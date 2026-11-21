@@ -2,6 +2,7 @@
   import type { MaybePromise } from "$lib/utils";
   import type { CalendarEvent } from "$lib/calendar/types";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import {
     eventLinkCandidateEvents,
     linkedEventRowsForTask,
@@ -87,10 +88,7 @@
         })
         .catch((error) => {
           if (runId !== searchRunId) return;
-          searchError = t(
-            "projects.detail.eventLinkSearchFailed",
-            error instanceof Error ? error.message : String(error),
-          );
+          searchError = userErrorMessage(error, t("projects.detail.eventLinkSearchFailed"));
           searchResults = [];
         })
         .finally(() => {

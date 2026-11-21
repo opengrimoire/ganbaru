@@ -28,15 +28,16 @@
   import { WELCOME_COLUMN_CLASS } from "$lib/vault/welcome-layout";
 
   /**
-   * The navigation every onboarding screen shares at its bottom: Back, when the screen has somewhere to go back to, and
-   * the primary action, which Enter also runs. A screen's other choices sit right above them, under the same divider, so
-   * the primary action keeps its place as screens change. With `progress`, dots after the primary action show how far
-   * along the screens are.
+   * The navigation every onboarding screen shares at its bottom: Back, when the screen has somewhere to go back to or
+   * `backLocked` shows it disabled, and the primary action, which Enter also runs. A screen's other choices sit right
+   * above them, under the same divider, so the primary action keeps its place as screens change. With `progress`, dots
+   * after the primary action show how far along the screens are.
    */
   let {
     primary,
     onBack,
     backDisabled = false,
+    backLocked = false,
     secondary,
     progress,
     class: className = "",
@@ -45,6 +46,8 @@
     /** Goes back a screen; without it, Back is left out. */
     onBack?: () => void;
     backDisabled?: boolean;
+    /** Shows Back disabled when the screen has nowhere to go back to, so the navigation keeps its shape. */
+    backLocked?: boolean;
     /** The screen's other choices, above Back and the primary action. */
     secondary?: Snippet;
     progress?: OnboardingNavProgress;
@@ -58,11 +61,11 @@
   <div class="flex flex-col gap-2 border-t border-border pt-4">
     {@render secondary?.()}
     <div class="flex items-center gap-2">
-      {#if onBack}
+      {#if onBack || backLocked}
         <button
           type="button"
           class="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent active:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={backDisabled}
+          disabled={backDisabled || !onBack}
           onclick={onBack}
         >
           <ArrowLeft size={16} strokeWidth={1.8} aria-hidden="true" />

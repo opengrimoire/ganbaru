@@ -140,7 +140,7 @@ describe("native soundscape playback projection", () => {
   it("reports a preset with no playable sound without starting output", async () => {
     const store = await loadedStore();
     await store.playPreset(preset("gone", [["gone", 1]]));
-    expect(store.error).toBe("This preset needs to be repaired before it can play.");
+    expect(store.error).toBe("Repair this soundscape before playing it.");
     expect(api.startSoundscape).not.toHaveBeenCalled();
   });
 });

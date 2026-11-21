@@ -16,7 +16,9 @@ use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
 use super::exclusion::{deliver, late_changes};
 use super::focus::{close_run_sql, open_run_sql};
-use super::replica::{Replica, converge, device_id, forge_change, pair, quoted, sealed_change};
+use super::replica::{
+    Replica, converge, device_id, forge_change, pair, prepared, quoted, sealed_change,
+};
 use super::sim::Rng;
 use crate::domains::distractions::{MAX_USAGE_DAY_SECONDS, RULES_TOPIC};
 use crate::manifest::vault::distractions::{
@@ -44,21 +46,24 @@ const OWNER_PROPERTY_ROUNDS: usize = 512;
 const OWNER_PROPERTY_DEVICES: usize = 32;
 
 /// Replicas that each seeded their settings row at vault open, as the app does once the
-/// tables start to replicate, with operations exchanged.
+/// tables start to replicate, with operations exchanged. Built once per count and copied.
 async fn replicas(count: usize) -> Vec<Replica> {
-    let mut replicas = Vec::with_capacity(count);
-    for index in 0..count {
-        let mut replica = Replica::new(index, 61).await;
-        let now = replica.now_ms;
-        replica
-            .engine
-            .seed_captures(&mut replica.conn, now)
-            .await
-            .unwrap();
-        replicas.push(replica);
-    }
-    converge(&mut replicas).await;
-    replicas
+    prepared(&format!("distractions seeded {count}"), async || {
+        let mut replicas = Vec::with_capacity(count);
+        for index in 0..count {
+            let mut replica = Replica::new(index, 61).await;
+            let now = replica.now_ms;
+            replica
+                .engine
+                .seed_captures(&mut replica.conn, now)
+                .await
+                .unwrap();
+            replicas.push(replica);
+        }
+        converge(&mut replicas).await;
+        replicas
+    })
+    .await
 }
 
 /// The key of a global blocked host rule, as rule writers derive it.

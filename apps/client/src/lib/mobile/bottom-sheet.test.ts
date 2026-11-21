@@ -38,6 +38,15 @@ describe("bottomSheetDragHeight", () => {
     expect(bottomSheetDragHeight(700, -400, heights)).toBe(800);
     expect(bottomSheetDragHeight(180, 400, heights)).toBe(0);
   });
+
+  it("keeps the top edge under the finger while the area grows or shrinks mid-drag", () => {
+    expect(bottomSheetDragHeight(500, 40, heights, 120)).toBe(580);
+    expect(bottomSheetDragHeight(500, 40, heights, -60)).toBe(400);
+  });
+
+  it("stays within the area when it grows past the full height", () => {
+    expect(bottomSheetDragHeight(760, -20, heights, 300)).toBe(800);
+  });
 });
 
 describe("bottomSheetReleaseVelocity", () => {

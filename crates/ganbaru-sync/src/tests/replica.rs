@@ -350,6 +350,60 @@ async fn space_template(vault_id: &str, person: &PersonKeyPair) -> Vec<u8> {
     spaces().entry(key).or_insert(bytes).clone()
 }
 
+/// The state of one installation of the shared vault that [`Replica::restore`] copies.
+#[derive(Clone)]
+struct Prepared {
+    bytes: Vec<u8>,
+    index: usize,
+    ctx: SpaceContext,
+    writer_seed: [u8; 32],
+    certificate: SignedCertificate,
+    reservation: Reservation,
+    device_id: String,
+    device_seed: [u8; 32],
+    now_ms: u64,
+    salt: u64,
+    generation: u32,
+    clones: u32,
+}
+
+/// Replicas each named setup built, kept to restore exact copies.
+static PREPARED: Mutex<BTreeMap<String, Vec<Prepared>>> = Mutex::new(BTreeMap::new());
+
+fn prepared_sets() -> std::sync::MutexGuard<'static, BTreeMap<String, Vec<Prepared>>> {
+    PREPARED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The replicas `build` returns, built and checked once per test binary for each `name` and
+/// restored as exact copies afterwards, so tests sharing an expensive setup, such as replicas
+/// that converged their seeded rows, run it once. `build` must give installations of the
+/// shared vault without space keys, and `name` must identify everything `build` does.
+pub(super) async fn prepared(
+    name: &str,
+    build: impl AsyncFnOnce() -> Vec<Replica>,
+) -> Vec<Replica> {
+    let cached = prepared_sets().get(name).cloned();
+    let states = match cached {
+        Some(states) => states,
+        None => {
+            let mut replicas = build().await;
+            let mut states = Vec::with_capacity(replicas.len());
+            for replica in &mut replicas {
+                states.push(replica.prepared().await);
+            }
+            prepared_sets().entry(name.to_owned()).or_insert(states);
+            return replicas;
+        }
+    };
+    let mut replicas = Vec::with_capacity(states.len());
+    for state in &states {
+        replicas.push(Replica::restore(state).await);
+    }
+    replicas
+}
+
 fn writer_seed(salt: u64, replica: usize, generation: u32) -> [u8; 32] {
     let mut seed = [0u8; 32];
     seed[..8].copy_from_slice(&salt.to_le_bytes());
@@ -469,6 +523,59 @@ impl Replica {
             salt: clone_salt(self.salt, self.clones),
             generation: self.generation,
             clones: 0,
+        }
+    }
+
+    /// The state that restores an exact copy of this installation of the shared vault: the same
+    /// database, writer, reservation, clock, and later writers.
+    async fn prepared(&mut self) -> Prepared {
+        assert!(
+            self.identity.keys.is_none(),
+            "a prepared replica holds no space keys"
+        );
+        assert_eq!(
+            self.person.public_key().to_text(),
+            person().public_key().to_text(),
+            "a prepared replica belongs to the shared vault"
+        );
+        Prepared {
+            bytes: self.snapshot().await,
+            index: self.index,
+            ctx: self.ctx.clone(),
+            writer_seed: self.identity.seed,
+            certificate: self.identity.certificate.clone(),
+            reservation: self.identity.reservation.clone(),
+            device_id: self.device_id.clone(),
+            device_seed: self.device_seed,
+            now_ms: self.now_ms,
+            salt: self.salt,
+            generation: self.generation,
+            clones: self.clones,
+        }
+    }
+
+    /// An exact copy of the installation `prepared` describes.
+    async fn restore(prepared: &Prepared) -> Self {
+        Self {
+            index: prepared.index,
+            conn: connection_from(&prepared.bytes).await,
+            engine: test_engine(),
+            ctx: prepared.ctx.clone(),
+            identity: Identity {
+                seed: prepared.writer_seed,
+                key: WriterKeyPair::from_seed(&prepared.writer_seed)
+                    .expect("test writer seed should be valid"),
+                certificate: prepared.certificate.clone(),
+                reservation: prepared.reservation.clone(),
+                keys: None,
+            },
+            device_id: prepared.device_id.clone(),
+            device_seed: prepared.device_seed,
+            person: person(),
+            now_ms: prepared.now_ms,
+            salt: prepared.salt,
+            generation: prepared.generation,
+            clones: prepared.clones,
         }
     }
 

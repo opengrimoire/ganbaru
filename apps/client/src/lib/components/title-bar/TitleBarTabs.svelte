@@ -28,12 +28,10 @@
   import { createSteadyPointerFilter, waitForPointerTravel } from "$lib/utils/hover-suppression";
   import type { WorkspaceTab, WorkspaceTabPlacement } from "$lib/workspace-tabs/model";
   import {
-    shortWorkspaceTabProject,
     workspaceTabFullLabel,
-    workspaceTabKindIcon,
+    workspaceTabIcon,
     workspaceTabLabel,
     workspaceTabPositionShortcut,
-    workspaceTabProjectHint,
   } from "$lib/workspace-tabs/presentation";
   import {
     tabDragLeftBar,
@@ -914,12 +912,11 @@
 />
 
 {#snippet tabFace(tab: WorkspaceTab, iconOnly: boolean)}
-  {@const Icon = workspaceTabKindIcon(tab.location.kind)}
-  {@const project = workspaceTabProjectHint(tab)}
+  {@const Icon = workspaceTabIcon(tab)}
   <Icon class="shrink-0" size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} />
   {#if !iconOnly}
     <span class="titlebar-tab-label min-w-0 flex-1 truncate text-start">
-      {workspaceTabLabel(tab, t)}{#if project}<span class="opacity-60"> {t("titleBar.tab.projectHint", shortWorkspaceTabProject(project))}</span>{/if}
+      {workspaceTabLabel(tab, t)}
     </span>
   {/if}
 {/snippet}

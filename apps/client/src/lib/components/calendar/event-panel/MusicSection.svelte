@@ -142,7 +142,7 @@
     <div transition:slide={sectionSlide()} data-section="music" class="music-body py-2.5 pl-1" style="background-color: var(--panel-bg);">
       <div class={phaseColumns ? "music-grid phase-columns" : "music-grid"}>
         {#if error}
-          <Notice class="col-span-full px-1 text-[0.65rem]" message={error} {onRetry} />
+          <Notice class="col-span-full px-1 text-[0.65rem]" message={t("calendar.eventPanel.musicLoadFailed")} copy={error} {onRetry} />
         {/if}
         {#each rows as row (row.phase)}
           <span class="music-label truncate text-[0.8rem] text-foreground">{row.label}</span>

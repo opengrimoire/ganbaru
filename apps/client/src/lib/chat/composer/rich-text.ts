@@ -2,7 +2,7 @@ import type { JsonValue, VersionedJson } from "$lib/chat/contracts";
 
 export const CHAT_COMPOSER_RICH_TEXT_SCHEMA_VERSION = 1;
 
-export const CHAT_COMPOSER_MARKS = ["bold", "italic"] as const;
+export const CHAT_COMPOSER_MARKS = ["bold", "italic", "strikethrough", "code"] as const;
 
 export type ChatComposerMark = (typeof CHAT_COMPOSER_MARKS)[number];
 
@@ -222,6 +222,23 @@ export function toggleChatComposerMark(
   ]);
 }
 
+/** Removes every mark from a visible text range, used for text that becomes a code block. */
+export function clearChatComposerMarks(
+  document: ChatComposerDocument,
+  selection: ChatComposerSelection,
+): ChatComposerDocument {
+  const segments = documentSegments(document);
+  const length = segments.reduce((total, segment) => total + segment.text.length, 0);
+  const start = clampOffset(Math.min(selection.start, selection.end), length);
+  const end = clampOffset(Math.max(selection.start, selection.end), length);
+  if (start === end) return normalizeChatComposerDocument(document);
+  return documentFromSegments([
+    ...sliceSegments(segments, 0, start),
+    ...sliceSegments(segments, start, end).map((segment) => ({ text: segment.text, marks: [] })),
+    ...sliceSegments(segments, end, length),
+  ]);
+}
+
 /** Returns the marks that should continue when text is inserted at an offset. */
 export function chatComposerMarksAt(document: ChatComposerDocument, offset: number): ChatComposerMark[] {
   const segments = documentSegments(document);
@@ -318,8 +335,9 @@ function sliceSegments(segments: LinearSegment[], from: number, to: number): Lin
   return result;
 }
 
+/** Escapes Markdown punctuation that would otherwise start or end formatting inside a marked run. */
 function escapeMarkedText(text: string): string {
-  return text.replace(/([\\*_])/gu, "\\$1");
+  return text.replace(/([\\*_~`])/gu, "\\$1");
 }
 
 interface MarkdownRunLayout {
@@ -337,28 +355,43 @@ interface MarkdownRunLayout {
  * edge whitespace of a marked run stays outside the delimiters and a whitespace-only run
  * is emitted without them. Emphasis always uses `*` because CommonMark rejects `_`
  * inside words; combined marks use the `***` form CommonMark reads as emphasis around
- * strong emphasis.
+ * strong emphasis. Strikethrough uses the GFM `~~` form inside emphasis, and inline code is
+ * innermost because a code span parses no other delimiters. A code span fence is one backtick
+ * longer than any backtick run in its text, padded with a space when the text starts or ends
+ * with a backtick, so code text never needs escaping.
  */
 function markdownRunLayout(run: ChatComposerTextRun): MarkdownRunLayout {
-  const bold = run.marks.includes("bold");
-  const italic = run.marks.includes("italic");
-  const delimiters: readonly [string, string] | null = bold && italic
-    ? ["***", "***"]
-    : bold ? ["**", "**"] : italic ? ["*", "*"] : null;
-  if (!delimiters) return { leading: "", prefix: "", core: run.text, suffix: "", trailing: "" };
+  if (run.marks.length === 0) return { leading: "", prefix: "", core: run.text, suffix: "", trailing: "" };
   const core = run.text.trim();
   if (core.length === 0) return { leading: run.text, prefix: "", core: "", suffix: "", trailing: "" };
+  const bold = run.marks.includes("bold");
+  const italic = run.marks.includes("italic");
+  const emphasis = bold && italic ? "***" : bold ? "**" : italic ? "*" : "";
+  const strike = run.marks.includes("strikethrough") ? "~~" : "";
+  let codeOpen = "";
+  let codeClose = "";
+  if (run.marks.includes("code")) {
+    const fence = "`".repeat(longestBacktickRun(core) + 1);
+    const padding = core.startsWith("`") || core.endsWith("`") ? " " : "";
+    codeOpen = fence + padding;
+    codeClose = padding + fence;
+  }
   const leadingLength = run.text.length - run.text.trimStart().length;
   return {
     leading: run.text.slice(0, leadingLength),
-    prefix: delimiters[0],
+    prefix: emphasis + strike + codeOpen,
     core,
-    suffix: delimiters[1],
+    suffix: codeClose + strike + emphasis,
     trailing: run.text.slice(leadingLength + core.length),
   };
 }
 
+function longestBacktickRun(text: string): number {
+  return Math.max(0, ...[...text.matchAll(/`+/gu)].map((match) => match[0].length));
+}
+
 function markdownCoreText(run: ChatComposerTextRun, text: string): string {
+  if (run.marks.includes("code")) return text;
   return run.marks.length > 0 ? escapeMarkedText(text) : text;
 }
 

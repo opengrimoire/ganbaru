@@ -19,6 +19,7 @@
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { technicalErrorDetail, userErrorMessage } from "$lib/i18n/user-errors";
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
   import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
@@ -91,12 +92,7 @@
     projectCalendarSurfaceStatuses,
     visibleCalendarEvents,
   } from "$lib/components/calendar/view/display-projection";
-  import {
-    calendarSwipeAxis,
-    calendarSwipeDirection,
-    calendarSwipeNavigation,
-    type CalendarSwipeAxis,
-  } from "./mobile-gestures";
+  import { CalendarMobileSwipeController } from "$lib/components/calendar/view/mobile-swipe-controller";
 
   const paneScope = getWorkspacePaneScope();
   const calendarStore = useCalendar();
@@ -441,7 +437,7 @@
     } catch (error) {
       untrack(() => {
         nativeEditor.update(null);
-        nativeEditor.error = saveErrorMessage(error);
+        nativeEditor.error = technicalErrorDetail(error) ?? t("calendar.view.previewFailed");
       });
     }
   });
@@ -457,7 +453,7 @@
       toasts.showSaveSuccessToast(toastId, t("calendar.view.saved"));
     } catch (error) {
       logPanelSaveError("panel-save", error, { ...event, description: event.description ?? "" });
-      toasts.showSaveErrorToast(toastId, t("calendar.view.saveFailed", saveErrorMessage(error)));
+      toasts.showSaveErrorToast(toastId, calendarFailureMessage(error, t("calendar.view.saveFailed")));
     }
   }
 
@@ -492,7 +488,7 @@
       toasts.showSaveSuccessToast(toastId, t("calendar.view.saved"));
     } catch (error) {
       console.error("Calendar Save retry failed", error);
-      toasts.showSaveErrorToast(toastId, t("calendar.view.saveFailed", saveErrorMessage(error)));
+      toasts.showSaveErrorToast(toastId, calendarFailureMessage(error, t("calendar.view.saveFailed")));
     }
   }
 
@@ -540,7 +536,7 @@
     afterRender: tick,
     savePendingLabel: () => t("calendar.view.saving"),
     saveSuccessLabel: () => t("calendar.view.saved"),
-    saveErrorLabel: (error) => t("calendar.view.saveFailed", saveErrorMessage(error)),
+    saveErrorLabel: (error) => calendarFailureMessage(error, t("calendar.view.saveFailed")),
     logError: logPanelSaveError,
   });
   const outsideClose = createCalendarOutsideCloseAction({
@@ -696,12 +692,12 @@
     return activePomodoroSaveWouldStopSession(data);
   }
 
-  function saveErrorMessage(error: unknown): string {
-    const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-    if (isTimingTooLargeMessage(message)) return t("calendar.view.tooManyChangedOccurrences");
-    if (isValueTooLargeMessage(message)) return t("calendar.view.valueTooLarge");
-    if (message.trim()) return message;
-    return t("calendar.view.unknownSaveError");
+  /** Explain native size limits by their stable codes, and otherwise show localized text or the given fallback. */
+  function calendarFailureMessage(error: unknown, fallback: string): string {
+    const detail = technicalErrorDetail(error) ?? "";
+    if (isTimingTooLargeMessage(detail)) return t("calendar.view.tooManyChangedOccurrences");
+    if (isValueTooLargeMessage(detail)) return t("calendar.view.valueTooLarge");
+    return userErrorMessage(error, fallback);
   }
 
   function logPanelSaveError(
@@ -723,129 +719,29 @@
     });
   }
 
-  let mobileSwipeSuppressClick = false;
-  let mobileSwipeState = $state<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    startedAt: number;
-    lastX: number;
-    lastY: number;
-    lastAt: number;
-    axis: CalendarSwipeAxis;
-  } | null>(null);
-
-  function removeMobileSwipeListeners(): void {
-    window.removeEventListener("pointermove", handleMobileSwipeMove);
-    window.removeEventListener("pointerup", handleMobileSwipeEnd);
-    window.removeEventListener("pointercancel", handleMobileSwipeCancel);
-  }
-
-  function resetMobileSwipe(): void {
-    removeMobileSwipeListeners();
-    mobileSwipeState = null;
-  }
-
-  function completeMobileSwipeNavigation(direction: "back" | "forward"): void {
-    removeMobileSwipeListeners();
-    mobileSwipeState = null;
-    navigate(direction, "touch");
-  }
-
-  function handleMobileSwipeStart(event: PointerEvent): void {
-    if (!mobileLayout || event.pointerType !== "touch" || !event.isPrimary || event.button !== 0
-      || session.state.mode !== "closed" || confirm.action) return;
-    mobileSwipeState = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      startedAt: performance.now(),
-      lastX: event.clientX,
-      lastY: event.clientY,
-      lastAt: performance.now(),
-      axis: null,
-    };
-    window.addEventListener("pointermove", handleMobileSwipeMove);
-    window.addEventListener("pointerup", handleMobileSwipeEnd);
-    window.addEventListener("pointercancel", handleMobileSwipeCancel);
-  }
-
-  function handleMobileSwipeMove(event: PointerEvent): void {
-    const state = mobileSwipeState;
-    if (!state || event.pointerId !== state.pointerId) return;
-    state.lastX = event.clientX;
-    state.lastY = event.clientY;
-    state.lastAt = performance.now();
-    const deltaX = event.clientX - state.startX;
-    const deltaY = event.clientY - state.startY;
-    if (state.axis === null) {
-      const axis = calendarSwipeAxis(deltaX, deltaY);
-      if (axis === null) return;
-      if (axis === "vertical") {
-        resetMobileSwipe();
-        return;
-      }
-      state.axis = axis;
-    }
-    event.preventDefault();
-  }
-
-  function finishMobileSwipe(state: NonNullable<typeof mobileSwipeState>): void {
-    const direction = state.axis === "horizontal"
-      ? calendarSwipeNavigation({
-        deltaX: state.lastX - state.startX,
-        elapsedMs: state.lastAt - state.startedAt,
-        viewportWidth: viewportController.viewWrapper?.clientWidth ?? window.innerWidth,
-      })
-      : null;
-    if (state.axis === "horizontal") mobileSwipeSuppressClick = true;
-    if (direction) completeMobileSwipeNavigation(direction);
-    else resetMobileSwipe();
-  }
-
-  function handleMobileSwipeEnd(event: PointerEvent): void {
-    const state = mobileSwipeState;
-    if (!state || event.pointerId !== state.pointerId) return;
-    finishMobileSwipe(state);
-  }
-
-  function handleMobileSwipeCancel(event: PointerEvent): void {
-    const state = mobileSwipeState;
-    if (!state || state.pointerId !== event.pointerId) return;
-    if (state.axis !== "horizontal") {
-      resetMobileSwipe();
-      return;
-    }
-    const direction = calendarSwipeDirection(state.lastX - state.startX);
-    mobileSwipeSuppressClick = true;
-    if (direction) completeMobileSwipeNavigation(direction);
-    else resetMobileSwipe();
-  }
-
-  function handleMobileSwipeClick(event: MouseEvent): void {
-    if (!mobileSwipeSuppressClick) return;
-    mobileSwipeSuppressClick = false;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-  }
+  const mobileSwipe = new CalendarMobileSwipeController({
+    canStart: () => mobileLayout && session.state.mode === "closed" && !confirm.action,
+    navigate: (direction) => navigate(direction, "touch"),
+    getViewportWidth: () => viewportController.viewWrapper?.clientWidth ?? window.innerWidth,
+  });
 
   function handleMobileContextMenu(event: MouseEvent): void {
     if (mobileLayout) event.preventDefault();
   }
 
   function handleMobileTouchEditStart(): void {
-    resetMobileSwipe();
+    mobileSwipe.reset();
     mobileGridEditing = true;
   }
 
   function handleMobileTouchEditEnd(): void {
-    mobileSwipeSuppressClick = true;
+    mobileSwipe.suppressNextClick();
     mobileGridEditing = false;
   }
 
   onDestroy(() => {
     viewAlive = false;
-    resetMobileSwipe();
+    mobileSwipe.reset();
     nativeEditor.reset();
     directEditor.reset();
     deleteEditor.reset();
@@ -1258,13 +1154,13 @@
     closeSession,
     pendingLabel: eventDeletePendingLabel,
     outcomeLabel: eventDeleteOutcomeLabel,
-    errorLabel: (error) => t("calendar.view.deleteFailed", saveErrorMessage(error)),
+    errorLabel: (error) => calendarFailureMessage(error, t("calendar.view.deleteFailed")),
   });
   const undoDeletedEvent = (): Promise<void> => deleteController.undoCurrent();
 
 
   function reportDeleteError(error: unknown): void {
-    const label = t("calendar.view.deleteFailed", saveErrorMessage(error));
+    const label = calendarFailureMessage(error, t("calendar.view.deleteFailed"));
     const toastId = toasts.showSavePendingToast(label);
     toasts.showSaveErrorToast(toastId, label);
   }
@@ -1314,7 +1210,7 @@
       const input = currentDeleteDraft();
       untrack(() => deleteEditor.update(input));
     } catch (error) {
-      untrack(() => { deleteEditor.update(null); deleteEditor.error = saveErrorMessage(error); });
+      untrack(() => { deleteEditor.update(null); deleteEditor.error = technicalErrorDetail(error) ?? t("calendar.view.deleteFailed"); });
     }
   });
 
@@ -1441,8 +1337,8 @@
     bind:this={viewportController.viewWrapper}
     class="min-w-0 flex-1 overflow-hidden"
     style="background-color: var(--cal-bg); touch-action: {mobileLayout ? 'pan-y pinch-zoom' : 'auto'};"
-    onpointerdowncapture={handleMobileSwipeStart}
-    onclickcapture={handleMobileSwipeClick}
+    onpointerdowncapture={mobileSwipe.handleStart}
+    onclickcapture={mobileSwipe.handleClick}
     oncontextmenu={handleMobileContextMenu}
   >
     <div class="h-full min-h-0">

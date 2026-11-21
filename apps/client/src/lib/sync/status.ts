@@ -1,6 +1,7 @@
 import type {
   SyncDegradedReason,
   SyncDeviceRef,
+  SyncErrorCode,
   SyncRelayProblem,
   SyncRole,
   SyncState,
@@ -8,7 +9,7 @@ import type {
 } from "$lib/api/sync";
 import type { AppLocale } from "$lib/i18n/locales";
 import { formatDateTime, formatNumber, formatRelativeMinutes } from "$lib/i18n/formatters";
-import type { Translate } from "$lib/i18n/translator.svelte";
+import type { Translate, TranslationKey } from "$lib/i18n/translator.svelte";
 import type { SyncPresentationRegistry } from "./presentation-registry";
 
 const MINUTE_MS = 60_000;
@@ -238,6 +239,26 @@ export function syncRelayLines(t: Translate, locale: AppLocale, status: SyncStat
     );
   }
   return lines;
+}
+
+/** Catalog message that explains each error code a sync status can report. */
+export const SYNC_ERROR_MESSAGE_KEYS = {
+  writerLimit: "sync.writerLimit",
+  bootstrapRequired: "sync.bootstrapRequired",
+  coordinatorRemoved: "sync.coordinatorRemoved",
+  serverNeedsUpdate: "sync.server.errors.serverNeedsUpdate",
+  forkClaimUnproven: "sync.forkClaimUnproven",
+} as const satisfies Record<SyncErrorCode, TranslationKey>;
+
+/**
+ * Explains why sync stopped, from the status error code. The native error text is never shown;
+ * a failure without a code gets a generic localized message.
+ *
+ * @param t Translator.
+ * @param code The status `lastErrorCode`.
+ */
+export function syncErrorMessage(t: Translate, code: SyncErrorCode | null): string {
+  return code === null ? t("sync.errorDetail") : t(SYNC_ERROR_MESSAGE_KEYS[code]);
 }
 
 /** Explains a typed relay problem in the user's language. */

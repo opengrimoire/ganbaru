@@ -178,7 +178,7 @@
         </label>
         <MaskedCodeInput
           id="sync-recovery-kit-rotate-code"
-          class="field h-9 w-full px-3 font-mono text-sm"
+          class="field w-full px-3 font-mono text-sm"
           clearLabel={t("common.clearKit")}
           dir="ltr"
           autocomplete="off"
@@ -219,7 +219,7 @@
       </label>
       <MaskedCodeInput
         id="sync-recovery-kit-code"
-        class="field h-9 w-full px-3 font-mono text-sm"
+        class="field w-full px-3 font-mono text-sm"
         clearLabel={t("common.clearKit")}
         dir="ltr"
         autocomplete="off"

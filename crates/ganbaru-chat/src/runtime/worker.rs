@@ -9,6 +9,16 @@ struct RuntimeWorker {
     session: Option<ProviderSessionSnapshot>,
     snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
     generation: Arc<AtomicU64>,
+    interrupt_confirmation_timeout: Duration,
+    /// The turn an accepted interrupt is waiting on, and when the runtime stops waiting.
+    interrupt_deadline: Option<(ChatTurnId, Instant)>,
+    /// How long the session must stay quiet before it restarts onto an updated CLI, when one was
+    /// installed while it ran.
+    restart_when_quiet: Option<Duration>,
+    /// When a due stop that found the session busy looks again.
+    stop_check_at: Option<Instant>,
+    /// The last CPU time measured below the provider process, and when.
+    cpu_sample: Option<(Instant, Duration)>,
 }
 
 impl RuntimeWorker {
@@ -16,6 +26,7 @@ impl RuntimeWorker {
         thread_id: ChatThreadId,
         snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
         generation: Arc<AtomicU64>,
+        interrupt_confirmation_timeout: Duration,
     ) -> Self {
         Self {
             thread_id,
@@ -24,11 +35,24 @@ impl RuntimeWorker {
             session: None,
             snapshot,
             generation,
+            interrupt_confirmation_timeout,
+            interrupt_deadline: None,
+            restart_when_quiet: None,
+            stop_check_at: None,
+            cpu_sample: None,
         }
     }
 
     async fn handle(&mut self, command: ThreadRuntimeCommand) -> bool {
-        self.touch();
+        // A restart request is not session activity, so it must not postpone the quiet period.
+        if !matches!(
+            command,
+            ThreadRuntimeCommand::RestartAfterProviderUpdate { .. }
+        ) {
+            self.touch();
+            // Activity starts a new idle period, so a deferral from an earlier busy check ends.
+            self.stop_check_at = None;
+        }
         match command {
             ThreadRuntimeCommand::SessionState(value) => self.update(|state| {
                 state.session_state = value;
@@ -46,6 +70,15 @@ impl RuntimeWorker {
                 state.terminal_linked_operation = value;
             }),
             ThreadRuntimeCommand::Touch => {}
+            ThreadRuntimeCommand::RestartAfterProviderUpdate { family_id, quiet } => {
+                let runs_family = self
+                    .driver
+                    .as_ref()
+                    .is_some_and(|driver| driver.instance_configuration().family_id == family_id);
+                if runs_family {
+                    self.restart_when_quiet = Some(quiet);
+                }
+            }
             ThreadRuntimeCommand::PromptCatalog { response } => {
                 let result = self
                     .driver
@@ -132,6 +165,8 @@ impl RuntimeWorker {
                 }
                 let generation = self.next_generation();
                 self.driver.take();
+                self.restart_when_quiet = None;
+                self.clear_stop_checks();
                 self.session = None;
                 self.update(|state| {
                     state.session_id = None;
@@ -192,6 +227,8 @@ impl RuntimeWorker {
                 }
                 let generation = self.next_generation();
                 self.driver.take();
+                self.restart_when_quiet = None;
+                self.clear_stop_checks();
                 self.session = None;
                 self.update(|state| {
                     state.session_id = None;
@@ -358,6 +395,7 @@ impl RuntimeWorker {
                     return false;
                 }
                 let previous_state = self.session_state();
+                let turn_id = request.turn_id.clone();
                 self.update(|state| state.session_state = ProviderSessionState::Stopping);
                 let result = match self.driver.as_mut() {
                     Some(driver) => {
@@ -368,6 +406,11 @@ impl RuntimeWorker {
                 };
                 if result.is_err() {
                     self.update(|state| state.session_state = previous_state);
+                } else {
+                    self.interrupt_deadline = Some((
+                        turn_id,
+                        Instant::now() + self.interrupt_confirmation_timeout,
+                    ));
                 }
                 let _ = response.send(result);
             }
@@ -430,6 +473,8 @@ impl RuntimeWorker {
         force: bool,
         context: DriverOperationContext,
     ) -> ChatResult<()> {
+        self.restart_when_quiet = None;
+        self.clear_stop_checks();
         let initial_flush = self.flush_events(&context).await;
         let Some(mut driver) = self.driver.take() else {
             self.session = None;
@@ -504,6 +549,139 @@ impl RuntimeWorker {
             .await;
     }
 
+    /// The earlier of a pending interrupt deadline and the next stop check: the idle deadline or
+    /// a restart after a CLI update, postponed while an earlier check found the session busy.
+    fn next_deadline(&self, idle_timeout: Duration) -> Option<Instant> {
+        let interrupt = self
+            .interrupt_deadline
+            .as_ref()
+            .map(|(_, deadline)| *deadline);
+        let stop = [self.idle_deadline(idle_timeout), self.restart_deadline()]
+            .into_iter()
+            .flatten()
+            .min()
+            .map(|due| self.stop_check_at.map_or(due, |check| due.max(check)));
+        [interrupt, stop].into_iter().flatten().min()
+    }
+
+    /// When the session can restart onto an updated CLI: once it has been quiet long enough.
+    fn restart_deadline(&self) -> Option<Instant> {
+        let quiet = self.restart_when_quiet?;
+        self.driver.as_ref()?;
+        let last_activity = self.snapshot.lock().ok()?.last_activity;
+        Some(last_activity + quiet)
+    }
+
+    /// Stops a session whose idle or update stop is due, unless it is still busy; a busy session
+    /// is checked again later.
+    async fn stop_when_due(&mut self, idle_timeout: Duration) {
+        let now = Instant::now();
+        if !self.can_idle_stop(idle_timeout) && !self.can_restart_after_update() {
+            self.stop_check_at = Some(now + STOP_RECHECK_INTERVAL);
+            return;
+        }
+        if let Some(recheck) = self.agent_work_recheck(now) {
+            self.stop_check_at = Some(now + recheck);
+            return;
+        }
+        self.idle_stop().await;
+    }
+
+    /// How long to wait before looking again when work the agent started may still be running:
+    /// the provider reports background work, or the processes below the provider used CPU since
+    /// the last sample. `None` when nothing shows the agent's work running.
+    ///
+    /// A first sample, or one too old to compare, starts a new measurement instead.
+    fn agent_work_recheck(&mut self, now: Instant) -> Option<Duration> {
+        let driver = self.driver.as_ref()?;
+        if driver.background_work_running() {
+            return Some(STOP_RECHECK_INTERVAL);
+        }
+        let used = crate::process::inventory::descendant_cpu_time(driver.session_process_id()?)?;
+        match self.cpu_sample.replace((now, used)) {
+            Some((sampled_at, earlier))
+                if now.duration_since(sampled_at) >= CPU_SAMPLE_INTERVAL
+                    && now.duration_since(sampled_at) <= CPU_SAMPLE_MAX_AGE =>
+            {
+                let busy = used.saturating_sub(earlier).as_nanos() * 100
+                    > now.duration_since(sampled_at).as_nanos() * BUSY_CPU_PERCENT;
+                busy.then_some(STOP_RECHECK_INTERVAL)
+            }
+            _ => Some(CPU_SAMPLE_INTERVAL),
+        }
+    }
+
+    fn clear_stop_checks(&mut self) {
+        self.stop_check_at = None;
+        self.cpu_sample = None;
+    }
+
+    /// Whether a session waiting on a CLI update is idle and has been quiet long enough.
+    fn can_restart_after_update(&self) -> bool {
+        self.restart_when_quiet
+            .is_some_and(|quiet| self.can_idle_stop(quiet))
+    }
+
+    /// Whether a pending interrupt deadline has passed.
+    fn interrupt_expired(&self, now: Instant) -> bool {
+        self.interrupt_deadline
+            .as_ref()
+            .is_some_and(|(_, deadline)| *deadline <= now)
+    }
+
+    /// Settles a turn whose provider accepted an interrupt but never confirmed it: records a
+    /// warning and an interrupted abort with an id derived from the thread and turn, then stops
+    /// the provider so the next turn starts a fresh session. Events the provider sends later
+    /// belong to a retired generation and are ignored as late. Does nothing when the turn
+    /// already settled.
+    async fn expire_interrupt(&mut self) {
+        let Some((turn_id, _)) = self.interrupt_deadline.take() else {
+            return;
+        };
+        if self.active_turn_id().as_ref() != Some(&turn_id) {
+            return;
+        }
+        let provider = self.driver.as_ref().map(|driver| {
+            let configuration = driver.instance_configuration();
+            (
+                configuration.family_id.clone(),
+                configuration.instance_id.clone(),
+            )
+        });
+        if let (Some(sink), Some((family_id, instance_id))) = (self.event_sink.clone(), provider) {
+            match unconfirmed_interrupt_events(&self.thread_id, &turn_id, &family_id, &instance_id)
+            {
+                Ok(events) => {
+                    for event in events {
+                        if let Err(error) = sink.emit(event).await {
+                            eprintln!(
+                                "Chat could not record an unconfirmed interrupt, code {:?}",
+                                error.code
+                            );
+                        }
+                    }
+                }
+                Err(error) => eprintln!(
+                    "Chat could not build an unconfirmed interrupt event, code {:?}",
+                    error.code
+                ),
+            }
+        }
+        let deadline = Instant::now() + DEFAULT_STOP_TIMEOUT;
+        if let Err(error) = self
+            .stop_driver(
+                false,
+                operation_context("runtime-interrupt-timeout", deadline),
+            )
+            .await
+        {
+            eprintln!(
+                "Chat could not stop a provider that ignored Stop, code {:?}",
+                error.code
+            );
+        }
+    }
+
     fn can_idle_stop(&self, idle_timeout: Duration) -> bool {
         self.driver.is_some()
             && self
@@ -562,11 +740,22 @@ pub(super) async fn run_thread_runtime(
     mut receiver: mpsc::Receiver<ThreadRuntimeCommand>,
     snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
     generation: Arc<AtomicU64>,
-    idle_timeout: Duration,
+    idle_timeout: IdleTimeout,
+    interrupt_confirmation_timeout: Duration,
 ) {
-    let mut worker = RuntimeWorker::new(thread_id, snapshot, generation);
+    let mut worker = RuntimeWorker::new(
+        thread_id,
+        snapshot,
+        generation,
+        interrupt_confirmation_timeout,
+    );
     loop {
-        let command = match worker.idle_deadline(idle_timeout) {
+        // Checked before waiting too, so steady commands never postpone an expired interrupt.
+        if worker.interrupt_expired(Instant::now()) {
+            worker.expire_interrupt().await;
+        }
+        let idle_timeout = idle_timeout.get();
+        let command = match worker.next_deadline(idle_timeout) {
             Some(deadline) => match tokio::time::timeout_at(
                 tokio::time::Instant::from_std(deadline),
                 receiver.recv(),
@@ -575,8 +764,8 @@ pub(super) async fn run_thread_runtime(
             {
                 Ok(command) => command,
                 Err(_) => {
-                    if worker.can_idle_stop(idle_timeout) {
-                        worker.idle_stop().await;
+                    if !worker.interrupt_expired(Instant::now()) {
+                        worker.stop_when_due(idle_timeout).await;
                     }
                     continue;
                 }

@@ -4,6 +4,7 @@ import {
   parseChatScratchCleanupResult,
   parseChatScratchDirectoryPage,
   parseChatScratchPromotionResult,
+  parseChatScratchReclaimReport,
   parseChatScratchScope,
 } from "./validation/organizational";
 
@@ -14,8 +15,8 @@ function scratchScopeFixture(): Record<string, unknown> {
   return {
     id: "scratch-scope:test",
     replyThreadId: "reply-thread:test",
-    teammateId: "participant:atlas",
-    teammateName: "Atlas",
+    agentId: "participant:atlas",
+    agentName: "Atlas",
     channelId: "channel:frontend",
     channelName: "frontend",
     projectId: "project:app",
@@ -173,5 +174,40 @@ describe("private scratch lifecycle contracts", () => {
     expect(() => parseChatScratchScope(scope)).toThrow(
       "highOrderKey must not precede lowerOrderKey",
     );
+  });
+
+  it("accepts a reclaim report with reasons, sizes, and unavailable rows", () => {
+    const row = {
+      scratchScopeId: "scratch-scope:test",
+      scratchGenerationId: "scratch-generation:test",
+      replyThreadId: "reply-thread:test",
+      generation: 2,
+      agentName: "Atlas",
+      channelName: "frontend",
+      projectName: "App",
+      groupName: null,
+      reason: "scopeArchived",
+      byteSize: 4096,
+      sizeTruncated: true,
+      deviceAvailability: "unavailableOnThisDevice",
+      lastActivityAt: timestamp,
+    };
+    const report = parseChatScratchReclaimReport({
+      rows: [row, { ...row, scratchGenerationId: "scratch-generation:idle", reason: "idle" }],
+      totalBytes: 0,
+      totalTruncated: false,
+      omitted: 3,
+      idleDays: 30,
+    });
+
+    expect(report.rows.map((entry) => entry.reason)).toEqual(["scopeArchived", "idle"]);
+    expect(report).toMatchObject({ totalBytes: 0, omitted: 3 });
+    expect(JSON.stringify(report)).not.toContain("/home/");
+    expect(() => parseChatScratchReclaimReport({
+      ...report,
+      rows: [{ ...row, reason: "projectFolder" }],
+    })).toThrow("reason");
+    expect(() => parseChatScratchReclaimReport({ ...report, omitted: -1 }))
+      .toThrow("must not be negative");
   });
 });

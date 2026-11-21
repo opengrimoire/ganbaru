@@ -117,6 +117,15 @@
   import { filmPressTransform, filmSpan, filmWorkday, type FilmSpan } from "$lib/vault/welcome-film";
   import { MUSIC_PLAYLISTS, type MusicScenePlaylist } from "$lib/vault/welcome-music-scene";
   import {
+    projectsCellMenuPlace,
+    projectsListScrollPx,
+    projectsPalettePlace,
+    projectsSettingsOffsets,
+    type Box,
+    type ListLayout,
+    type SettingsLayout,
+  } from "$lib/vault/welcome-projects-layout";
+  import {
     PROJECTS_BEATS,
     PROJECTS_CALENDAR_TAB_TARGET,
     PROJECTS_CLOCK,
@@ -130,7 +139,6 @@
     PROJECTS_PRESET,
     PROJECTS_PRIORITY_COLORS,
     PROJECTS_PRIORITY_ORDER,
-    PROJECTS_SETTINGS_TARGETS,
     PROJECTS_STATUS_COLORS,
     PROJECTS_STATUS_ORDER,
     PROJECTS_TASKS,
@@ -239,23 +247,9 @@
   const PANEL_COMPACT_W = 460;
   /** At or below this width the settings rows stack their labels above their controls, as the panel does. */
   const STACKED_ROWS_W = 480;
-  /** Where the Defaults heading rests once the settings scroll to it, below the top of their viewport. */
-  const DEFAULTS_SCROLL_PAD = 4;
-  /** Room kept above or below a settings control once the settings scroll it into view. */
-  const CONTROL_SCROLL_PAD = 8;
-  /** Room kept so a popover that just fits by measure still fits after rounding. */
-  const FIT_SLACK_PX = 1;
   /** The project header's end padding (`px-3`), so the settings button's right edge is known. */
   const HEADER_END_PX = 12;
 
-  /** A cell menu's edge margin and its gap from the cell, as the list's cell menus place themselves. */
-  const CELL_MENU_MARGIN = 8;
-  const CELL_MENU_GAP = 6;
-  /** Room kept beside a cell once the list scrolls it into view. */
-  const CELL_SCROLL_PAD = 12;
-  /** The color palette's edge margin and its padding, whose half is its gap from the trigger, as the picker places it. */
-  const PALETTE_EDGE = 8;
-  const PALETTE_PADDING_REM = 0.625;
   /** The playlist picker's width and height caps, as the playlist select sizes it. */
   const PLAYLIST_POPOVER_W = 320;
   const PLAYLIST_POPOVER_MAX_H = 520;
@@ -310,46 +304,6 @@
   /** The duration options of Event defaults, as the settings list them, and the one the scene picks. */
   type DurationOption = { value: string; label: string };
   const PICKED_DURATION = String(PROJECTS_DEFAULT_MINUTES);
-
-  /** A trigger, a viewport, or a section measured within its positioned parent or the canvas, in logical pixels. */
-  interface Box {
-    top: number;
-    left: number;
-    width: number;
-    height: number;
-  }
-
-  /** Where the list's parts sit, measured once the added task's row lays itself out. Cells are in canvas coordinates, before any scroll. */
-  interface ListLayout {
-    viewportWidth: number;
-    contentWidth: number;
-    status: Box;
-    /** The first subtask's status cell, once that subtask is in the list. */
-    subtaskStatus: Box | null;
-    priority: Box;
-    menuWidth: number;
-    statusMenuHeight: number;
-    priorityMenuHeight: number;
-  }
-
-  /**
-   * Where the settings' parts sit, measured once the panel lays itself out for the canvas. The viewport is within the
-   * panel, and the Defaults heading and the controls are within the settings' content, before any scroll.
-   */
-  interface SettingsLayout {
-    viewport: Box;
-    contentHeight: number;
-    defaultsTop: number;
-    controls: Record<ProjectsSettingsTarget, Box>;
-    paletteWidth: number;
-    paletteHeight: number;
-    durationMenuHeight: number;
-    pomodoroMenuHeight: number;
-    durationMenuWidth: number;
-    pomodoroMenuWidth: number;
-    playlistMenuHeight: number;
-    rem: number;
-  }
 
   const now = new Date();
   const sceneDate = filmWorkday(now);
@@ -625,15 +579,7 @@
   });
 
   /** How far the list has scrolled sideways: until the added task's status is in view, then on until its priority is. */
-  const listScrollPx = $derived.by(() => {
-    if (!listLayout) return 0;
-    const { viewportWidth } = listLayout;
-    const maxScroll = Math.max(0, listLayout.contentWidth - viewportWidth);
-    const target = (cell: Box) => Math.min(maxScroll, Math.max(0, cell.left + cell.width + CELL_SCROLL_PAD - viewportWidth));
-    const statusTarget = target(listLayout.status);
-    const priorityTarget = Math.max(statusTarget, target(listLayout.priority));
-    return statusTarget * listScroll.status + (priorityTarget - statusTarget) * listScroll.priority;
-  });
+  const listScrollPx = $derived(listLayout ? projectsListScrollPx(listLayout, listScroll) : 0);
 
   /**
    * How far the list has scrolled down on the scene on tasks: just enough to keep its last rows in view as rows are
@@ -701,65 +647,21 @@
     if (!listLayout || !cellMenu) return null;
     const cell = { status: listLayout.status, subtaskStatus: listLayout.subtaskStatus, priority: listLayout.priority }[cellMenu];
     if (!cell) return null;
-    const menuWidth = listLayout.menuWidth;
-    const menuHeight = statusMenuOpen ? listLayout.statusMenuHeight : listLayout.priorityMenuHeight;
-    const cellLeft = cell.left - listScrollPx;
-    const cellTop = cell.top - listScrollYPx;
-    const left = Math.max(CELL_MENU_MARGIN, Math.min(cellLeft, canvasW - menuWidth - CELL_MENU_MARGIN));
-    const belowTop = cellTop + cell.height + CELL_MENU_GAP;
-    const aboveBottom = cellTop - CELL_MENU_GAP;
-    const belowSpace = Math.max(0, canvasH - CELL_MENU_MARGIN - belowTop);
-    const aboveSpace = Math.max(0, aboveBottom - CELL_MENU_MARGIN);
-    const below = belowSpace >= menuHeight || belowSpace >= aboveSpace;
-    const top = Math.max(CELL_MENU_MARGIN, Math.min(below ? belowTop : aboveBottom - menuHeight, canvasH - CELL_MENU_MARGIN - menuHeight));
-    return { left, top };
+    return projectsCellMenuPlace({
+      cell,
+      menuWidth: listLayout.menuWidth,
+      menuHeight: statusMenuOpen ? listLayout.statusMenuHeight : listLayout.priorityMenuHeight,
+      scrollX: listScrollPx,
+      scrollY: listScrollYPx,
+      canvasW,
+      canvasH,
+    });
   });
 
-  /**
-   * Where the settings rest for each control: the Defaults heading at the top for the event name, then for every other
-   * control the least scroll from the one before that brings it into view. The color also keeps room for its palette
-   * below or above it on the canvas, so the palette never covers its own trigger on a short canvas.
-   */
-  const settingsOffsets = $derived.by<Record<ProjectsSettingsTarget, number> | null>(() => {
-    const layout = settingsLayout;
-    if (!layout) return null;
-    const viewportHeight = layout.viewport.height;
-    const maxScroll = Math.max(0, layout.contentHeight - viewportHeight);
-    const clamp = (value: number) => Math.min(maxScroll, Math.max(0, value));
-    const base = panel.top + layout.viewport.top;
-    const paletteGap = (PALETTE_PADDING_REM / 2) * layout.rem;
-    const offsets = {} as Record<ProjectsSettingsTarget, number>;
-    let previous = 0;
-    for (const target of PROJECTS_SETTINGS_TARGETS) {
-      const box = layout.controls[target];
-      let offset: number;
-      if (target === "name") {
-        offset = clamp(layout.defaultsTop - DEFAULTS_SCROLL_PAD);
-      } else {
-        const pad = CONTROL_SCROLL_PAD;
-        let low = clamp(box.top + box.height + pad - viewportHeight);
-        let high = Math.max(low, clamp(box.top - pad));
-        if (target === "color") {
-          const belowLow = base + box.top + box.height + paletteGap + layout.paletteHeight + PALETTE_EDGE - canvasH + FIT_SLACK_PX;
-          const aboveHigh = base + box.top - paletteGap - layout.paletteHeight - PALETTE_EDGE - FIT_SLACK_PX;
-          const nearest = (from: number, to: number) => Math.min(to, Math.max(from, previous));
-          const below = belowLow <= high ? { low: Math.max(low, belowLow), high } : null;
-          const above = aboveHigh >= low ? { low, high: Math.min(high, aboveHigh) } : null;
-          const fits = [below, above].filter((range): range is { low: number; high: number } => range !== null && range.low <= range.high);
-          if (fits.length > 0) {
-            const best = fits.reduce((chosen, range) =>
-              Math.abs(nearest(range.low, range.high) - previous) < Math.abs(nearest(chosen.low, chosen.high) - previous) ? range : chosen);
-            low = best.low;
-            high = best.high;
-          }
-        }
-        offset = Math.min(high, Math.max(low, previous));
-      }
-      offsets[target] = offset;
-      previous = offset;
-    }
-    return offsets;
-  });
+  /** Where the settings rest for each control, once the settings have laid themselves out. */
+  const settingsOffsets = $derived<Record<ProjectsSettingsTarget, number> | null>(
+    settingsLayout ? projectsSettingsOffsets(settingsLayout, panel.top, canvasH) : null,
+  );
 
   /** How far the settings have scrolled, easing from one control's rest to the next as each comes up. */
   const settingsScrollPx = $derived.by(() => {
@@ -807,19 +709,7 @@
   /** The color palette's place: below its trigger when it fits, above it otherwise, and kept on the canvas. */
   const palettePlace = $derived.by(() => {
     if (!settingsLayout || picker !== "color") return null;
-    const trigger = settingsRect(settingsLayout.controls.color);
-    const { paletteWidth, paletteHeight } = settingsLayout;
-    const offset = (PALETTE_PADDING_REM / 2) * settingsLayout.rem;
-    const maxLeft = Math.max(PALETTE_EDGE, canvasW - paletteWidth - PALETTE_EDGE);
-    const left = Math.min(Math.max(PALETTE_EDGE, trigger.left), maxLeft);
-    const belowTop = trigger.bottom + offset;
-    const aboveTop = trigger.top - paletteHeight - offset;
-    const top = belowTop + paletteHeight + PALETTE_EDGE <= canvasH
-      ? belowTop
-      : aboveTop >= PALETTE_EDGE
-        ? aboveTop
-        : Math.max(PALETTE_EDGE, canvasH - paletteHeight - PALETTE_EDGE);
-    return { left, top };
+    return projectsPalettePlace(settingsRect(settingsLayout.controls.color), settingsLayout, canvasW, canvasH);
   });
 
   const durationOptions = $derived<DurationOption[]>([

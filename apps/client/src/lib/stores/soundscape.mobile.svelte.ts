@@ -7,8 +7,8 @@ import type {
   MusicSoundscapeWrite,
 } from "$lib/music/soundscape/contracts";
 import type { SoundscapeMix } from "./soundscape.svelte";
-
-const UNAVAILABLE = "Soundscapes are unavailable on this platform.";
+import { LocalizedError } from "$lib/i18n/user-errors";
+import { translate } from "$lib/i18n/translator.svelte";
 
 class MobileSoundscapeStore {
   definitions = $state<MusicSoundscapeDefinition[]>([]);
@@ -57,7 +57,7 @@ class MobileSoundscapeStore {
   async saveDefinition(_write: MusicSoundscapeWrite): Promise<void> {}
   async removeDefinition(_definition: MusicSoundscapeDefinition): Promise<void> {}
   async savePreset(_write: MusicSoundscapePresetWrite): Promise<MusicSoundscapePreset> {
-    throw new Error(UNAVAILABLE);
+    throw new LocalizedError(translate("music.errors.soundscapeUnavailable"));
   }
   async playLayer(_definition: MusicSoundscapeDefinition): Promise<void> {}
   async removePreset(_preset: MusicSoundscapePreset): Promise<void> {}

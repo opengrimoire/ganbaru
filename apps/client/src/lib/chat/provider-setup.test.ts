@@ -3,12 +3,27 @@ import {
   createProviderSetupDraft,
   isSecretLikeEnvironmentName,
   providerConfigurationFromDraft,
+  providerCliSummary,
+  providerFamilyDisplayName,
   providerInstanceIdFromLabel,
   storesPlaintextSecret,
   validateProviderSetup,
 } from "./provider-setup";
 
 describe("provider setup", () => {
+  it("localizes only the generic ACP family label", () => {
+    expect(providerFamilyDisplayName({ familyId: "acp", displayName: "ACP agent" }, "Agente ACP")).toBe("Agente ACP");
+    expect(providerFamilyDisplayName({ familyId: "opencode", displayName: "OpenCode" }, "Agente ACP")).toBe("OpenCode");
+  });
+
+  it("names the program a configuration runs with its version once a probe read it", () => {
+    const family = { familyId: "codex", defaultExecutableCandidates: ["codex"] };
+    expect(providerCliSummary(family, { configuration: { executable: "C:\\Tools\\codex.exe" }, lastProbe: { version: "1.2.3" } }))
+      .toBe("codex.exe 1.2.3");
+    expect(providerCliSummary(family, { configuration: { executable: "/usr/bin/codex" }, lastProbe: null })).toBe("codex");
+    expect(providerCliSummary(family, { configuration: { executable: " " }, lastProbe: { version: null } })).toBe("codex");
+  });
+
   it("creates stable editable instance IDs from labels", () => {
     expect(providerInstanceIdFromLabel(" Chloé's Codex ")).toBe("chloe-s-codex");
   });
@@ -54,6 +69,30 @@ describe("provider setup", () => {
     }
   });
 
+  it("skips blank environment rows and empty launch arguments until they are filled in", () => {
+    const draft = createProviderSetupDraft();
+    Object.assign(draft, {
+      familyId: "codex",
+      label: "Codex",
+      instanceId: "codex",
+      executable: "codex",
+      launchArguments: ["", "--verbose"],
+      environment: [
+        { key: "blank", name: "", valueType: "inherit", value: "", credentialReference: "" },
+        { key: "partial", name: "", valueType: "text", value: "1", credentialReference: "" },
+      ],
+    });
+    const result = validateProviderSetup(draft, new Set());
+    expect(result.fields["environment.blank.name"]).toBeUndefined();
+    expect(result.fields["environment.partial.name"]).toBeDefined();
+
+    draft.environment = draft.environment.filter((row) => row.key === "blank");
+    expect(validateProviderSetup(draft, new Set()).valid).toBe(true);
+    const configuration = providerConfigurationFromDraft(draft);
+    expect(configuration.environment).toEqual({});
+    expect(configuration.launchArguments).toEqual(["--verbose"]);
+  });
+
   it("keeps secret values out of provider configuration", () => {
     const draft = createProviderSetupDraft();
     Object.assign(draft, {
@@ -81,8 +120,6 @@ describe("provider setup", () => {
     const current = {
       ...providerConfigurationFromDraft(draft),
       enabled: false,
-      visibleModelIds: ["gpt-5.6-sol"],
-      favoriteModelIds: ["gpt-5.6-sol"],
     };
 
     draft.executable = "/opt/codex/bin/codex";
@@ -90,8 +127,6 @@ describe("provider setup", () => {
 
     expect(updated.executable).toBe("/opt/codex/bin/codex");
     expect(updated.enabled).toBe(false);
-    expect(updated.visibleModelIds).toEqual(["gpt-5.6-sol"]);
-    expect(updated.favoriteModelIds).toEqual(["gpt-5.6-sol"]);
   });
 
   it("requires workspace consent for external OpenCode servers", () => {

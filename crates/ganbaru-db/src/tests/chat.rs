@@ -1,4 +1,4 @@
-use super::helpers::{insert_default_channel, migrated_memory_pool};
+use super::helpers::{insert_default_channel, load_project_chat_graph, migrated_memory_pool};
 use sqlx::{AssertSqlSafe, Row};
 
 const NOW: &str = "2026-07-20T12:00:00Z";
@@ -151,17 +151,18 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_browser_artifacts",
             "chat_provider_cleanup_jobs",
             "chat_terminal_layouts",
+            "idx_chat_terminal_layouts_working_folder",
             "chat_participants",
-            "chat_teammates",
-            "chat_teammate_policy_revisions",
+            "chat_agents",
+            "chat_agent_policy_revisions",
             "chat_conversations",
             "chat_channels",
             "chat_conversation_memberships",
-            "chat_teammate_working_folder_grants",
-            "chat_access_profiles",
-            "chat_access_profile_revisions",
-            "chat_teammate_access_state",
-            "chat_teammate_channel_memberships",
+            "chat_agent_app_settings",
+            "chat_project_agent_settings",
+            "chat_push_approvals",
+            "chat_remembered_approvals",
+            "chat_agent_channel_memberships",
             "chat_conversation_audience_state",
             "chat_message_references",
             "chat_participant_reference_targets",
@@ -196,10 +197,15 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_assignment_context_packages",
             "chat_assignment_context_sources",
             "chat_agent_runs",
+            "chat_agent_run_delivered_sources",
+            "chat_agent_run_usage",
+            "chat_agent_usage_daily",
+            "chat_provider_device_status",
+            "chat_secret_requests",
+            "chat_agent_run_attempt_immutable",
             "chat_assignment_dispatch_jobs",
-            "chat_assignment_requested_targets",
-            "chat_assignment_input_requested_targets",
             "chat_scheduled_messages",
+            "chat_push_request_claims",
             "chat_scheduled_message_attachment_references",
             "chat_scheduled_message_references",
             "project_primary_working_folders",
@@ -236,11 +242,14 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_channels_conversation",
             "chat_participants_local_user_identity",
             "idx_chat_conversation_memberships_participant",
-            "idx_chat_teammate_working_folder_grants_folder",
-            "idx_chat_access_profiles_builtin",
-            "idx_chat_teammate_channel_memberships_teammate",
+            "idx_chat_push_approvals_folder",
+            "idx_chat_remembered_approvals_approved_by",
+            "idx_chat_remembered_approvals_agent",
+            "idx_chat_agent_channel_memberships_agent",
             "idx_chat_assignment_authorization_revisions_active",
             "idx_chat_host_tool_invocations_authorization",
+            "idx_chat_secret_requests_run",
+            "idx_chat_secret_requests_assignment",
             "idx_chat_preview_tool_invocations_turn",
             "idx_chat_scratch_generations_active",
             "idx_chat_scratch_promotions_generation",
@@ -250,7 +259,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_conversation_items_order",
             "idx_chat_reply_threads_conversation",
             "idx_chat_message_references_revision",
-            "idx_chat_work_assignments_teammate",
+            "idx_chat_work_assignments_agent",
             "chat_reply_threads_root_item_insert",
             "chat_conversation_items_reply_thread_insert",
             "chat_communication_message_current_revision_update",
@@ -272,6 +281,24 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_attachments_path",
             "idx_chat_resources_path",
             "idx_chat_scheduled_message_references_folder",
+            "chat_timeline_change_clocks",
+            "chat_timeline_removals",
+            "idx_chat_timeline_removals_removed_at",
+            "idx_chat_messages_thread_change",
+            "idx_chat_activities_thread_change",
+            "idx_chat_plans_thread_change",
+            "idx_chat_turns_thread_change",
+            "chat_messages_timeline_change_insert",
+            "chat_messages_timeline_change_update",
+            "chat_messages_timeline_change_delete",
+            "chat_activities_timeline_change_insert",
+            "chat_activities_timeline_change_update",
+            "chat_activities_timeline_change_delete",
+            "chat_plans_timeline_change_insert",
+            "chat_plans_timeline_change_update",
+            "chat_plans_timeline_change_delete",
+            "chat_turns_timeline_change_insert",
+            "chat_turns_timeline_change_update",
         ] {
             let exists: Option<i64> =
                 sqlx::query_scalar("SELECT 1 FROM sqlite_schema WHERE name = ?")
@@ -390,8 +417,9 @@ fn fresh_vaults_seed_primary_folders_but_no_chat_conversations_or_pending_keys()
         }
         for table in [
             "chat_conversation_memberships",
-            "chat_teammate_channel_memberships",
-            "chat_teammate_working_folder_grants",
+            "chat_agent_channel_memberships",
+            "chat_push_approvals",
+            "chat_remembered_approvals",
             "chat_conversation_read_cursors",
             "chat_reply_thread_read_cursors",
         ] {
@@ -421,32 +449,27 @@ fn fresh_chat_has_only_the_local_owner_and_unprivileged_profile_recipes() {
         .fetch_one(&pool)
         .await
         .unwrap();
-        let ai_teammates: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_participants WHERE participant_kind = 'ai_teammate'",
+        let ai_agents: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_participants WHERE participant_kind = 'ai_agent'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        let profiles: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_access_profiles")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
 
         assert_eq!(participants, 1);
         assert_eq!(local_owners, 1);
-        assert_eq!(ai_teammates, 0);
-        assert_eq!(profiles, 5);
+        assert_eq!(ai_agents, 0);
     });
 }
 
 #[test]
-fn standalone_teammate_identity_is_inert_until_access_is_replaced() {
+fn standalone_agent_identity_is_inert_until_a_channel_adds_it() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
             "INSERT INTO chat_participants
                 (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('teammate:inert', 'ai_teammate', 'Inert teammate', ?, ?)",
+             VALUES ('agent:inert', 'ai_agent', 'Inert agent', ?, ?)",
         )
         .bind(NOW)
         .bind(NOW)
@@ -454,9 +477,8 @@ fn standalone_teammate_identity_is_inert_until_access_is_replaced() {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO chat_teammates
-                (participant_id, role, instructions, created_at, updated_at)
-             VALUES ('teammate:inert', 'General support', '', ?, ?)",
+            "INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+             VALUES ('agent:inert', 'codex', ?, ?)",
         )
         .bind(NOW)
         .bind(NOW)
@@ -464,278 +486,53 @@ fn standalone_teammate_identity_is_inert_until_access_is_replaced() {
         .await
         .unwrap();
 
-        let access_revision: i64 = sqlx::query_scalar(
-            "SELECT access_revision FROM chat_teammate_access_state
-             WHERE teammate_id = 'teammate:inert'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let memberships: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_conversation_memberships
-             WHERE participant_id = 'teammate:inert'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let ai_access: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_teammate_channel_memberships
-             WHERE teammate_id = 'teammate:inert'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let folder_grants: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_teammate_working_folder_grants
-             WHERE teammate_id = 'teammate:inert'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        for table in [
+            "chat_conversation_memberships",
+            "chat_agent_channel_memberships",
+            "chat_push_approvals",
+            "chat_remembered_approvals",
+        ] {
+            let column = if table == "chat_conversation_memberships" {
+                "participant_id"
+            } else {
+                "agent_id"
+            };
+            let rows: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+                "SELECT count(*) FROM {table} WHERE {column} = 'agent:inert'"
+            )))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(rows, 0, "{table}");
+        }
 
-        let stored_runtime_default: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pragma_table_info('chat_teammate_access_state')
-             WHERE name = 'runtime_approval_policy'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
-        assert_eq!(access_revision, 0);
-        assert_eq!(memberships, 0);
-        assert_eq!(ai_access, 0);
-        assert_eq!(folder_grants, 0);
+        let agent_columns = sqlx::query("SELECT name FROM pragma_table_info('chat_agents')")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<Vec<_>>();
         assert_eq!(
-            stored_runtime_default, 0,
-            "the teammate default runtime approval derives from its approval behavior"
+            agent_columns,
+            [
+                "participant_id",
+                "provider_family_id",
+                "current_policy_revision_id",
+                "created_at",
+                "updated_at"
+            ],
+            "access and instructions live on the vault, project, and channel, not the agent"
         );
-    });
-}
-
-#[test]
-fn access_profile_revisions_are_immutable_and_do_not_create_memberships() {
-    super::block_on(async {
-        let pool = migrated_memory_pool().await;
-        let update = sqlx::query(
-            "UPDATE chat_access_profile_revisions
-             SET maximum_folder_capability = 'publish'
-             WHERE id = 'access-profile-revision:conversation-only:1'",
+        let access_state: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM sqlite_schema WHERE name IN (
+                 'chat_agent_access_state', 'chat_agent_working_folder_grants'
+             )",
         )
-        .execute(&pool)
-        .await;
-        let delete = sqlx::query(
-            "DELETE FROM chat_access_profile_revisions
-             WHERE id = 'access-profile-revision:conversation-only:1'",
-        )
-        .execute(&pool)
-        .await;
-        let extend_builtin = sqlx::query(
-            "INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, default_read_history,
-                 default_participate, default_history_boundary,
-                 maximum_folder_capability, created_at)
-             VALUES ('forbidden-built-in-revision', 'access-profile:conversation-only',
-                     1, 1, 'entire', 'read', ?)",
-        )
-        .bind(NOW)
-        .execute(&pool)
-        .await;
-        let rewrite_builtin = sqlx::query(
-            "UPDATE chat_access_profiles
-             SET current_revision_id = 'forbidden-built-in-revision', revision = 2
-             WHERE id = 'access-profile:conversation-only'",
-        )
-        .execute(&pool)
-        .await;
-        let memberships: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM chat_teammate_channel_memberships")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-
-        assert!(update.is_err());
-        assert!(delete.is_err());
-        assert!(extend_builtin.is_err());
-        assert!(rewrite_builtin.is_err());
-        assert_eq!(memberships, 0);
-    });
-}
-
-#[test]
-fn live_profile_expansion_preserves_active_access_revision_and_membership_intent() {
-    super::block_on(async {
-        let pool = migrated_memory_pool().await;
-        let (conversation_id, _) = insert_default_channel(&pool).await;
-        sqlx::query(
-            "INSERT INTO chat_participants
-                (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('teammate:profile-test', 'ai_teammate', 'Profile test', ?, ?)",
-        )
-        .bind(NOW)
-        .bind(NOW)
-        .execute(&pool)
+        .fetch_optional(&pool)
         .await
         .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_teammates
-                (participant_id, role, instructions, created_at, updated_at)
-             VALUES ('teammate:profile-test', 'Tester', '', ?, ?)",
-        )
-        .bind(NOW)
-        .bind(NOW)
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_access_profiles
-                (id, display_name, created_at, updated_at)
-             VALUES ('access-profile:test', 'Test profile', ?, ?)",
-        )
-        .bind(NOW)
-        .bind(NOW)
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, default_read_history,
-                 default_participate, default_history_boundary,
-                 maximum_folder_capability, created_at)
-             VALUES ('access-profile-revision:test:1', 'access-profile:test',
-                     1, 1, 'entire', 'read', ?)",
-        )
-        .bind(NOW)
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_conversation_memberships
-                (conversation_id, participant_id, sync_key, membership_role, created_at,
-                 updated_at)
-             VALUES (?, 'teammate:profile-test', 'membership:profile-test', 'member', ?, ?)",
-        )
-        .bind(&conversation_id)
-        .bind(NOW)
-        .bind(NOW)
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_teammate_channel_memberships
-                (conversation_id, teammate_id, sync_key, access_profile_id,
-                 read_history, read_history_inherits_profile,
-                 participate, participate_inherits_profile,
-                 history_boundary, history_boundary_inherits_profile,
-                 created_at, updated_at)
-             VALUES (?, 'teammate:profile-test', 'channel-membership:profile-test',
-                     'access-profile:test',
-                     1, 1, 1, 1, 'entire', 1, ?, ?)",
-        )
-        .bind(&conversation_id)
-        .bind(NOW)
-        .bind(NOW)
-        .execute(&pool)
-        .await
-        .unwrap();
-        let (project_id, working_folder_id): (String, String) = sqlx::query_as(
-            "SELECT channel.project_id, primary_folder.working_folder_id
-             FROM chat_channels channel
-             JOIN project_primary_working_folders primary_folder
-               ON primary_folder.project_id = channel.project_id
-             WHERE channel.conversation_id = ?",
-        )
-        .bind(&conversation_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_teammate_working_folder_grants
-                (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
-                 capability, capability_inherits_profile, created_at)
-             VALUES (?, 'teammate:profile-test', ?, ?, 'grant:profile-test', 'read', 1, ?)",
-        )
-        .bind(&conversation_id)
-        .bind(project_id)
-        .bind(working_folder_id)
-        .bind(NOW)
-        .execute(&pool)
-        .await
-        .unwrap();
-        let audience_revision_before: i64 = sqlx::query_scalar(
-            "SELECT revision FROM chat_conversation_audience_state
-             WHERE conversation_id = ?",
-        )
-        .bind(&conversation_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, default_read_history,
-                 default_participate, default_history_boundary,
-                 maximum_folder_capability, created_at)
-             VALUES ('access-profile-revision:test:2', 'access-profile:test',
-                     1, 1, 'entire', 'edit', ?)",
-        )
-        .bind("2026-07-20T12:01:00Z")
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let access_revision: i64 = sqlx::query_scalar(
-            "SELECT access_revision FROM chat_teammate_access_state
-             WHERE teammate_id = 'teammate:profile-test'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let latest_profile_revision: i64 = sqlx::query_scalar(
-            "SELECT revision.revision
-             FROM chat_teammate_channel_memberships membership
-             JOIN chat_access_profile_effective_revisions revision
-               ON revision.access_profile_id = membership.access_profile_id
-             WHERE membership.teammate_id = 'teammate:profile-test'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let audience_revision_after: i64 = sqlx::query_scalar(
-            "SELECT revision FROM chat_conversation_audience_state
-             WHERE conversation_id = ?",
-        )
-        .bind(&conversation_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let pinned_column: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pragma_table_info('chat_teammate_channel_memberships')
-             WHERE name = 'access_profile_revision'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let effective_folder_capability: String = sqlx::query_scalar(
-            "SELECT CASE WHEN grant_row.capability_inherits_profile = 1
-                    THEN revision.maximum_folder_capability
-                    ELSE grant_row.capability END
-             FROM chat_teammate_working_folder_grants grant_row
-             JOIN chat_teammate_channel_memberships membership
-               ON membership.conversation_id = grant_row.conversation_id
-              AND membership.teammate_id = grant_row.teammate_id
-             JOIN chat_access_profiles profile ON profile.id = membership.access_profile_id
-             JOIN chat_access_profile_effective_revisions revision
-               ON revision.access_profile_id = profile.id
-             WHERE grant_row.teammate_id = 'teammate:profile-test'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
-        assert_eq!(access_revision, 0);
-        assert_eq!(latest_profile_revision, 2);
-        assert!(audience_revision_after > audience_revision_before);
-        assert_eq!(pinned_column, 0);
-        assert_eq!(effective_folder_capability, "edit");
+        assert_eq!(access_state, None);
     });
 }
 
@@ -826,12 +623,10 @@ fn authorization_source_snapshots_are_immutable_and_folder_policy_is_required() 
         sqlx::query(
             "INSERT INTO chat_assignment_authorization_revisions
                 (id, assignment_id, revision, requester_participant_id,
-                 teammate_policy_revision_id, teammate_access_revision,
-                 destination_conversation_id, access_profile_revision_id,
+                 destination_conversation_id,
                  resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
              VALUES ('authorization:test', 'assignment:test', 1, 'participant:local-owner',
-                     'policy:test', 1, 'conversation:test',
-                     'access-profile-revision:read-only:1', 'ask', ?, 'allowed', ?)",
+                     'conversation:test', 'ask', ?, 'allowed', ?)",
         )
         .bind("d".repeat(64))
         .bind(NOW)
@@ -1333,6 +1128,53 @@ fn chat_permission_columns_accept_only_current_modes() {
 }
 
 #[test]
+fn channel_membership_model_keeps_version_and_selection_together() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let selection = r#"{"modelId":"gpt-5","modelOptions":[]}"#;
+        let oversized = format!(r#"{{"modelId":"{}"}}"#, "m".repeat(16_384));
+        for (case, version, data, accepted) in [
+            ("override", Some(1_i64), Some(selection), true),
+            ("default", None, None, true),
+            ("version-only", Some(1), None, false),
+            ("data-only", None, Some(selection), false),
+            ("version-zero", Some(0), Some(selection), false),
+            ("array", Some(1), Some("[]"), false),
+            ("oversized", Some(1), Some(oversized.as_str()), false),
+        ] {
+            let result = sqlx::query(
+                "UPDATE chat_agent_channel_memberships
+                 SET model_selection_schema_version = ?, model_selection_data = ?
+                 WHERE conversation_id = 'conversation-general'
+                   AND agent_id = 'participant-agent'",
+            )
+            .bind(version)
+            .bind(data)
+            .execute(&pool)
+            .await;
+            if accepted {
+                result.unwrap();
+            } else {
+                assert!(result.is_err(), "{case} is refused");
+            }
+        }
+
+        let reference_columns: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM pragma_table_info('chat_participant_reference_targets') ORDER BY cid",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            reference_columns,
+            ["reference_id", "participant_id"],
+            "a mention names only its participant; the channel chooses the model"
+        );
+    });
+}
+
+#[test]
 fn working_folder_tool_schema_tracks_restore_invalidation_and_exact_cleanup() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
@@ -1614,5 +1456,1018 @@ fn stored_relative_paths_reject_any_backslash_and_trailing_parent_segments() {
         .await
         .unwrap_err();
         assert!(error.to_string().contains(shape_error), "{error}");
+    });
+}
+
+#[test]
+fn host_tool_invocations_record_only_known_tool_classes() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let request_hash = "a".repeat(64);
+        let record = |id: &str, tool_class: &str| {
+            sqlx::query(
+                "INSERT INTO chat_host_tool_invocations
+                    (id, authorization_revision_id, tool_name, tool_class, request_hash,
+                     decision_state, created_at)
+                 VALUES (?, 'authorization-1', 'chat_tool', ?, ?, 'allowed', ?)",
+            )
+            .bind(id.to_owned())
+            .bind(tool_class.to_owned())
+            .bind(request_hash.clone())
+            .bind(NOW)
+            .execute(&pool)
+        };
+        for tool_class in [
+            "read",
+            "edit",
+            "destructive",
+            "delegate",
+            "ask",
+            "report",
+            "secret",
+            "schedule",
+        ] {
+            record(&format!("invocation-{tool_class}"), tool_class)
+                .await
+                .unwrap();
+        }
+        assert!(record("invocation-unknown", "write").await.is_err());
+        assert!(record("invocation-upper", "Read").await.is_err());
+
+        sqlx::query(
+            "INSERT INTO chat_host_tool_invocations
+                (id, authorization_revision_id, tool_name, request_hash, decision_state,
+                 created_at)
+             VALUES ('invocation-default', 'authorization-1', 'chat_tool', ?, 'allowed', ?)",
+        )
+        .bind(&request_hash)
+        .bind(NOW)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let defaulted: String = sqlx::query_scalar(
+            "SELECT tool_class FROM chat_host_tool_invocations WHERE id = 'invocation-default'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(defaulted, "read");
+    });
+}
+
+/// Inserts channel note `id` in the general channel with `body` written by `editor`.
+async fn insert_channel_note(
+    pool: &sqlx::SqlitePool,
+    id: &str,
+    body: &str,
+    editor: Option<&str>,
+) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO chat_channel_notes
+             (id, channel_id, body, edited_by_participant_id, created_at, updated_at)
+         VALUES (?, 'channel-general', ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(body)
+    .bind(editor)
+    .bind(NOW)
+    .bind(NOW)
+    .execute(pool)
+    .await
+}
+
+async fn set_sync_applying(pool: &sqlx::SqlitePool, applying: bool) {
+    sqlx::query("UPDATE sync_apply_state SET applying = ? WHERE singleton = 1")
+        .bind(i64::from(applying))
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// Whether `error` is a refusal of a stored value, by the table's CHECK or by the sync value
+/// trigger that runs before it.
+fn is_value_refusal(error: &str) -> bool {
+    error.contains("CHECK constraint failed") || error.contains("Replicated row values are invalid")
+}
+
+#[test]
+fn channel_notes_are_indexed_by_channel_and_bound_their_body() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let index: String = sqlx::query_scalar(
+            "SELECT group_concat(name, ',') FROM pragma_index_info('idx_chat_channel_notes_channel')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(index, "channel_id,deleted_at,updated_at");
+
+        let owner = Some("participant:local-owner");
+        insert_channel_note(&pool, "note-longest", &"n".repeat(1000), owner)
+            .await
+            .unwrap();
+        for (id, body) in [
+            ("note-empty", "   ".to_owned()),
+            ("note-long", "n".repeat(1001)),
+        ] {
+            let error = insert_channel_note(&pool, id, &body, owner)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(is_value_refusal(&error), "{error}");
+        }
+        let error = insert_channel_note(&pool, &"k".repeat(129), "Fact", owner)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(is_value_refusal(&error), "{error}");
+
+        sqlx::query("DELETE FROM chat_channels WHERE id = 'channel-general'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let notes: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_channel_notes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(notes, 0, "notes are deleted with their channel");
+    });
+}
+
+#[test]
+fn channel_notes_are_written_only_by_people_outside_the_sync_applier() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        sqlx::query(
+            "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
+             VALUES ('participant-person', 'human', 'Ana', ?, ?)",
+        )
+        .bind(NOW)
+        .bind(NOW)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let refused = "Channel notes are edited by people";
+
+        for editor in [Some("participant-agent"), None, Some("participant-missing")] {
+            let error = insert_channel_note(&pool, "note-agent", "Fact", editor)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(refused), "{editor:?}: {error}");
+        }
+        insert_channel_note(&pool, "note-owner", "Fact", Some("participant:local-owner"))
+            .await
+            .unwrap();
+        insert_channel_note(&pool, "note-person", "Fact", Some("participant-person"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE chat_push_approvals SET approved_by_participant_id = NULL
+             WHERE destination_branch = 'release'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for update in [
+            "UPDATE chat_channel_notes SET body = 'Changed',
+                 edited_by_participant_id = 'participant-agent' WHERE id = 'note-owner'",
+            "UPDATE chat_channel_notes SET deleted_at = '2026-07-20T12:05:00.000Z',
+                 edited_by_participant_id = 'participant-agent' WHERE id = 'note-owner'",
+            "UPDATE chat_channel_notes SET edited_by_participant_id = NULL, body = 'Changed'
+             WHERE id = 'note-owner'",
+        ] {
+            let error = sqlx::query(update)
+                .execute(&pool)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(refused), "{error}");
+        }
+        sqlx::query(
+            "UPDATE chat_channel_notes SET body = 'Changed', updated_at = '2026-07-20T12:05:00.000Z'
+             WHERE id = 'note-owner'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        set_sync_applying(&pool, true).await;
+        insert_channel_note(&pool, "note-applied", "Fact", Some("participant-agent"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE chat_channel_notes SET body = 'Applied', edited_by_participant_id = NULL
+             WHERE id = 'note-owner'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        set_sync_applying(&pool, false).await;
+
+        set_sync_applying(&pool, true).await;
+        sqlx::query("DELETE FROM chat_participants WHERE id = 'participant-person'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        set_sync_applying(&pool, false).await;
+        let kept: Option<String> = sqlx::query_scalar(
+            "SELECT body FROM chat_channel_notes
+             WHERE id = 'note-person' AND edited_by_participant_id IS NULL",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            kept.as_deref(),
+            Some("Fact"),
+            "removing a person keeps their notes"
+        );
+    });
+}
+
+/// Inserts a standing push approval of the fixture agent in the fixture channel for the managed
+/// folder, made by `approver`.
+async fn insert_push_approval(
+    pool: &sqlx::SqlitePool,
+    branch: &str,
+    approver: Option<&str>,
+) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO chat_push_approvals
+             (conversation_id, agent_id, working_folder_id, push_url, destination_branch,
+              sync_key, approved_by_participant_id, approved_at)
+         VALUES ('conversation-general', 'participant-agent', 'folder-managed',
+                 'git@example.com:team/app.git', ?, 'push-approval-' || ?, ?, ?)",
+    )
+    .bind(branch)
+    .bind(branch)
+    .bind(approver)
+    .bind(NOW)
+    .execute(pool)
+    .await
+}
+
+/// The revocation time and revision of the approval for `branch`.
+async fn push_approval_state(pool: &sqlx::SqlitePool, branch: &str) -> (Option<String>, i64) {
+    let row = sqlx::query(
+        "SELECT revoked_at, revision FROM chat_push_approvals WHERE destination_branch = ?",
+    )
+    .bind(branch)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    (row.get("revoked_at"), row.get("revision"))
+}
+
+#[test]
+fn push_approvals_are_made_only_by_people_outside_the_sync_applier() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        sqlx::query(
+            "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
+             VALUES ('participant-person', 'human', 'Ana', ?, ?)",
+        )
+        .bind(NOW)
+        .bind(NOW)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let refused = "Push approvals are made by people";
+
+        for approver in [Some("participant-agent"), None, Some("participant-missing")] {
+            let error = insert_push_approval(&pool, "main", approver)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(refused), "{approver:?}: {error}");
+        }
+        insert_push_approval(&pool, "main", Some("participant:local-owner"))
+            .await
+            .unwrap();
+        insert_push_approval(&pool, "release", Some("participant-person"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE chat_push_approvals SET approved_by_participant_id = NULL
+             WHERE destination_branch = 'release'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for update in [
+            "UPDATE chat_push_approvals SET approved_by_participant_id = 'participant-agent'
+             WHERE destination_branch = 'main'",
+            "UPDATE chat_push_approvals SET approved_by_participant_id = NULL,
+                 approved_at = '2026-07-20T12:05:00.000Z' WHERE destination_branch = 'main'",
+            "UPDATE chat_push_approvals SET approved_at = '2026-07-20T12:05:00.000Z'
+             WHERE destination_branch = 'release' AND approved_by_participant_id IS NULL",
+        ] {
+            let error = sqlx::query(update)
+                .execute(&pool)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(refused), "{error}");
+        }
+
+        set_sync_applying(&pool, true).await;
+        insert_push_approval(&pool, "applied", Some("participant-agent"))
+            .await
+            .unwrap();
+        set_sync_applying(&pool, false).await;
+
+        insert_push_approval(&pool, "person", Some("participant-person"))
+            .await
+            .unwrap();
+        set_sync_applying(&pool, true).await;
+        sqlx::query("DELETE FROM chat_participants WHERE id = 'participant-person'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        set_sync_applying(&pool, false).await;
+        let kept: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_push_approvals
+             WHERE revoked_at IS NULL AND sync_key GLOB 'push-approval-*'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(kept, 4, "removing the approver keeps the approvals");
+    });
+}
+
+#[test]
+fn push_approvals_are_revoked_when_the_agent_leaves_the_channel() {
+    let removals: [(&str, &str); 3] = [
+        (
+            "membership removed",
+            "UPDATE chat_agent_channel_memberships SET removed_at = '2026-07-20T12:05:00.000Z'
+             WHERE sync_key = 'channel-membership-agent'",
+        ),
+        (
+            "membership deleted",
+            "DELETE FROM chat_agent_channel_memberships
+             WHERE sync_key = 'channel-membership-agent'",
+        ),
+        (
+            "agent archived",
+            "UPDATE chat_participants SET archived_at = '2026-07-20T12:05:00.000Z'
+             WHERE id = 'participant-agent'",
+        ),
+    ];
+    super::block_on(async {
+        for (case, statement) in removals {
+            let pool = migrated_memory_pool().await;
+            load_project_chat_graph(&pool).await;
+            insert_push_approval(&pool, "main", Some("participant:local-owner"))
+                .await
+                .unwrap();
+            sqlx::query(AssertSqlSafe(statement))
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("{case}: {error}"));
+            let rows =
+                sqlx::query("SELECT sync_key, revoked_at, revision FROM chat_push_approvals")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(rows.len(), 3, "{case}");
+            for row in rows {
+                let key: String = row.get("sync_key");
+                let revoked_at: Option<String> = row.get("revoked_at");
+                let revision: i64 = row.get("revision");
+                assert!(revoked_at.is_some(), "{case} revokes {key}");
+                assert_eq!(revision, 2, "{case} bumps the {key} revision once");
+            }
+        }
+    });
+}
+
+#[test]
+fn push_approvals_survive_unrelated_and_applied_changes() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        insert_push_approval(&pool, "main", Some("participant:local-owner"))
+            .await
+            .unwrap();
+        for statement in [
+            "UPDATE chat_channels SET agent_access = 'read' WHERE id = 'channel-general'",
+            "UPDATE chat_agent_channel_memberships
+             SET model_selection_schema_version = 1, model_selection_data = '{}'
+             WHERE sync_key = 'channel-membership-agent'",
+            "UPDATE chat_participants SET display_name = 'Renamed' WHERE id = 'participant-agent'",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        set_sync_applying(&pool, true).await;
+        sqlx::query(
+            "UPDATE chat_agent_channel_memberships SET removed_at = '2026-07-20T12:05:00.000Z'
+             WHERE sync_key = 'channel-membership-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        set_sync_applying(&pool, false).await;
+        assert_eq!(
+            push_approval_state(&pool, "main").await,
+            (None, 1),
+            "an applied removal leaves the revocation to the device that removed the agent"
+        );
+
+        sqlx::query("DELETE FROM projects WHERE id = 'project-chat'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let approvals: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_push_approvals")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(approvals, 0, "approvals are deleted with their folder");
+    });
+}
+
+/// Inserts a remembered approval of the fixture agent in the fixture channel for the command
+/// `command`, made by `approver` under ask access.
+async fn insert_remembered_approval(
+    pool: &sqlx::SqlitePool,
+    command: &str,
+    approver: Option<&str>,
+) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO chat_remembered_approvals
+             (conversation_id, agent_id, subject_kind, subject_key, sync_key,
+              approved_by_participant_id, approved_at, granted_access)
+         VALUES ('conversation-general', 'participant-agent', 'command', ?,
+                 'remembered-approval-' || ?, ?, ?, 'ask')",
+    )
+    .bind(command)
+    .bind(command)
+    .bind(approver)
+    .bind(NOW)
+    .execute(pool)
+    .await
+}
+
+#[test]
+fn remembered_approvals_are_made_only_by_people_outside_the_sync_applier() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let refused = "Remembered approvals are made by people";
+
+        for approver in [Some("participant-agent"), None, Some("participant-missing")] {
+            let error = insert_remembered_approval(&pool, "cargo test", approver)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(refused), "{approver:?}: {error}");
+        }
+        insert_remembered_approval(&pool, "cargo test", Some("participant:local-owner"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE chat_remembered_approvals SET approved_by_participant_id = NULL
+             WHERE subject_key = 'cargo test'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for update in [
+            "UPDATE chat_remembered_approvals SET approved_by_participant_id = 'participant-agent'
+             WHERE subject_key = 'cargo test'",
+            "UPDATE chat_remembered_approvals SET approved_at = '2026-07-20T12:05:00.000Z'
+             WHERE subject_key = 'cargo test'",
+        ] {
+            let error = sqlx::query(update)
+                .execute(&pool)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(refused), "{error}");
+        }
+
+        set_sync_applying(&pool, true).await;
+        insert_remembered_approval(&pool, "cargo build", Some("participant-agent"))
+            .await
+            .unwrap();
+        set_sync_applying(&pool, false).await;
+
+        for (kind, key, access) in [
+            ("path", "src", "ask"),
+            ("command", "", "ask"),
+            ("command", "cargo check", "admin"),
+        ] {
+            let error = sqlx::query(
+                "INSERT INTO chat_remembered_approvals
+                     (conversation_id, agent_id, subject_kind, subject_key, sync_key,
+                      approved_by_participant_id, approved_at, granted_access)
+                 VALUES ('conversation-general', 'participant-agent', ?, ?, 'refused',
+                         'participant:local-owner', ?, ?)",
+            )
+            .bind(kind)
+            .bind(key)
+            .bind(NOW)
+            .bind(access)
+            .execute(&pool)
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains("CHECK constraint failed"),
+                "{kind} {key:?} {access}: {error}"
+            );
+        }
+    });
+}
+
+#[test]
+fn remembered_approvals_are_revoked_when_the_agent_leaves_the_channel() {
+    let removals: [(&str, &str); 3] = [
+        (
+            "membership removed",
+            "UPDATE chat_agent_channel_memberships SET removed_at = '2026-07-20T12:05:00.000Z'
+             WHERE sync_key = 'channel-membership-agent'",
+        ),
+        (
+            "membership deleted",
+            "DELETE FROM chat_agent_channel_memberships
+             WHERE sync_key = 'channel-membership-agent'",
+        ),
+        (
+            "agent archived",
+            "UPDATE chat_participants SET archived_at = '2026-07-20T12:05:00.000Z'
+             WHERE id = 'participant-agent'",
+        ),
+    ];
+    super::block_on(async {
+        for (case, statement) in removals {
+            let pool = migrated_memory_pool().await;
+            load_project_chat_graph(&pool).await;
+            insert_remembered_approval(&pool, "cargo test", Some("participant:local-owner"))
+                .await
+                .unwrap();
+            sqlx::query(AssertSqlSafe(statement))
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("{case}: {error}"));
+            let (revoked_at, revision): (Option<String>, i64) =
+                sqlx::query_as("SELECT revoked_at, revision FROM chat_remembered_approvals")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert!(revoked_at.is_some(), "{case} revokes the approval");
+            assert_eq!(revision, 2, "{case} bumps the revision once");
+        }
+    });
+}
+
+#[test]
+fn remembered_approvals_survive_applied_removals_and_go_with_their_channel() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        insert_remembered_approval(&pool, "cargo test", Some("participant:local-owner"))
+            .await
+            .unwrap();
+        set_sync_applying(&pool, true).await;
+        sqlx::query(
+            "UPDATE chat_agent_channel_memberships SET removed_at = '2026-07-20T12:05:00.000Z'
+             WHERE sync_key = 'channel-membership-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        set_sync_applying(&pool, false).await;
+        let state: (Option<String>, i64) =
+            sqlx::query_as("SELECT revoked_at, revision FROM chat_remembered_approvals")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            state,
+            (None, 1),
+            "an applied removal leaves the revocation to the device that removed the agent"
+        );
+
+        sqlx::query("DELETE FROM projects WHERE id = 'project-chat'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let approvals: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_remembered_approvals")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(approvals, 0, "approvals are deleted with their channel");
+    });
+}
+
+async fn terminal_layout_count(pool: &sqlx::SqlitePool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM chat_terminal_layouts")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn terminal_layouts_are_keyed_by_channel_and_folder_and_follow_both() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        let (_, channel_id) = insert_default_channel(&pool).await;
+        insert_working_folder(&pool, "folder-docs", "project-routine-learning").await;
+        let insert = |folder: &'static str| {
+            sqlx::query(
+                "INSERT INTO chat_terminal_layouts (channel_id, working_folder_id, updated_at)
+                 VALUES (?, ?, ?)",
+            )
+            .bind(channel_id.clone())
+            .bind(folder)
+            .bind(NOW)
+        };
+        insert("working-folder-routine-learning")
+            .execute(&pool)
+            .await
+            .unwrap();
+        insert("folder-docs").execute(&pool).await.unwrap();
+        assert!(
+            insert("folder-docs").execute(&pool).await.is_err(),
+            "one layout per channel and folder"
+        );
+        assert_eq!(terminal_layout_count(&pool).await, 2);
+
+        sqlx::query("DELETE FROM project_working_folders WHERE id = 'folder-docs'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            terminal_layout_count(&pool).await,
+            1,
+            "layouts are deleted with their folder"
+        );
+        sqlx::query("DELETE FROM chat_channels WHERE id = ?")
+            .bind(&channel_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            terminal_layout_count(&pool).await,
+            0,
+            "layouts are deleted with their channel"
+        );
+    });
+}
+
+#[test]
+fn app_agent_settings_are_one_seeded_row_working_on_their_own_with_empty_instructions() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        let row = sqlx::query(
+            "SELECT id, agent_access, agent_instructions, revision FROM chat_agent_app_settings",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            row.len(),
+            1,
+            "a fresh vault seeds exactly one app settings row"
+        );
+        assert_eq!(row[0].get::<String, _>("id"), "vault");
+        assert_eq!(row[0].get::<String, _>("agent_access"), "own");
+        assert_eq!(row[0].get::<String, _>("agent_instructions"), "");
+        assert_eq!(row[0].get::<i64, _>("revision"), 2);
+
+        assert!(
+            sqlx::query(
+                "INSERT INTO chat_agent_app_settings (id, updated_at)
+                 VALUES ('second', '2026-10-23T00:00:00.000Z')",
+            )
+            .execute(&pool)
+            .await
+            .is_err(),
+            "the app settings row is a singleton"
+        );
+        assert!(
+            sqlx::query("UPDATE chat_agent_app_settings SET agent_access = NULL")
+                .execute(&pool)
+                .await
+                .is_err(),
+            "the app scope always names a level"
+        );
+    });
+}
+
+/// Version of the migration that moves an unsaved app access from ask to own.
+const OWN_BY_DEFAULT_MIGRATION: i64 = 20261120213144;
+
+#[test]
+fn the_own_default_moves_only_an_app_access_nobody_saved() {
+    super::block_on(async {
+        for (access, revision, seeded, expected, expected_revision, captures) in [
+            ("ask", 1, true, "own", 2, 1),
+            ("ask", 1, false, "own", 2, 0),
+            ("ask", 2, true, "ask", 2, 0),
+            ("read", 3, true, "read", 3, 0),
+            ("talk", 1, true, "talk", 1, 0),
+        ] {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .unwrap();
+            crate::MIGRATOR
+                .run_to(OWN_BY_DEFAULT_MIGRATION - 1, &pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "UPDATE chat_agent_app_settings SET agent_access = ?, revision = ?
+                 WHERE id = 'vault'",
+            )
+            .bind(access)
+            .bind(revision)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("DELETE FROM sync_capture")
+                .execute(&pool)
+                .await
+                .unwrap();
+            if seeded {
+                sqlx::query("INSERT INTO sync_seeded_tables (table_id) VALUES (357)")
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            crate::run_migrations(&pool).await.unwrap();
+            let captured: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sync_capture WHERE table_id = 357 AND row_key = 'vault'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                captured, captures,
+                "{access} at revision {revision}, seeded {seeded}"
+            );
+            let (stored, stored_revision): (String, i64) = sqlx::query_as(
+                "SELECT agent_access, revision FROM chat_agent_app_settings WHERE id = 'vault'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                (stored.as_str(), stored_revision),
+                (expected, expected_revision),
+                "{access} at revision {revision}"
+            );
+        }
+    });
+}
+
+/// The statement that sets `agent_access` to the bound value at `scope` in the fixture graph.
+fn access_update(scope: &str) -> &'static str {
+    match scope {
+        "app" => "UPDATE chat_agent_app_settings SET agent_access = ? WHERE id = 'vault'",
+        "project" => {
+            "UPDATE chat_project_agent_settings SET agent_access = ?
+             WHERE project_id = 'project-chat'"
+        }
+        "channel" => "UPDATE chat_channels SET agent_access = ? WHERE id = 'channel-general'",
+        _ => unreachable!("unknown scope {scope}"),
+    }
+}
+
+/// The statement that sets `agent_instructions` to the bound value at `scope`.
+fn instructions_update(scope: &str) -> &'static str {
+    match scope {
+        "app" => "UPDATE chat_agent_app_settings SET agent_instructions = ? WHERE id = 'vault'",
+        "project" => {
+            "UPDATE chat_project_agent_settings SET agent_instructions = ?
+             WHERE project_id = 'project-chat'"
+        }
+        "channel" => "UPDATE chat_channels SET agent_instructions = ? WHERE id = 'channel-general'",
+        _ => unreachable!("unknown scope {scope}"),
+    }
+}
+
+#[test]
+fn agent_access_names_one_of_four_levels_and_only_inner_scopes_inherit() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        for scope in ["app", "project", "channel"] {
+            for level in ["talk", "read", "ask", "own"] {
+                let changed = sqlx::query(AssertSqlSafe(access_update(scope)))
+                    .bind(level)
+                    .execute(&pool)
+                    .await
+                    .unwrap_or_else(|error| panic!("{scope} {level}: {error}"));
+                assert_eq!(changed.rows_affected(), 1, "{scope} {level}");
+            }
+            for level in ["", "write", "Own", "none"] {
+                assert!(
+                    sqlx::query(AssertSqlSafe(access_update(scope)))
+                        .bind(level)
+                        .execute(&pool)
+                        .await
+                        .is_err(),
+                    "{scope} refuses {level:?}"
+                );
+            }
+            let inherit = sqlx::query(AssertSqlSafe(access_update(scope)))
+                .bind(None::<String>)
+                .execute(&pool)
+                .await;
+            assert_eq!(
+                inherit.is_ok(),
+                scope != "app",
+                "{scope}: null inherits from the enclosing scope, and the app scope has none"
+            );
+        }
+    });
+}
+
+#[test]
+fn agent_instructions_hold_at_most_16384_characters_at_every_scope() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        for scope in ["app", "project", "channel"] {
+            for (length, accepted) in [(0, true), (16_384, true), (16_385, false)] {
+                let result = sqlx::query(AssertSqlSafe(instructions_update(scope)))
+                    .bind("i".repeat(length))
+                    .execute(&pool)
+                    .await;
+                assert_eq!(result.is_ok(), accepted, "{scope} with {length} characters");
+            }
+            assert!(
+                sqlx::query(AssertSqlSafe(instructions_update(scope)))
+                    .bind(None::<String>)
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "{scope} keeps empty text, not null, for no instructions"
+            );
+        }
+    });
+}
+
+#[test]
+fn project_agent_settings_are_deleted_with_their_project() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let count = |pool: sqlx::SqlitePool| async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM chat_project_agent_settings WHERE project_id = 'project-chat'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+        assert_eq!(count(pool.clone()).await, 1);
+        assert!(
+            sqlx::query(
+                "INSERT INTO chat_project_agent_settings (project_id, created_at, updated_at)
+                 VALUES ('project-missing', '2026-10-23T00:00:00.000Z',
+                         '2026-10-23T00:00:00.000Z')",
+            )
+            .execute(&pool)
+            .await
+            .is_err(),
+            "project settings need their project"
+        );
+
+        sqlx::query("DELETE FROM projects WHERE id = 'project-chat'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count(pool.clone()).await, 0);
+        let app: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_agent_app_settings")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(app, 1, "deleting a project keeps the app settings");
+    });
+}
+
+#[test]
+fn only_a_named_agent_participant_is_deleted_outside_the_sync_applier() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let named = "agent:0123456789abcdef0123456789abcdef";
+        for id in [
+            "participant-agent",
+            "participant:local-owner",
+            "agent:0123456789ABCDEF0123456789ABCDEF",
+            "agent:0123456789abcdef0123456789abcdef0",
+        ] {
+            sqlx::query(
+                "INSERT OR IGNORE INTO chat_participants
+                    (id, participant_kind, display_name, created_at, updated_at)
+                 VALUES (?, 'ai_agent', 'Other', ?, ?)",
+            )
+            .bind(id)
+            .bind(NOW)
+            .bind(NOW)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let error = sqlx::query("DELETE FROM chat_participants WHERE id = ?")
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("Only a named agent can be deleted"),
+                "{id}: {error}"
+            );
+        }
+
+        sqlx::query(
+            "INSERT INTO chat_participants
+                (id, participant_kind, display_name, created_at, updated_at)
+             VALUES (?, 'ai_agent', 'Named', ?, ?)",
+        )
+        .bind(named)
+        .bind(NOW)
+        .bind(NOW)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM chat_participants WHERE id = ?")
+            .bind(named)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        set_sync_applying(&pool, true).await;
+        sqlx::query(
+            "DELETE FROM chat_participants WHERE id = 'agent:0123456789ABCDEF0123456789ABCDEF'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        set_sync_applying(&pool, false).await;
+    });
+}
+
+#[test]
+fn provider_device_status_bounds_payloads_to_json_objects() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        let insert = |id: &'static str, catalog: String, limits: Option<&'static str>| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO chat_provider_device_status
+                        (id, device_id, provider_family_id, available, status_changed_at,
+                         catalog_data, catalog_changed_at, limits_data, limits_observed_at)
+                     VALUES (?, 'device-a', 'codex', 1, ?, ?, ?, ?, ?)",
+                )
+                .bind(id)
+                .bind(NOW)
+                .bind(catalog)
+                .bind(NOW)
+                .bind(limits)
+                .bind(limits.map(|_| NOW))
+                .execute(&pool)
+                .await
+            }
+        };
+        insert(
+            "status-1",
+            r#"{"models":[]}"#.to_string(),
+            Some(r#"{"limited":false}"#),
+        )
+        .await
+        .unwrap();
+        insert("status-2", r#"{"models":[]}"#.to_string(), None)
+            .await
+            .unwrap();
+        for (id, catalog, limits) in [
+            ("status-3", "[]".to_string(), None),
+            ("status-4", "not json".to_string(), None),
+            (
+                "status-5",
+                format!(r#"{{"x":"{}"}}"#, "a".repeat(32_768)),
+                None,
+            ),
+            ("status-6", r#"{"models":[]}"#.to_string(), Some("[1]")),
+        ] {
+            assert!(
+                insert(id, catalog, limits).await.is_err(),
+                "{id} should be refused"
+            );
+        }
     });
 }

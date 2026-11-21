@@ -27,7 +27,7 @@ const PERMANENT_DELETE_CLEANUP_GRACE: Duration = Duration::from_secs(24 * 60 * 6
 const PROVIDER_LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(30);
 const THREAD_DELETE_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 /// Approval mode for a fork of an organizational thread, whose stored mode came from a
-/// teammate authorization rather than from the forking user.
+/// agent authorization rather than from the forking user.
 const DIRECT_FORK_SAFETY_MODE: &str = "ask_for_approval";
 
 #[derive(Clone, Debug, Deserialize)]
@@ -84,6 +84,34 @@ pub async fn chat_read_timeline_page(
         limit,
     )
     .await
+}
+
+/// Reads the timeline rows of a thread that changed after the change clock value `after_change`.
+#[tauri::command]
+pub async fn chat_read_timeline_since(
+    app: tauri::AppHandle,
+    db_url: String,
+    thread_id: ChatThreadId,
+    after_change: u64,
+    limit: u32,
+) -> ChatResult<ganbaru_chat_contracts::models::ChatTimelineDeltaRead> {
+    reads::read_timeline_since(
+        &chat_pool(app, db_url).await?,
+        &thread_id,
+        after_change,
+        limit,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_read_activity_detail(
+    app: tauri::AppHandle,
+    db_url: String,
+    thread_id: ChatThreadId,
+    activity_id: ganbaru_chat_contracts::models::ChatActivityId,
+) -> ChatResult<ganbaru_chat_contracts::models::ChatActivityDetailRead> {
+    reads::read_activity_detail(&chat_pool(app, db_url).await?, &thread_id, &activity_id).await
 }
 
 #[tauri::command]
@@ -529,8 +557,6 @@ pub async fn chat_delete_thread_permanently(
         &timestamp(now)?,
     )
     .await?;
-    app.state::<super::terminal::ChatTerminalRegistry>()
-        .shutdown_thread(&thread_id)?;
     app.state::<super::internal_mcp::InternalMcpRegistry>()
         .stop_thread_endpoint(&thread_id)
         .await;

@@ -1,6 +1,8 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import Loading from "$lib/components/ui/Loading.svelte";
   import { NOTES_TEXT_COLORS, notesBlockColorStyle } from "$lib/notes/blocks/color";
   import CollectionRow from "$lib/components/collections/CollectionRow.svelte";
@@ -66,6 +68,7 @@
     updateNotesDataSourceRowParent,
     updateNotesDataSourceTableView,
   } from "$lib/api/notes";
+  import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { formatList, formatNumber } from "$lib/i18n/formatters";
@@ -246,7 +249,7 @@
     onSavingChange(mutating || rowCreation.isSaving(dataSourceId));
     return () => onSavingChange(false);
   });
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   /** Where the draft property header is shown; a null column is the add control after the last column. */
   let propertyDraft = $state.raw<{ anchor: HTMLElement; trigger: HTMLElement | null; placement: CollectionPropertyDraftPlacement; columnId: string | null; side: "left" | "right" } | null>(null);
   let columnMenuTriggers = $state<Record<string, HTMLButtonElement | undefined>>({});
@@ -465,8 +468,8 @@
    */
   async function createDraftProperty(type: NotesDataSourcePropertyType, name: string, icon: string | null): Promise<boolean> {
     const target = propertyDraft;
-    if (!target || mutating || editingLocked) throw new Error(t("notes.databaseSaving"));
-    if (target.columnId !== null && !onPropertyAction) throw new Error(t("notes.databaseSaving"));
+    if (!target || mutating || editingLocked) throw new LocalizedError(t("notes.databaseSaving"));
+    if (target.columnId !== null && !onPropertyAction) throw new LocalizedError(t("notes.databaseSaving"));
     mutating = true;
     error = null;
     try {
@@ -490,7 +493,7 @@
       await onPropertyAction(request);
       await loadTable(false);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -498,7 +501,7 @@
 
   /** Rename a property from its column menu; rejections reach the name field, which keeps the draft and shows them. */
   async function renameProperty(propertyId: string, name: string): Promise<void> {
-    if (mutating || editingLocked || !onPropertyAction) throw new Error(t("notes.databaseSaving"));
+    if (mutating || editingLocked || !onPropertyAction) throw new LocalizedError(t("notes.databaseSaving"));
     mutating = true;
     try {
       await onPropertyAction({ type: "rename", propertyId, name });
@@ -510,7 +513,7 @@
 
   /** Change a property icon from its column menu; rejections reach the name field, which shows them. */
   async function changePropertyIcon(propertyId: string, icon: string | null): Promise<void> {
-    if (mutating || editingLocked || !onPropertyAction) throw new Error(t("notes.databaseSaving"));
+    if (mutating || editingLocked || !onPropertyAction) throw new LocalizedError(t("notes.databaseSaving"));
     mutating = true;
     try {
       await onPropertyAction({ type: "icon", propertyId, icon });
@@ -582,7 +585,7 @@
       return loaded;
     } catch (caught) {
       if (requestId !== tableRequestId) return null;
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseTableFailed"));
       return null;
     } finally {
       if (requestId === tableRequestId) loading = false;
@@ -592,7 +595,7 @@
   /** Reloads a table that failed to load, rejecting while it is still unavailable. */
   async function retryTable(): Promise<void> {
     await loadTable();
-    if (error) throw new Error(error);
+    if (error) throw new LocalizedError(error.message);
   }
 
   async function loadMoreTableRows(): Promise<void> {
@@ -611,7 +614,7 @@
       table = { ...loaded, rows: [...rows.values()], row_hierarchy: { ...current.row_hierarchy, ...loaded.row_hierarchy } };
       notesDatabaseSession.write(databaseResource("table", dataSourceId, viewScope()), table);
     } catch (caught) {
-      if (requestId === tableRequestId) error = caught instanceof Error ? caught.message : String(caught);
+      if (requestId === tableRequestId) error = notesFailure(caught, t("notes.databaseTableFailed"));
     } finally {
       if (requestId === tableRequestId) loadingMore = false;
     }
@@ -661,7 +664,7 @@
       table = loaded;
       notesDatabaseSession.write(resource, loaded, epoch);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -795,7 +798,7 @@
       pendingFocusRowId = movable[0].id;
       await loadTable(false);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally { mutating = false; }
   }
 
@@ -818,7 +821,7 @@
       selectedTemplateId = template.id;
       templates = await listNotesDataSourceTemplates(dataSourceId);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -834,7 +837,7 @@
       selectedTemplateId = "";
       templates = await listNotesDataSourceTemplates(dataSourceId);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -842,10 +845,15 @@
 
   async function runButton(row: NotesPage, column: NotesDatabaseTableColumn): Promise<void> {
     const title = rowTitle(row);
+    const sourceId = dataSourceId;
     const confirmed = column.buttonRequiresConfirmation
-      ? window.confirm(t("notes.databaseButtonConfirm", column.name, title))
+      ? await requestConfirmation({
+        message: t("notes.databaseButtonConfirm", column.name, title),
+        confirmLabel: t("notes.databaseButtonConfirmAction"),
+      })
       : false;
     if (column.buttonRequiresConfirmation && !confirmed) return;
+    if (sourceId !== dataSourceId) return;
     mutating = true;
     error = null;
     try {
@@ -856,7 +864,7 @@
       });
       await loadTable();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -875,7 +883,7 @@
       }
       await loadTable();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -895,7 +903,7 @@
       }
       await loadTable();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -912,7 +920,7 @@
       await loadTable();
       return true;
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
       return false;
     } finally {
       mutating = false;
@@ -953,7 +961,7 @@
       await loadTable();
       return true;
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
       return false;
     } finally {
       mutating = false;
@@ -1183,10 +1191,10 @@
   <NotesDatabaseQueryBar properties={columns} {filters} {sorts} pending={mutating || editingLocked} onFiltersChange={saveFilters} onSortsChange={saveSorts} />
   {#if table}<span class="sr-only" role="status">{t("notes.databaseRowsCount", visibleRows.length)}</span>{/if}
 
-  {#if error && table}<Notice class="text-[0.8rem]" message={error} />{/if}
+  {#if error && table}<Notice class="text-[0.8rem]" message={error.message} copy={error.detail} />{/if}
 
   {#if !table && error}
-    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("notes.databaseTableFailed", error)} copy={error} onRetry={retryTable} /></div>
+    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={error.message} copy={error.detail} onRetry={retryTable} /></div>
   {:else if !table}<NotesLoadingSkeleton kind="table" />{/if}
   {#if table}
     <div class="grid gap-2 @container">
@@ -1506,7 +1514,7 @@
                 {/each}
                 <div role="cell"></div>
                 {#if rowCreation.errorFor(row.id)}
-                  <Notice class="col-span-full px-2 py-1 text-[0.8rem]" message={rowCreation.errorFor(row.id) ?? ""} onRetry={() => rowCreation.retry(row.id)} />
+                  <Notice class="col-span-full px-2 py-1 text-[0.8rem]" message={t("notes.databaseRowSaveFailed")} copy={rowCreation.errorFor(row.id) ?? false} onRetry={() => rowCreation.retry(row.id)} />
                 {/if}
               </CollectionRow>
               {/if}

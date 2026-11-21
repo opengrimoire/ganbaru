@@ -1,7 +1,7 @@
 use super::driver::{
     CodexNativeCommand, CodexProviderDriver, append_project_configuration_arguments,
-    codex_native_command, confirmed_resume_not_found, goal_request, parse_mcp_status_page,
-    validated_app_server_arguments,
+    codex_native_command, confirmed_resume_not_found, ensure_supported_user_agent, goal_request,
+    parse_mcp_status_page, validated_app_server_arguments,
 };
 use super::home::*;
 use super::normalizer::{CodexEventNormalizer, CodexRouteState};
@@ -9,9 +9,12 @@ use super::organizational::*;
 use super::protocol::*;
 use super::session::{
     CodexApprovalResponse, PendingCodexRequest, PendingCodexRequestKind, PendingCodexRequests,
-    approval_display, provider_request_id, resolve_codex_approval, resolve_codex_user_input,
+    approval_display, organizational_approval_denial, provider_request_id, resolve_codex_approval,
+    resolve_codex_user_input,
 };
-use super::transport::{CodexInboundMessage, CodexRpcConnection, CodexRpcFailure};
+use super::transport::{
+    CodexInboundMessage, CodexRpcConnection, CodexRpcFailure, MAX_JSONL_MESSAGE_BYTES,
+};
 use crate::events::{
     ApprovalSubjectKind, CanonicalEvent, CanonicalRuntimeEvent, SessionPermissionGrant,
 };
@@ -36,7 +39,11 @@ mod home;
 mod interactions;
 mod models;
 mod normalizer;
+mod protocol_coverage;
+mod rollback;
 mod transport;
+mod turn_errors;
+mod usage;
 
 static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 
@@ -96,7 +103,10 @@ fn identifier<T>(value: &str, constructor: impl FnOnce(String) -> Result<T, Stri
     constructor(value.to_string()).unwrap()
 }
 
-fn configuration(shared_home: &Path, shadow_home: Option<&Path>) -> ProviderInstanceConfig {
+pub(super) fn configuration(
+    shared_home: &Path,
+    shadow_home: Option<&Path>,
+) -> ProviderInstanceConfig {
     serde_json::from_value(json!({
         "schemaVersion": 1,
         "instanceId": "codex-instance-1",
@@ -108,16 +118,11 @@ fn configuration(shared_home: &Path, shadow_home: Option<&Path>) -> ProviderInst
         "launchArguments": [],
         "environment": {},
         "credentialReferences": {},
-        "visibleModelIds": [],
-        "favoriteModelIds": [],
         "providerConfig": {
             "schemaVersion": 1,
             "value": {
                 "shadowHomePath": shadow_home,
-                "refreshMcpBeforeTurn": true,
-                "allowCustomModels": false,
-                "customModelIds": [],
-                "customModelLabels": {}
+                "refreshMcpBeforeTurn": true
             }
         }
     }))
@@ -142,6 +147,12 @@ enum FixtureScenario {
     CommandApproval,
     StructuredQuestion,
     TurnNotInProgress,
+    CapacityFailure,
+    CapacityRetryInFlight,
+    CapacityRetryOrphan,
+    UsageLimit,
+    Elicitation,
+    RepeatedTurnCursor,
 }
 
 #[derive(Default)]
@@ -149,17 +160,35 @@ struct AppServerFixtureState {
     received: Mutex<Vec<Value>>,
     closed: AtomicBool,
     connections: AtomicU64,
+    /// The launch access of an organizational fixture, which its verified responses report.
+    organizational_access: Mutex<Option<CodexOrganizationalAccess>>,
 }
 
 impl AppServerFixtureState {
     fn received(&self) -> Vec<Value> {
         self.received.lock().unwrap().clone()
     }
+
+    fn organizational_access(&self) -> CodexOrganizationalAccess {
+        self.organizational_access
+            .lock()
+            .unwrap()
+            .expect("organizational fixture access")
+    }
 }
 
 fn fixture_driver(
     workspace: &Path,
     scenario: FixtureScenario,
+) -> (CodexProviderDriver, Arc<AppServerFixtureState>) {
+    fixture_driver_with(workspace, scenario, |_| {})
+}
+
+/// A fixture driver whose configuration `adjust` edits before the driver is built.
+fn fixture_driver_with(
+    workspace: &Path,
+    scenario: FixtureScenario,
+    adjust: impl FnOnce(&mut ProviderInstanceConfig),
 ) -> (CodexProviderDriver, Arc<AppServerFixtureState>) {
     let mut config = configuration(workspace, None);
     if scenario == FixtureScenario::Organizational {
@@ -168,10 +197,19 @@ fn fixture_driver(
             url: "http://127.0.0.1:41827/mcp".to_string(),
             bearer_token: "fixture-token".to_string(),
             organizational_authority: true,
+            pre_approved_tools: Vec::new(),
+            organizational_scope: Some(ProviderOrganizationalScope::Conversation),
         });
     }
+    adjust(&mut config);
+    let access = CodexOrganizationalAccess::for_launch(config.internal_mcp.as_ref())
+        .ok()
+        .flatten();
     let mut driver = CodexProviderDriver::new(config).unwrap();
-    let state = Arc::new(AppServerFixtureState::default());
+    let state = Arc::new(AppServerFixtureState {
+        organizational_access: Mutex::new(access),
+        ..AppServerFixtureState::default()
+    });
     let factory_state = Arc::clone(&state);
     let home = workspace.to_path_buf();
     driver.set_connection_factory(Arc::new(move |_working_directory| {
@@ -198,6 +236,91 @@ fn fixture_driver(
     (driver, state)
 }
 
+/// The effective configuration a verified organizational launch reads back for `access`.
+fn organizational_config(access: CodexOrganizationalAccess) -> Value {
+    let profile = access.permission_profile();
+    let root_access = if access == CodexOrganizationalAccess::Read {
+        "read"
+    } else {
+        "write"
+    };
+    let mut config = json!({
+        "default_permissions": profile,
+        "allow_login_shell": false,
+        "web_search": "cached",
+        "notify": [],
+        "otel": {
+            "exporter": "none",
+            "trace_exporter": "none",
+            "metrics_exporter": "none"
+        },
+        "shell_environment_policy": {
+            "inherit": "core",
+            "ignore_default_excludes": false,
+            "experimental_use_profile": false,
+            "set": {}
+        },
+        "permissions": {
+            (profile): {
+                "filesystem": {
+                    ":minimal": "read",
+                    ":workspace_roots": { ".": root_access }
+                },
+                "network": { "enabled": false }
+            }
+        },
+        "features": {
+            "apps": false,
+            "artifact": false,
+            "auth_elicitation": false,
+            "browser_use": false,
+            "browser_use_external": false,
+            "browser_use_full_cdp_access": false,
+            "code_mode": { "enabled": false },
+            "code_mode_host": true,
+            "computer_use": false,
+            "enable_mcp_apps": false,
+            "external_agent_memory_import": false,
+            "hooks": false,
+            "image_generation": false,
+            "in_app_browser": false,
+            "memories": false,
+            "multi_agent": false,
+            "multi_agent_v2": false,
+            "network_proxy": false,
+            "plugin_sharing": false,
+            "plugins": false,
+            "recommended_plugins": false,
+            "remote_plugin": false,
+            "request_permissions_tool": false,
+            "respect_system_proxy": false,
+            "shell_snapshot": false,
+            "shell_tool": true,
+            "skill_mcp_dependency_install": false,
+            "skill_search": false,
+            "standalone_web_search": false,
+            "unified_exec": true,
+            "use_agent_identity": false,
+            "view_image": false,
+            "workspace_dependencies": false
+        },
+        "mcp_servers": {
+            "ganbaru-chat": {
+                "enabled": true,
+                "required": true,
+                "url": "http://127.0.0.1:41827/mcp",
+                "bearer_token_env_var": "GANBARU_CHAT_MCP_TOKEN"
+            },
+            "openaiDeveloperDocs": { "enabled": false }
+        }
+    });
+    if access != CodexOrganizationalAccess::Commands {
+        config["features"]["shell_tool"] = json!(false);
+        config["features"]["unified_exec"] = json!(false);
+    }
+    config
+}
+
 async fn write_fixture_message<W>(writer: &mut W, message: Value)
 where
     W: AsyncWrite + Unpin,
@@ -221,6 +344,7 @@ async fn run_app_server_fixture<R, W>(
 {
     let mut reader = BufReader::new(reader);
     let mut resume_failed = false;
+    let mut turn_starts = 0_u32;
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line).await {
@@ -249,7 +373,7 @@ async fn run_app_server_fixture<R, W>(
                     json!({
                         "id": id,
                         "result": {
-                            "userAgent": "codex-cli/0.144.6",
+                            "userAgent": "codex-cli/0.167.1",
                             "codexHome": home,
                             "platformFamily": "unix",
                             "platformOs": "linux"
@@ -343,67 +467,7 @@ async fn run_app_server_fixture<R, W>(
                             }
                         })
                     } else {
-                        json!({
-                            "default_permissions": ORGANIZATIONAL_PERMISSION_PROFILE,
-                            "allow_login_shell": false,
-                            "web_search": "disabled",
-                            "shell_environment_policy": {
-                                "inherit": "core",
-                                "ignore_default_excludes": false,
-                                "experimental_use_profile": false,
-                                "set": {}
-                            },
-                            "permissions": {
-                                (ORGANIZATIONAL_PERMISSION_PROFILE): {
-                                    "filesystem": {
-                                        ":minimal": "read",
-                                        ":workspace_roots": { ".": "write" }
-                                    },
-                                    "network": { "enabled": false }
-                                }
-                            },
-                            "features": {
-                                "apps": false,
-                                "artifact": false,
-                                "auth_elicitation": false,
-                                "browser_use": false,
-                                "browser_use_external": false,
-                                "browser_use_full_cdp_access": false,
-                                "code_mode": { "enabled": false },
-                                "code_mode_host": false,
-                                "computer_use": false,
-                                "enable_mcp_apps": false,
-                                "external_agent_memory_import": false,
-                                "hooks": false,
-                                "image_generation": false,
-                                "in_app_browser": false,
-                                "memories": false,
-                                "multi_agent": false,
-                                "multi_agent_v2": false,
-                                "network_proxy": false,
-                                "plugin_sharing": false,
-                                "plugins": false,
-                                "recommended_plugins": false,
-                                "remote_plugin": false,
-                                "request_permissions_tool": false,
-                                "respect_system_proxy": false,
-                                "shell_snapshot": false,
-                                "skill_mcp_dependency_install": false,
-                                "skill_search": false,
-                                "standalone_web_search": false,
-                                "use_agent_identity": false,
-                                "workspace_dependencies": false
-                            },
-                            "mcp_servers": {
-                                "openaiDeveloperDocs": { "enabled": false },
-                                "ganbaru-chat": {
-                                    "enabled": true,
-                                    "required": true,
-                                    "url": "http://127.0.0.1:41827/mcp",
-                                    "bearer_token_env_var": "GANBARU_CHAT_MCP_TOKEN"
-                                }
-                            }
-                        })
+                        organizational_config(state.organizational_access())
                     }
                 } else {
                     json!({
@@ -434,7 +498,7 @@ async fn run_app_server_fixture<R, W>(
                         "id": id,
                         "result": {
                             "data": [{
-                                "id": ORGANIZATIONAL_PERMISSION_PROFILE,
+                                "id": state.organizational_access().permission_profile(),
                                 "allowed": true
                             }],
                             "nextCursor": null
@@ -498,6 +562,81 @@ async fn run_app_server_fixture<R, W>(
             "config/mcpServer/reload" => {
                 write_fixture_message(&mut writer, json!({ "id": id, "result": {} })).await;
             }
+            "turn/start"
+                if matches!(
+                    scenario,
+                    FixtureScenario::CapacityFailure
+                        | FixtureScenario::CapacityRetryInFlight
+                        | FixtureScenario::CapacityRetryOrphan
+                        | FixtureScenario::UsageLimit
+                ) =>
+            {
+                turn_starts += 1;
+                let turn_id = format!("fixture-provider-turn-{turn_starts}");
+                let thread_id = message["params"]["threadId"].clone();
+                let error = if scenario == FixtureScenario::UsageLimit {
+                    json!({ "message": "Fixture failure", "codexErrorInfo": "usageLimitExceeded" })
+                } else {
+                    json!({ "message": "Fixture failure", "codexErrorInfo": "serverOverloaded" })
+                };
+                let orphan = scenario == FixtureScenario::CapacityRetryOrphan;
+                let held = (scenario == FixtureScenario::CapacityRetryInFlight && turn_starts > 1)
+                    || (orphan && turn_starts == 2);
+                if held {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                }
+                let failure = |turn_id: &str| {
+                    vec![
+                        json!({
+                            "method": "error",
+                            "params": {
+                                "threadId": thread_id,
+                                "turnId": turn_id,
+                                "error": error,
+                                "willRetry": false
+                            }
+                        }),
+                        json!({
+                            "method": "turn/completed",
+                            "params": {
+                                "threadId": thread_id,
+                                "turn": { "id": turn_id, "status": "failed", "items": [], "error": error }
+                            }
+                        }),
+                    ]
+                };
+                let started = |turn_id: &str| {
+                    json!({
+                        "method": "turn/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "turn": { "id": turn_id, "status": "inProgress" }
+                        }
+                    })
+                };
+                let mut frames = vec![json!({
+                    "id": id,
+                    "result": { "turn": { "id": turn_id, "status": "inProgress" } }
+                })];
+                match (orphan, turn_starts) {
+                    // The held retry answers with its id only; its notifications arrive late.
+                    (true, 2) => {}
+                    (true, 3..) => {
+                        frames.push(started(&turn_id));
+                        frames.push(started("fixture-provider-turn-2"));
+                        frames.extend(failure("fixture-provider-turn-2"));
+                    }
+                    _ => {
+                        frames.push(started(&turn_id));
+                        if !held {
+                            frames.extend(failure(&turn_id));
+                        }
+                    }
+                }
+                for frame in frames {
+                    write_fixture_message(&mut writer, frame).await;
+                }
+            }
             "turn/start" if scenario == FixtureScenario::TurnNotInProgress => {
                 write_fixture_message(
                     &mut writer,
@@ -545,6 +684,24 @@ async fn run_app_server_fixture<R, W>(
                     )
                     .await;
                 }
+                if scenario == FixtureScenario::Elicitation {
+                    write_fixture_message(
+                        &mut writer,
+                        json!({
+                            "id": "fixture-elicitation",
+                            "method": "mcpServer/elicitation/request",
+                            "params": {
+                                "threadId": message["params"]["threadId"],
+                                "turnId": "fixture-provider-turn",
+                                "serverName": "fixture-docs",
+                                "mode": "form",
+                                "message": "Sign in to continue",
+                                "requestedSchema": { "type": "object", "properties": {} }
+                            }
+                        }),
+                    )
+                    .await;
+                }
                 if scenario == FixtureScenario::StructuredQuestion {
                     write_fixture_message(
                         &mut writer,
@@ -586,6 +743,22 @@ async fn run_app_server_fixture<R, W>(
                         }),
                     )
                     .await;
+                    // A subagent's plain retry outside the sandbox names no wider root.
+                    write_fixture_message(
+                        &mut writer,
+                        json!({
+                            "id": "fixture-organizational-file-change",
+                            "method": "item/fileChange/requestApproval",
+                            "params": {
+                                "threadId": "fixture-subagent-thread",
+                                "turnId": "fixture-subagent-turn",
+                                "itemId": "fixture-file-change-item",
+                                "reason": "command failed; retry without sandbox?",
+                                "grantRoot": null
+                            }
+                        }),
+                    )
+                    .await;
                 }
             }
             "turn/interrupt" => {
@@ -609,12 +782,60 @@ async fn run_app_server_fixture<R, W>(
                 )
                 .await;
             }
+            "thread/turns/list" => {
+                let page = fixture_turn_page(scenario, message["params"]["cursor"].as_str());
+                write_fixture_message(&mut writer, json!({ "id": id, "result": page })).await;
+            }
+            "thread/revert" => {
+                write_fixture_message(
+                    &mut writer,
+                    json!({
+                        "id": id,
+                        "result": {
+                            "thread": { "id": message["params"]["threadId"], "turns": [] },
+                            "turnsBackwardsCursor": null
+                        }
+                    }),
+                )
+                .await;
+            }
             _ => {
                 write_fixture_message(&mut writer, json!({ "id": id, "result": {} })).await;
             }
         }
     }
     state.closed.store(true, Ordering::Release);
+}
+
+/// Native thread turns, newest first, that `thread/turns/list` pages two at a time.
+const FIXTURE_THREAD_TURNS: [&str; 5] = [
+    "codex-turn-5",
+    "codex-turn-4",
+    "codex-turn-3",
+    "codex-turn-2",
+    "codex-turn-1",
+];
+
+/// One descending `thread/turns/list` page. `RepeatedTurnCursor` always points at page 2.
+fn fixture_turn_page(scenario: FixtureScenario, cursor: Option<&str>) -> Value {
+    const PAGE_SIZE: usize = 2;
+    let page = cursor
+        .and_then(|cursor| cursor.strip_prefix("page-"))
+        .and_then(|page| page.parse::<usize>().ok())
+        .unwrap_or(1);
+    let start = (page - 1) * PAGE_SIZE;
+    let data = FIXTURE_THREAD_TURNS
+        .iter()
+        .skip(start)
+        .take(PAGE_SIZE)
+        .map(|turn_id| json!({ "id": turn_id, "items": [], "status": "completed" }))
+        .collect::<Vec<_>>();
+    let next_cursor = if scenario == FixtureScenario::RepeatedTurnCursor {
+        Some("page-2".to_string())
+    } else {
+        (start + PAGE_SIZE < FIXTURE_THREAD_TURNS.len()).then(|| format!("page-{}", page + 1))
+    };
+    json!({ "data": data, "nextCursor": next_cursor })
 }
 
 fn start_request(workspace: &Path) -> StartSessionRequest {
@@ -677,4 +898,85 @@ async fn wait_for_fixture_message(
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     panic!("fixture message was not received");
+}
+
+#[test]
+fn codex_user_agents_admit_against_the_tested_range() {
+    use crate::registry::refused_version;
+    for (user_agent, admission) in [
+        ("codex-cli/0.155.9", ProviderVersionAdmission::BelowMinimum),
+        (
+            "codex-cli/1.0.0",
+            ProviderVersionAdmission::AtOrAboveCeiling,
+        ),
+    ] {
+        let error = ensure_supported_user_agent(user_agent).unwrap_err();
+        assert_eq!(
+            error.code,
+            ChatErrorCode::UnsupportedVersion,
+            "{user_agent}"
+        );
+        assert!(error.recoverable, "{user_agent}");
+        let (refused, version) = refused_version(&error).unwrap();
+        assert_eq!(refused, admission, "{user_agent}");
+        assert_eq!(
+            Some(version),
+            user_agent.split_once('/').map(|(_, v)| v.to_string())
+        );
+    }
+    for (user_agent, admission) in [
+        ("codex-cli/0.156.0", ProviderVersionAdmission::Supported),
+        ("codex-cli/0.167.1", ProviderVersionAdmission::Supported),
+        (
+            "codex-cli/0.168.0-alpha.2 (Linux; x86_64)",
+            ProviderVersionAdmission::UntestedNewer,
+        ),
+        ("codex-cli", ProviderVersionAdmission::Unreadable),
+        ("codex-cli/nightly", ProviderVersionAdmission::Unreadable),
+    ] {
+        assert_eq!(
+            ensure_supported_user_agent(user_agent).unwrap(),
+            admission,
+            "{user_agent}"
+        );
+    }
+}
+
+#[test]
+fn account_plans_rank_only_a_named_free_plan_as_free() {
+    let plan = |account: Value| {
+        serde_json::from_value::<CodexAccount>(account)
+            .unwrap()
+            .plan()
+    };
+    assert_eq!(
+        plan(json!({ "type": "apiKey" })),
+        Some(ProviderAccountPlan::ApiKey)
+    );
+    assert_eq!(
+        plan(json!({ "type": "chatgpt", "planType": "free" })),
+        Some(ProviderAccountPlan::Free)
+    );
+    for paid in [
+        "plus",
+        "pro",
+        "go",
+        "team",
+        "business",
+        "enterprise",
+        "edu",
+        "a_new_plan",
+    ] {
+        assert_eq!(
+            plan(json!({ "type": "chatgpt", "planType": paid })),
+            Some(ProviderAccountPlan::Subscription),
+            "{paid}"
+        );
+    }
+    assert_eq!(
+        plan(json!({ "type": "chatgpt", "planType": "unknown" })),
+        None
+    );
+    assert_eq!(plan(json!({ "type": "chatgpt", "planType": null })), None);
+    assert_eq!(plan(json!({ "type": "chatgpt" })), None);
 }

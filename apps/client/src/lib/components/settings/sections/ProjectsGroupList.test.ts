@@ -149,7 +149,7 @@ describe("Settings list of project groups", () => {
     buttonLabeled("Delete group Work")?.click();
     flushSync();
     buttonLabeled("Delete group (Enter)")?.click();
-    await vi.waitFor(() => expect(target.textContent).toContain("Could not delete group: locked"));
+    await vi.waitFor(() => expect(target.textContent).toContain("Could not delete group."));
   });
 
   it("says when there are no groups", () => {

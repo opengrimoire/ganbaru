@@ -46,3 +46,29 @@ export function buildProjectLists<TProject>(
   if (ungrouped.length > 0) lists.push({ key: UNGROUPED_PROJECT_LIST_KEY, group: null, projects: ungrouped });
   return lists;
 }
+
+/** Normalize a project search query for case-insensitive matching by name. */
+export function normalizeProjectSearch(query: string): string {
+  return query.trim().toLowerCase();
+}
+
+/** Whether a project name contains an already normalized query; an empty query matches every project. */
+export function projectMatchesSearch(project: { name: string }, normalizedQuery: string): boolean {
+  return !normalizedQuery || project.name.toLowerCase().includes(normalizedQuery);
+}
+
+/**
+ * Narrow project lists to the projects whose names match a search, keeping list and project order and leaving out
+ * lists without a match. An empty query keeps every list as it is.
+ */
+export function filterProjectLists<TProject extends { name: string }>(
+  lists: readonly ProjectList<TProject>[],
+  query: string,
+): ProjectList<TProject>[] {
+  const normalizedQuery = normalizeProjectSearch(query);
+  if (!normalizedQuery) return [...lists];
+  return lists.flatMap((list) => {
+    const projects = list.projects.filter((project) => projectMatchesSearch(project, normalizedQuery));
+    return projects.length > 0 ? [{ ...list, projects }] : [];
+  });
+}

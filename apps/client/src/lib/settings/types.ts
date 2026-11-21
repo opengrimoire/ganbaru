@@ -11,6 +11,7 @@ export const SETTINGS_SECTION_IDS = [
   "projects",
   "notes",
   "chat",
+  "agents",
   "focus",
   "music",
   "distractions",
@@ -23,11 +24,11 @@ export const SETTINGS_SECTION_IDS = [
 export type SectionId = (typeof SETTINGS_SECTION_IDS)[number];
 
 export type DistractionsSettingsTab = "limits" | "browser" | "mobile" | "desktop";
-export type ChatSettingsSubsection = "teammates" | "providers" | "permissions" | "behavior";
+export type AgentsSettingsSubsection = "providers" | "files";
 export type ContactsSettingsTab = "card" | "contacts" | "invitations" | "blocked";
 
 /** Unsaved Settings edit that must be confirmed before leaving its section or closing Settings. */
-export type SettingsDraftKind = "teammate" | "profile";
+export type SettingsDraftKind = "profile";
 
 export type DistractionsLimitEditorTarget =
   | { mode: "create" }

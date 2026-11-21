@@ -12,15 +12,16 @@ use ganbaru_chat_contracts::models::{
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerConfig, Tool,
-    ToolAnnotations,
+    ListToolsResult, PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams,
+    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
+    ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::{NotificationContext, RequestContext, RoleServer};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 use rmcp::{ErrorData as McpError, ServerHandler};
+use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::future::Future;
@@ -95,6 +96,11 @@ pub struct InternalMcpRunScope {
     pub runtime_approval_policy: ChatRuntimeApprovalPolicy,
     pub channel_sources: Vec<InternalMcpChannelSource>,
     pub folder_sources: Vec<InternalMcpFolderSource>,
+    /// Delegation depth of the run's assignment: 0 for work a person started.
+    pub delegation_depth: u8,
+    /// Whether another agent participated in the destination channel when the run started,
+    /// which decides whether the delegation tool is offered.
+    pub delegation_target_available: bool,
 }
 
 #[derive(Default)]
@@ -238,6 +244,8 @@ impl EndpointState {
     }
 }
 
+/// The plaintext token a provider process authenticates with, returned only when the endpoint
+/// is created or its token rotates. The registry keeps only its digest.
 #[derive(Clone, Eq, PartialEq)]
 pub struct InternalMcpEndpoint {
     pub url: String,
@@ -254,8 +262,21 @@ impl std::fmt::Debug for InternalMcpEndpoint {
     }
 }
 
+/// What [`InternalMcpRegistry::ensure_thread_endpoint`] found. Only a newly created endpoint
+/// carries a plaintext token; a running one rotates its token before another provider
+/// process can authenticate.
+#[derive(Debug)]
+pub enum EndpointIssue {
+    Created(InternalMcpEndpoint),
+    Running,
+}
+
+/// SHA-256 digest of the token an endpoint accepts, shared with its request authorization.
+type TokenDigest = Arc<RwLock<[u8; 32]>>;
+
 struct RunningEndpoint {
-    descriptor: InternalMcpEndpoint,
+    url: String,
+    token_digest: TokenDigest,
     state: Arc<EndpointState>,
     shutdown: oneshot::Sender<()>,
 }
@@ -273,11 +294,12 @@ impl InternalMcpRegistry {
         vault_root: PathBuf,
         thread_id: ChatThreadId,
         organizational_pending: bool,
-    ) -> ChatResult<InternalMcpEndpoint> {
-        if let Some(endpoint) = self.endpoints.lock().await.get(&thread_id) {
-            return Ok(endpoint.descriptor.clone());
+    ) -> ChatResult<EndpointIssue> {
+        if self.endpoints.lock().await.contains_key(&thread_id) {
+            return Ok(EndpointIssue::Running);
         }
         let token = generate_bearer_token()?;
+        let token_digest = Arc::new(RwLock::new(bearer_token_digest(&token)));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(endpoint_error)?;
@@ -290,7 +312,7 @@ impl InternalMcpRegistry {
             thread_id: thread_id.clone(),
             state: Arc::clone(&state),
         };
-        let router = endpoint_router(handler, token.clone());
+        let router = endpoint_router(handler, Arc::clone(&token_digest));
         let (shutdown, shutdown_receiver) = oneshot::channel();
         tauri::async_runtime::spawn(serve_endpoint(
             listener,
@@ -298,24 +320,46 @@ impl InternalMcpRegistry {
             EndpointConnectionLimits::default(),
             shutdown_receiver,
         ));
-        let descriptor = InternalMcpEndpoint {
-            url: format!("http://{address}/mcp"),
-            bearer_token: token,
-        };
+        let url = format!("http://{address}/mcp");
         let mut endpoints = self.endpoints.lock().await;
-        if let Some(existing) = endpoints.get(&thread_id) {
+        if endpoints.contains_key(&thread_id) {
             let _ = shutdown.send(());
-            return Ok(existing.descriptor.clone());
+            return Ok(EndpointIssue::Running);
         }
         endpoints.insert(
             thread_id,
             RunningEndpoint {
-                descriptor: descriptor.clone(),
+                url: url.clone(),
+                token_digest,
                 state,
                 shutdown,
             },
         );
-        Ok(descriptor)
+        Ok(EndpointIssue::Created(InternalMcpEndpoint {
+            url,
+            bearer_token: token,
+        }))
+    }
+
+    /// Replaces the token of the thread's running endpoint and returns the new plaintext for a
+    /// provider process about to start. Requests with the previous token fail from this point.
+    pub async fn rotate_thread_token(
+        &self,
+        thread_id: &ChatThreadId,
+    ) -> ChatResult<InternalMcpEndpoint> {
+        let endpoints = self.endpoints.lock().await;
+        let endpoint = endpoints.get(thread_id).ok_or_else(|| {
+            ChatError::new(
+                ChatErrorCode::TransportUnavailable,
+                "The Chat host tool endpoint is not running",
+                true,
+            )
+        })?;
+        let bearer_token = replace_bearer_token(&endpoint.token_digest).await?;
+        Ok(InternalMcpEndpoint {
+            url: endpoint.url.clone(),
+            bearer_token,
+        })
     }
 
     pub async fn activate_run_scope(
@@ -501,6 +545,10 @@ impl ServerHandler for ThreadMcpHandler {
                 .build(),
         )
         .with_instructions("Thread-scoped Ganbaru Chat resources and workspace preview tools")
+    }
+
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        std::borrow::Cow::Borrowed(session_protocol_versions())
     }
 
     fn on_initialized(
@@ -1037,9 +1085,17 @@ fn preview_tool_error(operation: &str) -> ChatError {
     )
 }
 
+/// The protocol revisions the endpoint offers, all of which open with `initialize`. A
+/// provider proves it reached the endpoint by completing that handshake, and session
+/// admission counts open sessions. Offering a stateless revision would let a client that
+/// discovers it skip `initialize`, so the readiness wait before a run would never end.
+fn session_protocol_versions() -> &'static [ProtocolVersion] {
+    ProtocolVersion::known_up_to(&ProtocolVersion::LATEST_WITH_INITIALIZE)
+}
+
 /// Builds the authenticated `/mcp` route for one endpoint. rmcp reads request bodies itself,
 /// so the body cap is set on its service rather than as an axum layer.
-fn endpoint_router<H>(handler: H, token: String) -> Router
+fn endpoint_router<H>(handler: H, token_digest: TokenDigest) -> Router
 where
     H: ServerHandler + Clone + Send + Sync + 'static,
 {
@@ -1059,7 +1115,7 @@ where
             authorize_request(
                 request,
                 next,
-                token.clone(),
+                Arc::clone(&token_digest),
                 semaphore.clone(),
                 Arc::clone(&sessions),
             )
@@ -1149,18 +1205,21 @@ fn admits_session_request(
 async fn authorize_request(
     request: Request<Body>,
     next: Next,
-    expected_token: String,
+    token_digest: TokenDigest,
     semaphore: Arc<Semaphore>,
     sessions: Arc<LocalSessionManager>,
 ) -> Response {
-    if !request_targets_loopback(&request)
-        || !request
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .is_some_and(|value| constant_time_equal(value.as_bytes(), expected_token.as_bytes()))
-    {
+    let presented_digest = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(bearer_token_digest);
+    let authorized = match presented_digest {
+        Some(presented) => constant_time_equal(&presented, &*token_digest.read().await),
+        None => false,
+    };
+    if !request_targets_loopback(&request) || !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let open_sessions = sessions.sessions.read().await.len();
@@ -1208,6 +1267,19 @@ fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
 
 fn generate_bearer_token() -> ChatResult<String> {
     secure_random_hex(32)
+}
+
+/// The SHA-256 digest an endpoint keeps in place of its token. Comparing digests of equal
+/// length keeps the check constant time whatever length a caller presents.
+fn bearer_token_digest(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
+}
+
+/// Generates a token, stores its digest in `token_digest`, and returns the plaintext.
+async fn replace_bearer_token(token_digest: &RwLock<[u8; 32]>) -> ChatResult<String> {
+    let token = generate_bearer_token()?;
+    *token_digest.write().await = bearer_token_digest(&token);
+    Ok(token)
 }
 
 pub(crate) fn generate_opaque_handle(prefix: &str) -> ChatResult<String> {
@@ -1293,322 +1365,4 @@ fn endpoint_error<T>(_error: T) -> ChatError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    const TEST_HEADER_READ_TIMEOUT: Duration = Duration::from_millis(200);
-    const TEST_WAIT: Duration = Duration::from_secs(5);
-
-    async fn test_endpoint(
-        router: Router,
-        max_connections: usize,
-    ) -> (
-        std::net::SocketAddr,
-        oneshot::Sender<()>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind test endpoint");
-        let address = listener.local_addr().expect("test endpoint address");
-        let (shutdown, shutdown_receiver) = oneshot::channel();
-        let server = tokio::spawn(serve_endpoint(
-            listener,
-            router,
-            EndpointConnectionLimits {
-                header_read_timeout: TEST_HEADER_READ_TIMEOUT,
-                max_connections,
-            },
-            shutdown_receiver,
-        ));
-        (address, shutdown, server)
-    }
-
-    fn root_router() -> Router {
-        Router::new().route("/", axum::routing::get(|| async { "ok" }))
-    }
-
-    #[derive(Clone)]
-    struct EmptyHandler;
-
-    impl ServerHandler for EmptyHandler {}
-
-    #[tokio::test]
-    async fn endpoint_refuses_request_bodies_over_the_declared_limit() {
-        let token = generate_bearer_token().expect("token");
-        let router = endpoint_router(EmptyHandler, token.clone());
-        let (address, _shutdown, _server) = test_endpoint(router, MAX_MCP_CONNECTIONS).await;
-        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
-        let body = vec![b' '; MAX_MCP_REQUEST_BYTES + 1];
-        let head = format!(
-            "POST /mcp HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        client.write_all(head.as_bytes()).await.unwrap();
-        // The server may answer and close before reading the whole body.
-        let _ = client.write_all(&body).await;
-        let response = read_until_closed(&mut client).await;
-        assert!(
-            response.starts_with("HTTP/1.1 413"),
-            "unexpected response: {}",
-            response.lines().next().unwrap_or_default()
-        );
-    }
-
-    async fn read_until_closed(stream: &mut tokio::net::TcpStream) -> String {
-        let mut response = Vec::new();
-        tokio::time::timeout(TEST_WAIT, stream.read_to_end(&mut response))
-            .await
-            .expect("connection closes in time")
-            .ok();
-        String::from_utf8_lossy(&response).into_owned()
-    }
-
-    async fn request_root(stream: &mut tokio::net::TcpStream) -> String {
-        stream
-            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-            .await
-            .expect("send request");
-        read_until_closed(stream).await
-    }
-
-    #[tokio::test]
-    async fn endpoint_closes_connections_that_send_no_headers_and_still_serves_requests() {
-        let (address, shutdown, server) = test_endpoint(root_router(), MAX_MCP_CONNECTIONS).await;
-        let mut idle = tokio::net::TcpStream::connect(address).await.unwrap();
-        let mut partial = tokio::net::TcpStream::connect(address).await.unwrap();
-        partial.write_all(b"GET / HTTP/1.1\r\nHost:").await.unwrap();
-
-        let started = tokio::time::Instant::now();
-        assert!(!read_until_closed(&mut idle).await.contains("200 OK"));
-        assert!(!read_until_closed(&mut partial).await.contains("200 OK"));
-        assert!(started.elapsed() < TEST_WAIT);
-
-        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
-        assert!(request_root(&mut client).await.contains("200 OK"));
-
-        drop(shutdown);
-        tokio::time::timeout(TEST_WAIT, server)
-            .await
-            .expect("endpoint stops after shutdown")
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn endpoint_holds_extra_connections_until_an_open_one_closes() {
-        let (address, _shutdown, _server) = test_endpoint(root_router(), 1).await;
-        let _idle = tokio::net::TcpStream::connect(address).await.unwrap();
-        tokio::time::sleep(TEST_HEADER_READ_TIMEOUT / 4).await;
-
-        let started = tokio::time::Instant::now();
-        let mut queued = tokio::net::TcpStream::connect(address).await.unwrap();
-        assert!(request_root(&mut queued).await.contains("200 OK"));
-        assert!(started.elapsed() >= TEST_HEADER_READ_TIMEOUT / 2);
-    }
-
-    #[test]
-    fn endpoint_refuses_new_sessions_at_the_cap_but_serves_existing_ones() {
-        let new_session = Request::builder().body(Body::empty()).unwrap();
-        let existing_session = Request::builder()
-            .header(MCP_SESSION_ID_HEADER, "session")
-            .body(Body::empty())
-            .unwrap();
-        assert!(admits_session_request(&new_session, 0, MAX_MCP_SESSIONS));
-        assert!(admits_session_request(
-            &new_session,
-            MAX_MCP_SESSIONS - 1,
-            MAX_MCP_SESSIONS
-        ));
-        assert!(!admits_session_request(
-            &new_session,
-            MAX_MCP_SESSIONS,
-            MAX_MCP_SESSIONS
-        ));
-        assert!(admits_session_request(
-            &existing_session,
-            MAX_MCP_SESSIONS,
-            MAX_MCP_SESSIONS
-        ));
-    }
-
-    struct DropFlag(Arc<AtomicBool>);
-
-    impl Drop for DropFlag {
-        fn drop(&mut self) {
-            self.0.store(true, Ordering::SeqCst);
-        }
-    }
-
-    fn pending_work(dropped: &Arc<AtomicBool>) -> impl Future<Output = ChatResult<()>> {
-        let flag = DropFlag(Arc::clone(dropped));
-        async move {
-            let _flag = flag;
-            std::future::pending::<ChatResult<()>>().await
-        }
-    }
-
-    #[tokio::test]
-    async fn tool_work_stops_when_its_request_is_cancelled_or_times_out() {
-        let dropped = Arc::new(AtomicBool::new(false));
-        let cancelled = bounded_work(std::future::ready(()), TEST_WAIT, pending_work(&dropped))
-            .await
-            .expect_err("cancelled work fails");
-        assert_eq!(cancelled.code, ChatErrorCode::Cancelled);
-        assert!(dropped.load(Ordering::SeqCst));
-
-        let dropped = Arc::new(AtomicBool::new(false));
-        let timed_out = bounded_work(
-            std::future::pending(),
-            TEST_HEADER_READ_TIMEOUT,
-            pending_work(&dropped),
-        )
-        .await
-        .expect_err("slow work fails");
-        assert_eq!(timed_out.code, ChatErrorCode::Timeout);
-        assert!(dropped.load(Ordering::SeqCst));
-
-        let finished = bounded_work(std::future::pending(), TEST_WAIT, async { Ok(7) }).await;
-        assert_eq!(finished.expect("finished work"), 7);
-    }
-
-    #[test]
-    fn endpoint_descriptors_keep_bearer_tokens_out_of_debug_output() {
-        let token = generate_bearer_token().expect("token");
-        let endpoint = InternalMcpEndpoint {
-            url: "http://127.0.0.1:41000/mcp".to_string(),
-            bearer_token: token.clone(),
-        };
-        let config = ganbaru_chat_contracts::models::ProviderInternalMcpConfig {
-            name: "ganbaru".to_string(),
-            url: endpoint.url.clone(),
-            bearer_token: token.clone(),
-            organizational_authority: true,
-        };
-        for output in [format!("{endpoint:?}"), format!("{config:?}")] {
-            assert!(!output.contains(&token), "{output}");
-            assert!(
-                output.contains("127.0.0.1:41000") && output.contains("[REDACTED]"),
-                "{output}"
-            );
-        }
-    }
-
-    #[test]
-    fn bearer_tokens_are_bounded_unique_and_compared_without_prefix_matches() {
-        let first = generate_bearer_token().expect("first token");
-        let second = generate_bearer_token().expect("second token");
-        assert_eq!(first.len(), 64);
-        assert_eq!(second.len(), 64);
-        assert_ne!(first, second);
-        assert!(constant_time_equal(first.as_bytes(), first.as_bytes()));
-        assert!(!constant_time_equal(first.as_bytes(), second.as_bytes()));
-        assert!(!constant_time_equal(
-            first.as_bytes(),
-            &first.as_bytes()[..63]
-        ));
-    }
-
-    #[test]
-    fn opaque_handles_use_validated_namespaces_and_256_bits_of_randomness() {
-        let handle = generate_opaque_handle("channel-source").expect("opaque handle");
-        assert!(handle.starts_with("channel-source:"));
-        assert_eq!(handle.len(), "channel-source:".len() + 64);
-        assert!(generate_opaque_handle("Channel Source").is_err());
-    }
-
-    #[test]
-    fn endpoint_accepts_only_loopback_hosts_and_origins() {
-        let allowed = Request::builder()
-            .header(header::HOST, "127.0.0.1:43123")
-            .body(Body::empty())
-            .unwrap();
-        assert!(request_targets_loopback(&allowed));
-
-        let remote_host = Request::builder()
-            .header(header::HOST, "192.0.2.10:43123")
-            .body(Body::empty())
-            .unwrap();
-        assert!(!request_targets_loopback(&remote_host));
-
-        let remote_origin = Request::builder()
-            .header(header::HOST, "localhost:43123")
-            .header(header::ORIGIN, "https://example.com")
-            .body(Body::empty())
-            .unwrap();
-        assert!(!request_targets_loopback(&remote_origin));
-    }
-
-    #[tokio::test]
-    async fn pending_organizational_endpoint_denies_tools_until_scope_activation() {
-        let state = EndpointState::new(true);
-        assert!(state.active_scope().await.is_err());
-    }
-
-    #[tokio::test]
-    async fn direct_endpoint_admits_tools_only_while_its_turn_runs() {
-        let state = EndpointState::new(false);
-        let first = ChatTurnId::new("turn-1").unwrap();
-        let second = ChatTurnId::new("turn-2").unwrap();
-        assert!(state.active_scope().await.unwrap().is_none());
-        assert!(state.require_direct_turn().await.is_err());
-
-        state.begin_direct_turn(&first).await;
-        assert!(state.require_direct_turn().await.is_ok());
-        state.end_direct_turn(Some(&first)).await;
-        let error = state.require_direct_turn().await.unwrap_err();
-        assert_eq!(error.code, ChatErrorCode::Permission);
-        assert!(
-            state.active_scope().await.unwrap().is_none(),
-            "listings stay available between turns"
-        );
-
-        state.begin_direct_turn(&second).await;
-        state.end_direct_turn(Some(&first)).await;
-        assert!(
-            state.require_direct_turn().await.is_ok(),
-            "a late settlement of an earlier turn keeps the running turn open"
-        );
-        state.end_direct_turn(None).await;
-        assert!(
-            state.require_direct_turn().await.is_err(),
-            "a provider exit closes any running turn"
-        );
-    }
-
-    #[tokio::test]
-    async fn organizational_endpoints_ignore_direct_turn_transitions() {
-        let state = EndpointState::new(true);
-        state
-            .begin_direct_turn(&ChatTurnId::new("turn-1").unwrap())
-            .await;
-        assert!(state.require_direct_turn().await.is_err());
-        assert!(matches!(
-            &*state.access.read().await,
-            EndpointAccessState::OrganizationalPending
-        ));
-    }
-
-    #[tokio::test]
-    async fn revoked_organizational_endpoint_never_falls_back_to_direct_access() {
-        let state = EndpointState::default();
-        *state.access.write().await =
-            EndpointAccessState::OrganizationalActive(Box::new(InternalMcpRunScope {
-                run_id: ChatAgentRunId::new("run-1").unwrap(),
-                provider_turn_id: ChatTurnId::new("turn-1").unwrap(),
-                assignment_id: ChatWorkAssignmentId::new("assignment-1").unwrap(),
-                authorization_revision_id: ChatAuthorizationRevisionId::new("authorization-1")
-                    .unwrap(),
-                destination_conversation_id: ChatConversationId::new("conversation-1").unwrap(),
-                authorization_scope_digest: "a".repeat(64),
-                execution_environment_id: Some("environment-1".to_string()),
-                scratch_generation_id: None,
-                runtime_approval_policy: ChatRuntimeApprovalPolicy::Ask,
-                channel_sources: Vec::new(),
-                folder_sources: Vec::new(),
-            }));
-        assert!(state.active_scope().await.unwrap().is_some());
-        *state.access.write().await = EndpointAccessState::OrganizationalRevoked;
-        assert!(state.active_scope().await.is_err());
-    }
-}
+mod tests;

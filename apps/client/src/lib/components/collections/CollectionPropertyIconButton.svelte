@@ -33,7 +33,7 @@
     try {
       Picker = (await import("$lib/components/icon-picker/IconPicker.svelte")).default;
     } catch (caught: unknown) {
-      loadError = t("collections.property.iconFailed", caught instanceof Error ? caught.message : String(caught));
+      loadError = t("collections.property.iconFailed");
     } finally {
       loading = false;
     }

@@ -32,6 +32,7 @@
   } from "$lib/api/quick-notes";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { LocalizedError, userErrorMessage } from "$lib/i18n/user-errors";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
   import { compareQuickNoteTags, quickNoteRelativeViewTagId, quickNoteTagMoveRequest, quickNoteViewIndexForKey } from "$lib/quick-notes/tags";
   import { applyQuickNoteGroupOrder } from "$lib/quick-notes/masonry";
@@ -181,7 +182,8 @@
       }
     } catch (error: unknown) {
       if (generation !== loadGeneration) return;
-      loadError = error instanceof Error ? error.message : String(error);
+      console.warn("Quick notes could not be loaded:", error);
+      loadError = userErrorMessage(error, t("quickNotes.loadFailed"));
     } finally {
       if (generation === loadGeneration) {
         loading = false;
@@ -239,7 +241,7 @@
       const message = error instanceof QuickNoteTagError && error.code === "duplicate_name"
         ? t("quickNotes.tag.duplicateName")
         : t("quickNotes.tag.saveFailed");
-      throw new Error(message, { cause: error });
+      throw new LocalizedError(message, { cause: error });
     }
   }
 
@@ -258,14 +260,15 @@
       publishQuickNotesChanged();
     } catch (error: unknown) {
       if (error instanceof QuickNoteTagError && error.code === "not_found") void loadTags();
-      throw new Error(tagErrorMessage(error), { cause: error });
+      throw new LocalizedError(tagErrorMessage(error), { cause: error });
     }
   }
 
   function colorTag(tag: QuickNoteTag, color: EventColor): void {
     loadError = "";
     void updateTag(tag, tag.name, color).catch((error: unknown) => {
-      loadError = error instanceof Error ? error.message : String(error);
+      console.warn("Quick note tag could not be updated:", error);
+      loadError = userErrorMessage(error, t("quickNotes.tag.updateFailed"));
     });
   }
 
@@ -292,7 +295,8 @@
     try {
       await loadTags();
     } catch (error: unknown) {
-      loadError = error instanceof Error ? error.message : String(error);
+      console.warn("Quick notes could not be loaded:", error);
+      loadError = userErrorMessage(error, t("quickNotes.loadFailed"));
     }
   }
 
@@ -361,7 +365,8 @@
       publishQuickNotesChanged();
       await load();
     } catch (error: unknown) {
-      loadError = error instanceof Error ? error.message : String(error);
+      console.warn("Quick note change failed:", error);
+      loadError = userErrorMessage(error, t("quickNotes.actionFailed"));
     }
   }
 
@@ -382,7 +387,8 @@
     } catch (error: unknown) {
       pendingReorders.clear();
       reorderAnnouncement = t("quickNotes.reorderFailed");
-      loadError = error instanceof Error ? error.message : String(error);
+      console.warn("Quick note order could not be saved:", error);
+      loadError = userErrorMessage(error, t("quickNotes.reorderFailed"));
       await load();
     } finally {
       reorderWorkerRunning = false;
@@ -528,7 +534,8 @@
     try {
       editorNote = await getQuickNote(note.id);
     } catch (error: unknown) {
-      loadError = error instanceof Error ? error.message : String(error);
+      console.warn("Quick note could not be opened:", error);
+      loadError = userErrorMessage(error, t("quickNotes.openFailed"));
     }
   }
 
@@ -649,7 +656,8 @@
         notes = snapshot.window.notes;
         nextCursor = snapshot.window.nextCursor;
       }).catch((error: unknown) => {
-        loadError = error instanceof Error ? error.message : String(error);
+        console.warn("Quick notes could not be loaded:", error);
+        loadError = userErrorMessage(error, t("quickNotes.loadFailed"));
       }).finally(() => {
         initializing = false;
       });
@@ -788,7 +796,7 @@
 
     {#if loadError && notes.length === 0}
       <div class="flex min-h-40">
-        <Notice layout="fill" class="text-sm" message={t("quickNotes.loadFailed")} copy={loadError} retryLabel={t("quickNotes.retry")} onRetry={() => load()} />
+        <Notice layout="fill" class="text-sm" message={t("quickNotes.loadFailed")} retryLabel={t("quickNotes.retry")} onRetry={() => load()} />
       </div>
     {:else if !initializing && notes.length === 0}
       {#if emptyMessage}<div class="flex min-h-40 items-center justify-center text-center text-sm text-muted-foreground">{emptyMessage}</div>{/if}

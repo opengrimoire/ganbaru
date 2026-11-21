@@ -6,6 +6,11 @@ export function hasVerticalOverflow(metrics: { scrollHeight: number; clientHeigh
   return metrics.scrollHeight - metrics.clientHeight > SCROLL_OVERFLOW_TOLERANCE;
 }
 
+/** Whether a container's content is wider than its visible area. */
+export function hasHorizontalOverflow(metrics: { scrollWidth: number; clientWidth: number }): boolean {
+  return metrics.scrollWidth - metrics.clientWidth > SCROLL_OVERFLOW_TOLERANCE;
+}
+
 /**
  * Calls `refresh` now and whenever the scroll metrics of `node` may have changed: on size changes of the node or its
  * children, and when children are added or removed. Returns a function that stops observing.

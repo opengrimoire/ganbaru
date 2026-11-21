@@ -12,21 +12,27 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-const MAX_JSONL_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+pub(super) const MAX_JSONL_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PENDING_REQUESTS: usize = 128;
 const MAX_INBOUND_MESSAGES: usize = 256;
 const MAX_OUTBOUND_MESSAGES: usize = 256;
 const MAX_METHOD_BYTES: usize = 256;
 const MAX_RPC_ID_BYTES: usize = 256;
 const MAX_ERROR_MESSAGE_BYTES: usize = 2_048;
-const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// The error a session ends with after Codex sends a line over the JSON Lines bound.
+pub const OVERSIZED_MESSAGE_ERROR: &str = "Codex sent a message larger than the supported limit";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CodexRpcFailure {
     Cancelled,
     Closed,
     Malformed(String),
-    Remote { code: i64, message: String },
+    /// Codex sent a line over the JSON Lines bound, which ends the connection.
+    Oversized,
+    Remote {
+        code: i64,
+        message: String,
+    },
     Timeout,
     Unavailable,
 }
@@ -54,6 +60,11 @@ impl CodexRpcFailure {
                 format!("Codex app-server returned an invalid {operation} response: {reason}"),
                 false,
             ),
+            Self::Oversized => (
+                ChatErrorCode::Protocol,
+                OVERSIZED_MESSAGE_ERROR.to_string(),
+                false,
+            ),
             Self::Remote { message, .. } => (
                 ChatErrorCode::Protocol,
                 format!("Codex rejected {operation}: {message}"),
@@ -77,6 +88,7 @@ impl fmt::Display for CodexRpcFailure {
             Self::Cancelled => formatter.write_str("request cancelled"),
             Self::Closed => formatter.write_str("transport closed"),
             Self::Malformed(reason) => write!(formatter, "malformed protocol: {reason}"),
+            Self::Oversized => formatter.write_str("message exceeds the byte limit"),
             Self::Remote { code, message } => write!(formatter, "remote error {code}: {message}"),
             Self::Timeout => formatter.write_str("request timed out"),
             Self::Unavailable => formatter.write_str("transport unavailable"),
@@ -97,6 +109,10 @@ pub enum CodexInboundMessage {
     },
     Malformed {
         reason: String,
+        byte_length: usize,
+    },
+    /// A line crossed the byte bound. The reader stops after it, and `Closed` follows.
+    Oversized {
         byte_length: usize,
     },
     Closed,
@@ -146,27 +162,23 @@ impl CodexRpcClient {
             return Err(error);
         }
 
-        loop {
-            if context.is_cancelled() {
-                self.remove_pending(&key);
-                return Err(if Instant::now() >= context.deadline {
+        let deadline = tokio::time::Instant::from_std(context.deadline);
+        let failure = tokio::select! {
+            biased;
+            () = context.cancellation.cancelled() => {
+                if Instant::now() >= context.deadline {
                     CodexRpcFailure::Timeout
                 } else {
                     CodexRpcFailure::Cancelled
-                });
+                }
             }
-            let remaining = context.deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                self.remove_pending(&key);
-                return Err(CodexRpcFailure::Timeout);
+            () = tokio::time::sleep_until(deadline) => CodexRpcFailure::Timeout,
+            response = &mut receiver => {
+                return response.unwrap_or(Err(CodexRpcFailure::Closed));
             }
-            let poll = remaining.min(CANCELLATION_POLL_INTERVAL);
-            match tokio::time::timeout(poll, &mut receiver).await {
-                Ok(Ok(result)) => return result,
-                Ok(Err(_)) => return Err(CodexRpcFailure::Closed),
-                Err(_) => {}
-            }
-        }
+        };
+        self.remove_pending(&key);
+        Err(failure)
     }
 
     pub async fn notify(&self, method: &str, params: Value) -> Result<(), CodexRpcFailure> {
@@ -229,6 +241,21 @@ pub struct CodexRpcConnection {
 }
 
 impl CodexRpcConnection {
+    /// Process ID of the provider process, while the connection still owns it.
+    pub fn process_id(&self) -> Option<u32> {
+        self.process
+            .as_ref()
+            .and_then(ProviderProcessHandle::process_id)
+    }
+
+    /// Watch that tells whether the resource scope's memory ceiling stopped the provider; `None`
+    /// when the provider is not scoped.
+    pub fn memory_limit_watch(&self) -> Option<crate::process::systemd_scope::MemoryLimitWatch> {
+        self.process
+            .as_ref()
+            .and_then(ProviderProcessHandle::memory_limit_watch)
+    }
+
     pub fn from_process(mut process: ProviderProcessHandle) -> ChatResult<Self> {
         let stdout = process.take_stdout()?;
         let stdin = process.take_stdin()?;
@@ -334,12 +361,15 @@ async fn write_messages<W>(
 ) where
     W: AsyncWrite + Send + Unpin + 'static,
 {
-    while let Err(tokio::sync::oneshot::error::TryRecvError::Empty) = shutdown.try_recv() {
-        let message = match tokio::time::timeout(CANCELLATION_POLL_INTERVAL, outbound.recv()).await
-        {
-            Ok(Some(message)) => message,
-            Ok(None) => break,
-            Err(_) => continue,
+    loop {
+        // Shutdown wins over queued messages, and a dropped sender also stops the writer.
+        let message = tokio::select! {
+            biased;
+            _ = &mut shutdown => break,
+            message = outbound.recv() => match message {
+                Some(message) => message,
+                None => break,
+            },
         };
         if writer.write_all(&message).await.is_err() || writer.flush().await.is_err() {
             fail_pending(&pending, CodexRpcFailure::Closed);
@@ -390,12 +420,13 @@ async fn read_messages<R>(
             },
             Ok(None) => break,
             Err(byte_length) => {
+                // The stream cannot be trusted to resynchronize after an unbounded line, so
+                // waiting requests fail at once and the session ends.
+                fail_pending(&pending, CodexRpcFailure::Oversized);
                 let _ = inbound
-                    .send(CodexInboundMessage::Malformed {
-                        reason: "message exceeds the byte limit".to_string(),
-                        byte_length,
-                    })
+                    .send(CodexInboundMessage::Oversized { byte_length })
                     .await;
+                break;
             }
         }
     }
@@ -532,46 +563,39 @@ fn rpc_id_key(id: &Value) -> Result<String, CodexRpcFailure> {
         .map_err(|_| CodexRpcFailure::Malformed("request id is invalid".to_string()))
 }
 
-async fn read_bounded_line<R>(reader: &mut BufReader<R>) -> Result<Option<Vec<u8>>, usize>
+/// Reads one JSON Lines frame of at most `MAX_JSONL_MESSAGE_BYTES`.
+///
+/// Returns `Err` with the bytes read so far as soon as a line crosses the bound, without waiting
+/// for its newline, so a stream that never ends the line cannot stall the reader.
+pub(super) async fn read_bounded_line<R>(
+    reader: &mut BufReader<R>,
+) -> Result<Option<Vec<u8>>, usize>
 where
     R: AsyncRead + Unpin,
 {
     let mut line = Vec::new();
-    let mut byte_length = 0_usize;
-    let mut oversized = false;
     loop {
         let available = match reader.fill_buf().await {
             Ok(available) => available,
             Err(_) => return Ok(None),
         };
         if available.is_empty() {
-            if byte_length == 0 {
+            if line.is_empty() {
                 return Ok(None);
             }
-            return if oversized {
-                Err(byte_length)
-            } else {
-                Ok(Some(trim_line_ending(line)))
-            };
+            return Ok(Some(trim_line_ending(line)));
         }
         let newline = available.iter().position(|byte| *byte == b'\n');
         let consumed = newline.map_or(available.len(), |index| index + 1);
-        byte_length = byte_length.saturating_add(consumed);
-        if !oversized {
-            if line.len().saturating_add(consumed) > MAX_JSONL_MESSAGE_BYTES + 1 {
-                oversized = true;
-                line.clear();
-            } else {
-                line.extend_from_slice(&available[..consumed]);
-            }
+        let byte_length = line.len().saturating_add(consumed);
+        if byte_length > MAX_JSONL_MESSAGE_BYTES + 1 {
+            reader.consume(consumed);
+            return Err(byte_length);
         }
+        line.extend_from_slice(&available[..consumed]);
         reader.consume(consumed);
         if newline.is_some() {
-            return if oversized {
-                Err(byte_length)
-            } else {
-                Ok(Some(trim_line_ending(line)))
-            };
+            return Ok(Some(trim_line_ending(line)));
         }
     }
 }

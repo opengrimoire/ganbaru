@@ -24,6 +24,7 @@
   } from "$lib/components/notes/editor-component-registry";
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
 
   let {
     editorStore,
@@ -38,7 +39,7 @@
   const { t } = getLocalization();
   const block = $derived(editorStore.selectedDatabaseBlock);
   const databaseTitle = $derived(block?.child_database.title || t("notes.untitled"));
-  let actionError = $state<string | null>(null);
+  let actionError = $state<NotesFailure | null>(null);
   let deleting = $state(false);
   let shareButton = $state<HTMLButtonElement | null>(null);
   let shareOpen = $state(false);
@@ -104,7 +105,7 @@
     try {
       return await editorStore.deleteBlock(blockId);
     } catch (error: unknown) {
-      actionError = error instanceof Error ? error.message : String(error);
+      actionError = notesFailure(error, t("notes.databaseChangeFailed"));
       return false;
     } finally {
       deleting = false;
@@ -117,14 +118,14 @@
     try {
       await editorStore.openDatabase(blockId);
     } catch (error: unknown) {
-      actionError = error instanceof Error ? error.message : String(error);
+      actionError = notesFailure(error, t("notes.databaseOpenFailed"));
     }
   }
 
   /** Open database rows using the normal Notes pane navigation. */
   function selectPage(pageId: string): void {
     void editorStore.openPageContextually(pageId).catch((error: unknown) => {
-      actionError = error instanceof Error ? error.message : String(error);
+      actionError = notesFailure(error, t("notes.databaseRowOpenFailed"));
     });
   }
 
@@ -187,7 +188,7 @@
     <div class="flex shrink-0 justify-end gap-1 px-3 py-2">{@render actions()}</div>
   {/if}
   <div class="min-h-0 min-w-0 flex-1 overflow-auto px-4 py-4 sm:px-6">
-    {#if actionError}<Notice class="mb-3 text-sm" message={actionError} />{/if}
+    {#if actionError}<Notice class="mb-3 text-sm" message={actionError.message} copy={actionError.detail} />{/if}
     {#if block}
       {#if rendererLoadState?.status === "ready" && rendererLoadState.component.kind === "child-database"}
         {@const DatabaseRenderer = rendererLoadState.component.component}

@@ -1,149 +1,117 @@
 //! Stable wire contracts for organizational Chat commands.
 
 use super::super::models::*;
+use crate::scheduling::RecurrenceSpec;
 use serde::{Deserialize, Serialize};
 
+/// An agent's default model, as Settings > Agents edits it.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatTeammatePolicyInput {
-    pub provider_instance_id: ProviderInstanceId,
-    pub safety_mode: ChatApprovalPolicy,
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChatAgentPolicyInput {
     #[serde(default)]
     pub provider_managed_model: bool,
     pub model_id: Option<ModelId>,
+    /// Options of the model, effort among them.
     #[serde(default)]
     pub model_options: Vec<ModelOptionSelection>,
-    pub effort: Option<String>,
-    pub speed: Option<String>,
     pub provider_options: VersionedJson,
+    #[serde(default = "default_interaction_mode")]
+    pub interaction_mode: InteractionMode,
 }
 
+fn default_interaction_mode() -> InteractionMode {
+    InteractionMode::Build
+}
+
+impl ChatAgentPolicyInput {
+    /// The model selection the policy stores.
+    pub fn model_selection(&self) -> ChatModelSelection {
+        ChatModelSelection {
+            provider_managed_model: self.provider_managed_model,
+            model_id: self.model_id.clone(),
+            model_options: self.model_options.clone(),
+        }
+    }
+}
+
+/// Saves a new default model for an agent.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CreateChatTeammateCommand {
-    pub teammate_id: ChatParticipantId,
+pub struct SetChatAgentPolicyCommand {
+    pub agent_id: ChatParticipantId,
+    pub policy: ChatAgentPolicyInput,
+}
+
+/// Creates an agent a person names, which runs its own model and effort on a provider family.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateChatAgentCommand {
     pub display_name: String,
-    pub avatar: VersionedJson,
-    #[serde(default)]
-    pub role: String,
+    pub provider_family_id: ProviderFamilyId,
+    pub policy: ChatAgentPolicyInput,
+}
+
+/// Saves the app scope of agent settings.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateChatAppAgentSettingsCommand {
+    pub access: ChatAgentAccess,
     #[serde(default)]
     pub instructions: String,
-    pub policy: ChatTeammatePolicyInput,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatAccessProfileRevisionInput {
-    pub default_channel_capabilities: ChatChannelCapabilities,
-    pub default_history_boundary: ChatHistoryBoundary,
-    pub maximum_folder_capability: ChatFolderCapability,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateChatAccessProfileCommand {
-    pub access_profile_id: ChatAccessProfileId,
-    pub display_name: String,
-    pub revision: ChatAccessProfileRevisionInput,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DuplicateChatAccessProfileCommand {
-    pub source_access_profile_id: ChatAccessProfileId,
-    pub access_profile_id: ChatAccessProfileId,
-    pub display_name: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PublishChatAccessProfileRevisionCommand {
-    pub access_profile_id: ChatAccessProfileId,
     pub expected_revision: u64,
-    pub revision: ChatAccessProfileRevisionInput,
 }
 
+/// Saves the project scope of agent settings; an absent access inherits the app access.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PreviewChatAccessProfileRevisionCommand {
-    pub access_profile_id: ChatAccessProfileId,
-    pub expected_revision: u64,
-    pub revision: ChatAccessProfileRevisionInput,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ArchiveChatAccessProfileCommand {
-    pub access_profile_id: ChatAccessProfileId,
-    pub expected_revision: u64,
-    pub archived: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatFolderGrantInput {
-    pub working_folder_id: ProjectWorkingFolderId,
-    pub capability: ChatFolderCapability,
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateChatProjectAgentSettingsCommand {
+    pub project_id: String,
+    pub access: Option<ChatAgentAccess>,
     #[serde(default)]
-    pub is_default: bool,
-    pub runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,
+    pub instructions: String,
+    /// Zero while the project has never saved its own settings.
+    pub expected_revision: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatTeammateChannelAccessInput {
+/// Saves the channel scope of agent settings; an absent access inherits the project access.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateChatChannelAgentSettingsCommand {
     pub channel_id: ChatChannelId,
-    pub access_profile_id: ChatAccessProfileId,
-    /// Effective profile revision the draft was made against. Saving refuses a draft whose
-    /// profile now has another effective revision, which a synced pointer can name even when it
-    /// is older than the one the draft saw.
-    pub access_profile_revision_id: ChatAccessProfileRevisionId,
-    pub capabilities: ChatChannelCapabilities,
-    pub history_boundary: ChatHistoryBoundary,
-    pub runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,
-    pub scratch_runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,
+    pub access: Option<ChatAgentAccess>,
     #[serde(default)]
-    pub folder_grants: Vec<ChatFolderGrantInput>,
+    pub instructions: String,
+    pub expected_revision: u64,
 }
 
+/// Adds an agent to a channel, where it works under the channel's access at once.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PreviewChatTeammateAccessCommand {
-    pub teammate_id: ChatParticipantId,
-    pub expected_access_revision: u64,
-    #[serde(default)]
-    pub channels: Vec<ChatTeammateChannelAccessInput>,
-    #[serde(default)]
-    pub teammate_profile: Option<UpdateChatTeammateProfileCommand>,
-    #[serde(default)]
-    pub policy: Option<ChatTeammatePolicyInput>,
+pub struct AddChatChannelAgentCommand {
+    pub channel_id: ChatChannelId,
+    pub agent_id: ChatParticipantId,
 }
 
+/// Removes an agent from a channel, which revokes its running work there and its push
+/// approvals.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ReplaceChatTeammateAccessCommand {
-    pub teammate_id: ChatParticipantId,
-    pub expected_access_revision: u64,
-    #[serde(default)]
-    pub channels: Vec<ChatTeammateChannelAccessInput>,
-    #[serde(default)]
-    pub teammate_profile: Option<UpdateChatTeammateProfileCommand>,
-    #[serde(default)]
-    pub policy: Option<ChatTeammatePolicyInput>,
+pub struct RemoveChatChannelAgentCommand {
+    pub channel_id: ChatChannelId,
+    pub agent_id: ChatParticipantId,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewChatChannelMembershipRemovalCommand {
-    pub teammate_id: ChatParticipantId,
+    pub agent_id: ChatParticipantId,
     pub channel_id: ChatChannelId,
-    pub expected_access_revision: u64,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListChatAssignmentTargetsCommand {
-    pub teammate_id: ChatParticipantId,
+    pub agent_id: ChatParticipantId,
     pub channel_id: ChatChannelId,
     pub reply_thread_id: Option<ChatReplyThreadId>,
 }
@@ -205,19 +173,6 @@ pub struct CleanupChatScratchCommand {
     pub confirmed: bool,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateChatTeammateProfileCommand {
-    pub teammate_id: ChatParticipantId,
-    pub display_name: String,
-    pub avatar: VersionedJson,
-    #[serde(default)]
-    pub role: String,
-    #[serde(default)]
-    pub instructions: String,
-    pub expected_revision: u64,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostChatMessageCommand {
@@ -234,14 +189,183 @@ pub struct PostChatMessageCommand {
     pub execution_target: Option<ChatExecutionTarget>,
     #[serde(default)]
     pub also_send_to_channel: bool,
+    /// How a reply to a thread with active work reaches that work; `None` steers working
+    /// work and queues anything else. A scheduled post refuses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub followup_routing: Option<ChatFollowupRouting>,
+}
+
+/// How a reply reaches the active work of its thread.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatFollowupRouting {
+    /// Into the running provider turn, when the work is working; queued otherwise.
+    Steer,
+    /// After the current provider turn ends, as the next turn of the work.
+    Queue,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScheduleChatMessageCommand {
     pub scheduled_message_id: ChatScheduledMessageId,
+    /// Delivery time of a one-time message, or the anchor of a repeating one: its first
+    /// occurrence is the first the rule names at or after this time.
     pub scheduled_for: UtcTimestamp,
     pub message: PostChatMessageCommand,
+    /// Repeat rule; `None` sends the message once.
+    #[serde(default)]
+    pub recurrence: Option<RecurrenceSpec>,
+}
+
+/// New content, delivery time, and repeat rule for a message still waiting to be sent. The
+/// message keeps its id, client command id, channel, reply thread, and executing device.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateScheduledChatMessageCommand {
+    pub scheduled_message_id: ChatScheduledMessageId,
+    /// Delivery time of a one-time message, or the time from which a repeating one next posts.
+    pub scheduled_for: UtcTimestamp,
+    pub normalized_markdown: String,
+    pub rich_content: VersionedJson,
+    #[serde(default)]
+    pub attachment_ids: Vec<ChatAttachmentId>,
+    #[serde(default)]
+    pub references: Vec<ChatMessageReference>,
+    #[serde(default)]
+    pub also_send_to_channel: bool,
+    /// Repeat rule; `None` sends the message once.
+    #[serde(default)]
+    pub recurrence: Option<RecurrenceSpec>,
+}
+
+/// A message waiting to be sent, once or on a repeat rule.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatScheduledMessageRead {
+    pub id: ChatScheduledMessageId,
+    pub channel_id: ChatChannelId,
+    pub reply_thread_id: Option<ChatReplyThreadId>,
+    pub normalized_markdown: String,
+    pub rich_content: VersionedJson,
+    pub attachment_ids: Vec<ChatAttachmentId>,
+    pub references: Vec<ChatMessageReference>,
+    pub also_send_to_channel: bool,
+    pub state: String,
+    /// Delivery time of a one-time message, or the anchor of a repeating one.
+    pub scheduled_for: UtcTimestamp,
+    pub last_error: Option<String>,
+    pub created_at: UtcTimestamp,
+    /// Repeat rule and progress, or `None` for a one-time message.
+    pub recurrence: Option<ChatScheduledRecurrenceRead>,
+}
+
+/// The repeat rule of a scheduled message and how far its series has come.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatScheduledRecurrenceRead {
+    /// Rule, zone, and quiet policy.
+    #[serde(flatten)]
+    pub spec: RecurrenceSpec,
+    /// When the next occurrence is due.
+    pub next_occurrence_at: UtcTimestamp,
+    /// Occurrences the series has posted.
+    pub fired_count: u64,
+    /// Occurrences this device skipped because they were missed or quiet; device-local.
+    pub skipped_occurrences: u64,
+    /// End of the quiet period the pending occurrence waits for on this device, if any.
+    pub deferred_until: Option<UtcTimestamp>,
+}
+
+/// A person's confirmation of an agent's schedule proposal, with the time, rule, and text
+/// they chose. The confirmed message mentions the proposing agent in the proposal's reply
+/// thread.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmScheduleProposalCommand {
+    /// The conversation item that carries the proposal.
+    pub proposal_item_id: ChatConversationItemId,
+    /// Delivery time of a one-time message, or the anchor of a repeating one.
+    pub scheduled_for: UtcTimestamp,
+    /// Repeat rule; `None` sends the message once.
+    #[serde(default)]
+    pub recurrence: Option<RecurrenceSpec>,
+    /// Edited message text without the agent mention the confirmation adds; `None` keeps
+    /// the proposed text.
+    #[serde(default)]
+    pub normalized_markdown: Option<String>,
+}
+
+/// Where a schedule proposal stands on this device.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatScheduleProposalState {
+    /// Nobody confirmed it and this device did not dismiss it.
+    Pending,
+    /// A person confirmed it on some device: its scheduled message exists or posted.
+    Confirmed,
+    /// This device dismissed it.
+    Dismissed,
+}
+
+/// The state of one schedule proposal.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatScheduleProposalStateRead {
+    pub proposal_item_id: ChatConversationItemId,
+    pub state: ChatScheduleProposalState,
+}
+
+/// A person's confirmation of an agent's push request. After the push, the confirmation posts
+/// `normalized_markdown` after a mention of the asking agent in the request's reply thread,
+/// which answers the request.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmPushRequestCommand {
+    /// The conversation item that carries the push request.
+    pub request_item_id: ChatConversationItemId,
+    /// The reply text without the agent mention the confirmation adds.
+    pub normalized_markdown: String,
+    /// Whether the person also approves later pushes of the agent from this folder to the
+    /// same push URL and destination branch, recorded only once this push succeeds.
+    #[serde(default)]
+    pub remember_approval: bool,
+}
+
+/// Where a push request stands.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatPushRequestState {
+    /// The asking run is still working, so nobody can confirm it yet.
+    Waiting,
+    /// A person can confirm it.
+    Open,
+    /// A person confirmed it on some device and the push succeeded.
+    Pushed,
+    /// It was answered, superseded, or its run did not complete.
+    Closed,
+}
+
+/// The state of one push request.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPushRequestStateRead {
+    pub request_item_id: ChatConversationItemId,
+    pub state: ChatPushRequestState,
+}
+
+/// Revokes a standing push approval, so later matching push requests ask again.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevokeChatPushApprovalCommand {
+    pub approval_id: String,
+}
+
+/// Revokes a remembered approval, so later matching agent requests ask again.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevokeChatRememberedApprovalCommand {
+    pub approval_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -251,46 +375,78 @@ pub struct PostChatMessageResult {
     pub reply_thread_id: Option<ChatReplyThreadId>,
     pub assignment: Option<ChatWorkAssignmentRead>,
     pub assignment_input_queued: bool,
+    /// How the post reached active work as an input, or `None` when it reached no active
+    /// work. A steer request on work that is not working reports `Queue`.
+    #[serde(default)]
+    pub routed_as: Option<ChatFollowupRouting>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatScratchPromotionDestinationInput, CreateChatTeammateCommand,
-        PreviewChatTeammateAccessCommand,
+        ChatAgentAccess, ChatScratchPromotionDestinationInput, InteractionMode,
+        SetChatAgentPolicyCommand, UpdateChatChannelAgentSettingsCommand,
+        UpdateChatProjectAgentSettingsCommand,
     };
     use serde_json::json;
 
-    fn teammate_payload() -> serde_json::Value {
+    fn policy_payload() -> serde_json::Value {
         json!({
-            "teammateId": "teammate:reviewer",
-            "displayName": "Reviewer",
-            "avatar": { "schemaVersion": 1, "value": { "kind": "initials" } },
-            "role": "Code reviewer",
-            "instructions": "",
+            "agentId": "agent:codex",
             "policy": {
-                "providerInstanceId": "provider:test",
-                "safetyMode": "ask_for_approval",
                 "providerManagedModel": true,
                 "modelId": null,
                 "modelOptions": [],
-                "effort": null,
-                "speed": null,
                 "providerOptions": { "schemaVersion": 1, "value": {} }
             }
         })
     }
 
     #[test]
-    fn standalone_teammate_creation_has_no_access_input() {
-        let payload = teammate_payload();
-        assert!(serde_json::from_value::<CreateChatTeammateCommand>(payload).is_ok());
+    fn agent_policy_keeps_only_the_model_and_provider_options() {
+        let command = serde_json::from_value::<SetChatAgentPolicyCommand>(policy_payload())
+            .expect("a model policy should deserialize");
+        assert_eq!(command.policy.interaction_mode, InteractionMode::Build);
+        assert!(command.policy.model_selection().provider_managed_model);
 
-        let mut legacy_payload = teammate_payload();
-        legacy_payload["memberships"] = json!([{
-            "channelId": "channel:general"
-        }]);
-        assert!(serde_json::from_value::<CreateChatTeammateCommand>(legacy_payload).is_err());
+        for removed in ["safetyMode", "effort", "speed", "providerInstanceId"] {
+            let mut payload = policy_payload();
+            payload["policy"][removed] = json!("ask_for_approval");
+            assert!(
+                serde_json::from_value::<SetChatAgentPolicyCommand>(payload).is_err(),
+                "{removed} is no longer part of an agent policy"
+            );
+        }
+    }
+
+    #[test]
+    fn scope_settings_inherit_with_an_absent_access() {
+        let project = serde_json::from_value::<UpdateChatProjectAgentSettingsCommand>(json!({
+            "projectId": "project:a",
+            "access": null,
+            "instructions": "Use the house style",
+            "expectedRevision": 0
+        }))
+        .unwrap();
+        assert_eq!(project.access, None);
+
+        let channel = serde_json::from_value::<UpdateChatChannelAgentSettingsCommand>(json!({
+            "channelId": "channel:general",
+            "access": "talk",
+            "expectedRevision": 3
+        }))
+        .unwrap();
+        assert_eq!(channel.access, Some(ChatAgentAccess::Talk));
+        assert_eq!(channel.instructions, "");
+
+        assert!(
+            serde_json::from_value::<UpdateChatChannelAgentSettingsCommand>(json!({
+                "channelId": "channel:general",
+                "access": "unattended",
+                "expectedRevision": 3
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -316,40 +472,5 @@ mod tests {
             serde_json::from_value::<ChatScratchPromotionDestinationInput>(legacy_destination)
                 .is_err()
         );
-    }
-
-    #[test]
-    fn teammate_access_preview_accepts_the_complete_atomic_draft() {
-        let payload = json!({
-            "teammateId": "teammate:reviewer",
-            "expectedAccessRevision": 4,
-            "channels": [],
-            "teammateProfile": {
-                "teammateId": "teammate:reviewer",
-                "displayName": "Reviewer",
-                "avatar": { "schemaVersion": 1, "value": { "kind": "initials" } },
-                "role": "Code reviewer",
-                "instructions": "Review changes",
-                "expectedRevision": 7
-            },
-            "policy": {
-                "providerInstanceId": "provider:test",
-                "safetyMode": "ask_for_approval",
-                "providerManagedModel": true,
-                "modelId": null,
-                "modelOptions": [],
-                "effort": null,
-                "speed": null,
-                "providerOptions": { "schemaVersion": 1, "value": {} }
-            }
-        });
-        let command = serde_json::from_value::<PreviewChatTeammateAccessCommand>(payload.clone())
-            .expect("the complete draft should deserialize");
-        assert!(command.teammate_profile.is_some());
-        assert!(command.policy.is_some());
-
-        let mut unknown = payload;
-        unknown["legacyMemberships"] = json!([]);
-        assert!(serde_json::from_value::<PreviewChatTeammateAccessCommand>(unknown).is_err());
     }
 }

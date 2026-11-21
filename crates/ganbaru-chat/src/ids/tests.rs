@@ -18,6 +18,15 @@ fn new_id_is_prefix_and_32_lowercase_hex_digits() {
 }
 
 #[test]
+fn a_new_agent_id_is_a_named_agent_key_sync_lets_a_person_delete() {
+    let id = new_id("agent").expect("random id");
+    assert!(
+        ganbaru_sync_contracts::chat_agents::is_named_agent_key(&id),
+        "{id}"
+    );
+}
+
+#[test]
 fn new_id_does_not_repeat() {
     let ids: BTreeSet<String> = (0..256)
         .map(|_| new_id("message-revision").expect("random id"))

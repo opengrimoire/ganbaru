@@ -2,10 +2,10 @@
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ChatAiTeammateRead, ChatParticipantRead } from "$lib/chat/contracts";
+import type { ChatAiAgentRead, ChatParticipantRead } from "$lib/chat/contracts";
 import { getChat } from "$lib/stores/chat.svelte";
 import { getPreferences } from "$lib/stores/preferences.svelte";
-import { modelSettings } from "$lib/components/chat/ChatComposer.test-support";
+import { modelSettings } from "$lib/components/chat/composer/composer-test-store";
 import ChatParticipantAvatar from "./ChatParticipantAvatar.svelte";
 
 const profileImage = vi.hoisted(() => ({
@@ -27,7 +27,7 @@ const localParticipant: ChatParticipantRead = {
 
 const agentParticipant: ChatParticipantRead = {
   id: "participant:atlas",
-  kind: "ai_teammate",
+  kind: "ai_agent",
   displayName: "Atlas",
   avatar: { schemaVersion: 1, value: {} },
   revision: 1,
@@ -42,8 +42,8 @@ describe("ChatParticipantAvatar", () => {
   const originalDisplayName = preferences.profileDisplayName;
   const originalImage = preferences.profileImage;
   const originalSettings = chat.settings;
-  const originalTeammates = chat.teammates;
-  const originalArchivedTeammates = chat.archivedTeammates;
+  const originalAgents = chat.agents;
+  const originalArchivedAgents = chat.archivedAgents;
 
   afterEach(async () => {
     if (component) await unmount(component);
@@ -53,8 +53,8 @@ describe("ChatParticipantAvatar", () => {
     preferences.setProfileDisplayName(originalDisplayName);
     preferences.setProfileImage(originalImage);
     chat.settings = originalSettings;
-    chat.teammates = originalTeammates;
-    chat.archivedTeammates = originalArchivedTeammates;
+    chat.agents = originalAgents;
+    chat.archivedAgents = originalArchivedAgents;
     profileImage.load.mockClear();
   });
 
@@ -81,30 +81,30 @@ describe("ChatParticipantAvatar", () => {
     expect(localParticipant.displayName).toBe("You");
   });
 
-  it("uses the teammate provider identity instead of a generic agent icon", () => {
+  it("uses the agent provider identity instead of a generic agent icon", () => {
     chat.settings = modelSettings();
-    chat.teammates = [{
+    chat.agents = [{
       participant: agentParticipant,
-      role: "Coding",
-      instructions: "",
+      providerFamilyId: "codex",
+      agentKind: "model",
+      localProviderInstanceId: "codex-local",
       configurationState: "healthy",
       latestPolicy: {
         id: "policy:atlas:1",
-        teammateId: agentParticipant.id,
+        agentId: agentParticipant.id,
         revision: 1,
-        providerInstanceId: "codex-local",
-        safetyMode: "ask_for_approval",
         providerManagedModel: false,
         modelId: "gpt-5.6-sol",
         modelOptions: [],
-        effort: "medium",
-        speed: null,
+        interactionMode: "build",
         providerOptions: { schemaVersion: 1, value: {} },
         createdAt: "2026-08-04T12:00:00.000Z",
       },
       channelCount: 1,
       activeAssignmentCount: 0,
-    } satisfies ChatAiTeammateRead];
+      hiddenAt: null,
+      linkedProviderStatus: null,
+    } satisfies ChatAiAgentRead];
     target = document.createElement("div");
     document.body.append(target);
     component = mount(ChatParticipantAvatar, {
@@ -117,38 +117,63 @@ describe("ChatParticipantAvatar", () => {
     expect(target.querySelector(".agent-fallback")).toBeNull();
   });
 
-  it("uses an explicitly provided archived teammate identity", () => {
+  it("shows the provider mark on a device without the agent's provider, such as a phone", () => {
+    chat.settings = null;
+    chat.agents = [{
+      participant: agentParticipant,
+      providerFamilyId: "claude",
+      agentKind: "line",
+      localProviderInstanceId: null,
+      configurationState: "provider_unavailable",
+      latestPolicy: null,
+      channelCount: 1,
+      activeAssignmentCount: 0,
+      hiddenAt: null,
+      linkedProviderStatus: null,
+    } satisfies ChatAiAgentRead];
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatParticipantAvatar, {
+      target,
+      props: { participant: agentParticipant, size: 32 },
+    });
+
+    expect(target.querySelector('.model-avatar[aria-label="Anthropic"]')).not.toBeNull();
+    expect(target.querySelector(".agent-fallback")).toBeNull();
+  });
+
+  it("uses an explicitly provided archived agent identity", () => {
     chat.settings = modelSettings();
-    chat.teammates = [];
-    const archivedTeammate = {
+    chat.agents = [];
+    const archivedAgent = {
       participant: { ...agentParticipant, archivedAt: "2026-08-14T12:00:00.000Z" },
-      role: "Coding",
-      instructions: "",
+      providerFamilyId: "codex",
+      agentKind: "model",
+      localProviderInstanceId: "codex-local",
       configurationState: "healthy",
       latestPolicy: {
         id: "policy:atlas:1",
-        teammateId: agentParticipant.id,
+        agentId: agentParticipant.id,
         revision: 1,
-        providerInstanceId: "codex-local",
-        safetyMode: "ask_for_approval",
         providerManagedModel: false,
         modelId: "gpt-5.6-sol",
         modelOptions: [],
-        effort: "medium",
-        speed: null,
+        interactionMode: "build",
         providerOptions: { schemaVersion: 1, value: {} },
         createdAt: "2026-08-04T12:00:00.000Z",
       },
       channelCount: 1,
       activeAssignmentCount: 0,
-    } satisfies ChatAiTeammateRead;
-    chat.archivedTeammates = [archivedTeammate];
+      hiddenAt: null,
+      linkedProviderStatus: null,
+    } satisfies ChatAiAgentRead;
+    chat.archivedAgents = [archivedAgent];
     target = document.createElement("div");
     document.body.append(target);
     component = mount(ChatParticipantAvatar, {
       target,
       props: {
-        participant: archivedTeammate.participant,
+        participant: archivedAgent.participant,
         size: 32,
       },
     });

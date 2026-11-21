@@ -10,6 +10,7 @@
   } from "$lib/api/notes/project-history";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import {
     isNotesPageOpenMode,
     type NotesPageOpenMode,
@@ -237,8 +238,7 @@
       }
       await saveConfirmed(nextEffective < currentEffective);
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      error = t("notes.projectSettingsSaveFailed", message);
+      error = userErrorMessage(cause, t("notes.projectSettingsSaveFailed"));
     } finally {
       saving = false;
     }
@@ -439,8 +439,7 @@
       pruneConfirmationOpen = false;
       saving = true;
       void saveConfirmed(true).catch((cause) => {
-        const message = cause instanceof Error ? cause.message : String(cause);
-        error = t("notes.projectSettingsSaveFailed", message);
+        error = userErrorMessage(cause, t("notes.projectSettingsSaveFailed"));
       }).finally(() => {
         saving = false;
       });

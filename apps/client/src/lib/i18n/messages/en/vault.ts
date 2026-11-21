@@ -138,13 +138,20 @@ export const vaultSetup = {
     headline: "Bring in AI only when you want it",
     body: "Chat with AI agents like Claude, Codex, or Cursor that work right inside your project's folder.",
     sceneDescription:
-      "A short animation of Chat in the Novel project, where Claude is mentioned in a question about what Mateo knows about Clara and answers in the message's thread after reading chapter 2 and searching for Mateo.",
+      "A short animation of Chat in the Novel project, where Opus is mentioned in a question about what Mateo knows about Clara and answers in the message's thread after reading chapter 2 and searching for Mateo.",
     channel: "general",
     roles: { claude: "Story feedback", codex: "Ebook builds" },
     prompt: "read chapter 2 and tell me what Mateo knows about Clara.",
     chapterPath: "chapters/02.md",
     reply:
       "In chapter 2, Mateo sees Clara leave the station with the letter, but he never tells Tomás. That silence could set up their argument in chapter 3.",
+  },
+  agents: {
+    headline: "Use the AI agents you already have",
+    body: "Ganbaru works with the AI agents on this computer, using your own accounts.",
+    listLabel: "AI agents on this computer",
+    checkFailed: "Ganbaru could not check the AI agents on this computer.",
+    setupFailed: "Ganbaru could not open the setup form.",
   },
   about: {
     headline: "Free and open source",
@@ -313,8 +320,6 @@ export const vaultHandoff = {
     installLink: "this guide",
     installSuffix: "to set up ganbaru-server on a computer that's always on, such as a home server or NAS",
     run: "On that server, run",
-    copyCommand: "Copy command",
-    commandCopied: "Command copied",
     outcome: "This computer joins the server's vault in a new folder.",
     startOutcome: "If the server is new, it gets a copy of this vault. If it already has one, this computer joins that vault in a new folder.",
     scan: "Scan server QR code",
@@ -374,7 +379,7 @@ export const vaultHandoff = {
   recovered: "This copy is now a vault of its own on this device.",
   localBackup:
     "When the linked vault replaces this phone's vault, Ganbaru keeps a backup of the replaced one in Settings > Data.",
-  failed: (details: string) => `The linked-device action failed: ${details}`,
+  failed: "The linked-device action failed.",
   blockerChat: "Finish or stop active Chat work before moving the vault.",
   blockerTerminal: "Close running Chat terminals before moving the vault.",
   blockerFocus: "Finish or stop the active Pomodoro session before moving the vault.",
@@ -404,5 +409,5 @@ export const vaultHandoff = {
     "The coordinating computer is handling too many connections right now. Wait a moment, then retry.",
   unreachable:
     "This device could not reach the coordinating computer. Keep both apps open on the same local network, then retry.",
-  unknownError: "Unknown error",
+  unknownError: "Device linking could not open.",
 } as const;

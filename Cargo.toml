@@ -28,6 +28,7 @@ members = [
   "crates/ganbaru-pomodoro",
   "crates/ganbaru-projects",
   "crates/ganbaru-quick-notes",
+  "crates/ganbaru-sandbox",
   "crates/ganbaru-sync",
   "crates/ganbaru-sync-contracts",
   "crates/ganbaru-sync-replica",
@@ -52,7 +53,7 @@ collapsible_if = "allow"
 
 [workspace.dependencies]
 agent-client-protocol = "2.0.0"
-ammonia = "4.1.7"
+ammonia = "4.1.9"
 axum = "0.8.8"
 base64 = "0.22.1"
 block2 = "0.6.2"
@@ -84,6 +85,7 @@ ganbaru-contacts = { path = "crates/ganbaru-contacts" }
 ganbaru-pomodoro = { path = "crates/ganbaru-pomodoro" }
 ganbaru-projects = { path = "crates/ganbaru-projects" }
 ganbaru-quick-notes = { path = "crates/ganbaru-quick-notes" }
+ganbaru-sandbox = { path = "crates/ganbaru-sandbox" }
 ganbaru-sync = { path = "crates/ganbaru-sync" }
 ganbaru-sync-contracts = { path = "crates/ganbaru-sync-contracts" }
 ganbaru-sync-replica = { path = "crates/ganbaru-sync-replica" }
@@ -103,6 +105,7 @@ jiff = { version = "0.2.37", default-features = false, features = [
   "tzdb-bundle-platform",
 ] }
 keyring = "4.1.5"
+landlock = "=0.4.7"
 libc = "0.2"
 libsqlite3-sys = { version = "0.37", default-features = false }
 mdns-sd = { version = "=0.21.6", default-features = false }
@@ -155,10 +158,11 @@ rodio = { version = "0.22.2", default-features = false, features = [
   "symphonia-wav",
   "symphonia-pcm",
 ] }
-rustix = { version = "1.1.4", default-features = false, features = ["std", "process", "fs"] }
+rustix = { version = "1.1.6", default-features = false, features = ["std", "process", "fs"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring"] }
 qrcode = { version = "0.14.1", default-features = false }
 quircs = "0.10.3"
+seccompiler = "=0.5.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
@@ -174,11 +178,13 @@ tauri-plugin-single-instance = "2.5.4"
 tauri-plugin-updater = { version = "2.14.0", default-features = false, features = ["rustls-tls"] }
 tokio = { version = "1.48", default-features = false, features = ["fs", "io-util", "macros", "net", "process", "rt", "sync", "time"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring"] }
+toml_edit = { version = "0.25.12", default-features = false, features = ["parse", "display"] }
 url = "2.5.8"
 wayland-client = "0.31.14"
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 webkit2gtk = "2.0.2"
 webview2-com = "0.38.2"
+windows-registry = "0.6.1"
 windows = { version = "0.61", features = [
   "Foundation",
   "Media",

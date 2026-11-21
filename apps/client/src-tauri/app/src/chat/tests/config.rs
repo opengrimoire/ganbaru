@@ -16,8 +16,6 @@ fn valid_device_config() -> serde_json::Value {
             "launchArguments": ["--profile", "work"],
             "environment": { "RUST_LOG": "warn" },
             "credentialReferences": { "API_TOKEN": "credential-1" },
-            "visibleModelIds": ["gpt-5-codex"],
-            "favoriteModelIds": ["gpt-5-codex"],
             "providerConfig": { "schemaVersion": 1, "value": {} },
             "futurePortableField": { "preserved": true }
         }],
@@ -32,7 +30,7 @@ fn valid_device_config() -> serde_json::Value {
             "interactionMode": "build"
         }],
         "workingFolderProviderPreferences": {},
-        "panels": { "inspectorWidthPx": 360 }
+        "panels": { "inspectorWidthPx": 360, "replyThreadWidthPx": 480 }
     })
 }
 
@@ -43,6 +41,7 @@ fn missing_device_entry_uses_safe_defaults() {
     assert!(config.providers.is_empty());
     assert!(config.remembered_selections.is_empty());
     assert_eq!(config.panels.inspector_width_px, 520);
+    assert_eq!(config.panels.reply_thread_width_px, 440);
 }
 
 #[test]
@@ -105,6 +104,28 @@ fn device_entry_rejects_machine_paths_and_invalid_remembered_models() {
 }
 
 #[test]
+fn panel_widths_read_the_thread_default_and_refuse_values_outside_the_bounds() {
+    let mut without_thread_width = valid_device_config();
+    without_thread_width["panels"]
+        .as_object_mut()
+        .unwrap()
+        .remove("replyThreadWidthPx");
+    let config = ChatDeviceConfig::from_stored(Some(&without_thread_width)).unwrap();
+    assert_eq!(config.panels.reply_thread_width_px, 440);
+
+    for width in [279, 801] {
+        let mut out_of_range = valid_device_config();
+        out_of_range["panels"]["replyThreadWidthPx"] = json!(width);
+        let error = ChatDeviceConfig::from_stored(Some(&out_of_range)).unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation);
+        assert_eq!(
+            error.field.as_deref(),
+            Some("chat.panels.replyThreadWidthPx")
+        );
+    }
+}
+
+#[test]
 fn behavior_validation_refuses_values_outside_the_bounds() {
     let oversized = ChatBehaviorPreferences {
         terminal_scrollback_lines: 100_001,
@@ -141,7 +162,7 @@ fn behavior_writes_one_preference_per_field() {
         .map(|patch| patch.path.join("."))
         .collect::<Vec<_>>();
 
-    assert_eq!(patches.len(), 7);
+    assert_eq!(patches.len(), 13);
     assert!(patches.iter().all(|patch| !patch.remove));
     assert!(paths.iter().all(|path| path.starts_with("chat.behavior.")));
     assert!(paths.contains(&"chat.behavior.confirmMultilineTerminalPaste".to_owned()));
@@ -179,6 +200,7 @@ fn configuration_reads_flatten_device_fields_beside_the_behavior() {
     let serialized = serde_json::to_value(&configuration).unwrap();
 
     assert_eq!(serialized["panels"]["inspectorWidthPx"], json!(360));
+    assert_eq!(serialized["panels"]["replyThreadWidthPx"], json!(480));
     assert_eq!(serialized["behavior"]["sendKey"], json!("enter"));
     assert!(serialized.get("schemaVersion").is_none());
 }

@@ -22,6 +22,7 @@
   import ProfileAvatar from "$lib/components/profile/ProfileAvatar.svelte";
   import { formatTimeLabel } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import {
     canonicalProjectCustomFieldNumber,
     projectCustomFieldAllowsMultipleOptions,
@@ -268,7 +269,7 @@
       if (!input.validity.valid) return;
       numericDraft = null;
     } catch (error: unknown) {
-      valueSaveError = t("projects.customFields.valueSaveFailed", error instanceof Error ? error.message : String(error));
+      valueSaveError = userErrorMessage(error, t("projects.customFields.valueSaveFailed"));
     } finally {
       numericSaving = false;
     }

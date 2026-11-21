@@ -139,7 +139,7 @@
           autocomplete="off"
           autocapitalize="characters"
           spellcheck="false"
-          class="field h-9 w-full px-3 font-mono text-[0.866667rem] tracking-wider"
+          class="field w-full px-3 font-mono text-[0.866667rem] tracking-wider"
           dir="ltr"
         />
       </div>

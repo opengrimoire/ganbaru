@@ -141,7 +141,7 @@
   .plain-file-header { position: sticky; left: 0; display: block; width: 100%; height: 20px; overflow: hidden; border-block: 1px solid var(--border); background: var(--background); padding-inline: 0.65rem; color: var(--foreground); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
   .plain-file-header.active { box-shadow: inset 2px 0 var(--primary); }
   .plain-diff-line { height: 20px; padding-inline: 0.65rem; white-space: pre; }
-  .plain-diff-line.addition { background: color-mix(in srgb, var(--action-confirm) 13%, var(--cal-bg)); }
+  .plain-diff-line.addition { background: color-mix(in srgb, var(--action-confirm-signal) 13%, var(--cal-bg)); }
   .plain-diff-line.deletion { background: color-mix(in srgb, var(--destructive) 12%, var(--cal-bg)); }
   .plain-diff-line.metadata { background: color-mix(in srgb, var(--muted) 72%, var(--cal-bg)); color: var(--muted-foreground); }
   .plain-diff-more { position: sticky; left: 0; display: block; width: 100%; height: 20px; background: var(--background); padding-inline: 0.65rem; color: var(--primary); text-align: left; }

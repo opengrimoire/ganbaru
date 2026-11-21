@@ -50,6 +50,8 @@ fn config(script: &Path, working_directory: &Path) -> ProviderProcessConfig {
         working_directory: working_directory.to_path_buf(),
         environment: BTreeMap::new(),
         stderr_limit_bytes: 128,
+        purpose: ganbaru_chat_providers::process::ProviderProcessPurpose::Session,
+        provider_instance_label: None,
     }
 }
 

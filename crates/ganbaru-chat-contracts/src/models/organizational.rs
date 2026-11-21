@@ -1,11 +1,11 @@
 use super::{
-    ChatAccessProfileId, ChatAccessProfileRevisionId, ChatAgentRunId, ChatAttachmentId,
+    ChatAgentPolicyRevisionId, ChatAgentRunId, ChatAssignmentInputId, ChatAttachmentId,
     ChatChannelId, ChatConversationId, ChatConversationItemId, ChatExecutionEnvironmentId,
     ChatMessageReferenceId, ChatMessageRevisionId, ChatParticipantId, ChatReplyThreadId,
-    ChatScheduledMessageId, ChatScratchCleanupJobId, ChatScratchGenerationId,
-    ChatScratchPromotionId, ChatScratchScopeId, ChatTeammatePolicyRevisionId, ChatThreadId,
-    ChatTurnId, ChatWorkAssignmentId, ModelId, ModelOptionSelection, ProjectWorkingFolderId,
-    ProviderInstanceId, UtcTimestamp, VersionedJson,
+    ChatScratchCleanupJobId, ChatScratchGenerationId, ChatScratchPromotionId, ChatScratchScopeId,
+    ChatThreadId, ChatTurnId, ChatWorkAssignmentId, InteractionMode, ModelId, ModelOptionSelection,
+    ProjectWorkingFolderId, ProviderFamilyId, ProviderInstanceId, ProviderModel, UtcTimestamp,
+    VersionedJson,
 };
 use serde::{Deserialize, Serialize};
 
@@ -13,13 +13,26 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum ChatParticipantKind {
     LocalUser,
-    AiTeammate,
+    AiAgent,
     Human,
+}
+
+/// What an AI agent stands for, read from how its id was made.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatAgentKind {
+    /// A built-in agent of one model line, such as Opus or Sol, which runs the line's newest
+    /// model.
+    Line,
+    /// The agent of one catalog model, such as Opus 5.5, which always runs that model.
+    Model,
+    /// An agent a person named, with its own model and effort.
+    Custom,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ChatTeammateConfigurationState {
+pub enum ChatAgentConfigurationState {
     Healthy,
     NeedsSetup,
     ProviderUnavailable,
@@ -41,41 +54,144 @@ pub enum ChatWorkAssignmentState {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ChatApprovalPolicy {
-    AskForApproval,
-    ApproveForMe,
-    FullAccess,
-    Custom,
+pub enum ChatAssignmentReviewOutcome {
+    /// The reviewer accepted the work as finished.
+    Accepted,
+    /// The reviewer asked for more work, which continues in a follow-up assignment.
+    ChangesRequested,
 }
 
-/// Independent capabilities granted to an AI teammate in one channel.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatChannelCapabilities {
-    pub read_history: bool,
-    pub participate: bool,
-}
-
-/// The portion of channel history visible through one membership.
+/// How a person ended ready-for-review work: recorded only on completed assignments.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum ChatHistoryBoundary {
-    Entire,
-    FromGrant {
-        /// Captured by the server. Commands may omit this value.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        lower_order_key: Option<String>,
-    },
+#[serde(rename_all = "camelCase")]
+pub struct ChatAssignmentReviewRead {
+    pub outcome: ChatAssignmentReviewOutcome,
+    pub reviewed_at: UtcTimestamp,
+    pub reviewed_by_participant_id: ChatParticipantId,
 }
 
-impl ChatHistoryBoundary {
-    /// Returns whether this boundary includes all retained channel history.
-    pub fn is_entire(&self) -> bool {
-        matches!(self, Self::Entire)
+/// A review of ready-for-review work.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ChatAssignmentReviewRequest {
+    /// Completes the work as accepted.
+    Accept,
+    /// Posts `note` as a reply that continues the work in a follow-up assignment.
+    RequestChanges { note: String },
+}
+
+/// How agents may work in a channel, set at the app, project, or channel scope and ordered from
+/// narrowest to widest.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatAgentAccess {
+    /// Agents reply from the channel alone, with no folder or path from disk.
+    Talk,
+    /// Agents read the project's folders but cannot change them.
+    Read,
+    /// Agents edit files and ask a person before running each command.
+    Ask,
+    /// Agents edit files and run confined commands without asking.
+    Own,
+}
+
+impl ChatAgentAccess {
+    /// Every level, from narrowest to widest.
+    pub const ALL: [Self; 4] = [Self::Talk, Self::Read, Self::Ask, Self::Own];
+
+    /// Returns the stored and wire name of the level.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Talk => "talk",
+            Self::Read => "read",
+            Self::Ask => "ask",
+            Self::Own => "own",
+        }
+    }
+
+    /// Parses a stored level, or returns `None` for an unknown value.
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|level| level.as_str() == value)
+    }
+}
+
+/// The scope an effective channel access comes from.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatAgentAccessSource {
+    /// The channel sets its own access.
+    Channel,
+    /// The channel inherits the access of its project.
+    Project,
+    /// The channel and its project inherit the app access.
+    App,
+}
+
+/// What one agent actually does in a channel on one device, from narrowest to widest. It is
+/// the requested [`ChatAgentAccess`] or the closest narrower behavior the provider supports.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatEffectiveAgentAccess {
+    /// Replies from the channel alone.
+    Talk,
+    /// Reads the project's folders.
+    Read,
+    /// Edits files without running commands, for a provider that cannot ask before commands.
+    EditOnly,
+    /// Edits files and asks before each command.
+    Ask,
+    /// Edits files and runs confined commands without asking.
+    Own,
+}
+
+impl ChatEffectiveAgentAccess {
+    /// Returns the wire name of the behavior.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Talk => "talk",
+            Self::Read => "read",
+            Self::EditOnly => "edit_only",
+            Self::Ask => "ask",
+            Self::Own => "own",
+        }
+    }
+}
+
+impl From<ChatAgentAccess> for ChatEffectiveAgentAccess {
+    fn from(level: ChatAgentAccess) -> Self {
+        match level {
+            ChatAgentAccess::Talk => Self::Talk,
+            ChatAgentAccess::Read => Self::Read,
+            ChatAgentAccess::Ask => Self::Ask,
+            ChatAgentAccess::Own => Self::Own,
+        }
+    }
+}
+
+/// Why an agent works below the channel's access on one device.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatAccessDowngradeReason {
+    /// The provider cannot confine commands to the project's folders, so it cannot work on its
+    /// own.
+    CannotConfineCommands,
+    /// The provider cannot ask a person before each command.
+    CannotAskBeforeCommands,
+    /// The provider cannot keep folders read only.
+    CannotReadOnly,
+    /// The provider cannot reply without a folder.
+    CannotIsolate,
+}
+
+impl ChatAccessDowngradeReason {
+    /// Returns the wire name of the reason.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CannotConfineCommands => "cannot_confine_commands",
+            Self::CannotAskBeforeCommands => "cannot_ask_before_commands",
+            Self::CannotReadOnly => "cannot_read_only",
+            Self::CannotIsolate => "cannot_isolate",
+        }
     }
 }
 
@@ -110,138 +226,218 @@ impl ChatFolderCapability {
             other
         }
     }
+
+    /// Returns the stored name of the capability.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Read => "read",
+            Self::Edit => "edit",
+            Self::Execute => "execute",
+            Self::Publish => "publish",
+        }
+    }
+
+    /// Parses a stored capability, or returns `None` for an unknown value.
+    pub fn parse(value: &str) -> Option<Self> {
+        [
+            Self::None,
+            Self::Read,
+            Self::Edit,
+            Self::Execute,
+            Self::Publish,
+        ]
+        .into_iter()
+        .find(|capability| capability.as_str() == value)
+    }
 }
 
-/// Runtime approval behavior after organizational authority has been resolved.
+/// Runtime approval behavior after channel access has been resolved.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ChatRuntimeApprovalPolicy {
+    /// A person approves each command.
     Ask,
+    /// Confined commands run without asking.
     AutoApprove,
-    Unattended,
-    ProviderCustom,
 }
 
-/// Stable keys for application-provided access profile recipes.
+impl ChatRuntimeApprovalPolicy {
+    /// Returns the stored name of the policy.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::AutoApprove => "auto_approve",
+        }
+    }
+
+    /// Parses a stored policy, or returns `None` for an unknown value.
+    pub fn parse(value: &str) -> Option<Self> {
+        [Self::Ask, Self::AutoApprove]
+            .into_iter()
+            .find(|policy| policy.as_str() == value)
+    }
+}
+
+/// The access a channel resolves to, with the scope it comes from.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub enum ChatAccessProfileBuiltinKey {
-    ConversationOnly,
-    ReadOnly,
-    EditFiles,
-    BuildAndTest,
-    PublishChanges,
+pub struct ChatEffectiveChannelAccessRead {
+    pub access: ChatAgentAccess,
+    pub source: ChatAgentAccessSource,
 }
 
+/// What one agent in a channel does on the reading device under the channel's access.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatAccessProfileRevision {
-    pub id: ChatAccessProfileRevisionId,
-    pub access_profile_id: ChatAccessProfileId,
+pub struct ChatAgentResolvedAccessRead {
+    pub agent_id: ChatParticipantId,
+    pub requested: ChatAgentAccess,
+    /// `None` when the agent cannot work in the channel on this device at all, for example
+    /// when its provider is not installed or cannot reply without a folder.
+    pub effective: Option<ChatEffectiveAgentAccess>,
+    /// Why `effective` is narrower than `requested`, absent when the agent works as requested
+    /// or its provider is not installed on this device.
+    pub downgrade_reason: Option<ChatAccessDowngradeReason>,
+    /// Whether this device has a provider installation for the agent.
+    pub installed: bool,
+    /// Whether the agent's provider on this device can work on its own, which decides whether
+    /// that level is offered for the agent here.
+    pub own_offered: bool,
+}
+
+/// The app scope of agent settings, which every project and channel inherits.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAppAgentSettingsRead {
+    pub access: ChatAgentAccess,
+    pub instructions: String,
     pub revision: u64,
-    pub default_channel_capabilities: ChatChannelCapabilities,
-    pub default_history_boundary: ChatHistoryBoundary,
-    pub maximum_folder_capability: ChatFolderCapability,
-    pub created_at: UtcTimestamp,
+    pub updated_at: UtcTimestamp,
 }
 
+/// The project scope of agent settings; an absent access inherits the app access.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatAccessProfileRead {
-    pub id: ChatAccessProfileId,
-    pub builtin_key: Option<ChatAccessProfileBuiltinKey>,
-    pub display_name: String,
-    pub latest_revision: ChatAccessProfileRevision,
-    pub revision: u64,
-    pub archived_at: Option<UtcTimestamp>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatFolderGrantRead {
-    pub working_folder_id: ProjectWorkingFolderId,
-    pub display_name: String,
-    pub capability: ChatFolderCapability,
-    pub is_default: bool,
-    pub runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,
-    pub revision: u64,
-    pub revoked_at: Option<UtcTimestamp>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatTeammateChannelAccessRead {
-    pub channel_id: ChatChannelId,
+pub struct ChatProjectAgentSettingsRead {
     pub project_id: String,
-    /// Group of the channel's project, absent when the project is outside every group.
-    pub group_id: Option<String>,
-    pub conversation_id: ChatConversationId,
-    pub channel_name: String,
-    pub access_profile_id: ChatAccessProfileId,
-    pub access_profile_revision_id: ChatAccessProfileRevisionId,
-    pub access_profile_revision: u64,
-    pub capabilities: ChatChannelCapabilities,
-    pub history_boundary: ChatHistoryBoundary,
-    pub runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,
-    pub scratch_runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,
-    pub folder_grants: Vec<ChatFolderGrantRead>,
-    pub membership_revision: u64,
-    pub removed_at: Option<UtcTimestamp>,
+    pub access: Option<ChatAgentAccess>,
+    pub instructions: String,
+    /// The access the project's channels inherit, with its source.
+    pub effective: ChatEffectiveChannelAccessRead,
+    /// Zero while the project has never saved its own settings.
+    pub revision: u64,
 }
 
+/// A model choice with its options, as agent policies, channel overrides, and work assignments
+/// store it.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatModelSelection {
+    /// Whether the provider picks the model; `model_id` is then absent.
+    #[serde(default)]
+    pub provider_managed_model: bool,
+    #[serde(default)]
+    pub model_id: Option<ModelId>,
+    #[serde(default)]
+    pub model_options: Vec<ModelOptionSelection>,
+}
+
+impl ChatModelSelection {
+    /// The provider default: the provider picks the model and no option is set.
+    pub fn provider_default() -> Self {
+        Self {
+            provider_managed_model: true,
+            model_id: None,
+            model_options: Vec::new(),
+        }
+    }
+}
+
+/// One standing push approval of an agent in a channel.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatTeammateAccessRead {
-    pub teammate_id: ChatParticipantId,
-    pub access_revision: u64,
-    pub teammate_default_runtime_approval: ChatRuntimeApprovalPolicy,
-    pub channels: Vec<ChatTeammateChannelAccessRead>,
+pub struct ChatChannelPushApprovalRead {
+    pub approval_id: String,
+    pub channel_id: ChatChannelId,
+    pub agent_id: ChatParticipantId,
+    pub working_folder_id: ProjectWorkingFolderId,
+    pub working_folder_name: String,
+    pub push_url: String,
+    pub destination_branch: String,
+    pub approved_at: UtcTimestamp,
 }
 
+/// What a remembered approval lets an agent repeat without asking.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ChatAccessIssueCode {
-    ArchivedChannel,
-    ArchivedFolder,
-    CrossProjectFolder,
-    DuplicateChannel,
-    DuplicateFolder,
-    MultipleDefaultFolders,
-    ProfileCeilingExceeded,
-    ProfileNotFound,
-    RetainedReferenceDisclosure,
-    TeammateNotFound,
+pub enum ChatRememberedApprovalKind {
+    /// Every page of one web origin, keyed `scheme://host[:port]`.
+    UrlOrigin,
+    /// One exact command.
+    Command,
+    /// Every call of one tool, keyed by its name.
+    Tool,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatAccessValidationIssue {
-    pub code: ChatAccessIssueCode,
-    pub field_path: String,
-    pub message: String,
+impl ChatRememberedApprovalKind {
+    /// The stored and wire name of the kind.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UrlOrigin => "url_origin",
+            Self::Command => "command",
+            Self::Tool => "tool",
+        }
+    }
+
+    /// Reads a stored kind name.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "url_origin" => Some(Self::UrlOrigin),
+            "command" => Some(Self::Command),
+            "tool" => Some(Self::Tool),
+            _ => None,
+        }
+    }
 }
 
+/// The rule an "Allow and don't ask again" choice would remember for an open request.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatTeammateAccessPreview {
-    pub proposed: Option<ChatTeammateAccessRead>,
-    pub is_expansion: bool,
-    pub added_channel_ids: Vec<ChatChannelId>,
-    pub removed_channel_ids: Vec<ChatChannelId>,
-    pub issues: Vec<ChatAccessValidationIssue>,
+pub struct ChatRememberableApprovalRead {
+    pub kind: ChatRememberedApprovalKind,
+    pub key: String,
 }
 
+/// One remembered approval of an agent in a channel.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatAccessProfileImpactPreview {
-    pub access_profile_id: ChatAccessProfileId,
-    pub current_revision: ChatAccessProfileRevision,
-    pub is_expansion: bool,
-    pub is_reduction: bool,
-    pub affected_teammate_ids: Vec<ChatParticipantId>,
-    pub affected_channel_ids: Vec<ChatChannelId>,
-    pub active_authorization_count: u64,
-    pub issues: Vec<ChatAccessValidationIssue>,
+pub struct ChatChannelRememberedApprovalRead {
+    pub approval_id: String,
+    pub channel_id: ChatChannelId,
+    pub agent_id: ChatParticipantId,
+    pub kind: ChatRememberedApprovalKind,
+    pub key: String,
+    pub approved_at: UtcTimestamp,
+}
+
+/// The channel scope of agent settings with what it resolves to: the channel details panel's
+/// Agents section.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatChannelAgentSettingsRead {
+    pub channel_id: ChatChannelId,
+    pub conversation_id: ChatConversationId,
+    /// The channel's own access, absent when it inherits.
+    pub access: Option<ChatAgentAccess>,
+    pub instructions: String,
+    pub effective: ChatEffectiveChannelAccessRead,
+    /// Each agent in the channel, resolved on the reading device.
+    pub agents: Vec<ChatAgentResolvedAccessRead>,
+    pub push_approvals: Vec<ChatChannelPushApprovalRead>,
+    pub revision: u64,
 }
 
 /// The one native environment selected for an agent run.
@@ -297,7 +493,8 @@ pub enum ChatAssignmentTargetLifecycleState {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatAssignmentTargetRead {
-    /// `None` identifies a scratch fallback that will be created lazily.
+    /// The existing environment this target names. Discovery lists only environments that exist, so it is set on
+    /// every listed target.
     pub execution_target: Option<ChatExecutionTarget>,
     pub kind: ChatAssignmentTargetKind,
     pub display_name: String,
@@ -370,14 +567,14 @@ pub struct ChatScratchGenerationRead {
     pub updated_at: UtcTimestamp,
 }
 
-/// Private scratch storage owned by one teammate in one reply thread.
+/// Private scratch storage owned by one agent in one reply thread.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatScratchScopeRead {
     pub id: ChatScratchScopeId,
     pub reply_thread_id: ChatReplyThreadId,
-    pub teammate_id: ChatParticipantId,
-    pub teammate_name: String,
+    pub agent_id: ChatParticipantId,
+    pub agent_name: String,
     pub channel_id: ChatChannelId,
     pub channel_name: String,
     pub project_id: String,
@@ -488,6 +685,60 @@ pub struct ChatScratchCleanupResultRead {
     pub completed_at: Option<UtcTimestamp>,
 }
 
+/// Why a scratch generation is safe to reclaim, in reporting priority order.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChatScratchReclaimReason {
+    /// The scope's reply thread work is archived.
+    ScopeArchived,
+    /// An earlier cleanup of the scope failed and can be retried.
+    ScopeCleanupFailed,
+    /// An earlier cleanup of the generation failed and can be retried.
+    GenerationCleanupFailed,
+    /// The generation was quarantined after its authority narrowed.
+    GenerationQuarantined,
+    /// No run or generation change happened within the idle period.
+    Idle,
+}
+
+/// One scratch generation that the existing confirmed cleanup can remove.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatScratchReclaimRow {
+    pub scratch_scope_id: ChatScratchScopeId,
+    pub scratch_generation_id: ChatScratchGenerationId,
+    /// Reply thread that owns the scope, used to open its scratch manager.
+    pub reply_thread_id: ChatReplyThreadId,
+    pub generation: u64,
+    pub agent_name: String,
+    pub channel_name: String,
+    pub project_name: String,
+    pub group_name: Option<String>,
+    pub reason: ChatScratchReclaimReason,
+    /// Bounded size on this device, or the stored size when the generation is unavailable here.
+    pub byte_size: u64,
+    pub size_truncated: bool,
+    pub device_availability: ChatScratchDeviceAvailability,
+    /// Latest generation change or run update.
+    pub last_activity_at: UtcTimestamp,
+}
+
+/// Largest reclaimable scratch generations with totals over every qualifying generation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatScratchReclaimReportRead {
+    /// Rows sorted by size, largest first, capped by the report row limit.
+    pub rows: Vec<ChatScratchReclaimRow>,
+    /// Sum of the sizes available on this device across every qualifying generation.
+    pub total_bytes: u64,
+    /// Whether any counted size hit its measurement bound.
+    pub total_truncated: bool,
+    /// Qualifying generations left out of `rows` by the row limit.
+    pub omitted: u64,
+    /// Days without activity after which active scratch counts as idle.
+    pub idle_days: u64,
+}
+
 impl ChatWorkAssignmentState {
     /// Returns whether the assignment still occupies the thread's active work slot.
     pub fn is_active(self) -> bool {
@@ -513,10 +764,146 @@ impl ChatWorkAssignmentState {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatAttachmentId, ChatChannelId, ChatExecutionTarget, ChatHistoryBoundary,
-        ChatMessageReference, ChatScratchPromotionDestinationRead, ChatWorkAssignmentState,
+        ChatAccessDowngradeReason, ChatAgentAccess, ChatAssignmentReviewOutcome,
+        ChatAssignmentReviewRead, ChatAssignmentReviewRequest, ChatAttachmentId, ChatChannelId,
+        ChatCustomAgentRemoval, ChatEffectiveAgentAccess, ChatExecutionTarget,
+        ChatFolderCapability, ChatMessageReference, ChatModelSelection, ChatParticipantId,
+        ChatReviewQueueKind, ChatReviewQueueRead, ChatRuntimeApprovalPolicy,
+        ChatScratchPromotionDestinationRead, ChatWorkAssignmentState, UtcTimestamp,
     };
     use serde_json::json;
+
+    #[test]
+    fn review_queue_round_trips_with_camel_case_fields_and_snake_case_kinds() {
+        let wire = json!({
+            "items": [{
+                "assignmentId": "assignment:review",
+                "revision": 3,
+                "kind": "review",
+                "projectId": "project:alpha",
+                "projectName": "Alpha",
+                "channelId": "channel:general",
+                "channelName": "general",
+                "replyThreadId": "reply-thread:review",
+                "agentParticipantId": "participant:reviewer",
+                "agentDisplayName": "Reviewer",
+                "stateReason": null,
+                "changedFileCount": 2,
+                "executedHere": true,
+                "updatedAt": "2026-11-12T10:00:00.000Z"
+            }],
+            "total": 201,
+            "failureCount": 4,
+            "truncated": true
+        });
+
+        let queue = serde_json::from_value::<ChatReviewQueueRead>(wire.clone()).unwrap();
+
+        assert_eq!(queue.items[0].kind, ChatReviewQueueKind::Review);
+        assert_eq!(serde_json::to_value(&queue).unwrap(), wire);
+        let mut unknown_kind = wire;
+        unknown_kind["items"][0]["kind"] = json!("ready_for_review");
+        assert!(serde_json::from_value::<ChatReviewQueueRead>(unknown_kind).is_err());
+    }
+
+    #[test]
+    fn review_queue_kinds_map_only_the_states_that_wait_for_the_person() {
+        let kinds = [
+            (ChatReviewQueueKind::Answer, "answer"),
+            (ChatReviewQueueKind::Approval, "approval"),
+            (ChatReviewQueueKind::Review, "review"),
+            (ChatReviewQueueKind::Failure, "failure"),
+        ];
+        for (kind, wire) in kinds {
+            assert_eq!(serde_json::to_value(kind).unwrap(), json!(wire));
+            assert_eq!(
+                serde_json::from_value::<ChatReviewQueueKind>(json!(wire)).unwrap(),
+                kind
+            );
+        }
+        assert_eq!(
+            ChatReviewQueueKind::from_state(ChatWorkAssignmentState::WaitingForAnswer),
+            Some(ChatReviewQueueKind::Answer)
+        );
+        assert_eq!(
+            ChatReviewQueueKind::from_state(ChatWorkAssignmentState::WaitingForApproval),
+            Some(ChatReviewQueueKind::Approval)
+        );
+        assert_eq!(
+            ChatReviewQueueKind::from_state(ChatWorkAssignmentState::ReadyForReview),
+            Some(ChatReviewQueueKind::Review)
+        );
+        assert_eq!(
+            ChatReviewQueueKind::from_state(ChatWorkAssignmentState::Failed),
+            Some(ChatReviewQueueKind::Failure)
+        );
+        for state in [
+            ChatWorkAssignmentState::Queued,
+            ChatWorkAssignmentState::Working,
+            ChatWorkAssignmentState::Completed,
+            ChatWorkAssignmentState::Cancelled,
+        ] {
+            assert_eq!(ChatReviewQueueKind::from_state(state), None);
+        }
+    }
+
+    #[test]
+    fn assignment_review_requests_round_trip_with_a_kind_tag() {
+        let accept = ChatAssignmentReviewRequest::Accept;
+        let request_changes = ChatAssignmentReviewRequest::RequestChanges {
+            note: "Cover the empty case".to_owned(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&accept).unwrap(),
+            json!({ "kind": "accept" })
+        );
+        assert_eq!(
+            serde_json::to_value(&request_changes).unwrap(),
+            json!({ "kind": "requestChanges", "note": "Cover the empty case" })
+        );
+        for request in [accept, request_changes] {
+            let wire = serde_json::to_value(&request).unwrap();
+            assert_eq!(
+                serde_json::from_value::<ChatAssignmentReviewRequest>(wire).unwrap(),
+                request
+            );
+        }
+        assert!(
+            serde_json::from_value::<ChatAssignmentReviewRequest>(
+                json!({ "kind": "requestChanges" })
+            )
+            .is_err(),
+            "a change request carries its note"
+        );
+        assert!(
+            serde_json::from_value::<ChatAssignmentReviewRequest>(json!({ "kind": "approve" }))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn assignment_review_reads_use_wire_names() {
+        let review = ChatAssignmentReviewRead {
+            outcome: ChatAssignmentReviewOutcome::ChangesRequested,
+            reviewed_at: UtcTimestamp::new("2026-11-11T10:00:00.000Z").unwrap(),
+            reviewed_by_participant_id: ChatParticipantId::new("participant:local-owner").unwrap(),
+        };
+
+        let wire = serde_json::to_value(&review).unwrap();
+        assert_eq!(
+            wire,
+            json!({
+                "outcome": "changes_requested",
+                "reviewedAt": "2026-11-11T10:00:00.000Z",
+                "reviewedByParticipantId": "participant:local-owner",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ChatAssignmentReviewRead>(wire).unwrap(),
+            review
+        );
+    }
 
     #[test]
     fn review_work_is_active_but_requires_a_new_follow_up_assignment() {
@@ -545,17 +932,88 @@ mod tests {
     }
 
     #[test]
-    fn tagged_organizational_contracts_use_camel_case_fields() {
-        let history = serde_json::from_value::<ChatHistoryBoundary>(json!({
-            "kind": "fromGrant",
-            "lowerOrderKey": "c007"
+    fn agent_access_levels_use_lowercase_names_and_order_from_narrowest() {
+        for level in ChatAgentAccess::ALL {
+            assert_eq!(
+                serde_json::to_value(level).unwrap(),
+                json!(level.as_str()),
+                "wire and stored names agree"
+            );
+            assert_eq!(ChatAgentAccess::parse(level.as_str()), Some(level));
+        }
+        assert_eq!(ChatAgentAccess::parse("Ask"), None);
+        assert_eq!(ChatAgentAccess::parse("unattended"), None);
+        assert!(
+            ChatAgentAccess::ALL
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+        );
+        assert!(ChatAgentAccess::Talk < ChatAgentAccess::Own);
+    }
+
+    #[test]
+    fn effective_access_places_edit_only_between_read_and_ask() {
+        assert!(ChatEffectiveAgentAccess::Read < ChatEffectiveAgentAccess::EditOnly);
+        assert!(ChatEffectiveAgentAccess::EditOnly < ChatEffectiveAgentAccess::Ask);
+        assert_eq!(
+            serde_json::to_value(ChatEffectiveAgentAccess::EditOnly).unwrap(),
+            json!("edit_only")
+        );
+        for level in ChatAgentAccess::ALL {
+            assert_eq!(
+                ChatEffectiveAgentAccess::from(level).as_str(),
+                level.as_str()
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(ChatAccessDowngradeReason::CannotAskBeforeCommands).unwrap(),
+            json!(ChatAccessDowngradeReason::CannotAskBeforeCommands.as_str())
+        );
+    }
+
+    #[test]
+    fn stored_policy_and_capability_names_round_trip() {
+        for policy in [
+            ChatRuntimeApprovalPolicy::Ask,
+            ChatRuntimeApprovalPolicy::AutoApprove,
+        ] {
+            assert_eq!(
+                ChatRuntimeApprovalPolicy::parse(policy.as_str()),
+                Some(policy)
+            );
+        }
+        assert_eq!(ChatRuntimeApprovalPolicy::parse("unattended"), None);
+        for capability in [
+            ChatFolderCapability::None,
+            ChatFolderCapability::Read,
+            ChatFolderCapability::Edit,
+            ChatFolderCapability::Execute,
+            ChatFolderCapability::Publish,
+        ] {
+            assert_eq!(
+                ChatFolderCapability::parse(capability.as_str()),
+                Some(capability)
+            );
+        }
+    }
+
+    #[test]
+    fn model_selection_reads_the_stored_policy_shape() {
+        let selection = serde_json::from_value::<ChatModelSelection>(json!({
+            "providerManagedModel": false,
+            "modelId": "gpt-5",
+            "modelOptions": []
         }))
         .unwrap();
-        assert_eq!(
-            serde_json::to_value(history).unwrap(),
-            json!({ "kind": "fromGrant", "lowerOrderKey": "c007" })
-        );
+        assert_eq!(selection.model_id.unwrap().as_str(), "gpt-5");
+        assert!(!selection.provider_managed_model);
+        let default = serde_json::from_value::<ChatModelSelection>(json!({})).unwrap();
+        assert!(default.model_id.is_none());
+        assert!(ChatModelSelection::provider_default().provider_managed_model);
+    }
 
+    #[test]
+    fn tagged_organizational_contracts_use_camel_case_fields() {
         let target = serde_json::from_value::<ChatExecutionTarget>(json!({
             "kind": "scratch",
             "scratchScopeId": "scratch-scope:test",
@@ -599,6 +1057,11 @@ mod tests {
                 "channelId": "channel:general"
             })
         );
+
+        assert_eq!(
+            serde_json::to_value(ChatCustomAgentRemoval::Deleted).unwrap(),
+            json!({ "kind": "deleted" })
+        );
     }
 }
 
@@ -615,31 +1078,70 @@ pub struct ChatParticipantRead {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatTeammatePolicyRead {
-    pub id: ChatTeammatePolicyRevisionId,
-    pub teammate_id: ChatParticipantId,
+pub struct ChatAgentPolicyRead {
+    pub id: ChatAgentPolicyRevisionId,
+    pub agent_id: ChatParticipantId,
     pub revision: u64,
-    pub provider_instance_id: ProviderInstanceId,
-    pub safety_mode: ChatApprovalPolicy,
     pub provider_managed_model: bool,
     pub model_id: Option<ModelId>,
+    /// Model options of the default model, effort among them.
     pub model_options: Vec<ModelOptionSelection>,
-    pub effort: Option<String>,
-    pub speed: Option<String>,
     pub provider_options: VersionedJson,
+    pub interaction_mode: InteractionMode,
     pub created_at: UtcTimestamp,
 }
 
+/// One agent: a provider family of the vault, named by the provider.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatAiTeammateRead {
+pub struct ChatAiAgentRead {
     pub participant: ChatParticipantRead,
-    pub role: String,
-    pub instructions: String,
-    pub configuration_state: ChatTeammateConfigurationState,
-    pub latest_policy: Option<ChatTeammatePolicyRead>,
+    pub provider_family_id: ProviderFamilyId,
+    pub agent_kind: ChatAgentKind,
+    /// The configured provider instance of the family on the reading device, absent when the
+    /// provider is not installed here.
+    pub local_provider_instance_id: Option<ProviderInstanceId>,
+    pub configuration_state: ChatAgentConfigurationState,
+    pub latest_policy: Option<ChatAgentPolicyRead>,
     pub channel_count: u64,
     pub active_assignment_count: u64,
+    /// When a person removed the agent after it had been used, which archived it and hides it
+    /// from the Settings agent list until it is restored. A hidden agent is always off.
+    pub hidden_at: Option<UtcTimestamp>,
+    /// What the linked desktop that would run the agent shares about its provider, read only
+    /// on a device without the provider installed; absent otherwise or when no linked device
+    /// shared a status.
+    #[serde(default)]
+    pub linked_provider_status: Option<ChatLinkedProviderStatusRead>,
+}
+
+/// The provider status a linked device shares for one provider family: whether it can run the
+/// family now, the model names and option labels of its catalog, and the plan limits it last
+/// saw. Descriptions, account details, paths, and executables are never shared.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLinkedProviderStatusRead {
+    pub device_id: String,
+    pub available: bool,
+    pub models: Vec<ProviderModel>,
+    pub usage_limits: Option<ChatLinkedUsageLimitsRead>,
+}
+
+/// Plan limits a linked device observed, with the time it observed them.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLinkedUsageLimitsRead {
+    pub observed_at: UtcTimestamp,
+    pub status: crate::events::RateLimitStatusEvent,
+}
+
+/// What removing an agent a person named did: an agent that was never used is deleted on every
+/// device, and one that was used is archived and hidden so its history keeps its author.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ChatCustomAgentRemoval {
+    Deleted,
+    Archived { agent: Box<ChatAiAgentRead> },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -647,25 +1149,11 @@ pub struct ChatAiTeammateRead {
 pub struct ChatConversationMembershipRead {
     pub conversation_id: ChatConversationId,
     pub participant: ChatParticipantRead,
-    pub ai_access: Option<ChatChannelRosterAiSummary>,
+    /// For an AI agent, whether it was added to the channel and works there; false for people.
+    pub agent_in_channel: bool,
     pub revision: u64,
     pub removed_at: Option<UtcTimestamp>,
 }
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatChannelRosterAiSummary {
-    pub access_profile_id: ChatAccessProfileId,
-    pub access_profile_revision: u64,
-    pub access_profile_builtin_key: Option<ChatAccessProfileBuiltinKey>,
-    pub access_profile_name: String,
-    pub capabilities: ChatChannelCapabilities,
-    pub history_boundary: ChatHistoryBoundary,
-    pub runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,
-    pub scratch_runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,
-    pub folder_grants: Vec<ChatFolderGrantRead>,
-}
-
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatChannelRosterRead {
@@ -678,12 +1166,11 @@ pub struct ChatChannelRosterRead {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatChannelMembershipRemovalPreview {
-    pub teammate_id: ChatParticipantId,
+    pub agent_id: ChatParticipantId,
     pub channel_id: ChatChannelId,
     pub active_assignment_count: u64,
     pub active_authorization_count: u64,
     pub will_revoke_active_work: bool,
-    pub proposed_access: ChatTeammateAccessRead,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -776,6 +1263,9 @@ pub struct ChatReplyThreadSummaryRead {
     pub last_activity_at: UtcTimestamp,
     pub participants: Vec<ChatParticipantRead>,
     pub unread: bool,
+    /// Whether the thread's current work failed and the local person has not read the failure
+    /// in the thread.
+    pub unseen_failure: bool,
     pub work_state: Option<ChatWorkAssignmentState>,
 }
 
@@ -798,24 +1288,12 @@ pub struct ChatMessageRead {
     /// Position of the item within its scope; items order by `(order_key, item_id)`.
     pub order_key: String,
     pub edited_at: Option<UtcTimestamp>,
+    /// When the item entered its scope: the post time, or for a reply that waited for running
+    /// work, the time the work received it.
     pub created_at: UtcTimestamp,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatScheduledMessageRead {
-    pub id: ChatScheduledMessageId,
-    pub channel_id: ChatChannelId,
-    pub reply_thread_id: Option<ChatReplyThreadId>,
-    pub normalized_markdown: String,
-    pub rich_content: VersionedJson,
-    pub attachment_ids: Vec<ChatAttachmentId>,
-    pub references: Vec<ChatMessageReference>,
-    pub also_send_to_channel: bool,
-    pub state: String,
-    pub scheduled_for: UtcTimestamp,
-    pub last_error: Option<String>,
-    pub created_at: UtcTimestamp,
+    /// Whether the message is a reply waiting for running work, or one cancelled before it
+    /// reached a run. The timeline leaves it out; the queue of its work lists a waiting one.
+    pub awaiting_delivery: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -841,51 +1319,156 @@ pub struct ChatChannelPageRead {
 pub struct ChatWorkAssignmentRead {
     pub id: ChatWorkAssignmentId,
     pub reply_thread_id: ChatReplyThreadId,
-    pub teammate: ChatParticipantRead,
+    pub agent: ChatParticipantRead,
     pub triggering_message_item_id: ChatConversationItemId,
     pub previous_assignment_id: Option<ChatWorkAssignmentId>,
     pub state: ChatWorkAssignmentState,
     pub state_reason: Option<String>,
+    /// Where this work came from when another agent delegated it; absent for work a person
+    /// started.
+    pub delegation: Option<ChatAssignmentDelegationRead>,
+    /// The model the work was started on, frozen when the assignment was created.
+    pub model_selection: ChatModelSelection,
+    /// The composed app, project, and channel instructions, frozen with the model.
+    pub instructions: String,
+    /// The model that actually ran, written by the executing device at dispatch; absent until
+    /// then.
+    pub model_label: Option<String>,
     pub revision: u64,
     pub settled_at: Option<UtcTimestamp>,
     pub created_at: UtcTimestamp,
     pub updated_at: UtcTimestamp,
-    /// What the reading device would accept by starting this work, present when it waits for a
-    /// local action there. Computed on read and never persisted.
-    pub local_acceptance: Option<ChatAssignmentAcceptanceOfferRead>,
+    /// How a person ended the work, present only when it is completed after review.
+    pub review: Option<ChatAssignmentReviewRead>,
+    /// Provider thread of the newest run of this reply thread that ran on the reading device, so
+    /// the composer can show its usage; absent when no run of the thread executed here. Computed
+    /// on read from device-local runs and never persisted.
+    pub latest_run_provider_thread_id: Option<ChatThreadId>,
 }
 
-/// One folder a waiting assignment would run in, with the access it would hold there.
+/// Where delegated work came from and what it was asked to return.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatAssignmentAcceptanceFolderRead {
-    pub display_name: String,
-    pub capability: ChatFolderCapability,
-    pub runtime_approval: ChatRuntimeApprovalPolicy,
+pub struct ChatAssignmentDelegationRead {
+    pub parent_assignment_id: ChatWorkAssignmentId,
+    /// Reply thread of the parent work, absent while the parent row has not reached this device.
+    pub parent_reply_thread_id: Option<ChatReplyThreadId>,
+    /// How many delegations separate this work from work a person started, from 1.
+    pub depth: u8,
+    pub objective: String,
+    pub expected_result: String,
 }
 
-/// What a device accepts by starting a waiting assignment.
+/// Work an agent delegated from an assignment, with its live state.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatAssignmentAcceptanceOfferRead {
-    /// Acceptance digest of this subject, returned with the Start so a change refuses it.
-    pub digest: String,
-    pub provider_instance_id: String,
-    pub folders: Vec<ChatAssignmentAcceptanceFolderRead>,
-    pub scratch_runtime_approval: ChatRuntimeApprovalPolicy,
-}
-
-/// Work that waits for a local action on the reading device, wherever its reply thread is.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatWaitingAssignmentRead {
+pub struct ChatDelegatedChildRead {
     pub assignment_id: ChatWorkAssignmentId,
+    pub parent_assignment_id: ChatWorkAssignmentId,
+    pub reply_thread_id: ChatReplyThreadId,
+    pub agent: ChatParticipantRead,
+    pub objective: String,
+    pub state: ChatWorkAssignmentState,
+    pub state_reason: Option<String>,
+    pub created_at: UtcTimestamp,
+}
+
+/// What a review queue item asks of the person, from the assignment state that put it there.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatReviewQueueKind {
+    /// The agent waits for an answer to a question (`waiting_for_answer`).
+    Answer,
+    /// The agent waits for an approval (`waiting_for_approval`).
+    Approval,
+    /// Finished work waits for review (`ready_for_review`).
+    Review,
+    /// The work failed recently and nothing continues it (`failed`).
+    Failure,
+}
+
+impl ChatReviewQueueKind {
+    /// The queue kind of an assignment in `state`, or `None` when that state needs nothing
+    /// from the person.
+    #[must_use]
+    pub fn from_state(state: ChatWorkAssignmentState) -> Option<Self> {
+        match state {
+            ChatWorkAssignmentState::WaitingForAnswer => Some(Self::Answer),
+            ChatWorkAssignmentState::WaitingForApproval => Some(Self::Approval),
+            ChatWorkAssignmentState::ReadyForReview => Some(Self::Review),
+            ChatWorkAssignmentState::Failed => Some(Self::Failure),
+            _ => None,
+        }
+    }
+}
+
+/// One assignment that waits for the person, in any channel of any project.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatReviewQueueItemRead {
+    pub assignment_id: ChatWorkAssignmentId,
+    /// The assignment revision the item was read at, for stale checks on accept.
+    pub revision: u64,
+    pub kind: ChatReviewQueueKind,
     pub project_id: String,
+    pub project_name: String,
     pub channel_id: ChatChannelId,
     pub channel_name: String,
     pub reply_thread_id: ChatReplyThreadId,
-    pub teammate_display_name: String,
-    pub created_at: UtcTimestamp,
+    pub agent_participant_id: ChatParticipantId,
+    pub agent_display_name: String,
+    /// The assignment state reason, clipped for display.
+    pub state_reason: Option<String>,
+    /// Distinct files the assignment's review updates report as changed.
+    pub changed_file_count: u32,
+    /// Whether this installation executed the assignment.
+    pub executed_here: bool,
+    pub updated_at: UtcTimestamp,
+}
+
+/// The review queue: the first items by priority and recency, with how many match in all.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatReviewQueueRead {
+    pub items: Vec<ChatReviewQueueItemRead>,
+    pub total: u32,
+    /// How many of `total` are failures. Notifications announce them, while the sidebar leaves
+    /// them to the channel and thread markers.
+    pub failure_count: u32,
+    /// Whether `total` exceeds the items read.
+    pub truncated: bool,
+}
+
+/// A reply routed to an assignment after the message that started it, with where its delivery
+/// stands. The preview is the start of the message's current revision.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAssignmentInputRead {
+    pub input_id: ChatAssignmentInputId,
+    pub message_item_id: ChatConversationItemId,
+    pub ordinal: u64,
+    /// `steer`, `queued_continuation`, or `follow_up`.
+    pub routing_kind: String,
+    /// `pending`, `delivered`, `failed`, or `ignored`.
+    pub delivery_state: String,
+    /// Whether a person holds the pending input back from delivery until they resume it.
+    pub held: bool,
+    pub delivered_at: Option<UtcTimestamp>,
+    /// The message revision the run received, present once the input is delivered.
+    pub delivered_revision_id: Option<ChatMessageRevisionId>,
+    pub current_revision_id: Option<ChatMessageRevisionId>,
+    pub preview: String,
+    /// Whether the message continues past the preview.
+    pub preview_truncated: bool,
+    pub author_participant_id: Option<ChatParticipantId>,
+}
+
+/// New text for a pending assignment input, which replaces its message's current revision.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAssignmentInputEditRequest {
+    pub normalized_markdown: String,
+    pub rich_content: VersionedJson,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -897,12 +1480,14 @@ pub struct ChatAgentRunRead {
     pub working_folder_id: Option<ProjectWorkingFolderId>,
     pub execution_environment_id: ChatExecutionEnvironmentId,
     pub scratch_generation_id: Option<ChatScratchGenerationId>,
-    pub teammate_policy_revision_id: ChatTeammatePolicyRevisionId,
-    pub effort: Option<String>,
     pub provider_execution_turn_id: ChatTurnId,
     pub provider_execution_thread_id: Option<ChatThreadId>,
     pub state: String,
     pub run_ordinal: u64,
+    /// Why this run exists: `fresh`, `retry`, or `handoff`.
+    pub attempt_reason: String,
+    /// Why a handoff run replaced its native session; set exactly when the run is a handoff.
+    pub handoff_reason: Option<String>,
     pub created_at: UtcTimestamp,
     pub updated_at: UtcTimestamp,
 }
@@ -915,6 +1500,8 @@ pub struct ChatReplyThreadPageRead {
     pub replies: Vec<ChatMessageRead>,
     pub assignment: Option<ChatWorkAssignmentRead>,
     pub agent_runs: Vec<ChatAgentRunRead>,
+    /// Work delegated from this reply thread's assignments, oldest first, with its live state.
+    pub delegated_children: Vec<ChatDelegatedChildRead>,
     pub previous_cursor: Option<String>,
     pub revision: u64,
 }

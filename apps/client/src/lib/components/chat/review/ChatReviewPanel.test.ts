@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { en } from "$lib/i18n/messages/en";
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +14,24 @@ import ChatReviewPanel from "./ChatReviewPanel.svelte";
 const api = vi.hoisted(() => ({
   openReview: vi.fn<(request: OpenChatReviewRequest) => Promise<ChatReviewSnapshotRead>>(),
   readPatches: vi.fn<() => Promise<ChatReviewPatchPageRead>>(),
+}));
+
+vi.mock("$lib/api/sync", async (importOriginal) => ({
+  ...await importOriginal<typeof import("$lib/api/sync")>(),
+  getSyncAuthority: vi.fn(async () => ({
+    anchorDeviceId: "device-2",
+    epoch: 1,
+    revision: 1,
+    frozen: false,
+    ownIsAdmin: true,
+    devices: [{
+      device: { deviceId: "device-2", deviceLabel: "Laptop", ownDevice: false },
+      kind: "desktop",
+      role: "admin",
+      enrolledRevision: 1,
+      removedRevision: null,
+    }],
+  })),
 }));
 
 vi.mock("$lib/api/chat", async (importOriginal) => ({
@@ -71,7 +90,7 @@ describe("ChatReviewPanel", () => {
 
     expect(api.openReview).toHaveBeenCalledTimes(1);
     expect(api.readPatches).toHaveBeenCalledTimes(1);
-    expect(target.querySelector('[role="alert"]')?.textContent).toContain("Patch transport failed");
+    expect(target.querySelector('[role="alert"]')?.textContent).toContain(en.chatErrors.actions.loadReview);
     expect(target.querySelector(".review-content [data-loading]")).toBeNull();
   });
 
@@ -107,6 +126,61 @@ describe("ChatReviewPanel", () => {
     await vi.waitFor(() => expect(target?.textContent).toContain("too large to show in Review"));
 
     expect(target.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("names the executing device and lists its files instead of a diff for work that ran elsewhere", async () => {
+    api.openReview.mockRejectedValue({
+      code: "not_found",
+      message: "Work assignment ran on another device",
+      details: {
+        reason: "executed_elsewhere",
+        executingDeviceId: "device-2",
+        changedFiles: ["src/a.ts", "src/b.ts"],
+        changedFilesTruncated: false,
+      },
+    });
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReviewPanel, {
+      target,
+      props: { source: { kind: "assignment", assignmentId: "assignment-1" } },
+    });
+
+    await vi.waitFor(() => expect(target?.textContent).toContain("This work ran on Laptop"));
+
+    expect([...target.querySelectorAll(".executed-elsewhere li")].map((item) => item.textContent?.trim())).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(target.querySelector(".review-workspace")).toBeNull();
+    expect(target.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("hides files brought in by Git operations until the toggle shows them", async () => {
+    const base = snapshot();
+    const [authored] = base.files;
+    const imported = { ...authored, fileId: "file-0", relativePath: "merged.py", flags: { ...authored.flags, authored: false } };
+    api.openReview.mockResolvedValue({
+      ...base,
+      source: { kind: "assignment", assignmentId: "assignment-1" },
+      files: [imported, authored],
+      authoredPaths: "computed",
+    });
+    api.readPatches.mockResolvedValue({ patches: [], continuationCursor: null });
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReviewPanel, {
+      target,
+      props: { source: { kind: "assignment", assignmentId: "assignment-1" } },
+    });
+
+    await vi.waitFor(() => expect(target?.querySelector(".file-toolbar strong")?.textContent).toBe("hello.py"));
+    expect(target.querySelector(".review-file-list")?.textContent).not.toContain("merged.py");
+    expect(api.readPatches).toHaveBeenCalledWith(expect.objectContaining({ fileIds: ["file-1"] }));
+
+    const toggle = target.querySelector<HTMLInputElement>(".git-imported-toggle input");
+    expect(toggle).not.toBeNull();
+    toggle?.click();
+    await tick();
+
+    expect(target.querySelector(".review-file-list")?.textContent).toContain("merged.py");
   });
 
   it("opens provider changes against the hidden session that produced them", async () => {
@@ -168,6 +242,7 @@ function snapshot(): ChatReviewSnapshotRead {
         providerReported: true,
         gitObserved: true,
         readOnly: false,
+        authored: true,
       },
       capabilities: {
         stage: true,
@@ -181,5 +256,6 @@ function snapshot(): ChatReviewSnapshotRead {
     totals: { files: 1, additions: 1, deletions: 0 },
     preferredPatch: null,
     freshness: "current",
+    authoredPaths: "not_needed",
   };
 }

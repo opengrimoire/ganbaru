@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import {
   copyNotesPageHistoryBlocks,
   getNotesPageHistorySettings,
@@ -68,10 +69,6 @@ export function createNotesPageHistoryController(
   let versionRequestId = 0;
   let settingsRequestId = 0;
 
-  function errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-  }
-
   function resetPageState(): void {
     snapshotsRequestId += 1;
     versionRequestId += 1;
@@ -96,7 +93,7 @@ export function createNotesPageHistoryController(
       settings = nextSettings;
     } catch (error) {
       if (requestId !== settingsRequestId) return;
-      settingsError = errorMessage(error);
+      settingsError = notesErrorDetail(error);
       context.setLoadError(settingsError);
     } finally {
       if (requestId === settingsRequestId) settingsLoading = false;
@@ -114,7 +111,7 @@ export function createNotesPageHistoryController(
       await reloadSnapshots();
     } catch (error) {
       if (requestId !== settingsRequestId) return;
-      settingsError = errorMessage(error);
+      settingsError = notesErrorDetail(error);
       context.setLoadError(settingsError);
     } finally {
       if (requestId === settingsRequestId) settingsLoading = false;
@@ -144,7 +141,7 @@ export function createNotesPageHistoryController(
     } catch (error) {
       if (requestId !== snapshotsRequestId || pageId !== context.readSelectedPageId()) return;
       snapshots = [];
-      snapshotsError = errorMessage(error);
+      snapshotsError = notesErrorDetail(error);
     } finally {
       if (requestId === snapshotsRequestId) snapshotsLoading = false;
     }
@@ -168,7 +165,7 @@ export function createNotesPageHistoryController(
       if (requestId !== versionRequestId || pageId !== context.readSelectedPageId()) return;
       version = null;
       versionSnapshotId = null;
-      versionError = errorMessage(error);
+      versionError = notesErrorDetail(error);
     } finally {
       if (requestId === versionRequestId) versionLoading = false;
     }
@@ -189,7 +186,7 @@ export function createNotesPageHistoryController(
       });
       context.requestPageLoadFocus();
     } catch (error) {
-      actionError = errorMessage(error);
+      actionError = notesErrorDetail(error);
       context.setLoadError(actionError);
     } finally {
       actionLoading = false;
@@ -215,7 +212,7 @@ export function createNotesPageHistoryController(
       }, copied));
       context.requestPageLoadFocus(copied.results[0]?.id ?? null);
     } catch (error) {
-      actionError = errorMessage(error);
+      actionError = notesErrorDetail(error);
       context.setLoadError(actionError);
     } finally {
       actionLoading = false;

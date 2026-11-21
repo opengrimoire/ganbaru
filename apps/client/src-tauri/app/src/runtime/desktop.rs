@@ -276,11 +276,13 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(chat::settings_commands::ChatSettingsState::default())
         .manage(chat::provider_files::ProviderFileState::default())
         .manage(chat::internal_mcp::InternalMcpRegistry::default())
+        .manage(chat::authority_epoch::ChatAuthorityEpoch::default())
+        .manage(chat::live_execution::ChatLiveChanges::default())
+        .manage(chat::secrets::ChatSecretRegistry::default())
         .manage(chat::preview::ChatBrowserManager::default())
         .manage(ganbaru_chat::runtime::ChatRuntimeRegistry::default())
         .manage(chat::review::engine::ChatReviewRegistry::default())
         .manage(chat::terminal::ChatTerminalRegistry::default())
-        .manage(chat::terminal_access::ChatTerminalAccess::default())
         .manage(chat::workspace::mutation::ChatWorkspaceMutationRegistry::default())
         .manage(chat::workspace::commands::ProjectWorkingFolderSelections::default())
         .manage(chat::workspace::observer::ChatWorkspaceObserverRegistry::default())
@@ -356,13 +358,14 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::terminal_commands::chat_terminal_input,
             chat::terminal_commands::chat_terminal_resize,
             chat::terminal_commands::chat_terminal_close,
-            chat::terminal_commands::chat_reserve_draft_thread,
             chat::checkpoint_commands::chat_run_checkpoint_cleanup,
             chat::diagnostics_commands::chat_read_diagnostics,
             chat::diagnostics_commands::chat_update_diagnostic_preferences,
             chat::diagnostics_commands::chat_delete_diagnostics,
             chat::diagnostics_commands::chat_export_redacted_diagnostics,
             chat::diagnostics_commands::chat_stop_all_processes,
+            chat::diagnostics_commands::chat_list_processes,
+            chat::diagnostics_commands::chat_stop_process,
             chat::diagnostics_commands::chat_rebuild_projections,
             chat::restore_commands::chat_preview_checkpoint_restore,
             chat::restore_commands::chat_execute_checkpoint_restore,
@@ -375,9 +378,10 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::settings_commands::chat_test_provider,
             chat::settings_commands::chat_confirm_provider_runtime,
             chat::settings_commands::chat_probe_provider,
+            chat::provider_updates::chat_check_provider_updates,
+            chat::provider_updates::chat_run_provider_update,
             chat::settings_commands::chat_refresh_all_providers,
             chat::settings_commands::chat_refresh_provider_models,
-            chat::settings_commands::chat_update_provider_models,
             chat::settings_commands::chat_update_behavior,
             chat::settings_commands::chat_update_panels,
             chat::settings_commands::chat_set_working_folder_provider_preference,
@@ -399,42 +403,72 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::channels::chat_archive_channel,
             chat::channels::chat_restore_channel,
             chat::channels::chat_set_channel_read,
-            chat::organization::chat_list_teammates,
-            chat::organization::chat_read_teammate,
-            chat::organization::chat_create_teammate,
-            chat::organization::chat_archive_teammate,
-            chat::organization::access::chat_list_access_profiles,
-            chat::organization::access::chat_create_access_profile,
-            chat::organization::access::chat_duplicate_access_profile,
-            chat::organization::access::chat_preview_access_profile_revision,
-            chat::organization::access::chat_publish_access_profile_revision,
-            chat::organization::access::chat_archive_access_profile,
-            chat::organization::access::chat_read_teammate_access,
+            chat::organization::chat_list_agents,
+            chat::organization::chat_read_agent,
+            chat::usage_summaries::chat_read_agent_usage,
+            chat::organization::chat_create_agent,
+            chat::organization::chat_set_agent_policy,
+            chat::organization::chat_archive_agent,
+            chat::organization::chat_remove_custom_agent,
+            chat::organization::chat_restore_custom_agent,
+            chat::organization::access::chat_read_app_agent_settings,
+            chat::organization::access::chat_update_app_agent_settings,
+            chat::organization::access::chat_read_project_agent_settings,
+            chat::organization::access::chat_update_project_agent_settings,
+            chat::organization::access::chat_read_channel_agent_settings,
+            chat::organization::access::chat_update_channel_agent_settings,
+            chat::organization::access::chat_add_channel_agent,
+            chat::organization::access::chat_remove_channel_agent,
             chat::organization::access::chat_read_channel_roster,
             chat::organization::access::chat_list_assignment_targets,
             chat::organization::access::chat_preview_channel_membership_removal,
-            chat::organization::access::chat_preview_teammate_access,
-            chat::organization::access::chat_replace_teammate_access,
             chat::scratch::commands::chat_list_scratch_scopes,
             chat::scratch::commands::chat_browse_scratch_generation,
             chat::scratch::commands::chat_promote_scratch_file,
             chat::scratch::commands::chat_preview_scratch_cleanup,
             chat::scratch::commands::chat_cleanup_scratch,
+            chat::scratch::commands::chat_read_scratch_reclaim_report,
             chat::organization::chat_read_project_primary_working_folder,
             chat::organization::chat_set_project_primary_working_folder,
             chat::organization::chat_post_message,
             chat::organization::chat_schedule_message,
+            chat::organization::chat_confirm_schedule_proposal,
+            chat::organization::chat_dismiss_schedule_proposal,
+            chat::organization::chat_read_schedule_proposal_states,
+            chat::organization::chat_confirm_push_request,
+            chat::organization::chat_read_push_request_states,
+            chat::organization::chat_list_push_approvals,
+            chat::organization::chat_revoke_push_approval,
+            chat::organization::chat_list_remembered_approvals,
+            chat::organization::chat_revoke_remembered_approval,
+            chat::organization::chat_list_channel_notes,
+            chat::organization::chat_create_channel_note,
+            chat::organization::chat_update_channel_note,
+            chat::organization::chat_delete_channel_note,
+            chat::organization::chat_accept_note_proposal,
+            chat::organization::chat_dismiss_note_proposal,
+            chat::organization::chat_read_note_proposal_states,
             chat::organization::chat_list_scheduled_messages,
             chat::organization::chat_cancel_scheduled_message,
             chat::organization::chat_retry_scheduled_message,
+            chat::organization::chat_update_scheduled_message,
             chat::organization::chat_send_scheduled_message_now,
             chat::organization::chat_dispatch_due_scheduled_messages,
+            chat::quiet_periods::chat_read_quiet_periods,
+            chat::quiet_periods::chat_save_quiet_periods,
+            chat::quiet_periods::chat_read_quiet_state,
             chat::organization::chat_read_channel_page,
             chat::organization::chat_read_reply_thread_page,
             chat::organization::chat_search_messages,
             chat::organization::chat_cancel_assignment,
-            chat::organization::chat_accept_assignment_here,
-            chat::organization::chat_list_waiting_assignments,
+            chat::organization::chat_list_assignment_inputs,
+            chat::organization::chat_list_review_queue,
+            chat::organization::chat_edit_assignment_input,
+            chat::organization::chat_cancel_assignment_input,
+            chat::organization::chat_set_assignment_input_held,
+            chat::organization::chat_steer_assignment_input,
+            chat::organization::chat_reorder_assignment_inputs,
+            chat::organization::chat_review_assignment,
             chat::organization::chat_retry_assignment,
             chat::organization::chat_start_mentioned_assignment,
             chat::organization::chat_recover_assignment_dispatch_jobs,
@@ -442,6 +476,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::threads::chat_read_thread_shell,
             chat::threads::chat_read_timeline_page,
             chat::threads::chat_read_timeline_turn,
+            chat::threads::chat_read_timeline_since,
+            chat::threads::chat_read_activity_detail,
             chat::threads::chat_fork_thread,
             chat::threads::chat_open_external_url,
             chat::threads::chat_rename_thread,
@@ -450,6 +486,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::threads::chat_restore_thread,
             chat::threads::chat_delete_thread_permanently,
             chat::git::chat_git_status,
+            chat::git::chat_read_commit_draft_context,
+            chat::git::chat_read_change_request_draft_context,
             chat::git::chat_git_stage,
             chat::git::chat_git_unstage,
             chat::git::chat_git_commit,
@@ -487,11 +525,14 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::drafts::chat_save_draft,
             chat::drafts::chat_read_draft,
             chat::drafts::chat_delete_draft,
-            chat::interaction_commands::chat_import_image,
+            chat::secrets::chat_provide_secret,
+            chat::secrets::chat_decline_secret,
+            chat::secrets::chat_list_secret_requests,
+            chat::attachment_commands::chat_import_image,
             chat::interaction_commands::chat_pick_images,
-            chat::interaction_commands::chat_attachment_data_url,
-            chat::interaction_commands::chat_read_attachments,
-            chat::interaction_commands::chat_import_text_snippet,
+            chat::attachment_commands::chat_attachment_data_url,
+            chat::attachment_commands::chat_read_attachments,
+            chat::attachment_commands::chat_import_text_snippet,
             chat::interaction_commands::chat_search_working_folder_paths,
             chat::interaction_commands::chat_validate_working_folder_mentions,
             chat::interaction_commands::chat_list_prompt_catalog,
@@ -513,6 +554,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::send_commands::chat_resolve_user_input,
             notifications::desktop::show_event_notification,
             notifications::desktop::show_notes_notification,
+            notifications::desktop::show_chat_notification,
             notifications::desktop::show_project_task_notification,
             notifications::desktop::show_benchmark_notification,
             pomodoro::overlay::dismiss_pomodoro_completion,
@@ -627,6 +669,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             benchmark::select_database_target,
             benchmark::seed::benchmark_seed_pomodoro_history,
             benchmark::seed::benchmark_seed_dense_music_library,
+            benchmark::seed::benchmark_seed_chat_timeline,
+            benchmark::seed::benchmark_replay_chat_stream,
             restart_app,
             updates::updater_install_context,
             updates::updates_check,
@@ -1028,6 +1072,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             if let Err(error) = vault::secure_app_config_dir(app.handle()) {
                 eprintln!("app config directory permissions are unchanged: {error}");
             }
+            app.manage(chat::live_execution::RemoteApprovals::new(
+                app.handle().clone(),
+            ));
             vault::handoff::initialize(app.handle());
             if let Err(error) =
                 vault::backup::recover_interrupted_replacements_for_app(app.handle())
@@ -1047,6 +1094,10 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             app.manage(chat::sync::AssignmentWaker::new(app.handle().clone()));
             chat::revocation::start_job_drain(app.handle());
             chat::cleanup_service::start(app.handle());
+            chat::usage_summaries::start(app.handle());
+            chat::provider_status::start(app.handle());
+            #[cfg(target_os = "linux")]
+            tauri::async_runtime::spawn(ganbaru_chat_providers::process::probe_resource_scope());
             music::setup_youtube_host(app.handle())?;
             music::session::setup(app.handle());
             distractions::runtime::setup(app.handle());

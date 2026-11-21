@@ -25,6 +25,8 @@ export function parseChatChannel(value: unknown, label = "Chat channel"): ChatCh
     memberships: readArray(record.memberships, `${label}.memberships`, parseChatConversationMembership),
     messageCount: readNonNegativeSafeInteger(record.messageCount, `${label}.messageCount`),
     unreadCount: readNonNegativeSafeInteger(record.unreadCount, `${label}.unreadCount`),
+    unreadReplyCount: readNonNegativeSafeInteger(record.unreadReplyCount, `${label}.unreadReplyCount`),
+    unseenFailure: readBoolean(record.unseenFailure, `${label}.unseenFailure`),
     latestPreview: readNullable(record.latestPreview, `${label}.latestPreview`, readString),
     lastActivityAt: readUtcTimestamp(record.lastActivityAt, `${label}.lastActivityAt`),
     attentionState: readNullable(

@@ -1,0 +1,950 @@
+<script lang="ts">
+  import { onMount, tick } from "svelte";
+  import Check from "@lucide/svelte/icons/check";
+  import CircleAlert from "@lucide/svelte/icons/circle-alert";
+  import CircleCheck from "@lucide/svelte/icons/circle-check";
+  import Eye from "@lucide/svelte/icons/eye";
+  import EyeOff from "@lucide/svelte/icons/eye-off";
+  import FolderOpen from "@lucide/svelte/icons/folder-open";
+  import Plus from "@lucide/svelte/icons/plus";
+  import Save from "@lucide/svelte/icons/save";
+  import Trash2 from "@lucide/svelte/icons/trash";
+  import * as chatApi from "$lib/api/chat";
+  import type { JsonValue, ProviderInstanceConfig, ProviderSetupTestRead } from "$lib/chat/contracts";
+  import { chatErrorDetailText, chatErrorMessage, chatErrorReason, providerProbeMessage } from "$lib/chat/error-presentation";
+  import {
+    createProviderSetupDraft,
+    providerConfigurationFromDraft,
+    providerFamilyDisplayName,
+    providerInstanceIdFromLabel,
+    storesPlaintextSecret,
+    validateProviderSetup,
+    type ProviderEnvironmentDraft,
+    type ProviderEnvironmentValueType,
+    type ProviderSetupDraft,
+  } from "$lib/chat/provider-setup";
+  import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { getChat } from "$lib/stores/chat.svelte";
+  import type { ChatProviderSetupTarget } from "$lib/settings/types";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import Select from "$lib/components/ui/Select.svelte";
+  import SwitchField from "$lib/components/ui/SwitchField.svelte";
+
+  let {
+    target,
+    onCancel,
+    compactLayout = false,
+    iconRailLayout = false,
+    onScrollContainerChange = () => {},
+    onScrollbarInsetsChange = () => {},
+  }: {
+    target: ChatProviderSetupTarget;
+    onCancel: () => void;
+    compactLayout?: boolean;
+    iconRailLayout?: boolean;
+    onScrollContainerChange?: (element: HTMLElement | undefined) => void;
+    onScrollbarInsetsChange?: (insets: { top: number; bottom: number }) => void;
+  } = $props();
+
+  const { t } = getLocalization();
+  const chat = getChat();
+  let draft = $state<ProviderSetupDraft>(createProviderSetupDraft());
+  let editorRootEl: HTMLElement | undefined = $state();
+  let scrollElement: HTMLElement | undefined = $state();
+  let initialized = $state(false);
+  let saving = $state(false);
+  let testing = $state(false);
+  let operationError = $state<string | null>(null);
+  let testResult = $state<ProviderSetupTestRead | null>(null);
+  let testSucceeded = $state(false);
+  let revealSecrets = $state<Record<string, boolean>>({});
+  let pendingSecrets = $state<Record<string, string>>({});
+  let touchedFields = $state<Record<string, boolean>>({});
+  let nextRowId = 1;
+  const contentPaddingX = $derived(compactLayout ? "0.75rem" : iconRailLayout ? "1.25rem" : "2rem");
+  const contentPaddingTop = $derived(compactLayout ? "1rem" : iconRailLayout ? "1.25rem" : "2rem");
+  const contentPaddingBottom = $derived(compactLayout ? "1rem" : iconRailLayout ? "1.25rem" : "2rem");
+  const editingId = $derived(target.mode === "edit" ? target.instanceId : null);
+  const existingProvider = $derived(
+    target.mode === "edit"
+      ? chat.settings?.providerInstances.find((entry) => entry.configuration.instanceId === target.instanceId) ?? null
+      : null,
+  );
+  const existingIds = $derived(
+    new Set(chat.settings?.providerInstances.map((entry) => entry.configuration.instanceId) ?? []),
+  );
+  const validation = $derived(validateProviderSetup(draft, existingIds, editingId));
+  const family = $derived(
+    chat.settings?.providerFamilies.find((entry) => entry.familyId === draft.familyId) ?? null,
+  );
+  const openCodePassword = $derived(
+    draft.environment.find((row) => row.name === "OPENCODE_SERVER_PASSWORD") ?? null,
+  );
+  const customEnvironment = $derived(draft.environment.filter((row) => row.name !== "OPENCODE_SERVER_PASSWORD"));
+  const environmentValueTypeOptions = $derived([
+    { value: "text", label: t("settings.agents.setup.textValue") },
+    { value: "secret", label: t("settings.agents.setup.secretValue") },
+    { value: "inherit", label: t("settings.agents.setup.inheritedValue") },
+  ]);
+
+  onMount(() => {
+    void initialize();
+  });
+
+  $effect(() => {
+    onScrollContainerChange(scrollElement);
+    reportScrollbarInsets();
+
+    const contentEl = editorRootEl?.closest<HTMLElement>("[data-settings-content]");
+    if (!editorRootEl || !scrollElement || !contentEl) {
+      return () => {
+        onScrollContainerChange(undefined);
+        onScrollbarInsetsChange({ top: 0, bottom: 0 });
+      };
+    }
+
+    const observer = new ResizeObserver(reportScrollbarInsets);
+    observer.observe(editorRootEl);
+    observer.observe(scrollElement);
+    observer.observe(contentEl);
+    window.addEventListener("resize", reportScrollbarInsets);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", reportScrollbarInsets);
+      onScrollContainerChange(undefined);
+      onScrollbarInsetsChange({ top: 0, bottom: 0 });
+    };
+  });
+
+  function reportScrollbarInsets(): void {
+    const contentEl = editorRootEl?.closest<HTMLElement>("[data-settings-content]");
+    if (!scrollElement || !contentEl) {
+      onScrollbarInsetsChange({ top: 0, bottom: 0 });
+      return;
+    }
+    const contentRect = contentEl.getBoundingClientRect();
+    const scrollRect = scrollElement.getBoundingClientRect();
+    onScrollbarInsetsChange({
+      top: Math.max(0, scrollRect.top - contentRect.top),
+      bottom: Math.max(0, contentRect.bottom - scrollRect.bottom),
+    });
+  }
+
+  async function initialize(): Promise<void> {
+    try {
+      await chat.ensureLoaded();
+      if (target.mode === "edit") {
+        const provider = chat.settings?.providerInstances.find(
+          (entry) => entry.configuration.instanceId === target.instanceId,
+        );
+        if (provider) {
+          draft = draftFromConfiguration(provider.configuration);
+        } else {
+          operationError = t("settings.agents.setup.configurationMissing");
+        }
+      } else {
+        const providerFamily = chat.settings?.providerFamilies.find(
+          (entry) => entry.familyId === target.familyId,
+        );
+        if (providerFamily?.implementationStatus === "available") {
+          initializeFamily(
+            providerFamily.familyId,
+            providerFamilyDisplayName(providerFamily, t("chat.providers.acp.name")),
+            providerFamily.defaultExecutableCandidates[0] ?? "",
+          );
+        } else {
+          operationError = t("settings.agents.setup.integrationUnavailable");
+        }
+      }
+    } catch (error: unknown) {
+      operationError = errorMessage(error);
+    } finally {
+      initialized = true;
+      await tick();
+      scrollElement?.focus();
+    }
+  }
+
+  /** Retries preparing the setup form and rejects when it still cannot be prepared. */
+  async function retryInitialize(): Promise<void> {
+    operationError = null;
+    await initialize();
+    if (operationError) throw new Error(operationError);
+  }
+
+  function initializeFamily(familyId: string, displayName: string, executable: string): void {
+    draft.familyId = familyId;
+    draft.executable = executable;
+    draft.providerHome = "";
+    draft.providerConfig = defaultProviderConfig(familyId);
+    draft.label = displayName;
+    draft.instanceId = uniqueInstanceId(displayName);
+    testResult = null;
+    testSucceeded = false;
+    operationError = null;
+  }
+
+  function uniqueInstanceId(label: string): string {
+    const base = providerInstanceIdFromLabel(label) || "provider";
+    if (!existingIds.has(base)) return base;
+    let suffix = 2;
+    while (existingIds.has(`${base}-${suffix}`)) suffix += 1;
+    return `${base}-${suffix}`;
+  }
+
+  function updateLabel(value: string): void {
+    const previousGenerated = providerInstanceIdFromLabel(draft.label);
+    draft.label = value;
+    const secretBound = draft.environment.some((row) => row.credentialReference);
+    if (!secretBound && (!draft.instanceId || draft.instanceId === previousGenerated)) {
+      draft.instanceId = uniqueInstanceId(value);
+    }
+  }
+
+  function addArgument(): void {
+    draft.launchArguments = [...draft.launchArguments, ""];
+  }
+
+  function addEnvironment(): void {
+    const row: ProviderEnvironmentDraft = {
+      key: `row-${nextRowId++}`,
+      name: "",
+      valueType: "text",
+      value: "",
+      credentialReference: "",
+    };
+    draft.environment = [...draft.environment, row];
+  }
+
+  function isEnvironmentValueType(value: string): value is ProviderEnvironmentValueType {
+    return value === "text" || value === "secret" || value === "inherit";
+  }
+
+  function setEnvironmentValueType(row: ProviderEnvironmentDraft, valueType: string): void {
+    if (isEnvironmentValueType(valueType)) row.valueType = valueType;
+  }
+
+  /** Lets a field show its validation message once the user has left it. */
+  function touchField(field: string): void {
+    touchedFields[field] = true;
+  }
+
+  function removeEnvironment(key: string): void {
+    draft.environment = draft.environment.filter((row) => row.key !== key);
+    delete pendingSecrets[key];
+  }
+
+  function setOpenCodeMode(mode: "local" | "external"): void {
+    const current = draft.providerConfig.value;
+    const value: { [key: string]: JsonValue } = typeof current === "object"
+      && current !== null
+      && !Array.isArray(current)
+      ? { ...current, mode }
+      : { mode };
+    if (mode === "local") {
+      delete value.serverUrl;
+      delete value.allowInsecureExternalHttp;
+      delete value.confirmExternalWorkspaceAccess;
+    }
+    draft.providerConfig = { schemaVersion: 1, value };
+    if (mode === "local" && openCodePassword) {
+      const row = openCodePassword;
+      if (row.credentialReference) {
+        void removeSecret(row).catch((error: unknown) => { operationError = errorMessage(error); });
+      }
+      removeEnvironment(row.key);
+    }
+  }
+
+  function addOpenCodePassword(): void {
+    if (openCodePassword) return;
+    draft.environment = [...draft.environment, {
+      key: `row-${nextRowId++}`,
+      name: "OPENCODE_SERVER_PASSWORD",
+      valueType: "secret",
+      value: "",
+      credentialReference: "",
+    }];
+  }
+
+  async function storeSecret(row: ProviderEnvironmentDraft): Promise<void> {
+    const secret = pendingSecrets[row.key]?.trim();
+    if (!secret || !row.name) return;
+    try {
+      row.credentialReference = await chatApi.replaceChatCredential(draft.instanceId, row.name, secret);
+      pendingSecrets[row.key] = "";
+      operationError = null;
+    } catch (error: unknown) {
+      operationError = errorMessage(error);
+    }
+  }
+
+  async function moveToCredentialStore(row: ProviderEnvironmentDraft): Promise<void> {
+    pendingSecrets[row.key] = row.value;
+    row.valueType = "secret";
+    row.value = "";
+    await storeSecret(row);
+  }
+
+  async function removeSecret(row: ProviderEnvironmentDraft): Promise<void> {
+    try {
+      if (row.credentialReference) await chatApi.removeChatCredential(draft.instanceId, row.name);
+      row.credentialReference = "";
+      operationError = null;
+    } catch (error: unknown) {
+      operationError = errorMessage(error);
+    }
+  }
+
+  async function pickExecutable(): Promise<void> {
+    try {
+      const selected = await chatApi.pickChatProviderExecutable(t("settings.agents.setup.chooseExecutable"));
+      if (selected) draft.executable = selected;
+    } catch (error: unknown) {
+      operationError = errorMessage(error);
+    }
+  }
+
+  async function pickHome(): Promise<void> {
+    try {
+      const selected = await chatApi.pickChatProviderHome(t("settings.agents.setup.chooseProviderHome"));
+      if (selected) draft.providerHome = selected;
+    } catch (error: unknown) {
+      operationError = errorMessage(error);
+    }
+  }
+
+  async function testSetup(): Promise<void> {
+    operationError = null;
+    testResult = null;
+    testSucceeded = false;
+    if (!validation.valid) return;
+    testing = true;
+    try {
+      const configuration = configurationFromDraft();
+      const result = await chat.testProvider(configuration);
+      if (!result) return;
+      testResult = result;
+      testSucceeded = result.probe.state === "healthy"
+        || testResult.probe.state === "authentication_required";
+    } catch (error: unknown) {
+      operationError = errorMessage(error);
+    } finally {
+      testing = false;
+    }
+  }
+
+  async function save(): Promise<void> {
+    operationError = null;
+    if (!validation.valid) return;
+    saving = true;
+    try {
+      if (await chat.saveProvider(configurationFromDraft())) onCancel();
+    } catch (error: unknown) {
+      operationError = errorMessage(error);
+    } finally {
+      saving = false;
+    }
+  }
+
+  function configurationFromDraft(): ProviderInstanceConfig {
+    return providerConfigurationFromDraft(draft, existingProvider?.configuration);
+  }
+
+  function providerConfigValue(key: string): string {
+    const value = draft.providerConfig.value;
+    return typeof value === "object"
+      && value !== null
+      && !Array.isArray(value)
+      && typeof value[key] === "string"
+      ? value[key]
+      : "";
+  }
+
+  function openCodeMode(): "local" | "external" {
+    const mode = providerConfigValue("mode");
+    return mode === "external" ? "external" : "local";
+  }
+
+  function openCodeServerUrl(): string {
+    return providerConfigValue("serverUrl");
+  }
+
+  function openCodeUsesInsecureExternalHttp(): boolean {
+    try {
+      const url = new URL(openCodeServerUrl());
+      const hostname = url.hostname.toLowerCase();
+      const loopback = hostname === "localhost"
+        || hostname === "[::1]"
+        || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+      return url.protocol === "http:" && !loopback;
+    } catch {
+      return false;
+    }
+  }
+
+  function providerConfigBoolean(key: string): boolean {
+    const value = draft.providerConfig.value;
+    return typeof value === "object"
+      && value !== null
+      && !Array.isArray(value)
+      && value[key] === true;
+  }
+
+  function setProviderConfigValue(key: string, value: string): void {
+    const current = draft.providerConfig.value;
+    draft.providerConfig = {
+      schemaVersion: 1,
+      value: {
+        ...(typeof current === "object" && current !== null && !Array.isArray(current) ? current : {}),
+        [key]: value || null,
+      },
+    };
+  }
+
+  function setProviderConfigBoolean(key: string, value: boolean): void {
+    const current = draft.providerConfig.value;
+    draft.providerConfig = {
+      schemaVersion: 1,
+      value: {
+        ...(typeof current === "object" && current !== null && !Array.isArray(current) ? current : {}),
+        [key]: value,
+      },
+    };
+  }
+
+  function fieldError(field: string): string | null {
+    const error = validation.fields[field];
+    if (!error) return null;
+    if (field === "familyId") return t("settings.agents.setup.validation.provider");
+    if (field === "label") return t("settings.agents.setup.validation.label");
+    if (field === "instanceId") {
+      return error.includes("already")
+        ? t("settings.agents.setup.validation.duplicateInstanceId")
+        : t("settings.agents.setup.validation.instanceId");
+    }
+    if (field === "executable") return t("settings.agents.setup.validation.executable");
+    if (field.startsWith("launchArguments")) return t("settings.agents.setup.validation.arguments");
+    if (field.endsWith(".name")) return t("settings.agents.setup.validation.environmentName");
+    if (field.endsWith(".value")) {
+      return error.includes("secret")
+        ? t("settings.agents.setup.validation.secret")
+        : t("settings.agents.setup.validation.environmentValue");
+    }
+    if (field === "providerConfig.endpoint" || field === "providerConfig.serverUrl") {
+      return t("settings.agents.setup.validation.endpoint");
+    }
+    if (field === "providerConfig.allowInsecureExternalHttp") {
+      return t("settings.agents.setup.validation.insecureExternalHttp");
+    }
+    if (field === "providerConfig.confirmExternalWorkspaceAccess") {
+      return t("settings.agents.setup.validation.externalWorkspaceAccess");
+    }
+    return t("settings.agents.setup.validation.providerConfig");
+  }
+
+  function draftFromConfiguration(configuration: ProviderInstanceConfig): ProviderSetupDraft {
+    const environment: ProviderEnvironmentDraft[] = [];
+    for (const [name, value] of Object.entries(configuration.environment)) {
+      environment.push({
+        key: `row-${nextRowId++}`,
+        name,
+        valueType: value === `inherit:${name}` ? "inherit" : "text",
+        value,
+        credentialReference: "",
+      });
+    }
+    for (const [name, reference] of Object.entries(configuration.credentialReferences)) {
+      environment.push({
+        key: `row-${nextRowId++}`,
+        name,
+        valueType: "secret",
+        value: "",
+        credentialReference: reference,
+      });
+    }
+    return {
+      familyId: configuration.familyId,
+      label: configuration.label,
+      instanceId: configuration.instanceId,
+      executable: configuration.executable,
+      providerHome: configuration.providerHome ?? "",
+      launchArguments: [...configuration.launchArguments],
+      environment,
+      providerConfig: configuration.providerConfig,
+    };
+  }
+
+  function defaultProviderConfig(familyId: string): ProviderSetupDraft["providerConfig"] {
+    if (familyId === "codex") {
+      return {
+        schemaVersion: 1,
+        value: { refreshMcpBeforeTurn: false },
+      };
+    }
+    if (familyId === "opencode") return { schemaVersion: 1, value: { mode: "local" } };
+    return { schemaVersion: 1, value: {} };
+  }
+
+  function errorMessage(error: unknown): string {
+    if (chatErrorReason(error) === "duplicate_provider") {
+      const existing = chatErrorDetailText(error, "existingLabel");
+      if (existing) return t("settings.agents.setup.duplicateConfiguration", existing);
+    }
+    return chatErrorMessage(error, t("settings.agents.setup.operationFailed"));
+  }
+
+  function editorTitle(): string {
+    if (!family) return target.mode === "edit" ? t("settings.agents.setup.editTitle") : t("settings.agents.setup.title");
+    return target.mode === "edit"
+      ? t("settings.agents.setup.editConfigurationTitle", providerFamilyDisplayName(family, t("chat.providers.acp.name")))
+      : t("settings.agents.setup.addConfigurationTitle", providerFamilyDisplayName(family, t("chat.providers.acp.name")));
+  }
+</script>
+
+<div bind:this={editorRootEl} class="flex h-full min-h-0 flex-col">
+  <main bind:this={scrollElement} tabindex="-1" class="hide-scrollbar min-h-0 flex-1 overflow-y-auto outline-none">
+    <header
+      class="shrink-0"
+      style="padding-left: {contentPaddingX}; padding-right: {contentPaddingX}; padding-top: {contentPaddingTop};"
+    >
+      <div class="border-b border-border/70 pb-4">
+        <h1 class="truncate text-[1rem] font-semibold text-foreground">
+          {editorTitle()}
+        </h1>
+        <p class="mt-1 max-w-2xl text-[0.866667rem] text-muted-foreground">
+          {t("settings.agents.setup.intro")}
+        </p>
+      </div>
+    </header>
+
+    <div
+      class="flex flex-col gap-6 py-6"
+      style="padding-left: {contentPaddingX}; padding-right: {contentPaddingX};"
+    >
+      {#if !initialized}
+        <Loading layout="fill" class="min-h-28" />
+      {:else}
+        {#if family}
+          <section class="setup-section">
+            <h2>{t("settings.agents.setup.connectionSection")}</h2>
+            <div class="form-row">
+              <label for="provider-label">{t("settings.agents.setup.label")}</label>
+              <div class="field-control">
+                <input
+                  id="provider-label"
+                  value={draft.label}
+                  oninput={(event) => updateLabel(event.currentTarget.value)}
+                />
+                {#if fieldError("label")}<small>{fieldError("label")}</small>{/if}
+              </div>
+            </div>
+            <div class="form-row">
+              <label for="provider-executable">{t("settings.agents.setup.executable")}</label>
+              <div class="field-control">
+                <div class="input-with-action">
+                  <input id="provider-executable" class="min-w-0 flex-1" bind:value={draft.executable} />
+                  <button type="button" aria-label={t("settings.agents.setup.chooseExecutable")} onclick={() => void pickExecutable()}>
+                    <FolderOpen size={14} />
+                  </button>
+                </div>
+                {#if fieldError("executable")}<small>{fieldError("executable")}</small>{/if}
+              </div>
+            </div>
+
+            {#if draft.familyId !== "cursor"}
+              <div class="form-row">
+                <label for="provider-home">{t("settings.agents.setup.providerHome")}</label>
+                <div class="field-control">
+                  <div class="input-with-action">
+                    <input id="provider-home" class="min-w-0 flex-1" bind:value={draft.providerHome} />
+                    <button type="button" aria-label={t("settings.agents.setup.chooseProviderHome")} onclick={() => void pickHome()}>
+                      <FolderOpen size={14} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            {/if}
+
+            {#if draft.familyId === "codex"}
+              <div class="form-row">
+                <label for="codex-shadow-home">{t("settings.agents.setup.codexShadowHome")}</label>
+                <div class="field-control">
+                  <input
+                    id="codex-shadow-home"
+                    value={providerConfigValue("shadowHomePath")}
+                    oninput={(event) => setProviderConfigValue("shadowHomePath", event.currentTarget.value)}
+                  />
+                </div>
+              </div>
+            {:else if draft.familyId === "cursor"}
+              <div class="form-row">
+                <label for="cursor-endpoint">{t("settings.agents.setup.endpoint")}</label>
+                <div class="field-control">
+                  <input
+                    id="cursor-endpoint"
+                    value={providerConfigValue("endpoint")}
+                    oninput={(event) => setProviderConfigValue("endpoint", event.currentTarget.value)}
+                  />
+                  {#if fieldError("providerConfig.endpoint")}<small>{fieldError("providerConfig.endpoint")}</small>{/if}
+                </div>
+              </div>
+            {:else if draft.familyId === "opencode"}
+              <div class="form-row">
+                <span>{t("settings.agents.setup.openCodeMode")}</span>
+                <div class="segmented-control" role="radiogroup" aria-label={t("settings.agents.setup.openCodeMode") }>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={openCodeMode() === "local"}
+                    class:active={openCodeMode() === "local"}
+                    onclick={() => setOpenCodeMode("local")}
+                  >{t("settings.agents.setup.localMode")}</button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={openCodeMode() === "external"}
+                    class:active={openCodeMode() === "external"}
+                    onclick={() => setOpenCodeMode("external")}
+                  >{t("settings.agents.setup.externalMode")}</button>
+                </div>
+              </div>
+              {#if openCodeMode() === "external"}
+                <div class="form-row">
+                  <label for="opencode-endpoint">{t("settings.agents.setup.endpoint")}</label>
+                  <div class="field-control">
+                    <input
+                      id="opencode-endpoint"
+                      value={openCodeServerUrl()}
+                      oninput={(event) => setProviderConfigValue("serverUrl", event.currentTarget.value)}
+                    />
+                    {#if fieldError("providerConfig.serverUrl")}<small>{fieldError("providerConfig.serverUrl")}</small>{/if}
+                  </div>
+                </div>
+                <SwitchField
+                  label={t("settings.agents.setup.confirmExternalWorkspaceAccess")}
+                  checked={providerConfigBoolean("confirmExternalWorkspaceAccess")}
+                  onChange={(checked) => setProviderConfigBoolean("confirmExternalWorkspaceAccess", checked)}
+                />
+                {#if fieldError("providerConfig.confirmExternalWorkspaceAccess")}
+                  <p class="field-error">{fieldError("providerConfig.confirmExternalWorkspaceAccess")}</p>
+                {/if}
+                {#if openCodeUsesInsecureExternalHttp()}
+                  <div class="security-warning">
+                    <p>{t("settings.agents.setup.insecureExternalHttpWarning")}</p>
+                    <SwitchField
+                      label={t("settings.agents.setup.allowInsecureExternalHttp")}
+                      checked={providerConfigBoolean("allowInsecureExternalHttp")}
+                      onChange={(checked) => setProviderConfigBoolean("allowInsecureExternalHttp", checked)}
+                    />
+                    {#if fieldError("providerConfig.allowInsecureExternalHttp")}
+                      <p class="field-error">{fieldError("providerConfig.allowInsecureExternalHttp")}</p>
+                    {/if}
+                  </div>
+                {/if}
+                {#if openCodePassword}
+                  <div class="form-row">
+                    <span>{t("settings.agents.setup.externalPassword")}</span>
+                    <div class="field-control">
+                      <div class="input-with-actions">
+                        <input
+                          type={revealSecrets[openCodePassword.key] ? "text" : "password"}
+                          value={pendingSecrets[openCodePassword.key] ?? ""}
+                          placeholder={openCodePassword.credentialReference
+                            ? t("settings.agents.setup.stored")
+                            : t("settings.agents.setup.missing")}
+                          oninput={(event) => { pendingSecrets[openCodePassword.key] = event.currentTarget.value; }}
+                        />
+                        <button
+                          type="button"
+                          aria-label={t("settings.agents.providers.revealAccount")}
+                          onclick={() => { revealSecrets[openCodePassword.key] = !revealSecrets[openCodePassword.key]; }}
+                        >
+                          {#if revealSecrets[openCodePassword.key]}<EyeOff size={13} />{:else}<Eye size={13} />{/if}
+                        </button>
+                        <button type="button" aria-label={t("settings.agents.setup.storeSecret")} onclick={() => void storeSecret(openCodePassword)}>
+                          <Check size={13} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={t("settings.agents.setup.removeSecret")}
+                          onclick={() => {
+                            if (openCodePassword.credentialReference) void removeSecret(openCodePassword);
+                            removeEnvironment(openCodePassword.key);
+                          }}
+                        ><Trash2 size={13} /></button>
+                      </div>
+                      {#if fieldError(`environment.${openCodePassword.key}.value`)}
+                        <small>{fieldError(`environment.${openCodePassword.key}.value`)}</small>
+                      {/if}
+                    </div>
+                  </div>
+                {:else}
+                  <div class="row-action">
+                    <button type="button" onclick={addOpenCodePassword}>
+                      <Plus size={13} />{t("settings.agents.setup.addExternalPassword")}
+                    </button>
+                  </div>
+                {/if}
+              {/if}
+            {/if}
+          </section>
+
+          <div class="section-divider" aria-hidden="true"></div>
+
+          <section class="setup-section">
+            <h2>{t("settings.agents.setup.advanced")}</h2>
+            <div class="advanced-content">
+                <div class="form-row">
+                  <label for="provider-instance-id">{t("settings.agents.setup.instanceId")}</label>
+                  <div class="field-control">
+                    <input id="provider-instance-id" bind:value={draft.instanceId} disabled={target.mode === "edit"} />
+                    {#if fieldError("instanceId")}<small>{fieldError("instanceId")}</small>{/if}
+                  </div>
+                </div>
+
+                <div class="advanced-group">
+                  <div class="form-row">
+                    <span>{t("settings.agents.setup.launchArguments")}</span>
+                    <div class="collection-action">
+                      <button type="button" onclick={addArgument}><Plus size={13} />{t("settings.agents.setup.addArgument")}</button>
+                    </div>
+                  </div>
+                  {#each draft.launchArguments as argument, index}
+                    <div class="argument-row">
+                      <input
+                        aria-label={t("settings.agents.setup.launchArgument", index + 1)}
+                        value={argument}
+                        oninput={(event) => { draft.launchArguments[index] = event.currentTarget.value; }}
+                      />
+                      <button
+                        type="button"
+                        aria-label={t("settings.agents.setup.removeArgument", index + 1)}
+                        onclick={() => {
+                          draft.launchArguments = draft.launchArguments.filter((_, candidate) => candidate !== index);
+                        }}
+                      ><Trash2 size={13} /></button>
+                      {#if fieldError(`launchArguments.${index}`)}
+                        <small>{fieldError(`launchArguments.${index}`)}</small>
+                      {/if}
+                    </div>
+                  {/each}
+                  {#if draft.launchArguments.length === 0}
+                    <p class="advanced-empty">{t("settings.agents.setup.noArguments")}</p>
+                  {/if}
+                </div>
+
+                <div class="advanced-group">
+                  <div class="form-row">
+                    <span>{t("settings.agents.setup.environment")}</span>
+                    <div class="collection-action">
+                      <button type="button" onclick={addEnvironment}><Plus size={13} />{t("settings.agents.setup.addEnvironment")}</button>
+                    </div>
+                  </div>
+                  {#each customEnvironment as row (row.key)}
+                    {@const nameError = touchedFields[`environment.${row.key}.name`] ? fieldError(`environment.${row.key}.name`) : null}
+                    {@const valueError = touchedFields[`environment.${row.key}.value`] ? fieldError(`environment.${row.key}.value`) : null}
+                    <div class="environment-row">
+                      <input
+                        class="environment-name"
+                        aria-label={t("settings.agents.setup.variableName")}
+                        placeholder={t("settings.agents.setup.variableName")}
+                        aria-invalid={nameError ? "true" : undefined}
+                        bind:value={row.name}
+                        readonly={row.credentialReference !== ""}
+                        onblur={() => touchField(`environment.${row.key}.name`)}
+                      />
+                      <Select
+                        inline
+                        class="environment-kind w-full"
+                        value={row.valueType}
+                        options={environmentValueTypeOptions}
+                        ariaLabel={t("settings.agents.setup.valueType")}
+                        onChange={(value) => setEnvironmentValueType(row, value)}
+                      />
+                      {#if row.valueType === "text"}
+                        <input
+                          class="environment-value"
+                          aria-label={t("settings.agents.setup.environmentValue")}
+                          placeholder={t("settings.agents.setup.environmentValue")}
+                          aria-invalid={valueError ? "true" : undefined}
+                          bind:value={row.value}
+                          onblur={() => touchField(`environment.${row.key}.value`)}
+                        />
+                      {:else if row.valueType === "secret"}
+                        <div class="input-with-actions environment-value">
+                          <input
+                            type={revealSecrets[row.key] ? "text" : "password"}
+                            aria-label={t("settings.agents.setup.environmentValue")}
+                            aria-invalid={valueError ? "true" : undefined}
+                            value={pendingSecrets[row.key] ?? ""}
+                            placeholder={row.credentialReference ? t("settings.agents.setup.stored") : t("settings.agents.setup.missing")}
+                            oninput={(event) => { pendingSecrets[row.key] = event.currentTarget.value; }}
+                            onblur={() => touchField(`environment.${row.key}.value`)}
+                          />
+                          <button type="button" onclick={() => { revealSecrets[row.key] = !revealSecrets[row.key]; }}>
+                            {#if revealSecrets[row.key]}<EyeOff size={13} />{:else}<Eye size={13} />{/if}
+                          </button>
+                          <button type="button" aria-label={t("settings.agents.setup.storeSecret")} onclick={() => void storeSecret(row)}>
+                            <Check size={13} />
+                          </button>
+                        </div>
+                      {:else}
+                        <span class="inherit-value environment-value">{t("settings.agents.setup.inheritedHint")}</span>
+                      {/if}
+                      <button
+                        type="button"
+                        class="remove-row"
+                        aria-label={t("settings.agents.setup.removeEnvironment")}
+                        onclick={() => {
+                          if (row.valueType === "secret" && row.credentialReference) void removeSecret(row);
+                          removeEnvironment(row.key);
+                        }}
+                      ><Trash2 size={13} /></button>
+                      {#if storesPlaintextSecret(row)}
+                        <p class="environment-warning">
+                          {t("settings.agents.setup.plaintextSecretWarning")}
+                          <button type="button" onclick={() => void moveToCredentialStore(row)}>{t("settings.agents.setup.storeAsSecret")}</button>
+                        </p>
+                      {/if}
+                      {#if nameError || valueError}
+                        <small class="environment-error">{nameError ?? valueError}</small>
+                      {/if}
+                    </div>
+                  {/each}
+                  {#if customEnvironment.length === 0}
+                    <p class="advanced-empty">{t("settings.agents.setup.noEnvironment")}</p>
+                  {/if}
+                </div>
+            </div>
+          </section>
+        {:else if operationError}
+          <div class="min-h-40 text-sm"><Notice layout="fill" message={operationError} onRetry={retryInitialize} /></div>
+        {/if}
+      {/if}
+    </div>
+  </main>
+
+  <footer
+    class="shrink-0"
+    style="padding-left: {contentPaddingX}; padding-right: {contentPaddingX}; padding-bottom: {contentPaddingBottom};"
+  >
+    <div class="footer-content">
+      <div class="footer-message" aria-live="polite">
+        {#if operationError && family}
+          <Notice message={operationError} />
+        {:else if testResult}
+          {@const ResultIcon = testSucceeded ? CircleCheck : CircleAlert}
+          {@const facts = [
+            ...(!testSucceeded && testResult.probe.detail ? [testResult.probe.detail] : []),
+            ...(testResult.probe.version ? [testResult.probe.version] : []),
+            ...(testResult.probe.accountLabel ? [testResult.probe.accountLabel] : []),
+          ]}
+          <div class="test-result" role="status" data-state={testSucceeded ? "success" : "failure"}>
+            <span class="test-result-icon" aria-hidden="true"><ResultIcon strokeWidth={1.8} aria-hidden="true" /></span>
+            <span class="test-result-text">
+              <span>
+                {testSucceeded
+                  ? t("settings.agents.setup.testPassed")
+                  : t("settings.agents.setup.testFailed", providerProbeMessage(testResult.probe.state))}
+              </span>
+              {#if facts.length > 0}
+                <small class="test-result-facts">{#each facts as fact, index (index)}<span>{fact}</span>{/each}</small>
+              {/if}
+            </span>
+          </div>
+        {/if}
+      </div>
+      <div class="footer-actions">
+        <button type="button" class="secondary-button" onclick={onCancel}>{t("common.cancel")}</button>
+        <button
+          type="button"
+          class="secondary-button"
+          disabled={testing || saving || !validation.valid}
+          onclick={() => void testSetup()}
+        >
+          {testing ? t("settings.agents.setup.testing") : t("settings.agents.setup.test")}
+        </button>
+        <button
+          type="button"
+          class="primary-button"
+          disabled={saving || testing || !validation.valid}
+          onclick={() => void save()}
+        >
+          {#if target.mode === "edit"}<Save size={13} />{/if}
+          {target.mode === "edit" ? t("settings.agents.setup.save") : t("settings.agents.setup.create")}
+        </button>
+      </div>
+    </div>
+  </footer>
+</div>
+
+<style>
+  .setup-section { display:flex; flex-direction:column; gap:0.9rem; }
+  .setup-section > h2 { padding-inline:0.25rem; font-size:calc(0.866667rem * var(--type-scale)); font-weight:600; }
+  .section-divider { height:1px; flex-shrink:0; background:var(--border); transform:scaleY(0.5); }
+  .form-row { display:flex; min-width:0; align-items:center; justify-content:space-between; gap:1rem; padding:0.15rem 0.25rem; }
+  .form-row > label,.form-row > span { min-width:0; flex:1; color:var(--foreground); font-size:calc(0.82rem * var(--type-scale)); }
+  .field-control { display:flex; width:min(22rem,55%); min-width:0; flex-direction:column; gap:0.25rem; }
+  input { height:var(--control-height); min-width:0; border:1px solid var(--border); border-radius:var(--floating-item-radius); background:transparent; padding:calc(0.25rem - 1px) 0.5rem; color:var(--foreground); font-size:calc(0.78rem * var(--type-scale)); outline:none; }
+  input::placeholder { color:var(--muted-foreground); }
+  input[aria-invalid="true"] { border-color:var(--destructive); }
+  input:disabled { cursor:not-allowed; opacity:0.55; }
+  .field-control small,.argument-row small,.environment-error,.field-error { color:var(--destructive); font-size:calc(0.68rem * var(--type-scale)); }
+  .field-error { padding-inline:0.25rem; }
+  .input-with-action,.input-with-actions { display:flex; min-width:0; gap:0.25rem; }
+  .input-with-action input,.input-with-actions input { min-width:0; flex:1; }
+  .input-with-action button,.input-with-actions button,.remove-row,.argument-row > button { display:inline-grid; width:var(--control-height); height:var(--control-height); flex:0 0 auto; place-items:center; border:1px solid var(--border); border-radius:0.375rem; background:var(--card); color:var(--muted-foreground); }
+  .input-with-action button:hover,.input-with-actions button:hover,.remove-row:hover,.argument-row > button:hover { background:var(--accent); color:var(--foreground); }
+  .segmented-control { display:grid; width:min(22rem,55%); grid-template-columns:repeat(2,minmax(0,1fr)); gap:0.2rem; border:1px solid var(--border); border-radius:0.375rem; padding:0.2rem; }
+  .segmented-control button { min-height:1.65rem; border-radius:0.25rem; color:var(--muted-foreground); font-size:calc(0.72rem * var(--type-scale)); }
+  .segmented-control button:hover { background:color-mix(in srgb,var(--accent) 50%,transparent); }
+  .segmented-control button.active { background:var(--accent); color:var(--accent-foreground); }
+  .security-warning { display:grid; gap:0.6rem; border-block:1px solid color-mix(in srgb,var(--status-tentative) 48%,var(--border)); padding:0.7rem 0.25rem; color:var(--status-tentative); font-size:calc(0.72rem * var(--type-scale)); }
+  .row-action { display:flex; justify-content:flex-end; padding-inline:0.25rem; }
+  .row-action button,.collection-action button { display:inline-flex; height:var(--control-height); align-items:center; gap:0.35rem; border:1px solid var(--border); border-radius:0.375rem; background:var(--card); padding-inline:0.5rem; color:var(--foreground); font-size:calc(0.7rem * var(--type-scale)); }
+  .row-action button:hover,.collection-action button:hover { background:var(--accent); }
+  .advanced-content { display:grid; gap:1rem; }
+  .advanced-group { display:grid; gap:0.45rem; }
+  .collection-action { display:flex; width:min(22rem,55%); min-width:0; justify-content:flex-end; }
+  .advanced-empty { padding-inline:0.25rem; color:var(--muted-foreground); font-size:calc(0.7rem * var(--type-scale)); }
+  .argument-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:0.25rem; padding-inline:0.25rem; }
+  .argument-row small { grid-column:1/-1; }
+  .environment-row { display:grid; grid-template-columns:minmax(0,1fr) 8.5rem minmax(0,1.4fr) auto; align-items:center; gap:0.35rem; padding-inline:0.25rem; }
+  .inherit-value { display:flex; min-width:0; min-height:var(--control-height); align-items:center; padding-inline:0.5rem; color:var(--muted-foreground); font-size:calc(0.72rem * var(--type-scale)); }
+  .environment-error { grid-column:1/-1; }
+  .environment-warning { display:flex; flex-wrap:wrap; grid-column:1/-1; align-items:center; gap:0.4rem; color:var(--muted-foreground); font-size:calc(0.68rem * var(--type-scale)); }
+  .environment-warning button { color:var(--foreground); text-decoration:underline; }
+  .test-result { display:flex; min-width:0; align-items:flex-start; gap:0.5em; color:var(--foreground); line-height:1.45; }
+  .test-result-icon { display:flex; height:1lh; flex:0 0 auto; align-items:center; color:var(--status-tentative); }
+  .test-result[data-state="success"] .test-result-icon { color:var(--action-confirm-signal); }
+  .test-result-icon :global(svg) { width:1.1em; height:1.1em; }
+  .test-result-text { display:flex; min-width:0; flex-direction:column; overflow-wrap:anywhere; }
+  .test-result-facts { display:flex; flex-wrap:wrap; gap:0.125rem 1rem; color:var(--muted-foreground); font-size:inherit; }
+  .footer-content { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.6rem; border-top:1px solid var(--border); padding-top:0.75rem; }
+  .footer-message { min-width:0; flex:1; font-size:calc(0.75rem * var(--type-scale)); }
+  .footer-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:0.45rem; }
+  .secondary-button,.primary-button { display:inline-flex; height:var(--control-height); align-items:center; justify-content:center; gap:0.4rem; border-radius:0.375rem; padding-inline:0.75rem; font-size:calc(0.78rem * var(--type-scale)); font-weight:500; }
+  .secondary-button { border:1px solid var(--border); background:var(--background); color:var(--foreground); }
+  .secondary-button:hover:not(:disabled) { background:var(--accent); }
+  .primary-button { background:var(--primary); color:var(--primary-foreground); }
+  .primary-button:hover:not(:disabled) { background:color-mix(in srgb,var(--primary) 90%,black); }
+  .secondary-button:disabled,.primary-button:disabled { cursor:not-allowed; opacity:0.5; }
+  :global(.dark) .input-with-action button,
+  :global(.dark) .input-with-actions button,
+  :global(.dark) .remove-row,
+  :global(.dark) .argument-row > button,
+  :global(.dark) .row-action button,
+  :global(.dark) .collection-action button { background:transparent; }
+  @media (max-width:620px) {
+    .form-row { align-items:stretch; flex-direction:column; gap:0.4rem; }
+    .field-control,.segmented-control,.collection-action { width:100%; }
+    .environment-row { grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; }
+    .environment-name { grid-column:1/3; }
+    .environment-row > :global(.environment-kind) { grid-column:1; grid-row:2; }
+    .environment-value { grid-column:2/4; grid-row:2; }
+    .remove-row { grid-column:3; grid-row:1; }
+  }
+</style>

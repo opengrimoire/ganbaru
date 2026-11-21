@@ -319,6 +319,96 @@ fn untrusted_policy_keeps_only_an_absolute_user_hooks_path() {
 }
 
 #[test]
+fn requested_runs_silence_every_hook_and_allow_only_standard_transports() {
+    let mut policy = GitPolicy::requested();
+    policy.trust = GitFolderTrust::Trusted(FolderConfigDigest::zero());
+    let hardening = hardening_for(
+        policy,
+        &[
+            entry(
+                GitConfigScope::Global,
+                "core.hooksPath",
+                Some("/home/u/hooks"),
+            ),
+            entry(
+                GitConfigScope::Global,
+                "core.fsmonitor",
+                Some("/home/u/fsmonitor"),
+            ),
+            entry(GitConfigScope::Global, "credential.helper", Some("store")),
+            entry(
+                GitConfigScope::Global,
+                "core.sshCommand",
+                Some("ssh -i key"),
+            ),
+            entry(
+                GitConfigScope::Global,
+                "protocol.custom.allow",
+                Some("always"),
+            ),
+            entry(GitConfigScope::Local, "credential.helper", Some("!planted")),
+            entry(GitConfigScope::Local, "core.sshCommand", Some("planted")),
+            entry(
+                GitConfigScope::Local,
+                "protocol.planted.allow",
+                Some("always"),
+            ),
+            entry(GitConfigScope::Local, "commit.gpgSign", Some("false")),
+        ],
+        &GitInheritedEnvironment::default(),
+        hooks(),
+    );
+    assert_eq!(
+        config_value(&hardening, "core.hooksPath"),
+        Some("/no-hooks")
+    );
+    assert_eq!(config_value(&hardening, "core.fsmonitor"), Some(""));
+    assert_eq!(
+        config_value(&hardening, "core.sshCommand"),
+        Some("ssh -i key")
+    );
+    assert_eq!(config_value(&hardening, "credential.helper"), Some("store"));
+    assert_eq!(config_value(&hardening, "protocol.allow"), Some("never"));
+    assert_eq!(
+        config_value(&hardening, "protocol.ext.allow"),
+        Some("never")
+    );
+    assert_eq!(
+        config_value(&hardening, "protocol.planted.allow"),
+        Some("never")
+    );
+    assert_eq!(config_value(&hardening, "protocol.custom.allow"), None);
+    for protocol in super::REQUESTED_PROTOCOLS {
+        let key = format!("protocol.{protocol}.allow");
+        assert_eq!(config_value(&hardening, &key), Some("always"), "{key}");
+    }
+    assert_eq!(config_value(&hardening, "commit.gpgSign"), None);
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_CONFIG",
+        "GIT_EXEC_PATH",
+    ] {
+        assert!(
+            hardening
+                .cleared_environment
+                .iter()
+                .any(|cleared| cleared == name),
+            "{name}"
+        );
+    }
+    for name in ["GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_CONFIG_PARAMETERS"] {
+        assert!(
+            !hardening
+                .cleared_environment
+                .iter()
+                .any(|cleared| cleared == name),
+            "{name}"
+        );
+    }
+}
+#[test]
 fn trusted_policy_keeps_the_full_configuration() {
     let hardening = hardening_for(
         USER_TRUSTED,

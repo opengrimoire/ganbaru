@@ -13,6 +13,7 @@
   } from "$lib/notes/types";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import NotesRoundTripDiagnostics from "$lib/components/notes/NotesRoundTripDiagnostics.svelte";
   import NotesTransferFieldRow from "./NotesTransferFieldRow.svelte";
 
@@ -39,7 +40,7 @@
   let includeAssets = $state(true);
   let includeDatabaseViews = $state(true);
   let exporting = $state(false);
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let result = $state<NotesHtmlArchiveSaveResult | null>(null);
   let dialogEl = $state<HTMLDivElement | null>(null);
   const canExport = $derived(!exporting);
@@ -112,7 +113,7 @@
         includeDatabaseViews,
       });
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.htmlExportFailed"));
     } finally {
       exporting = false;
     }
@@ -223,7 +224,7 @@
         </NotesTransferFieldRow>
 
         {#if error}
-          <Notice class="text-[0.8rem]" message={t("notes.htmlExportFailed", error)} copy={error} />
+          <Notice class="text-[0.8rem]" message={error.message} copy={error.detail} />
         {/if}
 
         {#if result}

@@ -187,6 +187,9 @@ pub(super) fn clear_codex_command_route(live: &CodexLiveSession) {
         state.active_chat_turn_id = None;
         state.active_provider_turn_id = None;
         state.session_state = ProviderSessionState::Ready;
+        if let Some(retry) = state.capacity_retry.take() {
+            retry.cancel();
+        }
     }
 }
 

@@ -1,9 +1,9 @@
 //! Queued follow-up validation, persistence, and attachment references.
 
-use super::attachments::MAX_IMAGE_COUNT;
 use super::support::{
     chat_pool, corrupt_data_error, json_error, now_timestamp, persistence_error, versioned_row,
 };
+use crate::chat::attachment_commands::MAX_IMAGE_COUNT;
 use crate::chat::interaction_commands::{ChatQueuedFollowupRead, SaveQueuedFollowupRequest};
 use ganbaru_chat::repository::attachments;
 use ganbaru_chat_contracts::models::{

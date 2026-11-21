@@ -6,6 +6,7 @@
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import Upload from "@lucide/svelte/icons/upload";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { technicalErrorDetail, userErrorMessage } from "$lib/i18n/user-errors";
   import { getNotesHistoryRetentionImpact } from "$lib/api/notes/project-history";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -48,6 +49,7 @@
   let pendingVersionCount = $state(0);
   let pendingStoredBytes = $state(0);
   let retentionError = $state<string | null>(null);
+  let retentionErrorDetail = $state<string | null>(null);
   const historyRetention = $derived(
     notes.pageHistorySettings?.retention_days ?? DEFAULT_NOTES_HISTORY_RETENTION_DAYS,
   );
@@ -134,10 +136,8 @@
     retentionError = null;
     await notes.updatePageHistoryRetention(value);
     if (notes.pageHistorySettingsError) {
-      retentionError = t(
-        "settings.notesGeneral.historyRetentionUpdateFailed",
-        notes.pageHistorySettingsError,
-      );
+      retentionError = t("settings.notesGeneral.historyRetentionUpdateFailed");
+      retentionErrorDetail = notes.pageHistorySettingsError;
     }
   }
 
@@ -161,8 +161,8 @@
       pendingVersionCount = impact.versionCount;
       pendingStoredBytes = impact.storedBytes;
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      retentionError = t("settings.notesGeneral.historyRetentionUpdateFailed", message);
+      retentionError = userErrorMessage(cause, t("settings.notesGeneral.historyRetentionUpdateFailed"));
+      retentionErrorDetail = technicalErrorDetail(cause);
     }
   }
 
@@ -211,7 +211,7 @@
         </div>
       {/if}
       {#if retentionError}
-        <Notice class="px-1 text-[0.8rem]" message={retentionError} />
+        <Notice class="px-1 text-[0.8rem]" message={retentionError} copy={retentionErrorDetail ?? undefined} />
       {/if}
       <SwitchField
         label={t("settings.notesGeneral.showPropertyIcons")}
@@ -223,7 +223,7 @@
   </section>
 
   {#if notificationsAvailable}
-    <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+    <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 
     <section class="flex flex-col gap-4">
       <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("settings.notesNotifications.heading")}</h2>
@@ -268,7 +268,7 @@
   {/if}
 
   {#if transfersAvailable}
-    <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+    <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 
     <section class="flex flex-col gap-4">
       <div class="min-w-0 px-1">
@@ -296,7 +296,7 @@
       </div>
     </section>
 
-    <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+    <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 
     <section class="flex flex-col gap-4">
       <div class="min-w-0 px-1">

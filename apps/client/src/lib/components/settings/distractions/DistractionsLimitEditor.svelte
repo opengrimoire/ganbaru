@@ -676,7 +676,7 @@
         {/if}
       </section>
 
-      <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+      <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 
       <section class="flex flex-col gap-4">
         <div class="min-w-0 px-1">
@@ -694,10 +694,10 @@
                   value={entry.name}
                   oninput={(event) => updateEntry(entry.id, "name", event.currentTarget.value)}
                   aria-label={t("settings.distractions.limits.editor.sourceName")}
-                  class="field h-8 min-w-0 flex-1 px-2.5 text-[0.8rem] text-foreground"
+                  class="field min-w-0 flex-1 px-2.5 text-[0.8rem] text-foreground"
                   placeholder={t("settings.distractions.limits.editor.sourceNamePlaceholder")}
                 />
-                <div class="flex size-8 min-h-(--control-height) min-w-(--control-height) shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground dark:bg-transparent">
+                <div class="flex size-(--control-height) shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground dark:bg-transparent">
                   <EventColorPicker
                     color={entry.color ?? undefined}
                     theme={theme.current}
@@ -723,7 +723,7 @@
                     value={entry.websiteHost}
                     disabled={isAndroid}
                     oninput={(event) => updateEntry(entry.id, "websiteHost", event.currentTarget.value)}
-                    class="field h-8 min-w-0 px-2.5 text-[0.8rem] text-foreground"
+                    class="field min-w-0 px-2.5 text-[0.8rem] text-foreground"
                     placeholder="domain.com"
                   />
                 </label>
@@ -731,7 +731,7 @@
                 <div class="flex min-w-0 flex-col gap-1">
                   <span class="text-[0.733333rem] font-medium text-muted-foreground">{t("settings.distractions.limits.editor.mobile")}</span>
                   {#if isAndroid}
-                    <div class="field flex h-8 min-w-0 items-center gap-1 px-1.5">
+                    <div class="field flex min-w-0 items-center gap-1 px-1.5">
                       <button type="button" onclick={() => openMobileAppPicker(entry.id)} class={["min-w-0 flex-1 truncate rounded-sm px-1.5 py-1 text-left text-[0.8rem] outline-none hover:bg-accent", entry.mobileAppName ? "text-foreground" : "text-muted-foreground"]}>
                         {entry.mobileAppName || t("settings.distractions.limits.editor.chooseApp")}
                       </button>
@@ -743,13 +743,13 @@
                       <span class="text-[0.7rem] text-destructive">{t("settings.distractions.mobile.reselectForAndroid")}</span>
                     {/if}
                   {:else}
-                    <input value={entry.mobileAppName} oninput={(event) => updateEntry(entry.id, "mobileAppName", event.currentTarget.value)} class="field h-8 min-w-0 px-2.5 text-[0.8rem] text-foreground" placeholder={t("settings.distractions.limits.editor.mobilePlaceholder")} />
+                    <input value={entry.mobileAppName} oninput={(event) => updateEntry(entry.id, "mobileAppName", event.currentTarget.value)} class="field min-w-0 px-2.5 text-[0.8rem] text-foreground" placeholder={t("settings.distractions.limits.editor.mobilePlaceholder")} />
                   {/if}
                 </div>
 
                 <div class="flex min-w-0 flex-col gap-1">
                   <span class="text-[0.733333rem] font-medium text-muted-foreground">{t("settings.distractions.limits.editor.desktop")}</span>
-                  <div class="field flex h-8 min-w-0 items-center gap-1 px-1.5">
+                  <div class="field flex min-w-0 items-center gap-1 px-1.5">
                     <button
                       type="button"
                       onclick={() => openDesktopAppPicker(entry.id)}

@@ -1,7 +1,9 @@
 import type {
   ProviderFamilyId,
+  ProviderFamilyMetadataRead,
   ProviderInstanceConfig,
   ProviderInstanceId,
+  ProviderInstanceRead,
   VersionedJson,
 } from "./contracts";
 import { isLoopbackHostname } from "./workspace/loopback";
@@ -61,6 +63,52 @@ const SECRET_NAME_SEGMENTS: ReadonlySet<string> = new Set([
   "TOKEN",
 ]);
 
+/** Family identifier of the generic Agent Client Protocol integration. */
+export const GENERIC_ACP_FAMILY_ID: ProviderFamilyId = "acp";
+
+/**
+ * Returns the label presented for a provider family.
+ *
+ * Vendor families keep the brand name their driver reports. The generic ACP family has no brand,
+ * so it uses the localized label supplied by the caller.
+ *
+ * @param family - Provider family metadata reported by the backend.
+ * @param genericAcpName - Localized label for the generic ACP family.
+ * @returns The label shown in settings and pickers.
+ */
+export function providerFamilyDisplayName(
+  family: { familyId: string; displayName: string },
+  genericAcpName: string,
+): string {
+  return family.familyId === GENERIC_ACP_FAMILY_ID ? genericAcpName : family.displayName;
+}
+
+/** The parts of a configuration that name the program it runs. */
+type ProviderCliSource = { configuration: Pick<ProviderInstanceRead["configuration"], "executable">; lastProbe: { version: string | null } | null };
+
+/** The program name a family runs when nothing else names one. */
+export function providerFamilyCliName(family: Pick<ProviderFamilyMetadataRead, "familyId" | "defaultExecutableCandidates">): string {
+  return family.defaultExecutableCandidates[0] || family.familyId;
+}
+
+/** The program name a configuration runs, from the last part of its executable path. */
+export function providerCliName(
+  family: Pick<ProviderFamilyMetadataRead, "familyId" | "defaultExecutableCandidates">,
+  provider: ProviderCliSource,
+): string {
+  const executable = provider.configuration.executable.trim().replaceAll("\\", "/");
+  return executable.split("/").at(-1) || providerFamilyCliName(family);
+}
+
+/** The program name a configuration runs, followed by its version once a probe read it. */
+export function providerCliSummary(
+  family: Pick<ProviderFamilyMetadataRead, "familyId" | "defaultExecutableCandidates">,
+  provider: ProviderCliSource,
+): string {
+  const cliName = providerCliName(family, provider);
+  return provider.lastProbe?.version ? `${cliName} ${provider.lastProbe.version}` : cliName;
+}
+
 /** Whether an environment variable name looks like it holds a secret, compared per underscore segment. */
 export function isSecretLikeEnvironmentName(name: string): boolean {
   return name.split("_").some((segment) => SECRET_NAME_SEGMENTS.has(segment.toUpperCase()));
@@ -72,6 +120,14 @@ export function isSecretLikeEnvironmentName(name: string): boolean {
  */
 export function storesPlaintextSecret(row: ProviderEnvironmentDraft): boolean {
   return row.valueType === "text" && row.value.length > 0 && isSecretLikeEnvironmentName(row.name);
+}
+
+/**
+ * Whether an environment row is still untouched: no name, no value, and no stored secret. Validation and saving skip
+ * blank rows, so adding a row never blocks the form before the user fills it in.
+ */
+export function isBlankEnvironmentRow(row: ProviderEnvironmentDraft): boolean {
+  return row.name.trim().length === 0 && row.value.length === 0 && row.credentialReference.length === 0;
 }
 
 export function createProviderSetupDraft(): ProviderSetupDraft {
@@ -122,6 +178,7 @@ export function validateProviderSetup(
   const names = new Set<string>();
   const dedicatedVariable = DEDICATED_HOME_VARIABLES[draft.familyId];
   for (const row of draft.environment) {
+    if (isBlankEnvironmentRow(row)) continue;
     const field = `environment.${row.key}`;
     if (!ENVIRONMENT_NAME_PATTERN.test(row.name)) {
       fields[`${field}.name`] = "Enter a valid environment variable name.";
@@ -155,6 +212,7 @@ export function providerConfigurationFromDraft(
   const environment: Record<string, string> = {};
   const credentialReferences: Record<string, string> = {};
   for (const row of draft.environment) {
+    if (isBlankEnvironmentRow(row)) continue;
     if (row.valueType === "text") environment[row.name] = row.value;
     if (row.valueType === "inherit") environment[row.name] = `inherit:${row.name}`;
     if (row.valueType === "secret") credentialReferences[row.name] = row.credentialReference;
@@ -167,11 +225,9 @@ export function providerConfigurationFromDraft(
     enabled: current?.enabled ?? true,
     executable: draft.executable.trim(),
     providerHome: draft.providerHome.trim() || null,
-    launchArguments: [...draft.launchArguments],
+    launchArguments: draft.launchArguments.filter((argument) => argument.length > 0),
     environment,
     credentialReferences,
-    visibleModelIds: [...(current?.visibleModelIds ?? [])],
-    favoriteModelIds: [...(current?.favoriteModelIds ?? [])],
     providerConfig: draft.providerConfig,
   };
 }

@@ -7,9 +7,13 @@ import type {
   ProviderCapability,
   ProviderFamilyId,
   ProviderImplementationStatus,
+  ProviderInstallShell,
   ProviderMaturity,
   ProviderInstanceId,
   ProbeState,
+  ProviderAccountPlan,
+  ProviderAuthSource,
+  ProviderVersionAdmission,
   UtcTimestamp,
   VersionedJson,
 } from "./common";
@@ -25,8 +29,6 @@ export interface ProviderInstanceConfig {
   launchArguments: string[];
   environment: Record<string, string>;
   credentialReferences: Record<string, CredentialReferenceId>;
-  visibleModelIds: ModelId[];
-  favoriteModelIds: ModelId[];
   providerConfig: VersionedJson;
   [unknownField: string]: unknown;
 }
@@ -50,6 +52,52 @@ export interface ProviderAuthoritySupport {
   confinedCommands: boolean;
   networkBoundary: boolean;
   classifiedPublish: boolean;
+  /** Every shell command the provider can run reaches Ganbaru for the person to approve. */
+  personApprovedCommands: boolean;
+}
+
+/** A provider's own install instructions for its CLI. */
+export interface ProviderInstallGuide {
+  /** The terminal this platform runs the commands in. */
+  shell: ProviderInstallShell;
+  /** The installer command the provider documents for this platform's terminal. */
+  command: string;
+  /** The command that signs the person in to their provider account once the CLI is installed. */
+  signInCommand: string;
+  /** The sign-in command for a terminal opened right after the installer ran, which names the installed program by its folder when the installer leaves that folder off `PATH`. */
+  signInAfterInstallCommand: string;
+  /** The provider documentation page about installing the CLI, always `https`. */
+  docsUrl: string;
+  /** A tool the installer needs that this device lacks, installed first; `null` when nothing is missing. */
+  requirement: ProviderInstallRequirement | null;
+}
+
+/** A tool a provider installer needs, such as Node.js for an npm package. */
+export interface ProviderInstallRequirement {
+  /** The tool's name as people know it. */
+  name: string;
+  /** The program discovery looks for to tell whether the tool is installed. */
+  program: string;
+  /** The command that installs the tool in the guide's terminal. */
+  command: string;
+}
+
+/** A newer provider CLI release than the last probe found, inside the family's supported range. */
+export interface ProviderUpdateRead {
+  instanceId: ProviderInstanceId;
+  currentVersion: string;
+  latestVersion: string;
+  /** The provider's own update command, as the person would type it. */
+  updateCommand: string;
+  /** Whether Ganbaru can run the update; `false` when a package manager or the system owns the install. */
+  runsInApp: boolean;
+}
+
+/** How running a provider's update command ended. */
+export interface ProviderUpdateRunRead {
+  successful: boolean;
+  /** The last lines a failed update wrote. */
+  output: string | null;
 }
 
 export interface ProviderFamilyMetadataRead {
@@ -58,6 +106,11 @@ export interface ProviderFamilyMetadataRead {
   configurationSchemaVersion: number;
   supportedPlatforms: string[];
   minimumTestedCliVersion: string | null;
+  maximumTestedCliVersion: string | null;
+  /** The command that updates the provider CLI, shown next to version notices. */
+  updateCommand: string | null;
+  /** How to install the provider CLI on this platform, shown when its program is missing. */
+  installGuide: ProviderInstallGuide | null;
   defaultExecutableCandidates: string[];
   implementationStatus: ProviderImplementationStatus;
   maturity: ProviderMaturity;
@@ -72,10 +125,16 @@ export interface ProviderProbeResult {
   version: string | null;
   negotiatedProtocolVersion: string | null;
   accountLabel: string | null;
+  authSource: ProviderAuthSource | null;
+  /** The account's plan, or `null` when the provider does not report it. */
+  accountPlan: ProviderAccountPlan | null;
   capabilities: ProviderCapabilities;
   authoritySupport: ProviderAuthoritySupport;
   checkedAt: UtcTimestamp;
   detail: string | null;
+  versionAdmission: ProviderVersionAdmission | null;
+  /** The oldest CLI version agent runs on this device accept, present only when the probed version is older. */
+  agentMinimumVersion: string | null;
 }
 
 export interface ModelChoiceOption {
@@ -119,12 +178,13 @@ export interface ProviderModel {
   availability: ModelAvailability;
   capabilities: ProviderCapability[];
   options: ModelOptionDefinition[];
-  custom: boolean;
 }
 
 export interface ProviderModelCatalog {
   instanceId: ProviderInstanceId;
   models: ProviderModel[];
+  /** The entry of `models` that runs when nothing names a model, chosen instead of the provider's changing default. */
+  recommendedModelId: ModelId | null;
   source: ModelCatalogSource;
   discoveredAt: UtcTimestamp;
   stale: boolean;

@@ -8,6 +8,7 @@
   } from "$lib/calendar/date-range-selection";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { activateModalFocus } from "$lib/modal-focus";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import type {
@@ -736,10 +737,7 @@
         customFieldSaveGenerations.get(requestKey) !== requestGeneration
         || selectedTask?.id !== task.id
       ) return;
-      detailError = t(
-        "projects.customFields.valueSaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      detailError = userErrorMessage(error, t("projects.customFields.valueSaveFailed"));
     } finally {
       if (saveRequest && customFieldSaveQueues.get(requestKey) === saveRequest) {
         customFieldSaveQueues.delete(requestKey);
@@ -856,10 +854,7 @@
       await projects.linkTaskTag(task.id, tag.id);
       tagDraft = "";
     } catch (error) {
-      detailError = t(
-        "projects.detail.tagSaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      detailError = userErrorMessage(error, t("projects.detail.tagSaveFailed"));
     }
   }
 
@@ -887,10 +882,7 @@
       await projects.addAndLinkTaskTag(task, name);
       tagDraft = "";
     } catch (error) {
-      detailError = t(
-        "projects.detail.tagSaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      detailError = userErrorMessage(error, t("projects.detail.tagSaveFailed"));
     }
   }
 
@@ -903,10 +895,7 @@
     try {
       await projects.unlinkTaskTag(task.id, tag.id);
     } catch (error) {
-      detailError = t(
-        "projects.detail.tagSaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      detailError = userErrorMessage(error, t("projects.detail.tagSaveFailed"));
     }
   }
 
@@ -943,10 +932,7 @@
     try {
       await projects.promoteSubtask(task);
     } catch (error) {
-      detailError = t(
-        "projects.detail.promoteFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      detailError = userErrorMessage(error, t("projects.detail.promoteFailed"));
     }
   }
 
@@ -963,10 +949,7 @@
       await projects.demoteTaskToSubtask(task, parentTask);
       parentTaskSearch = "";
     } catch (error) {
-      detailError = t(
-        "projects.detail.demoteFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      detailError = userErrorMessage(error, t("projects.detail.demoteFailed"));
     }
   }
 
@@ -986,10 +969,7 @@
       await projects.addTaskDependency(blockingTask.id, blockedTask.id);
       dependencySearch = "";
     } catch (error) {
-      detailError = t(
-        "projects.detail.dependencySaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      detailError = userErrorMessage(error, t("projects.detail.dependencySaveFailed"));
     }
   }
 
@@ -1006,10 +986,7 @@
     try {
       await projects.removeTaskDependency(dependencyId);
     } catch (error) {
-      detailError = t(
-        "projects.detail.dependencySaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      detailError = userErrorMessage(error, t("projects.detail.dependencySaveFailed"));
     }
   }
 
@@ -1025,10 +1002,7 @@
       await projects.linkTaskEvent(task.id, event.id, "scheduled");
       return true;
     } catch (error) {
-      detailError = t(
-        "projects.detail.eventLinkSaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      detailError = userErrorMessage(error, t("projects.detail.eventLinkSaveFailed"));
       return false;
     }
   }
@@ -1045,10 +1019,7 @@
     try {
       await projects.unlinkTaskEvent(task.id, event.id);
     } catch (error) {
-      detailError = t(
-        "projects.detail.eventLinkSaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      detailError = userErrorMessage(error, t("projects.detail.eventLinkSaveFailed"));
     }
   }
 
@@ -1058,7 +1029,7 @@
     try {
       await projects.archiveTasks([task]);
     } catch (error) {
-      detailError = t("projects.detail.archiveFailed", error instanceof Error ? error.message : String(error));
+      detailError = userErrorMessage(error, t("projects.detail.archiveFailed"));
     } finally {
       detailSaving = false;
     }
@@ -1071,18 +1042,14 @@
     try {
       await projects.restoreTasks([task]);
     } catch (error) {
-      detailError = t("projects.detail.restoreFailed", error instanceof Error ? error.message : String(error));
+      detailError = userErrorMessage(error, t("projects.detail.restoreFailed"));
     } finally {
       detailSaving = false;
     }
   }
 
   function detailSaveErrorMessage(error: unknown): string {
-    const message = error instanceof Error ? error.message : String(error);
-    return message === t("projects.detail.invalidEstimate")
-      || message === t("projects.detail.invalidDate")
-      ? message
-      : t("projects.detail.saveFailed", message);
+    return userErrorMessage(error, t("projects.detail.saveFailed"));
   }
 
   async function createTaskFromDraft(
@@ -1115,7 +1082,7 @@
       }
     } catch (error) {
       if (!created) {
-        detailError = t("projects.tasks.createFailed", error instanceof Error ? error.message : String(error));
+        detailError = userErrorMessage(error, t("projects.tasks.createFailed"));
         detailSaving = false;
         return;
       }
@@ -1136,7 +1103,8 @@
     });
     detailSaving = false;
     if (relationFailures.length > 0) {
-      errors.push(t("projects.detail.draftRelationsFailed", relationFailures.join("; ")));
+      console.warn("[projects] draft relation writes failed", relationFailures);
+      errors.push(t("projects.detail.draftRelationsFailed"));
     }
     if (errors.length > 0) {
       const message = errors.join(" ");

@@ -24,7 +24,9 @@ import {
   insertWorkspaceTab,
   isWithinTabScope,
   kindLocation,
+  locationKeepsItem,
   moveWorkspaceTab,
+  newTabLocation,
   parseClosedWorkspaceTabs,
   parseWorkspaceTabsState,
   relativeWorkspaceTabId,
@@ -131,6 +133,8 @@ let launcherRequests = $state(0);
 /** The shown tab that reads and restores the secondary view stores, or null when the shown tabs use different stores. */
 let secondaryTabId = $state<string | null>(null);
 let restoreSequence = 0;
+/** The latest restore of the shown tabs, settled once they show their locations or a later change takes over. */
+let latestRestore: Promise<void> = Promise.resolve();
 let activationOrder: string[] = [];
 let connection: WorkspaceTabsConnection | null = null;
 /** The last tab opened in the background and the tab it was opened from, so a run of them keeps its order. */
@@ -333,7 +337,12 @@ function cancelRestore(): void {
  * Show the active tab and the tab beside it. The partner goes first, so the active tab's own location wins
  * wherever the two touch the same stores.
  */
-async function restoreActive(): Promise<void> {
+function restoreActive(): Promise<void> {
+  latestRestore = restoreShownTabs();
+  return latestRestore;
+}
+
+async function restoreShownTabs(): Promise<void> {
   const host = connection;
   if (!host) return;
   const tab = currentTab();
@@ -365,11 +374,16 @@ async function restoreActive(): Promise<void> {
 
 /**
  * Drop the lock of a tab whose project or item could not be shown, for example because it was deleted, so
- * the tab follows the stores again instead of opening a new tab every time it is selected.
+ * the tab follows the stores again instead of opening a new tab every time it is selected. A tab kept on its
+ * item without a lock takes what the stores show instead.
  */
 function unlockIfUnreachable(tabId: string, shown: WorkspaceTabLocation): void {
   const tab = tabsState.tabs.find((candidate) => candidate.id === tabId);
-  if (tab?.locked && !isWithinTabScope(tab, shown)) setState(updateWorkspaceTab(tabsState, tabId, { locked: false }));
+  if (!tab || isWithinTabScope(tab, shown)) return;
+  if (tab.locked) setState(updateWorkspaceTab(tabsState, tabId, { locked: false }));
+  else if (locationKeepsItem(tab.location) && meaningfulLocation(shown)) {
+    setState(updateWorkspaceTab(tabsState, tabId, { location: shown }));
+  }
 }
 
 function commitState(next: WorkspaceTabsState): void {
@@ -715,7 +729,7 @@ function openInSplit(id: string): void {
 function newKindTab(kind: View): WorkspaceTab | null {
   const host = connection;
   if (!host || !canAddWorkspaceTab(tabsState)) return null;
-  const tab = createWorkspaceTab(createTabId(), host.adapter.read(kind) ?? kindLocation(kind));
+  const tab = createWorkspaceTab(createTabId(), newTabLocation(host.adapter.read(kind) ?? kindLocation(kind)));
   return { ...tab, ...tabNames(host.adapter, tab) };
 }
 
@@ -757,7 +771,7 @@ function showNeighborOf(id: string): void {
 function openKind(kind: View): void {
   const host = connection;
   if (!host) return;
-  const location = host.adapter.read(kind) ?? kindLocation(kind);
+  const location = newTabLocation(host.adapter.read(kind) ?? kindLocation(kind));
   const tab = createWorkspaceTab(createTabId(), location);
   commitState(insertWorkspaceTab(tabsState, { ...tab, ...tabNames(host.adapter, tab) }, "end"));
 }
@@ -1118,6 +1132,10 @@ export function getWorkspaceTabs() {
     },
     /** The view stores a shown tab reads and restores. */
     paneScope: scopeOf,
+    /** Settles once the shown tabs finish restoring their locations into the view stores. */
+    whenRestored(): Promise<void> {
+      return latestRestore;
+    },
     navigationScope,
     navigateIn,
     holds,

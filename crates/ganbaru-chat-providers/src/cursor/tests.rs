@@ -5,17 +5,22 @@ use super::executable::*;
 use super::interactions::*;
 use super::normalizer::{CursorEventNormalizer, CursorRouteState};
 use super::protocol::*;
-use super::session::initialize_session;
+use super::session::{
+    AcpAuthPreference, AcpInboundQueue, auth_preference, initialize_session,
+    require_session_loading, select_auth_method,
+};
+use super::transport::AcpInboundMessage;
 use crate::events::{CanonicalEvent, CanonicalRuntimeEvent};
 use crate::models::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use support::*;
 
 mod integration;
-mod support;
+pub(super) mod support;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,6 +120,7 @@ fn executable_probe_parses_versions_accounts_and_protected_arguments() {
 
     let settings = CursorProviderSettings {
         api_endpoint: Some("https://cursor.example.test/api".to_string()),
+        auth_method: None,
     };
     assert_eq!(
         launch_arguments(&["--verbose".to_string()], &settings).unwrap(),
@@ -186,6 +192,7 @@ fn grok_acp_arguments_models_and_questions_preserve_provider_values() {
             question_id: "strategy".to_string(),
             selected_option_ids: vec!["focused".to_string()],
             free_form_text: None,
+            attachment_ids: Vec::new(),
         }],
     )
     .unwrap();
@@ -246,6 +253,120 @@ fn grok_process_environment_uses_the_configured_provider_home() {
     );
 }
 
+/// A private home replaces the configured one in the environment and in the continuation group,
+/// so a keyed launch never reads the login kept in the configured home or resumes its sessions.
+#[test]
+fn a_private_grok_home_replaces_the_configured_home() {
+    let home = TestDirectory::new("grok-configured-home");
+    let private = TestDirectory::new("grok-private-home");
+    let mut provider = configuration(home.path(), None);
+    provider.family_id = ProviderFamilyId::new("grok").unwrap();
+    let settings = CursorProviderSettings::default();
+    let configured_group = acp_continuation_group(
+        &provider,
+        &settings,
+        super::driver::AcpProviderFlavor::Grok,
+        None,
+    )
+    .unwrap();
+    provider.private_home = Some(private.path().to_string_lossy().into_owned());
+    let environment = process_environment_for(&provider, "Grok").unwrap();
+    assert_eq!(
+        environment.get("GROK_HOME").map(String::as_str),
+        Some(private.path().to_string_lossy().as_ref())
+    );
+    let private_group = acp_continuation_group(
+        &provider,
+        &settings,
+        super::driver::AcpProviderFlavor::Grok,
+        None,
+    )
+    .unwrap();
+    assert_ne!(configured_group, private_group);
+
+    provider.private_home = Some("relative/home".to_string());
+    assert!(process_environment_for(&provider, "Grok").is_err());
+}
+
+/// A configured xAI key, resolved from a credential reference before launch, reaches the
+/// process environment and selects key authentication; a blank or absent key keeps the account
+/// login, and the app's own environment never selects the key on its own.
+#[test]
+fn grok_authenticates_with_the_configured_api_key_and_reports_its_source() {
+    let home = TestDirectory::new("grok-api-key");
+    let mut provider = configuration(home.path(), None);
+    provider.family_id = ProviderFamilyId::new("grok").unwrap();
+
+    let login = CursorProviderDriver::new_grok(provider.clone()).unwrap();
+    assert!(!login.grok_uses_api_key());
+    assert_eq!(login.auth_source(), Some(ProviderAuthSource::AccountLogin));
+    assert_eq!(
+        login.auth_preference(),
+        AcpAuthPreference::Flavor("cached_token")
+    );
+    assert!(
+        !process_environment_for(&provider, "Grok")
+            .unwrap()
+            .contains_key("XAI_API_KEY")
+    );
+
+    let mut blank = provider.clone();
+    blank
+        .environment
+        .insert("XAI_API_KEY".to_string(), "  ".to_string());
+    let blank = CursorProviderDriver::new_grok(blank).unwrap();
+    assert_eq!(blank.auth_source(), Some(ProviderAuthSource::AccountLogin));
+
+    let mut keyed = provider;
+    keyed
+        .environment
+        .insert("XAI_API_KEY".to_string(), "xai-fixture-key".to_string());
+    let environment = process_environment_for(&keyed, "Grok").unwrap();
+    assert_eq!(
+        environment.get("XAI_API_KEY").map(String::as_str),
+        Some("xai-fixture-key")
+    );
+    let keyed = CursorProviderDriver::new_grok(keyed).unwrap();
+    assert!(keyed.grok_uses_api_key());
+    assert_eq!(keyed.auth_source(), Some(ProviderAuthSource::ApiKey));
+    assert_eq!(
+        keyed.auth_preference(),
+        AcpAuthPreference::Flavor("xai.api_key")
+    );
+
+    let mut cursor = configuration(home.path(), None);
+    cursor
+        .environment
+        .insert("XAI_API_KEY".to_string(), "xai-fixture-key".to_string());
+    let cursor = CursorProviderDriver::new(cursor).unwrap();
+    assert!(!cursor.grok_uses_api_key());
+    assert_eq!(cursor.auth_source(), None);
+}
+
+#[test]
+fn grok_api_key_detection_needs_the_exact_variable_with_a_value() {
+    use std::collections::BTreeMap;
+    let environment =
+        |name: &str, value: &str| BTreeMap::from([(name.to_string(), value.to_string())]);
+    assert!(super::session::grok_api_key_configured(&environment(
+        "XAI_API_KEY",
+        "key"
+    )));
+    assert!(!super::session::grok_api_key_configured(&environment(
+        "XAI_API_KEY",
+        " \t"
+    )));
+    assert!(!super::session::grok_api_key_configured(&environment(
+        "GROK_API_KEY",
+        "key"
+    )));
+    assert!(!super::session::grok_api_key_configured(&BTreeMap::new()));
+    assert_eq!(
+        super::session::grok_api_key_configured(&environment("xai_api_key", "key")),
+        cfg!(windows)
+    );
+}
+
 #[test]
 fn negotiated_capabilities_and_model_traits_are_truthful() {
     let initialize = parse_initialize(initialize_response(false)).unwrap();
@@ -254,7 +375,12 @@ fn negotiated_capabilities_and_model_traits_are_truthful() {
         true,
     )
     .unwrap();
-    let capabilities = negotiated_capabilities_for(AcpProviderFlavor::Cursor, &initialize, &setup);
+    let capabilities = negotiated_capabilities_for(
+        AcpProviderFlavor::Cursor,
+        &initialize,
+        Some(&setup),
+        ObservedAcpCapabilities::default(),
+    );
     for capability in [
         ProviderCapability::NativeResume,
         ProviderCapability::NativePlan,
@@ -288,25 +414,325 @@ fn negotiated_capabilities_and_model_traits_are_truthful() {
             }
         }))
         .unwrap(),
-        &parse_session_setup(
-            json!({
-                "sessionId": "limited",
-                "configOptions": [{
-                    "id": "thinking",
-                    "name": "Thinking",
-                    "type": "boolean",
-                    "currentValue": false,
-                    "options": []
-                }]
-            }),
-            true,
-        )
-        .unwrap(),
+        Some(
+            &parse_session_setup(
+                json!({
+                    "sessionId": "limited",
+                    "configOptions": [{
+                        "id": "thinking",
+                        "name": "Thinking",
+                        "type": "boolean",
+                        "currentValue": false,
+                        "options": []
+                    }]
+                }),
+                true,
+            )
+            .unwrap(),
+        ),
+        ObservedAcpCapabilities::default(),
     );
     assert!(!disabled.supports(ProviderCapability::NativeResume));
     assert!(!disabled.supports(ProviderCapability::NativePlan));
     assert!(!disabled.supports(ProviderCapability::DynamicModelChange));
     assert!(!disabled.supports(ProviderCapability::Images));
+}
+
+fn minimal_initialize(agent_capabilities: Value) -> AcpInitializeResponse {
+    parse_initialize(json!({ "protocolVersion": 1, "agentCapabilities": agent_capabilities }))
+        .unwrap()
+}
+
+#[test]
+fn every_acp_capability_has_a_source() {
+    let initialize = minimal_initialize(json!({}));
+    let setup = parse_session_setup(json!({ "sessionId": "minimal" }), true).unwrap();
+    for flavor in [AcpProviderFlavor::Cursor, AcpProviderFlavor::Grok] {
+        let capabilities = negotiated_capabilities_for(
+            flavor,
+            &initialize,
+            Some(&setup),
+            ObservedAcpCapabilities::default(),
+        );
+        for capability in [
+            ProviderCapability::Approvals,
+            ProviderCapability::FileReferences,
+            ProviderCapability::StructuredQuestions,
+            ProviderCapability::StructuredPlans,
+            ProviderCapability::ProviderDiffs,
+            ProviderCapability::ReasoningSummaries,
+        ] {
+            assert!(
+                capabilities.supports(capability),
+                "{flavor:?} {capability:?}"
+            );
+        }
+        for capability in [
+            ProviderCapability::NativeResume,
+            ProviderCapability::NativePlan,
+            ProviderCapability::Images,
+            ProviderCapability::DynamicModelChange,
+            ProviderCapability::SlashCommands,
+        ] {
+            assert!(
+                !capabilities.supports(capability),
+                "{flavor:?} {capability:?}"
+            );
+        }
+        assert!(
+            capabilities
+                .entries
+                .iter()
+                .filter(|entry| !entry.supported)
+                .all(|entry| entry.explanation.is_some())
+        );
+    }
+}
+
+#[test]
+fn observed_capabilities_turn_on_at_the_next_session_start() {
+    let initialize = minimal_initialize(json!({}));
+    let setup = parse_session_setup(json!({ "sessionId": "observed" }), true).unwrap();
+    let mut observed = ObservedAcpCapabilities::default();
+    observed.merge(ObservedAcpCapabilities {
+        slash_commands: true,
+        ..ObservedAcpCapabilities::default()
+    });
+    observed.merge(ObservedAcpCapabilities::default());
+    assert!(observed.slash_commands);
+    let capabilities = negotiated_capabilities_for(
+        AcpProviderFlavor::Cursor,
+        &initialize,
+        Some(&setup),
+        observed,
+    );
+    assert!(capabilities.supports(ProviderCapability::SlashCommands));
+}
+
+#[test]
+fn route_state_records_commands_and_reasoning_the_agent_sends() {
+    let normalizer = CursorEventNormalizer::new_for_provider(
+        ProviderInstanceId::new("cursor-instance").unwrap(),
+        ChatThreadId::new("thread").unwrap(),
+        ProviderSessionId::new("session").unwrap(),
+        "cursor",
+        "Cursor",
+    );
+    let mut state = CursorRouteState::new(
+        "provider-thread".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+        None,
+        Vec::new(),
+        std::env::temp_dir(),
+    );
+    let update = |update: Value| json!({ "sessionId": "provider-thread", "update": update });
+    normalizer
+        .normalize_session_update(
+            &mut state,
+            update(
+                json!({ "sessionUpdate": "available_commands_update", "availableCommands": [] }),
+            ),
+        )
+        .unwrap();
+    assert!(!state.observed.slash_commands);
+    normalizer
+        .normalize_session_update(
+            &mut state,
+            update(json!({
+                "sessionUpdate": "available_commands_update",
+                "availableCommands": [{ "name": "review", "description": "Review changes" }]
+            })),
+        )
+        .unwrap();
+    assert!(state.observed.slash_commands);
+    normalizer
+        .normalize_session_update(
+            &mut state,
+            update(
+                json!({ "sessionUpdate": "available_commands_update", "availableCommands": [] }),
+            ),
+        )
+        .unwrap();
+    assert!(state.observed.slash_commands);
+    assert!(!state.observed.reasoning);
+    let _ = normalizer.normalize_session_update(
+        &mut state,
+        update(json!({
+            "sessionUpdate": "agent_thought_chunk",
+            "content": { "type": "text", "text": "Thinking" }
+        })),
+    );
+    assert!(state.observed.reasoning);
+}
+
+#[test]
+fn config_option_updates_replace_the_route_options() {
+    let normalizer = test_normalizer();
+    let mut state = test_route_state();
+    let events = normalizer
+        .normalize_session_update(
+            &mut state,
+            json!({
+                "sessionId": "provider-thread",
+                "update": { "sessionUpdate": "config_option_update", "configOptions": config_options() }
+            }),
+        )
+        .unwrap();
+    assert!(events.is_empty());
+    assert_eq!(
+        state
+            .config_options
+            .iter()
+            .map(|option| option.id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "model",
+            "reasoning",
+            "context_size",
+            "fast",
+            "thinking",
+            "mode"
+        ]
+    );
+}
+
+#[test]
+fn usage_updates_map_context_and_keep_only_valid_costs() {
+    let normalizer = test_normalizer();
+    let mut state = test_route_state();
+    let usage = |update: Value, state: &mut CursorRouteState| {
+        normalizer
+            .normalize_session_update(
+                state,
+                json!({ "sessionId": "provider-thread", "update": update }),
+            )
+            .unwrap()
+    };
+
+    let events = usage(
+        json!({ "sessionUpdate": "usage_update", "used": 42, "size": 1000 }),
+        &mut state,
+    );
+    let [event] = events.as_slice() else {
+        panic!("one usage event");
+    };
+    let CanonicalEvent::ThreadUsageUpdated(update) = &event.event else {
+        panic!("usage event");
+    };
+    assert_eq!(update.context_tokens, Some(42));
+    assert_eq!(update.context_limit, Some(1000));
+    assert!(update.cost.is_none());
+    assert!(state.observed.usage);
+    assert!(
+        !state.observed.cost,
+        "a usage update without a cost reports no cost"
+    );
+
+    for invalid_cost in [
+        json!({ "amount": -1.0, "currency": "USD" }),
+        json!({ "amount": 1.0, "currency": "" }),
+        json!({ "amount": 1.0, "currency": "U$D" }),
+        json!("free"),
+    ] {
+        let events = usage(
+            json!({ "sessionUpdate": "usage_update", "used": 1, "size": 2, "cost": invalid_cost }),
+            &mut state,
+        );
+        let CanonicalEvent::ThreadUsageUpdated(update) = &events[0].event else {
+            panic!("usage event");
+        };
+        assert!(update.cost.is_none());
+    }
+    assert!(!state.observed.cost);
+
+    let events = usage(
+        json!({ "sessionUpdate": "usage_update", "used": 7, "size": 9, "cost": { "amount": 0.5, "currency": "EUR" } }),
+        &mut state,
+    );
+    let CanonicalEvent::ThreadUsageUpdated(update) = &events[0].event else {
+        panic!("usage event");
+    };
+    let cost = update.cost.as_ref().unwrap();
+    assert_eq!((cost.amount, cost.currency.as_str()), (0.5, "EUR"));
+    assert!(state.observed.cost);
+
+    for malformed in [
+        json!({ "sessionUpdate": "usage_update", "used": "many", "size": 2 }),
+        json!({ "sessionUpdate": "usage_update", "used": 1 }),
+        json!({ "sessionUpdate": "usage_update", "used": -1, "size": 2 }),
+    ] {
+        let events = usage(malformed, &mut state);
+        assert!(
+            matches!(events.as_slice(), [event] if matches!(event.event, CanonicalEvent::Unknown(_))),
+            "a malformed usage update stays visible as an unknown event"
+        );
+    }
+}
+
+fn test_normalizer() -> CursorEventNormalizer {
+    CursorEventNormalizer::new_for_provider(
+        ProviderInstanceId::new("cursor-instance").unwrap(),
+        ChatThreadId::new("thread").unwrap(),
+        ProviderSessionId::new("session").unwrap(),
+        "cursor",
+        "Cursor",
+    )
+}
+
+fn test_route_state() -> CursorRouteState {
+    CursorRouteState::new(
+        "provider-thread".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+        None,
+        Vec::new(),
+        std::env::temp_dir(),
+    )
+}
+
+#[test]
+fn mcp_capabilities_parse_tolerantly() {
+    for (agent_capabilities, http, sse) in [
+        (json!({}), false, false),
+        (
+            json!({ "mcpCapabilities": { "http": false } }),
+            false,
+            false,
+        ),
+        (json!({ "mcpCapabilities": { "http": true } }), true, false),
+        (
+            json!({ "mcpCapabilities": { "http": true, "sse": true } }),
+            true,
+            true,
+        ),
+        (
+            json!({ "mcpCapabilities": { "http": "yes" } }),
+            false,
+            false,
+        ),
+        (json!({ "mcpCapabilities": "http" }), false, false),
+        (json!({ "mcpCapabilities": null }), false, false),
+    ] {
+        let parsed = minimal_initialize(agent_capabilities.clone());
+        assert_eq!(
+            parsed.agent_capabilities.mcp_capabilities,
+            AcpMcpCapabilities { http, sse },
+            "{agent_capabilities}"
+        );
+    }
+}
+
+#[test]
+fn cursor_and_grok_keep_http_mcp_by_flavor() {
+    let silent = minimal_initialize(json!({}));
+    for flavor in [AcpProviderFlavor::Cursor, AcpProviderFlavor::Grok] {
+        assert!(silent.agent_capabilities.accepts_http_mcp(flavor));
+    }
 }
 
 #[test]
@@ -403,6 +829,17 @@ fn ask_permissions_accept_only_verified_workspace_edits() {
     )
     .unwrap();
     assert!(auto_permission_option(&command, SafetyMode::AskForApproval).is_none());
+    assert_eq!(
+        auto_permission_option(&edit, SafetyMode::ApproveForMe)
+            .unwrap()
+            .option_id,
+        "allow-this",
+        "self-approving work edits the workspace without asking"
+    );
+    assert!(
+        auto_permission_option(&command, SafetyMode::ApproveForMe).is_none(),
+        "a command request still reaches the person"
+    );
     let external = parse_permission(
         &permission("edit", "/tmp/cursor-external-file"),
         workspace.path(),
@@ -476,6 +913,7 @@ fn structured_questions_are_separate_and_validate_provider_choices() {
             question_id: "strategy".to_string(),
             selected_option_ids: vec!["focused".to_string()],
             free_form_text: None,
+            attachment_ids: Vec::new(),
         }],
     )
     .unwrap();
@@ -487,6 +925,7 @@ fn structured_questions_are_separate_and_validate_provider_choices() {
                 question_id: "strategy".to_string(),
                 selected_option_ids: vec!["invented".to_string()],
                 free_form_text: None,
+                attachment_ids: Vec::new(),
             }]
         )
         .is_err()
@@ -575,12 +1014,32 @@ fn confirmed_resume_not_found_is_narrow() {
 }
 
 #[test]
+fn an_agent_that_cannot_load_sessions_reports_the_earlier_session_as_not_found() {
+    let initialize = |load_session: bool| {
+        parse_initialize(json!({
+            "protocolVersion": 1,
+            "agentCapabilities": { "loadSession": load_session }
+        }))
+        .unwrap()
+    };
+    assert!(require_session_loading(&initialize(true), "Cursor").is_ok());
+    let error = require_session_loading(&initialize(false), "Cursor").unwrap_err();
+    assert_eq!(
+        error.code,
+        ChatErrorCode::ResumeNotFound,
+        "a continuation hands off instead of failing"
+    );
+}
+
+#[test]
 fn session_start_auth_resume_and_configuration_rollback_are_bounded() {
     crate::test_block_on(async {
         let healthy_state = Arc::new(AcpFixtureState::default());
         let mut healthy = fixture_connection(FixtureScenario::Healthy, Arc::clone(&healthy_state));
+        let mut healthy_inbound = AcpInboundQueue::new(healthy.take_inbound().unwrap());
         let started = initialize_session(
             &healthy,
+            &mut healthy_inbound,
             "/fixture/workspace",
             None,
             modes(SafetyMode::AskForApproval, InteractionMode::Plan),
@@ -610,8 +1069,10 @@ fn session_start_auth_resume_and_configuration_rollback_are_bounded() {
             FixtureScenario::AuthenticationRequired,
             Arc::clone(&auth_state),
         );
+        let mut auth_inbound = AcpInboundQueue::new(auth.take_inbound().unwrap());
         let auth_error = initialize_session(
             &auth,
+            &mut auth_inbound,
             "/fixture/workspace",
             None,
             modes(SafetyMode::AskForApproval, InteractionMode::Build),
@@ -629,8 +1090,10 @@ fn session_start_auth_resume_and_configuration_rollback_are_bounded() {
         let resume_state = Arc::new(AcpFixtureState::default());
         let mut resume =
             fixture_connection(FixtureScenario::ResumeMissing, Arc::clone(&resume_state));
+        let mut resume_inbound = AcpInboundQueue::new(resume.take_inbound().unwrap());
         let resume_error = initialize_session(
             &resume,
+            &mut resume_inbound,
             "/fixture/workspace",
             Some("missing-session"),
             modes(SafetyMode::AskForApproval, InteractionMode::Build),
@@ -649,8 +1112,10 @@ fn session_start_auth_resume_and_configuration_rollback_are_bounded() {
         let rollback_state = Arc::new(AcpFixtureState::default());
         let mut rollback =
             fixture_connection(FixtureScenario::RejectFastMode, Arc::clone(&rollback_state));
+        let mut rollback_inbound = AcpInboundQueue::new(rollback.take_inbound().unwrap());
         let rollback_error = initialize_session(
             &rollback,
+            &mut rollback_inbound,
             "/fixture/workspace",
             None,
             modes(SafetyMode::AskForApproval, InteractionMode::Build),
@@ -680,6 +1145,178 @@ fn session_start_auth_resume_and_configuration_rollback_are_bounded() {
             .await
             .unwrap();
     });
+}
+
+#[test]
+fn turn_end_closes_open_tool_items_so_none_reach_the_next_turn() {
+    let normalizer = CursorEventNormalizer::new_for_provider(
+        ProviderInstanceId::new("cursor-instance-1".to_string()).unwrap(),
+        ChatThreadId::new("thread-1".to_string()).unwrap(),
+        ProviderSessionId::new("session-1".to_string()).unwrap(),
+        "cursor",
+        "Cursor",
+    );
+    let mut state = CursorRouteState::new(
+        "cursor-session-fixture".to_string(),
+        modes(SafetyMode::AskForApproval, InteractionMode::Build),
+        None,
+        Vec::new(),
+        PathBuf::from("/fixture/workspace"),
+    );
+    let tool_call = |id: &str| {
+        json!({
+            "sessionId": "cursor-session-fixture",
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": id,
+                "title": "Run tests",
+                "kind": "execute",
+                "status": "in_progress"
+            }
+        })
+    };
+    let interrupted_items = |events: &[CanonicalRuntimeEvent]| {
+        events
+            .iter()
+            .filter_map(|event| match &event.event {
+                CanonicalEvent::ItemCompleted(item)
+                    if item.status == ActivityStatus::Interrupted =>
+                {
+                    Some(item.item_id.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    state.active_turn_id = Some(ChatTurnId::new("turn-1".to_string()).unwrap());
+    normalizer
+        .normalize_session_update(&mut state, tool_call("tool-b"))
+        .unwrap();
+    normalizer
+        .normalize_session_update(&mut state, tool_call("tool-a"))
+        .unwrap();
+    let completed = normalizer.finish_turn(&mut state, "end_turn").unwrap();
+    assert_eq!(interrupted_items(&completed), ["tool-a", "tool-b"]);
+    assert!(matches!(
+        completed.last().map(|event| &event.event),
+        Some(CanonicalEvent::TurnCompleted(_))
+    ));
+
+    state.active_turn_id = Some(ChatTurnId::new("turn-2".to_string()).unwrap());
+    let aborted = normalizer
+        .interrupted(&mut state, "transport closed")
+        .unwrap();
+    assert!(interrupted_items(&aborted).is_empty());
+    assert!(matches!(
+        aborted.last().map(|event| &event.event),
+        Some(CanonicalEvent::TurnAborted(_))
+    ));
+}
+
+#[test]
+fn session_load_drains_replayed_history_and_keeps_live_updates() {
+    crate::test_block_on(async {
+        let state = Arc::new(AcpFixtureState::default());
+        let mut connection = fixture_connection(FixtureScenario::ReplayOnLoad, Arc::clone(&state));
+        let mut inbound = AcpInboundQueue::new(connection.take_inbound().unwrap())
+            .with_replay_idle(Duration::from_millis(200));
+        let started = initialize_session(
+            &connection,
+            &mut inbound,
+            "/fixture/workspace",
+            Some("cursor-session-fixture"),
+            modes(SafetyMode::AskForApproval, InteractionMode::Build),
+            None,
+            &[],
+            &context("replay-load"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(started.session_id, "cursor-session-fixture");
+        let received = state.received();
+        let permission_reply = received
+            .iter()
+            .find(|message| message["id"] == REPLAYED_PERMISSION_ID)
+            .expect("the replayed permission request is answered");
+        assert_eq!(
+            permission_reply["result"]["outcome"]["outcome"],
+            "cancelled"
+        );
+
+        let client = connection.client();
+        let prompt = tokio::spawn(async move {
+            client
+                .request(
+                    "session/prompt",
+                    json!({ "sessionId": "cursor-session-fixture", "prompt": [] }),
+                    &context("live-prompt"),
+                )
+                .await
+        });
+        let mut routed = Vec::new();
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(1), inbound.recv())
+                .await
+                .expect("the live update reaches the router")
+                .expect("the transport stays open");
+            let live = update_text(&message) == Some("Fixture response");
+            routed.push(message);
+            if live {
+                break;
+            }
+        }
+        assert!(
+            routed
+                .iter()
+                .all(|message| update_text(message) != Some(REPLAYED_HISTORY_TEXT)),
+            "replayed history never reaches the router: {routed:?}"
+        );
+        assert!(matches!(
+            &routed[0],
+            AcpInboundMessage::Notification { params, .. }
+                if params["update"]["sessionUpdate"] == "available_commands_update"
+        ));
+        assert!(
+            routed.iter().all(|message| !matches!(
+                message,
+                AcpInboundMessage::Notification { params, .. }
+                    if matches!(
+                        params["update"]["sessionUpdate"].as_str(),
+                        Some("current_mode_update" | "config_option_update")
+                    )
+            )),
+            "late mode and configuration updates are folded into the setup: {routed:?}"
+        );
+        let mode_requests = state
+            .received()
+            .into_iter()
+            .filter(|message| {
+                message["method"] == "session/set_config_option"
+                    && message["params"]["configId"] == "mode"
+            })
+            .map(|message| message["params"]["value"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mode_requests,
+            [json!("code")],
+            "the requested Build mode is applied over the late {LATE_MODE_ID} mode"
+        );
+        prompt.abort();
+        connection
+            .stop(Duration::ZERO, Duration::from_millis(20))
+            .await
+            .unwrap();
+    });
+}
+
+fn update_text(message: &AcpInboundMessage) -> Option<&str> {
+    match message {
+        AcpInboundMessage::Notification { params, .. } => {
+            params["update"]["content"]["text"].as_str()
+        }
+        _ => None,
+    }
 }
 
 fn event_kind_present(events: &[CanonicalRuntimeEvent], expected: &str) -> bool {
@@ -796,5 +1433,250 @@ fn cursor_and_grok_read_their_verified_configuration_paths() {
         for path in never_read {
             assert!(!reads.contains(path), "{name} never loads {path:?}");
         }
+    }
+}
+
+/// Cursor writes files and, under a permissive project allowlist, runs the shell without asking
+/// the client, so Cursor and generic agents claim no folder boundary. Grok claims them only when
+/// the sandbox confines its process on this device.
+#[test]
+fn acp_flavors_hold_conversation_boundaries_unless_grok_is_confined() {
+    use crate::ProviderDriver;
+
+    let home = TestDirectory::new("authority-support");
+    let cursor = CursorProviderDriver::new(configuration(home.path(), None)).unwrap();
+    let mut grok_configuration = configuration(home.path(), None);
+    grok_configuration.family_id = ProviderFamilyId::new("grok").unwrap();
+    let grok = CursorProviderDriver::new_grok(grok_configuration).unwrap();
+    let generic =
+        CursorProviderDriver::new_generic(generic_configuration(home.path(), None)).unwrap();
+
+    for driver in [&cursor, &generic] {
+        let name = driver.metadata().display_name;
+        let support = driver.authority_support();
+        assert!(support.isolated_conversation, "{name}");
+        assert!(support.internal_host_tools, "{name}");
+        for (flag, held) in [
+            ("deny_shell", support.deny_shell),
+            ("read_only_root", support.read_only_root),
+            ("writable_root", support.writable_root),
+            ("confined_commands", support.confined_commands),
+            ("network_boundary", support.network_boundary),
+            ("classified_publish", support.classified_publish),
+            ("person_approved_commands", support.person_approved_commands),
+        ] {
+            assert!(!held, "{name} must not claim {flag}");
+        }
+    }
+    assert_eq!(
+        grok.authority_support(),
+        super::confinement::grok_authority_support(super::confinement::sandbox_helper().is_some())
+    );
+}
+
+#[test]
+fn cursor_versions_admit_against_the_tested_range() {
+    use crate::registry::{admits_sessions, refused_version};
+    for (version, admission) in [
+        ("2026.04.07", ProviderVersionAdmission::BelowMinimum),
+        (MINIMUM_CURSOR_VERSION, ProviderVersionAdmission::Supported),
+        ("2026.04.08-abc1234", ProviderVersionAdmission::Supported),
+        ("2026.05.01", ProviderVersionAdmission::Supported),
+        ("2026.11.11", ProviderVersionAdmission::Supported),
+        ("2026.11.12", ProviderVersionAdmission::UntestedNewer),
+        ("2031.01.01", ProviderVersionAdmission::UntestedNewer),
+    ] {
+        let parsed = parse_version(version).unwrap();
+        let result = ensure_supported_version(parsed);
+        assert_eq!(result.is_ok(), admits_sessions(admission), "{version}");
+        match result {
+            Ok(admitted) => assert_eq!(admitted, admission, "{version}"),
+            Err(error) => assert_eq!(
+                refused_version(&error),
+                Some((admission, parsed.to_string())),
+                "{version}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn grok_versions_admit_against_the_tested_range() {
+    use crate::registry::{admits_sessions, refused_version};
+    for (version, admission) in [
+        ("0.2.40", ProviderVersionAdmission::BelowMinimum),
+        ("1.0.76", ProviderVersionAdmission::BelowMinimum),
+        ("1.0.77", ProviderVersionAdmission::Supported),
+        ("1.0.88", ProviderVersionAdmission::UntestedNewer),
+        ("2.0.0", ProviderVersionAdmission::AtOrAboveCeiling),
+        ("stable", ProviderVersionAdmission::Unreadable),
+    ] {
+        let result = ensure_supported_grok_version(version);
+        assert_eq!(result.is_ok(), admits_sessions(admission), "{version}");
+        match result {
+            Ok(admitted) => assert_eq!(admitted, admission, "{version}"),
+            Err(error) => assert_eq!(
+                refused_version(&error),
+                Some((admission, version.to_string())),
+                "{version}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn cursor_agents_need_the_confined_build_only_where_the_helper_confines_them() {
+    assert_eq!(
+        cursor_agent_minimum_version("2026.11.10", true).as_deref(),
+        Some("2026.11.11")
+    );
+    assert_eq!(cursor_agent_minimum_version("2026.11.11", true), None);
+    assert_eq!(cursor_agent_minimum_version("2026.11.10", false), None);
+    assert_eq!(cursor_agent_minimum_version("unreadable", true), None);
+}
+
+#[test]
+fn auth_selection_follows_advertised_methods() {
+    let select = |preference, initialize: &AcpInitializeResponse| {
+        select_auth_method("Agent", preference, initialize)
+    };
+    let cursor_preference = auth_preference(AcpProviderFlavor::Cursor, false, None);
+    let grok_cached = auth_preference(AcpProviderFlavor::Grok, false, None);
+    let grok_api_key = auth_preference(AcpProviderFlavor::Grok, true, None);
+
+    let none = minimal_initialize(json!({}));
+    assert_eq!(select(cursor_preference, &none).unwrap(), None);
+    assert_eq!(
+        select(AcpAuthPreference::Configured(None), &none).unwrap(),
+        None
+    );
+
+    let cursor = parse_initialize(initialize_response(true)).unwrap();
+    assert_eq!(
+        select(cursor_preference, &cursor).unwrap().as_deref(),
+        Some(CURSOR_AUTH_METHOD)
+    );
+    assert_eq!(
+        select(grok_api_key, &cursor).unwrap_err().code,
+        ChatErrorCode::AuthenticationRequired
+    );
+
+    let grok = parse_initialize(json!({
+        "protocolVersion": 1,
+        "agentCapabilities": {},
+        "authMethods": [{ "id": "cached_token", "name": "Cached token" }]
+    }))
+    .unwrap();
+    assert_eq!(
+        select(grok_cached, &grok).unwrap().as_deref(),
+        Some("cached_token")
+    );
+    assert!(select(grok_api_key, &grok).is_err());
+}
+
+#[test]
+fn generic_auth_uses_only_the_configured_method() {
+    let generic = parse_initialize(json!({
+        "protocolVersion": 1,
+        "agentCapabilities": {},
+        "authMethods": [
+            { "id": "oauth", "name": "Browser sign in" },
+            { "id": "api-key", "name": "API key" }
+        ]
+    }))
+    .unwrap();
+    assert_eq!(
+        select_auth_method(
+            "ACP agent",
+            auth_preference(AcpProviderFlavor::Generic, false, Some("api-key")),
+            &generic
+        )
+        .unwrap()
+        .as_deref(),
+        Some("api-key")
+    );
+    for configured in [None, Some("password")] {
+        let error = select_auth_method(
+            "ACP agent",
+            auth_preference(AcpProviderFlavor::Generic, false, configured),
+            &generic,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::AuthenticationRequired);
+        assert!(
+            error.message.contains("Browser sign in (oauth)"),
+            "{error:?}"
+        );
+        assert!(error.message.contains("API key (api-key)"), "{error:?}");
+    }
+}
+
+#[test]
+fn probe_capabilities_keep_session_dependent_entries_potential() {
+    let initialize = minimal_initialize(json!({}));
+    let capabilities = negotiated_capabilities_for(
+        AcpProviderFlavor::Cursor,
+        &initialize,
+        None,
+        ObservedAcpCapabilities::default(),
+    );
+    assert!(capabilities.supports(ProviderCapability::NativePlan));
+    assert!(capabilities.supports(ProviderCapability::DynamicModelChange));
+    assert!(!capabilities.supports(ProviderCapability::NativeResume));
+    assert!(!capabilities.supports(ProviderCapability::Images));
+}
+
+#[test]
+fn generic_capability_table_omits_vendor_extensions() {
+    let generic = acp_capability_kinds(AcpProviderFlavor::Generic);
+    for vendor_only in [
+        ProviderCapability::StructuredQuestions,
+        ProviderCapability::StructuredPlans,
+        ProviderCapability::ProviderDiffs,
+    ] {
+        assert!(!generic.contains(&vendor_only), "{vendor_only:?}");
+        assert!(
+            acp_capability_kinds(AcpProviderFlavor::Cursor).contains(&vendor_only),
+            "{vendor_only:?}"
+        );
+    }
+    for standard in [
+        ProviderCapability::Approvals,
+        ProviderCapability::DynamicModelChange,
+        ProviderCapability::FileReferences,
+        ProviderCapability::NativeResume,
+        ProviderCapability::ContextUsage,
+        ProviderCapability::CostReporting,
+    ] {
+        assert!(generic.contains(&standard), "{standard:?}");
+    }
+}
+
+#[test]
+fn resource_links_stay_inside_the_workspace() {
+    let workspace = TestDirectory::new("resource-link");
+    let link =
+        super::operations::resource_link(workspace.path(), "docs/read me.md", "ACP agent").unwrap();
+    let expected = reqwest::Url::from_file_path(workspace.path().join("docs/read me.md")).unwrap();
+    assert_eq!(link["type"], "resource_link");
+    assert_eq!(link["uri"], expected.as_str());
+    assert!(expected.as_str().contains("read%20me.md"));
+    assert_eq!(link["name"], "read me.md");
+    assert_eq!(link["title"], "docs/read me.md");
+    for escaping in [
+        "../secret",
+        "/etc/passwd",
+        "docs/../../secret",
+        "./main.rs",
+        "a\0b",
+        "",
+    ] {
+        assert_eq!(
+            super::operations::resource_link(workspace.path(), escaping, "ACP agent")
+                .unwrap_err()
+                .code,
+            ChatErrorCode::Validation,
+            "{escaping:?}"
+        );
     }
 }

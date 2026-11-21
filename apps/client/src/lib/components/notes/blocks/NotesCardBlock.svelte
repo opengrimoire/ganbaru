@@ -7,6 +7,7 @@
   import Sigma from "@lucide/svelte/icons/sigma";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesErrorDetail } from "$lib/notes/failure";
   import { bookmarkCaptionPlainText, canOpenBookmarkUrl } from "$lib/notes/block-types/bookmark";
   import { blockPlainText } from "$lib/notes/blocks/factory";
   import {
@@ -148,7 +149,7 @@
       bookmarkOpenError = null;
       await openNotesExternalUrl(block.bookmark.url.trim());
     } catch (error) {
-      bookmarkOpenError = error instanceof Error ? error.message : String(error);
+      bookmarkOpenError = notesErrorDetail(error);
     }
   }
 
@@ -158,7 +159,7 @@
       embedOpenError = null;
       await openNotesExternalUrl(block.embed.url.trim());
     } catch (error) {
-      embedOpenError = error instanceof Error ? error.message : String(error);
+      embedOpenError = notesErrorDetail(error);
     }
   }
 
@@ -168,7 +169,7 @@
       linkPreviewOpenError = null;
       await openNotesExternalUrl(block.link_preview.url.trim());
     } catch (error) {
-      linkPreviewOpenError = error instanceof Error ? error.message : String(error);
+      linkPreviewOpenError = notesErrorDetail(error);
     }
   }
 </script>
@@ -210,7 +211,7 @@
         onkeydown={(event) => handleInputKeydown(event, text || event.currentTarget.value)}
       />
       {#if bookmarkOpenError}
-        <Notice class="text-[0.733333rem]" message={t("notes.openBookmarkFailed", bookmarkOpenError)} copy={bookmarkOpenError} />
+        <Notice class="text-[0.733333rem]" message={t("notes.openBookmarkFailed")} copy={bookmarkOpenError} />
       {/if}
     </div>
     <button
@@ -264,7 +265,7 @@
         {/if}
       </output>
       {#if linkPreviewOpenError}
-        <Notice class="text-[0.733333rem]" message={t("notes.openLinkPreviewFailed", linkPreviewOpenError)} copy={linkPreviewOpenError} />
+        <Notice class="text-[0.733333rem]" message={t("notes.openLinkPreviewFailed")} copy={linkPreviewOpenError} />
       {/if}
     </div>
     <button
@@ -311,7 +312,7 @@
         {embedTitle || t("notes.blockType.embed")}
       </output>
       {#if embedOpenError}
-        <Notice class="text-[0.733333rem]" message={t("notes.openEmbedFailed", embedOpenError)} copy={embedOpenError} />
+        <Notice class="text-[0.733333rem]" message={t("notes.openEmbedFailed")} copy={embedOpenError} />
       {/if}
     </div>
     <button

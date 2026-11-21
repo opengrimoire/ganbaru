@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { OFF_SYNC_STATUS, SYNC_RELAY_PROBLEMS, type SyncStatusView } from "$lib/api/sync";
+import { OFF_SYNC_STATUS, SYNC_ERROR_CODES, SYNC_RELAY_PROBLEMS, type SyncStatusView } from "$lib/api/sync";
+import { en } from "$lib/i18n/messages/en";
+import { es } from "$lib/i18n/messages/es";
 import { translateFromPartialCatalog, type Translate } from "$lib/i18n/translator.svelte";
 import {
   canRequestSync,
   syncClockAheadLines,
   syncConnectionLabel,
   syncDegradedRows,
+  syncErrorMessage,
+  SYNC_ERROR_MESSAGE_KEYS,
   formatSyncTime,
   syncConflictLines,
   syncDeviceAcknowledgementLines,
@@ -315,5 +319,28 @@ describe("relay delivery stages", () => {
   it("reports everything confirmed only when nothing waits locally or at the anchor", () => {
     expect(syncDeliveryLines(t, status({ state: "idle", relay }))).toEqual(["Every change from this device is confirmed"]);
     expect(syncDeliveryLines(t, status({ state: "idle", pendingLocalChanges: 1, relay }))).toEqual([]);
+  });
+});
+
+function catalogText(catalog: unknown, key: string): unknown {
+  return key.split(".").reduce<unknown>(
+    (branch, part) =>
+      typeof branch === "object" && branch !== null ? (branch as Record<string, unknown>)[part] : undefined,
+    catalog,
+  );
+}
+
+describe("sync error messages", () => {
+  it("has an English and a Spanish sentence for every error code", () => {
+    for (const code of SYNC_ERROR_CODES) {
+      const key = SYNC_ERROR_MESSAGE_KEYS[code];
+      expect(typeof catalogText(en, key), `en ${key}`).toBe("string");
+      expect(typeof catalogText(es, key), `es ${key}`).toBe("string");
+      expect(syncErrorMessage(t, code)).toBe(catalogText(en, key));
+    }
+  });
+
+  it("explains a failure without a code without showing native text", () => {
+    expect(syncErrorMessage(t, null)).toBe("Sync stopped because of an error.");
   });
 });

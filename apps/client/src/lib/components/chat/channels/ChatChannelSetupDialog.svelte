@@ -8,8 +8,8 @@
   import * as chatApi from "$lib/api/chat";
   import type { ChatChannelRead, ChatChannelMembershipRemovalPreview } from "$lib/chat/contracts";
   import type { ChatSidebarSection } from "$lib/chat/channel-sections";
-  import { applyChannelMemberChanges } from "$lib/chat/teammates/channel-member-changes";
-  import { summarizeChannelMembers } from "$lib/chat/teammates/channel-members";
+  import { agentNeedsSetupHere } from "$lib/chat/agents/agent-setup";
+  import { summarizeChannelMembers } from "$lib/chat/agents/channel-members";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import LocalPersonAvatar from "$lib/components/contacts/LocalPersonAvatar.svelte";
   import ParticipantPicker from "$lib/components/contacts/ParticipantPicker.svelte";
@@ -19,6 +19,7 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { activateModalFocus, activateModalKeyboardLayer, trapModalTabKey } from "$lib/modal-focus";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
@@ -26,6 +27,7 @@
   import { useProjects } from "$lib/stores/projects.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { CHAT_OPEN_MEMBERS_EVENT, type ChatOpenMembersDetail } from "./members-panel-events";
 
   let {
     channel = null,
@@ -56,7 +58,7 @@
     ...sections.map((section) => ({ value: section.id, label: section.name })),
   ]);
   const currentMembers = summarizeChannelMembers(currentChannel?.memberships ?? []);
-  const currentTeammateIds = currentMembers.teammateIds;
+  const currentAgentIds = currentMembers.agentIds;
 
   let dialog = $state<HTMLDivElement | null>(null);
   let nameInput = $state<HTMLInputElement | null>(null);
@@ -64,34 +66,35 @@
   let name = $state(currentChannel?.name ?? "");
   let topic = $state(currentChannel?.topic ?? "");
   let sectionId = $state(untrack(() => initialSectionId ?? ""));
-  let selectedTeammateIds = $state<ReadonlySet<string>>(new Set(currentTeammateIds));
+  let selectedAgentIds = $state<ReadonlySet<string>>(new Set(currentAgentIds));
   let pickerOpen = $state(false);
   let saving = $state(false);
   let error = $state<string | null>(null);
-  let removal = $state<{ teammateId: string; preview: ChatChannelMembershipRemovalPreview } | null>(null);
+  let removal = $state<{ agentId: string; preview: ChatChannelMembershipRemovalPreview } | null>(null);
   let removalBusy = $state(false);
 
-  const memberTeammates = $derived(chat.teammates.filter((teammate) => selectedTeammateIds.has(teammate.participant.id)));
+  const memberAgents = $derived(chat.agents.filter((agent) => selectedAgentIds.has(agent.participant.id)));
   const localName = $derived(preferences.profileDisplayName.trim() || t("contacts.you"));
   const localDetail = $derived(preferences.profileDisplayName.trim() ? t("contacts.you") : null);
   const removalParticipant = $derived.by(() => {
     const pending = removal;
     if (!pending) return null;
-    return chat.teammates.find((teammate) => teammate.participant.id === pending.teammateId)?.participant ?? null;
+    return chat.agents.find((agent) => agent.participant.id === pending.agentId)?.participant ?? null;
   });
 
-  function addMembers(teammateIds: string[]): void {
-    selectedTeammateIds = new Set([...selectedTeammateIds, ...teammateIds]);
+  function addMembers(agentIds: string[]): void {
+    selectedAgentIds = new Set([...selectedAgentIds, ...agentIds]);
   }
 
-  /** Settings covers the dialog, so it closes now and comes back for the same channel once Settings is gone. */
-  function createTeammate(): void {
+  /**
+   * Agents come from installed providers, so a new one starts in Settings > Agents. Settings covers the dialog,
+   * so it closes now and comes back for the same channel once Settings is gone.
+   */
+  function setUpProvider(): void {
     const channelId = currentChannel?.id;
     onCancel();
-    settingsLauncher.open("chat", {
-      chatSubsection: "teammates",
-      chatChannelId: channelId,
-      chatCreateTeammate: true,
+    settingsLauncher.open("agents", {
+      agentsSubsection: "providers",
       onClosed: () => {
         if (channelId) paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-edit-channel", { detail: { channelId } }));
         else paneEvents.dispatchEvent(new Event("ganbaru:chat-new-channel"));
@@ -99,41 +102,52 @@
     });
   }
 
-  function dropMember(teammateId: string): void {
-    const next = new Set(selectedTeammateIds);
-    next.delete(teammateId);
-    selectedTeammateIds = next;
+  function dropMember(agentId: string): void {
+    const next = new Set(selectedAgentIds);
+    next.delete(agentId);
+    selectedAgentIds = next;
   }
 
-  async function removeMember(teammateId: string): Promise<void> {
-    if (!currentChannel || !currentTeammateIds.has(teammateId)) {
-      dropMember(teammateId);
+  async function removeMember(agentId: string): Promise<void> {
+    if (!currentChannel || !currentAgentIds.has(agentId)) {
+      dropMember(agentId);
       return;
     }
     if (removalBusy) return;
     removalBusy = true;
     error = null;
     try {
-      const access = await chatApi.readChatTeammateAccess(teammateId);
-      const preview = await chatApi.previewChatChannelMembershipRemoval({
-        teammateId,
-        channelId: currentChannel.id,
-        expectedAccessRevision: access.accessRevision,
-      });
-      if (preview.activeAssignmentCount === 0 && preview.activeAuthorizationCount === 0) dropMember(teammateId);
-      else removal = { teammateId, preview };
+      const preview = await chatApi.previewChatChannelMembershipRemoval({ agentId, channelId: currentChannel.id });
+      if (preview.willRevokeActiveWork) removal = { agentId, preview };
+      else dropMember(agentId);
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.membersAction"));
     } finally {
       removalBusy = false;
     }
   }
 
-  function configureMember(participantId: string): void {
-    onCancel();
-    paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-configure-teammate", {
-      detail: { participantId, channelId: currentChannel?.id },
+  /** Agent access, instructions, and models live in the channel's details, so this opens them for the channel. */
+  function openAgentSettings(channelId: string): void {
+    paneEvents.dispatchEvent(new CustomEvent(CHAT_OPEN_MEMBERS_EVENT, {
+      detail: { channelId, addMembers: false } satisfies ChatOpenMembersDetail,
     }));
+  }
+
+  function configureMember(): void {
+    const channelId = currentChannel?.id;
+    onCancel();
+    if (channelId) openAgentSettings(channelId);
+  }
+
+  /** Adds and removes the agents this dialog changed, and reports whether any were added. */
+  async function applyAgentChanges(channelId: string): Promise<boolean> {
+    const added = [...selectedAgentIds].filter((agentId) => !currentAgentIds.has(agentId));
+    const removed = [...currentAgentIds].filter((agentId) => !selectedAgentIds.has(agentId));
+    for (const agentId of removed) await chatApi.removeChatChannelAgent({ channelId, agentId });
+    for (const agentId of added) await chatApi.addChatChannelAgent({ channelId, agentId });
+    if (added.length > 0 || removed.length > 0) await chat.channelAgentsChanged(channelId);
+    return added.length > 0;
   }
 
   async function save(): Promise<void> {
@@ -144,14 +158,12 @@
       let saved = currentChannel
         ? await chat.updateChannelDetails(currentChannel, name, topic)
         : await chat.createChannel({ id: `channel:${crypto.randomUUID()}`, projectId, name, topic });
-      if (await applyChannelMemberChanges(currentTeammateIds, selectedTeammateIds, saved.id)) {
-        saved = await chatApi.readChatChannel(saved.id);
-        chat.activeChannels = chat.activeChannels.map((entry) => entry.id === saved.id ? saved : entry);
-        await chat.refreshTeammates();
-      }
+      const addedAgents = await applyAgentChanges(saved.id);
+      saved = chat.activeChannels.find((entry) => entry.id === saved.id) ?? saved;
       onSaved(saved, sectionId || null);
+      if (addedAgents) openAgentSettings(saved.id);
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.channelAction"));
     } finally {
       saving = false;
     }
@@ -205,11 +217,11 @@
     <div class="dialog-body flex min-h-0 flex-col gap-4 overflow-y-auto px-5 py-3 text-panel">
       <label class="grid gap-1.5">
         <span class="field-label">{t("chat.channels.name")}</span>
-        <div class="field flex h-9 items-center gap-1 pl-2.5"><Hash size={14} class="shrink-0 text-muted-foreground" /><input bind:this={nameInput} class="field-bare min-w-0 flex-1" bind:value={name} maxlength="80" required disabled={currentChannel?.isDefault} /></div>
+        <div class="field flex items-center gap-1 pl-2.5"><Hash size={14} class="shrink-0 text-muted-foreground" /><input bind:this={nameInput} class="field-bare min-w-0 flex-1" bind:value={name} maxlength="80" required disabled={currentChannel?.isDefault} /></div>
       </label>
       <label class="grid gap-1.5">
         <span class="field-label">{t("chat.channels.topic")}</span>
-        <input class="field h-9" bind:value={topic} maxlength="250" placeholder={t("chat.channels.topicPlaceholder")} />
+        <input class="field" bind:value={topic} maxlength="250" placeholder={t("chat.channels.topicPlaceholder")} />
       </label>
       {#if sections.length > 0}
         <div class="grid gap-1.5">
@@ -239,16 +251,16 @@
             </MemberRow>
           {/each}
         </ul>
-        <span class="member-group-label">{t("chat.organization.teammates")}</span>
+        <span class="member-group-label">{t("chat.organization.agents")}</span>
         <ul class="member-list">
-          {#each memberTeammates as teammate (teammate.participant.id)}
-            <MemberRow name={teammate.participant.displayName} detail={teammate.configurationState === "healthy" ? teammate.role || t("chat.organization.aiTeammate") : t("chat.organization.needsSetup")}>
-              {#snippet avatar()}<ChatParticipantAvatar participant={teammate.participant} {teammate} size={MEMBER_AVATAR_SIZE} />{/snippet}
+          {#each memberAgents as agent (agent.participant.id)}
+            <MemberRow name={agent.participant.displayName} detail={agentNeedsSetupHere(agent.configurationState) ? t("chat.organization.needsSetup") : t("chat.organization.aiAgent")}>
+              {#snippet avatar()}<ChatParticipantAvatar participant={agent.participant} {agent} size={MEMBER_AVATAR_SIZE} />{/snippet}
               {#snippet trailing()}
-                {#if currentTeammateIds.has(teammate.participant.id)}
-                  <button type="button" class="dialog-icon-button" aria-label={t("chat.organization.accessSettings", teammate.participant.displayName)} onclick={() => configureMember(teammate.participant.id)}><Settings2 size={14} /></button>
+                {#if currentAgentIds.has(agent.participant.id)}
+                  <button type="button" class="dialog-icon-button" aria-label={t("chat.organization.accessSettings", agent.participant.displayName)} onclick={configureMember}><Settings2 size={14} /></button>
                 {/if}
-                <button type="button" class="dialog-icon-button" aria-label={t("chat.organization.removeTeammate", teammate.participant.displayName)} disabled={removalBusy} onclick={() => void removeMember(teammate.participant.id)}><X size={14} /></button>
+                <button type="button" class="dialog-icon-button" aria-label={t("chat.organization.removeAgent", agent.participant.displayName)} disabled={removalBusy} onclick={() => void removeMember(agent.participant.id)}><X size={14} /></button>
               {/snippet}
             </MemberRow>
           {/each}
@@ -270,23 +282,23 @@
   <ParticipantPicker
     anchor={addMembersButton}
     title={t("contacts.picker.title")}
-    teammates={chat.teammates}
-    memberTeammateIds={selectedTeammateIds}
-    includeTeammates
+    agents={chat.agents}
+    memberAgentIds={selectedAgentIds}
+    includeAgents
     space={{ kind: "channel", name: name.trim() }}
     onConfirm={addMembers}
     onClose={() => { pickerOpen = false; }}
-    onNewTeammate={createTeammate}
+    onNewAgent={setUpProvider}
   />
 {/if}
 
 {#if removal && removalParticipant}
   <ConfirmDialog
-    title={t("chat.organization.removeTeammateTitle", removalParticipant.displayName)}
-    message={t("chat.organization.removeTeammateImpact", removal.preview.activeAssignmentCount, removal.preview.activeAuthorizationCount)}
-    confirmLabel={t("chat.organization.removeTeammateConfirm")}
+    title={t("chat.organization.removeAgentTitle", removalParticipant.displayName)}
+    message={t("chat.organization.removeAgentImpact", removal.preview.activeAssignmentCount, removal.preview.activeAuthorizationCount)}
+    confirmLabel={t("chat.organization.removeAgentConfirm")}
     cancelLabel={t("common.cancel")}
-    onConfirm={() => { if (removal) dropMember(removal.teammateId); removal = null; }}
+    onConfirm={() => { if (removal) dropMember(removal.agentId); removal = null; }}
     onCancel={() => { removal = null; }}
   />
 {/if}

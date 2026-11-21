@@ -4,6 +4,9 @@ import { withWorkingFolderTrust } from "$lib/api/working-folder-trust";
 import { translate } from "$lib/i18n/translator.svelte";
 import type {
   ChatAttachmentRead,
+  ChatChannelId,
+  ChatReplyThreadId,
+  ChatCommitDraftContextRead,
   ProjectWorkingFolderDirectoryRead,
   ProjectWorkingFolderFilePreview,
   ChatTerminalCloseResult,
@@ -34,6 +37,7 @@ import type {
 } from "$lib/chat/contracts";
 import {
   parseChatAttachmentRead,
+  parseChatCommitDraftContext,
   parseProjectWorkingFolderDirectory,
   parseProjectWorkingFolderFilePreview,
   parseChatTerminalCloseResult,
@@ -388,9 +392,13 @@ export interface DiscoveredPreviewServer {
   sourceLabel: string;
 }
 
-export async function discoverPreviewServers(threadId: ChatThreadId): Promise<DiscoveredPreviewServer[]> {
+/** Finds loopback servers announced by the terminals of one channel and working folder. */
+export async function discoverPreviewServers(
+  channelId: ChatChannelId,
+  workingFolderId: ProjectWorkingFolderId,
+): Promise<DiscoveredPreviewServer[]> {
   const value = await invoke<unknown>("chat_browser_discover_servers", {
-    dbUrl: await ensureDbUrl(), threadId,
+    dbUrl: await ensureDbUrl(), channelId, workingFolderId,
   });
   if (!Array.isArray(value)) throw new Error("Invalid preview server list");
   return value.map((entry) => {
@@ -511,6 +519,48 @@ export async function readGitStatus(workingFolderId: ProjectWorkingFolderId, exe
   }));
 }
 
+/**
+ * Reads the bounded staged changes and recent commit subjects an agent drafts a commit message from.
+ *
+ * @param workingFolderId Working folder whose staged changes are read.
+ * @param executionEnvironmentId Execution environment of the folder, or null for the folder itself.
+ * @returns The validated draft context.
+ */
+export async function readCommitDraftContext(
+  workingFolderId: ProjectWorkingFolderId,
+  executionEnvironmentId: string | null = null,
+): Promise<ChatCommitDraftContextRead> {
+  return parseChatCommitDraftContext(await invoke<unknown>("chat_read_commit_draft_context", {
+    dbUrl: await ensureDbUrl(),
+    workingFolderId,
+    executionEnvironmentId,
+  }));
+}
+
+/**
+ * Reads the bounded changes and commit subjects `head` adds over `base`, for drafting change request text.
+ *
+ * @param workingFolderId Working folder whose repository is read.
+ * @param base Branch the change request merges into.
+ * @param head Branch the change request proposes.
+ * @param executionEnvironmentId Execution environment of the folder, or null for the folder itself.
+ * @returns The validated draft context.
+ */
+export async function readChangeRequestDraftContext(
+  workingFolderId: ProjectWorkingFolderId,
+  base: string,
+  head: string,
+  executionEnvironmentId: string | null = null,
+): Promise<ChatCommitDraftContextRead> {
+  return parseChatCommitDraftContext(await invoke<unknown>("chat_read_change_request_draft_context", {
+    dbUrl: await ensureDbUrl(),
+    workingFolderId,
+    base,
+    head,
+    executionEnvironmentId,
+  }));
+}
+
 export async function stageGitPaths(
   workingFolderId: ProjectWorkingFolderId,
   paths: string[],
@@ -618,21 +668,21 @@ export async function discardGitPaths(
 }
 
 export async function readChatTerminalLayout(
-  threadId: ChatThreadId,
+  channelId: ChatChannelId,
   workingFolderId: ProjectWorkingFolderId,
 ): Promise<ChatTerminalLayoutRead> {
   return parseChatTerminalLayout(await invoke<unknown>("chat_read_terminal_layout", {
-    dbUrl: await ensureDbUrl(), threadId, workingFolderId,
+    dbUrl: await ensureDbUrl(), channelId, workingFolderId,
   }));
 }
 
 export async function saveChatTerminalPanelLayout(
-  threadId: ChatThreadId,
+  channelId: ChatChannelId,
   workingFolderId: ProjectWorkingFolderId,
   panel: ChatTerminalPanelLayout,
 ): Promise<ChatTerminalLayoutRead> {
   return parseChatTerminalLayout(await invoke<unknown>("chat_save_terminal_panel_layout", {
-    dbUrl: await ensureDbUrl(), threadId, workingFolderId, panel,
+    dbUrl: await ensureDbUrl(), channelId, workingFolderId, panel,
   }));
 }
 
@@ -732,68 +782,51 @@ function externalOpenPrompt() {
   };
 }
 
+/**
+ * Lists the terminals one Chat panel scope owns in a channel working folder.
+ *
+ * @param replyThreadId - The reply thread whose own tab shows the panels, or null for the channel's panels.
+ */
 export async function listChatTerminals(
-  threadId: ChatThreadId,
+  channelId: ChatChannelId,
   workingFolderId: ProjectWorkingFolderId,
+  replyThreadId: ChatReplyThreadId | null = null,
 ): Promise<ChatTerminalRead[]> {
   return parseChatTerminals(await invoke<unknown>("chat_list_terminals", {
     dbUrl: await ensureDbUrl(),
-    threadId,
+    channelId,
     workingFolderId,
+    replyThreadId,
   }));
 }
 
-/** Localized text for the native terminal start dialog; Rust appends the folder and shell. */
-function terminalStartPrompt() {
-  return {
-    title: translate("chat.inspector.terminalStartTitle"),
-    message: translate("chat.inspector.terminalStartMessage"),
-    allowLabel: translate("chat.inspector.terminalStartAllow"),
-    cancelLabel: translate("chat.inspector.terminalStartCancel"),
-  };
-}
-
 /**
- * Binds a thread to its working folder before terminal requests. An unsaved draft thread is
- * reserved natively; a saved thread is only checked against the folder.
- */
-export async function reserveChatDraftThread(
-  threadId: ChatThreadId,
-  workingFolderId: ProjectWorkingFolderId,
-): Promise<void> {
-  await invoke<unknown>("chat_reserve_draft_thread", {
-    dbUrl: await ensureDbUrl(),
-    threadId,
-    workingFolderId,
-  });
-}
-
-/**
- * Starts a terminal. The first terminal for a folder and environment in each app launch asks
- * for a native confirmation; declining rejects with a `cancelled` Chat error.
+ * Starts a terminal in the channel's authorized working folder, owned by the channel's panels or, with a
+ * `replyThreadId`, by the panels of that reply thread's own tab.
  */
 export async function createChatTerminal(request: {
   terminalId: string;
-  threadId: ChatThreadId;
+  channelId: ChatChannelId;
+  replyThreadId?: ChatReplyThreadId | null;
   workingFolderId: ProjectWorkingFolderId;
   columns: number;
   rows: number;
 }): Promise<ChatTerminalSnapshotRead> {
   return parseChatTerminalSnapshot(await invoke<unknown>("chat_terminal_create", {
     dbUrl: await ensureDbUrl(),
-    request: { ...request, startPrompt: terminalStartPrompt() },
+    request,
   }));
 }
 
 export async function readChatTerminalSnapshot(
   terminalId: string,
-  threadId: ChatThreadId,
+  channelId: ChatChannelId,
   workingFolderId: ProjectWorkingFolderId,
 ): Promise<ChatTerminalSnapshotRead> {
   return parseChatTerminalSnapshot(await invoke<unknown>("chat_terminal_snapshot", {
     dbUrl: await ensureDbUrl(),
     terminalId,
-    threadId,
+    channelId,
     workingFolderId,
   }));
 }
@@ -810,7 +843,7 @@ export async function readChatTerminalSnapshot(
  */
 export async function attachChatTerminal(
   terminalId: string,
-  threadId: ChatThreadId,
+  channelId: ChatChannelId,
   workingFolderId: ProjectWorkingFolderId,
   subscriptionId: string,
   channel: Channel<unknown>,
@@ -818,7 +851,7 @@ export async function attachChatTerminal(
   return parseChatTerminalSnapshot(await invoke<unknown>("chat_terminal_attach", {
     dbUrl: await ensureDbUrl(),
     terminalId,
-    threadId,
+    channelId,
     workingFolderId,
     subscriptionId,
     channel,
@@ -845,39 +878,39 @@ export async function detachChatTerminal(terminalId: string, subscriptionId: str
 
 export async function writeChatTerminal(
   terminalId: string,
-  threadId: ChatThreadId,
+  channelId: ChatChannelId,
   workingFolderId: ProjectWorkingFolderId,
   text: string,
 ): Promise<void> {
   await invoke("chat_terminal_input", {
     dbUrl: await ensureDbUrl(),
-    request: { terminalId, threadId, workingFolderId, text },
+    request: { terminalId, channelId, workingFolderId, text },
   });
 }
 
 export async function resizeChatTerminal(
   terminalId: string,
-  threadId: ChatThreadId,
+  channelId: ChatChannelId,
   workingFolderId: ProjectWorkingFolderId,
   columns: number,
   rows: number,
 ): Promise<void> {
   await invoke("chat_terminal_resize", {
     dbUrl: await ensureDbUrl(),
-    request: { terminalId, threadId, workingFolderId, columns, rows },
+    request: { terminalId, channelId, workingFolderId, columns, rows },
   });
 }
 
 export async function closeChatTerminal(
   terminalId: string,
-  threadId: ChatThreadId,
+  channelId: ChatChannelId,
   workingFolderId: ProjectWorkingFolderId,
   confirmed: boolean,
 ): Promise<ChatTerminalCloseResult> {
   return parseChatTerminalCloseResult(await invoke<unknown>("chat_terminal_close", {
     dbUrl: await ensureDbUrl(),
     terminalId,
-    threadId,
+    channelId,
     workingFolderId,
     confirmed,
   }));

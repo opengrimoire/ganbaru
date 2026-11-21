@@ -165,7 +165,7 @@
               {/snippet}
             </IconPicker>
           {/if}
-          <input data-dialog-autofocus id="music-playlist-name" bind:value={name} disabled={protectedIdentity && mode === "edit"} class="field h-9 min-w-0 flex-1 px-3 text-xs" />
+          <input data-dialog-autofocus id="music-playlist-name" bind:value={name} disabled={protectedIdentity && mode === "edit"} class="field min-w-0 flex-1 px-3 text-xs" />
         </div>
         {#if mode !== "duplicate"}
           <fieldset class="mt-4"><legend class="text-xs font-medium">{t("music.builder.intendedUses")}</legend><div class="mt-2 flex flex-wrap gap-x-4 gap-y-2">{#each useOptions as use}<label class="flex items-center gap-2 text-xs"><Checkbox checked={intendedUses.includes(use)} onChange={() => toggleUse(use)} />{useLabel(use)}</label>{/each}</div></fieldset>

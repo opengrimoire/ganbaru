@@ -9,13 +9,15 @@
   import { cn } from "$lib/utils";
   import { completeVaultHandoffOnboarding } from "$lib/vault/handoff-onboarding";
   import { getActiveVaultInfo } from "$lib/vault/state";
-  import OnboardingNav, { type OnboardingNavPrimary } from "../OnboardingNav.svelte";
+  import OnboardingNav, { type OnboardingNavPrimary, type OnboardingNavProgress } from "../OnboardingNav.svelte";
   import VaultHandoffPanel from "./VaultHandoffPanel.svelte";
 
   /**
    * The linking screen of first use, with the shared onboarding navigation at its bottom: its primary action continues
-   * without linking until a device links, and Back, when the shell passes `onBack`, returns to the screen before it
-   * until a device links.
+   * without linking until a device links. With `backLocked`, Back shows disabled, for first use, where the screens
+   * before linking cannot be chosen again. With `progress`, the navigation shows the screen's place among the first-use
+   * screens. `onComplete` receives the vault active once the screen is left, which a linked or server copy may have
+   * replaced.
    */
   let {
     platform,
@@ -23,7 +25,8 @@
     initialInvitation = null,
     initialStatus = null,
     bootstrapReplicaOnLink = false,
-    onBack,
+    backLocked = false,
+    progress,
     onComplete,
   }: {
     platform: "desktop" | "android";
@@ -31,8 +34,9 @@
     initialInvitation?: PairingInvitation | null;
     initialStatus?: PairingStatus | null;
     bootstrapReplicaOnLink?: boolean;
-    onBack?: () => void;
-    onComplete: () => void | Promise<void>;
+    backLocked?: boolean;
+    progress?: OnboardingNavProgress;
+    onComplete: (activeVaultId: string) => void | Promise<void>;
   } = $props();
 
   const { t } = getLocalization();
@@ -51,8 +55,8 @@
    */
   const primary = $derived<OnboardingNavPrimary>(
     !linked
-      ? { label: t("vaultHandoff.continueWithoutLinking"), onClick: () => void leave(false) }
-      : { label: t("vaultHandoff.continue"), onClick: () => void leave(true), busy: !readyToContinue },
+      ? { label: t("vaultHandoff.continueWithoutLinking"), onClick: () => void leave(false), busy: completing }
+      : { label: t("vaultHandoff.continue"), onClick: () => void leave(true), busy: completing || !readyToContinue },
   );
 
   function safeStorage(): Storage | undefined {
@@ -82,7 +86,7 @@
     try {
       if (!persistCompletion) await releaseStarterVault();
       const activeId = persistCompletion ? await activeVaultId() : null;
-      await onComplete();
+      await onComplete(activeId ?? vaultId);
       const storage = safeStorage();
       if (storage) {
         completeVaultHandoffOnboarding(storage, vaultId);
@@ -95,30 +99,6 @@
   }
 </script>
 
-{#if completing}
-  <section
-    class="grid h-full w-full place-items-center"
-    role="status"
-    aria-label={t("common.loading")}
-  >
-    <svg
-      viewBox="0 0 48 48"
-      class="ganbaru-loading-ring size-12 text-foreground"
-      aria-hidden="true"
-    >
-      <circle
-        class="ganbaru-loading-ring-stroke"
-        cx="24"
-        cy="24"
-        r="18"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="3"
-        stroke-linecap="round"
-      />
-    </svg>
-  </section>
-{:else}
 <div class="@container flex h-full flex-col" data-vault-handoff-onboarding={platform}>
   <!-- The content hangs from the top, so the source choices in the title stay put while the panel below changes height. Android starts
        it higher so the tallest panel fits a phone screen without scrolling. -->
@@ -143,6 +123,5 @@
     </div>
   </section>
 
-  <OnboardingNav {primary} onBack={linked ? undefined : onBack} />
+  <OnboardingNav {primary} {backLocked} {progress} />
 </div>
-{/if}

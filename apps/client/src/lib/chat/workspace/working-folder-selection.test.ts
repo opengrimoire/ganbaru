@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectWorkingFolderRead } from "$lib/chat/contracts";
-import { preferredProjectWorkingFolder } from "./working-folder-selection";
+import {
+  channelPanelWorkingFolders,
+  preferredProjectWorkingFolder,
+  resolveChannelPanelWorkingFolder,
+} from "./working-folder-selection";
 
 function folder(
   id: string,
@@ -29,6 +33,35 @@ function folder(
     currentBranch: null, trust: "undecided",
   };
 }
+
+function withFolder(
+  entry: ProjectWorkingFolderRead,
+  change: Partial<ProjectWorkingFolderRead["workingFolder"]>,
+): ProjectWorkingFolderRead {
+  return { ...entry, workingFolder: { ...entry.workingFolder, ...change } };
+}
+
+describe("channel panel working folders", () => {
+  it("offers only the project's available unarchived folders in project order", () => {
+    const app = withFolder(folder("app", "external", "available"), { sortOrder: 20 });
+    const managed = folder("managed", "managed", "available");
+    const unbound = folder("unbound", "external", "unbound");
+    const archived = withFolder(folder("archived", "external", "available"), { archivedAt: "2026-07-26T12:00:00Z" });
+    const otherProject = folder("other", "managed", "available", "project-2");
+    expect(channelPanelWorkingFolders([app, unbound, managed, archived, otherProject], "project-1"))
+      .toEqual([managed, app]);
+    expect(channelPanelWorkingFolders([app, managed], null)).toEqual([]);
+  });
+
+  it("keeps the chosen folder while it stays bound and otherwise follows the channel default", () => {
+    const managed = folder("managed", "managed", "available");
+    const app = folder("app", "external", "available");
+    expect(resolveChannelPanelWorkingFolder([managed, app], "app", "managed")).toBe("app");
+    expect(resolveChannelPanelWorkingFolder([managed, app], null, "managed")).toBe("managed");
+    expect(resolveChannelPanelWorkingFolder([managed], "app", "managed")).toBe("managed");
+    expect(resolveChannelPanelWorkingFolder([], "app", null)).toBeNull();
+  });
+});
 
 describe("preferredProjectWorkingFolder", () => {
   it("restores an available remembered external folder", () => {

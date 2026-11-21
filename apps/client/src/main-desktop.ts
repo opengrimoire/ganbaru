@@ -165,6 +165,11 @@ const appPromise = (async () => {
             await hydrateUserThemes();
           });
           void appRuntimeReady.catch(() => undefined);
+          // A vault re-picked to recover from a startup error was already in use, so only a new one shows the tour then.
+          if (initialError === null || info.created) {
+            const { markWelcomeTourPending } = await import("./lib/vault/welcome-tour");
+            markWelcomeTourPending(safeStorage(), info.vaultId);
+          }
           await mountVaultHandoffOnboarding(info.vaultId, setupView, appRuntimeReady);
         },
       },
@@ -172,11 +177,11 @@ const appPromise = (async () => {
     return setupView;
   }
 
-  async function mountVaultHandoffOnboarding(
-    vaultId: string,
-    currentView?: MountedRoot,
-    appRuntimeReady: Promise<void> = Promise.resolve(),
-  ) {
+  /**
+   * Starts preparing the workspace App opens with while a first-use screen shows, and returns how to open App in place
+   * of the screen then: it waits for that preparation, retrying it if it failed, and opens App only once.
+   */
+  function startDesktopAppOpening(appRuntimeReady: Promise<void>): (currentView?: MountedRoot) => Promise<MountedRoot> {
     const appModulePromise = import("./App.svelte");
     void appModulePromise.catch(() => undefined);
     const prepareWorkspace = async () => {
@@ -185,11 +190,90 @@ const appPromise = (async () => {
       const { prepareDesktopWorkspace } = await import("./lib/windows/desktop-workspace-readiness");
       await prepareDesktopWorkspace();
     };
-    // Start data preparation while pairing is visible; keep failures retryable on Continue.
     const workspacePreparation = prepareWorkspace();
     void workspacePreparation.catch((error: unknown) => {
       console.warn("Desktop workspace preparation failed:", error);
     });
+    let opening: Promise<MountedRoot> | null = null;
+    return (currentView) => {
+      if (opening) return opening;
+      opening = Promise.all([appModulePromise, workspacePreparation.catch(prepareWorkspace)])
+        .then(async ([{ default: App }]) => {
+          if (currentView) await unmount(currentView);
+          return mount(App, { target });
+        })
+        .catch((error: unknown) => {
+          opening = null;
+          throw error;
+        });
+      return opening;
+    };
+  }
+
+  let welcomeTourModules: Promise<
+    [typeof import("$lib/components/vault/VaultWelcomeTourView.svelte"), typeof import("./lib/vault/welcome-tour")]
+  > | null = null;
+
+  /** Loads the feature tour once, so a screen before it can start the load and leave for the tour without waiting. */
+  function loadWelcomeTourModules() {
+    welcomeTourModules ??= Promise.all([
+      import("$lib/components/vault/VaultWelcomeTourView.svelte"),
+      import("./lib/vault/welcome-tour"),
+    ]).catch((error: unknown) => {
+      welcomeTourModules = null;
+      throw error;
+    });
+    return welcomeTourModules;
+  }
+
+  /** Replaces `currentView` with the feature tour of `vaultId`, whose last screen opens App through `openApp`. */
+  async function mountWelcomeTour(
+    vaultId: string,
+    openApp: (currentView?: MountedRoot) => Promise<MountedRoot>,
+    currentView?: MountedRoot,
+  ) {
+    const [{ default: VaultWelcomeTourView }, { completeWelcomeTour }] = await loadWelcomeTourModules();
+    if (currentView) await unmount(currentView);
+    let tourView: MountedRoot;
+    tourView = mount(VaultWelcomeTourView, {
+      target,
+      props: {
+        onComplete: async () => {
+          await openApp(tourView);
+          completeWelcomeTour(safeStorage(), vaultId);
+        },
+      },
+    });
+    return tourView;
+  }
+
+  /**
+   * Leaves the linking screen for the vault active by then: the feature tour when it is pending for that vault,
+   * carried over from `setupVaultId` if a linked copy replaced it, and App otherwise.
+   */
+  async function continueAfterLinking(
+    setupVaultId: string,
+    activeVaultId: string,
+    openApp: (currentView?: MountedRoot) => Promise<MountedRoot>,
+    currentView?: MountedRoot,
+  ): Promise<MountedRoot> {
+    const { carryWelcomeTour, welcomeTourPending } = await import("./lib/vault/welcome-tour");
+    const storage = safeStorage();
+    carryWelcomeTour(storage, setupVaultId, activeVaultId);
+    return welcomeTourPending(storage, activeVaultId)
+      ? mountWelcomeTour(activeVaultId, openApp, currentView)
+      : openApp(currentView);
+  }
+
+  async function mountVaultHandoffOnboarding(
+    vaultId: string,
+    currentView?: MountedRoot,
+    appRuntimeReady: Promise<void> = Promise.resolve(),
+  ) {
+    // Start data preparation while pairing is visible; keep failures retryable on Continue.
+    const openApp = startDesktopAppOpening(appRuntimeReady);
+    const { welcomeTourPending } = await import("./lib/vault/welcome-tour");
+    if (welcomeTourPending(safeStorage(), vaultId)) void loadWelcomeTourModules().catch(() => undefined);
     const [{ default: VaultHandoffOnboardingView }, handoffApi] = await Promise.all([
       import("$lib/components/vault/handoff/VaultHandoffOnboardingView.svelte"),
       import("$lib/api/vault-handoff"),
@@ -201,12 +285,7 @@ const appPromise = (async () => {
     });
     if (!initialStatus) {
       // Linking can be disabled for this run; Settings explains it, and startup must continue.
-      const [{ default: App }] = await Promise.all([
-        appModulePromise,
-        workspacePreparation.catch(prepareWorkspace),
-      ]);
-      if (currentView) await unmount(currentView);
-      return mount(App, { target });
+      return continueAfterLinking(vaultId, vaultId, openApp, currentView);
     }
     const initialInvitation = initialStatus.linked
       ? null
@@ -215,31 +294,16 @@ const appPromise = (async () => {
     if (currentView) await unmount(currentView);
 
     let onboardingView: MountedRoot;
-    let transitionPromise: Promise<void> | null = null;
-    const openApp = (): Promise<void> => {
-      if (transitionPromise) return transitionPromise;
-      perfMark("boot.onboarding-continue");
-      transitionPromise = Promise.all([
-        appModulePromise,
-        workspacePreparation.catch(prepareWorkspace),
-      ])
-        .then(async ([{ default: App }]) => {
-          await unmount(onboardingView);
-          mount(App, { target });
-        })
-        .catch((error: unknown) => {
-          transitionPromise = null;
-          throw error;
-        });
-      return transitionPromise;
-    };
     onboardingView = mount(VaultHandoffOnboardingView, {
       target,
       props: {
         vaultId,
         initialInvitation,
         initialStatus,
-        onComplete: openApp,
+        onComplete: async (activeVaultId: string) => {
+          perfMark("boot.onboarding-continue");
+          await continueAfterLinking(vaultId, activeVaultId, openApp, onboardingView);
+        },
       },
     });
     perfMark("boot.onboarding-mounted");
@@ -266,9 +330,14 @@ const appPromise = (async () => {
       if (!vaultHandoffOnboardingCompleted(safeStorage(), activeVault.vaultId)) {
         return await mountVaultHandoffOnboarding(activeVault.vaultId);
       }
+      const { welcomeTourPending } = await import("./lib/vault/welcome-tour");
+      if (welcomeTourPending(safeStorage(), activeVault.vaultId)) {
+        return await mountWelcomeTour(activeVault.vaultId, startDesktopAppOpening(Promise.resolve()));
+      }
     }
   } catch (err) {
     console.warn("Could not load the active vault:", err);
+    // VaultSetupView matches this native text to a localized message and never shows it.
     const vaultError = err instanceof Error ? err.message : String(err);
     return await mountVaultSetupView(vaultError);
   }

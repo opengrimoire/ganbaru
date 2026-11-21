@@ -8,6 +8,7 @@ import { readLastChatChannelId } from "$lib/chat/channel-sections";
 import { setActiveVaultIdentity } from "$lib/vault/active-vault";
 import { getChat, getChatStore, resetChatForVault } from "./chat.svelte";
 import { ChatConfigurationController } from "$lib/stores/chat/configuration-controller.svelte";
+import { multiProviderSettings } from "$lib/components/chat/composer/composer-test-store";
 
 const projects = vi.hoisted(() => ({
   selectedProjectId: "project",
@@ -34,23 +35,24 @@ function settings(sendKey: "enter" | "mod_enter" = "enter"): ChatSettingsRead {
   return {
     configuration: {
       providers: [], automaticProviderSetupDisabled: [], rememberedSelections: [],
-      workingFolderProviderPreferences: {}, panels: { inspectorWidthPx: 320 },
+      workingFolderProviderPreferences: {}, panels: { inspectorWidthPx: 320, replyThreadWidthPx: 440 },
       behavior: {
         sendKey, restoreLastSelectedThread: true, showReasoningSummaries: true,
-        automaticallyFoldSettledWork: true, terminalScrollbackLines: 1_000,
-        idleSessionTimeoutSeconds: 600, confirmMultilineTerminalPaste: true,
+        automaticallyFoldSettledWork: true, timelineDensity: "comfortable", terminalScrollbackLines: 1_000,
+        idleSessionTimeoutSeconds: 600, confirmMultilineTerminalPaste: true, notifyWaitingForYou: true,
+        notifyReviewReady: true, notifyFailures: true, announceBackgroundWork: true, notificationIncludeContent: false,
       },
     },
-    providerFamilies: [], providerInstances: [], credentialStoreAvailability: "available",
+    providerFamilies: [], providerInstances: [], installedExecutables: {}, credentialStoreAvailability: "available",
     lastSelectedThreadId: null,
   };
 }
 
 /** Builds navigation for local history that is independent of provider availability. */
-function channel(id = "general"): ChatChannelRead {
+function channel(id = "general", projectId = "project"): ChatChannelRead {
   return {
-    id, conversationId: `conversation-${id}`, projectId: "project", name: id, topic: "",
-    isDefault: id === "general", memberships: [], messageCount: 0, unreadCount: 0,
+    id, conversationId: `conversation-${id}`, projectId, name: id, topic: "",
+    isDefault: id === "general", memberships: [], messageCount: 0, unreadCount: 0, unreadReplyCount: 0, unseenFailure: false,
     latestPreview: null, lastActivityAt: "2026-09-22T12:00:00Z", attentionState: null,
     revision: 1, archivedAt: null, createdAt: "2026-09-22T12:00:00Z", updatedAt: "2026-09-22T12:00:00Z",
   };
@@ -67,7 +69,8 @@ function message(channelId: string): ChatMessageRead {
     },
     authorLabelSnapshot: "User", normalizedMarkdown: "Saved local history",
     richContent: { schemaVersion: 1, value: {} }, attachmentIds: [], references: [],
-    replyThread: null, orderKey: "c001", editedAt: null, createdAt: "2026-09-22T12:00:00Z",
+    replyThread: null, orderKey: "c001", awaitingDelivery: false, editedAt: null,
+    createdAt: "2026-09-22T12:00:00Z",
   };
 }
 
@@ -82,8 +85,8 @@ beforeEach(() => {
   vi.spyOn(chatApi, "recoverInterruptedChatTurns").mockResolvedValue();
   vi.spyOn(chatApi, "recoverChatAssignmentDispatchJobs").mockResolvedValue(0);
   vi.spyOn(chatApi, "listChatNavigationChannels").mockResolvedValue([channel(), channel("other")]);
-  vi.spyOn(chatApi, "listChatTeammates").mockResolvedValue([]);
-  vi.spyOn(chatApi, "listChatWaitingAssignments").mockResolvedValue([]);
+  vi.spyOn(chatApi, "listChatAgents").mockResolvedValue([]);
+  vi.spyOn(chatApi, "listChatReviewQueue").mockResolvedValue({ items: [], total: 0, failureCount: 0, truncated: false });
   vi.spyOn(chatApi, "readChatProjectPrimaryWorkingFolder").mockRejectedValue(new Error("no working folder"));
   vi.spyOn(chatApi, "readChatChannelPage").mockImplementation(async (channelId) => ({
     channelId, messages: [message(channelId)], previousCursor: null, revision: 1,
@@ -99,14 +102,37 @@ afterEach(() => {
 });
 
 describe("Chat startup", () => {
-  it("prewarms cached history without launching providers, then discovers once when opened", async () => {
+  it("discovers providers once as startup prewarms cached history, without waiting for them", async () => {
     await chat.prewarmForProject("project");
     expect(chat.loaded).toBe(true);
     expect(chat.channelMessages).toEqual([message("general")]);
-    expect(chatApi.discoverDefaultChatProviders).not.toHaveBeenCalled();
+    expect(chatApi.discoverDefaultChatProviders).toHaveBeenCalledOnce();
     await Promise.all([chat.ensureLoaded(), chat.ensureLoaded()]);
     expect(chatApi.discoverDefaultChatProviders).toHaveBeenCalledOnce();
     expect(chat.providerDiscoveryLoading).toBe(true);
+  });
+
+  it("rereads the agents when discovery finds a provider no agent covers, so it can be mentioned", async () => {
+    await chat.prewarmForProject("project");
+    const found = multiProviderSettings();
+    const discovered = found.providerInstances.map((provider) => ({
+      participant: { id: `agent-${provider.configuration.familyId}` },
+      providerFamilyId: provider.configuration.familyId,
+    })) as unknown as Awaited<ReturnType<typeof chatApi.listChatAgents>>;
+    vi.mocked(chatApi.listChatAgents).mockImplementation(async (archived) => (archived ? [] : discovered));
+    discovery.resolve(found);
+    await vi.waitFor(() => expect(chat.agents).toEqual(discovered));
+    const reads = vi.mocked(chatApi.listChatAgents).mock.calls.length;
+    vi.mocked(chatApi.readChatSettings).mockResolvedValue(found);
+    await chat.refreshSettings();
+    expect(chatApi.listChatAgents).toHaveBeenCalledTimes(reads);
+  });
+
+  it("discovers providers again for a vault activated after startup", async () => {
+    await chat.prewarmForProject("project");
+    resetChatForVault();
+    await chat.prewarmForProject("project");
+    expect(chatApi.discoverDefaultChatProviders).toHaveBeenCalledTimes(2);
   });
 
   it("loads the selected channel while provider discovery remains unresolved", async () => {
@@ -145,10 +171,10 @@ describe("Chat startup", () => {
       configuration: {
         schemaVersion: 1, instanceId: "provider", familyId: "codex", label: "Codex",
         enabled: true, executable: "codex", providerHome: null, launchArguments: [],
-        environment: {}, credentialReferences: {}, visibleModelIds: [], favoriteModelIds: [],
+        environment: {}, credentialReferences: {},
         providerConfig: { schemaVersion: 1, value: {} },
       },
-      lastProbe: null, lastSuccessfulProbeAt: null, modelCatalog: null, runtimeReview: [],
+      lastProbe: null, lastSuccessfulProbeAt: null, modelCatalog: null, runtimeReview: [], usageLimits: null, lastUsedAt: null, duplicateOf: null,
     });
     discovery.resolve(discovered);
     await vi.waitFor(() => expect(chat.settings?.configuration.behavior.sendKey).toBe("mod_enter"));
@@ -333,6 +359,15 @@ describe("Chat stores of split panes", () => {
     expect(secondary.scheduledMessagesVersion).toBe(scheduledVersion);
   });
 
+  it("tells open push request cards to reread after a native organization change", async () => {
+    await chat.ensureLoaded();
+    const pushVersion = chat.pushRequestsVersion;
+    const pageReads = vi.mocked(chatApi.readChatChannelPage).mock.calls.length;
+    await chat.handleOrganizationChange();
+    expect(chat.pushRequestsVersion).toBe(pushVersion + 1);
+    expect(chatApi.readChatChannelPage).toHaveBeenCalledTimes(pageReads + 1);
+  });
+
   it("applies changed shared settings to every pane's composer defaults", async () => {
     await secondary.ensureLoaded();
     const primaryDefaults = vi.spyOn(chat, "scheduleComposerDefaults");
@@ -350,5 +385,47 @@ describe("Chat stores of split panes", () => {
     expect(secondary.loaded).toBe(false);
     expect(secondary.selectedChannelId).toBeNull();
     expect(secondary.settings).toBeNull();
+  });
+});
+
+describe("Chat reply thread tabs", () => {
+  beforeEach(() => {
+    vi.mocked(chatApi.listChatNavigationChannels).mockResolvedValue([
+      channel(), channel("other"), channel("elsewhere", "other-project"),
+    ]);
+    vi.spyOn(chatApi, "listChatChannels").mockImplementation(async (projectId) => (
+      projectId === "project" ? [channel(), channel("other")] : [channel("elsewhere", "other-project")]
+    ));
+    vi.spyOn(chatApi, "readChatReplyThreadPage").mockRejectedValue(new Error("no reply thread"));
+    vi.spyOn(chatApi, "setChatChannelRead").mockImplementation(async (channelId) => channel(channelId));
+    vi.spyOn(chatApi, "readChatChannel").mockImplementation(async (channelId) => (
+      channelId === "elsewhere" ? channel(channelId, "other-project") : channel(channelId)
+    ));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+
+  it("keeps a restored reply thread tab when its project selection finishes after it", async () => {
+    await chat.ensureLoaded();
+    await chat.selectChannel("elsewhere");
+    const projectSelection = chat.syncProjectSelection("project");
+    const threadTab = chat.showReplyThreadTab("general", "reply-thread");
+    await Promise.all([projectSelection, threadTab]);
+    expect(chat.selectedChannelId).toBe("general");
+    expect(chat.replyThreadTabId).toBe("reply-thread");
+    expect(chat.openReplyThreadId).toBe("reply-thread");
+  });
+
+  it("switches between a channel and its reply thread tab at once without rereading the channel", async () => {
+    await chat.ensureLoaded();
+    await chat.showReplyThreadTab("general", "reply-thread");
+    const pageReads = vi.mocked(chatApi.readChatChannelPage).mock.calls.length;
+    const toChannel = chat.selectChannel("general");
+    expect(chat.replyThreadTabId).toBeNull();
+    await toChannel;
+    const toThread = chat.showReplyThreadTab("general", "reply-thread");
+    expect(chat.replyThreadTabId).toBe("reply-thread");
+    expect(chat.openReplyThreadId).toBe("reply-thread");
+    await toThread;
+    expect(chatApi.readChatChannelPage).toHaveBeenCalledTimes(pageReads);
   });
 });

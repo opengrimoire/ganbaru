@@ -168,8 +168,9 @@
   --selection-background: rgba(37, 99, 235, 0.28);
   /* Matches the Android selection handle drawables in src-tauri/gen/android/app/src/main/res/values/colors.xml. */
   --selection-handle: #3B82F6;
-  --app-scrollbar-thumb: color-mix(in srgb, var(--foreground) 18%, transparent);
-  --app-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 36%, transparent);
+  /* Native and hand-drawn scrollbars share the theme-derived Calendar thumb; floating and dialog surfaces mix their own in ui-foundations.css. */
+  --app-scrollbar-thumb: var(--cal-scrollbar-thumb);
+  --app-scrollbar-thumb-hover: var(--cal-scrollbar-thumb-hover);
   --app-scrollbar-native-size: 8px;
   --app-scrollbar-size: var(--app-scrollbar-native-size);
 
@@ -195,6 +196,7 @@
   /* Action semantics (light) */
   --action-confirm: #059669;
   --action-confirm-foreground: #FFFFFF;
+  --action-confirm-signal: #007E52;
   --action-danger-armed: #B91C1C;
   --action-danger-armed-foreground: #FFFFFF;
 
@@ -225,6 +227,7 @@
   --keyboard-surface-height: 100vh;
   --visual-viewport-width: 100vw;
   --visual-viewport-height: 100vh;
+  --visual-viewport-full-height: 100vh;
   --visual-viewport-offset-top: 0px;
   --visual-viewport-offset-left: 0px;
   --mobile-topbar-h: 48px;
@@ -306,6 +309,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   /* Action semantics (dark) */
   --action-confirm: #065F46;
   --action-confirm-foreground: #D1FAE5;
+  --action-confirm-signal: #12A57C;
   --action-danger-armed: #991B1B;
   --action-danger-armed-foreground: #FFFFFF;
 
@@ -377,6 +381,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   --color-form-indicator: var(--form-indicator);
   --color-action-confirm: var(--action-confirm);
   --color-action-confirm-foreground: var(--action-confirm-foreground);
+  --color-action-confirm-signal: var(--action-confirm-signal);
   --color-action-danger-armed: var(--action-danger-armed);
   --color-action-danger-armed-foreground: var(--action-danger-armed-foreground);
   --color-status-accepted: var(--status-accepted);

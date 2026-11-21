@@ -56,7 +56,7 @@ Assets use managed relative identities. Import copies validated bytes into a fea
 
 ## Chat separation
 
-The durable organization layer owns projects, channels, memberships, messages, ordered provider-session links, canonical events, projections, drafts, attachments, checkpoints, access revisions, and cleanup records. Provider-native thread IDs are continuation handles within that layer.
+The durable organization layer owns projects, channels, memberships, messages, ordered provider-session links, canonical events, projections, drafts, attachments, checkpoints, agent access settings, authorization revisions, and cleanup records. Provider-native thread IDs are continuation handles within that layer.
 
 A run may be targetless while it plans or discusses. Before native filesystem, terminal, Git, preview, or process work begins, it resolves exactly one authorized execution target: a project working folder or a private scratch generation. Provider-native trust does not widen that target. See [Chat access control](access-control.md).
 

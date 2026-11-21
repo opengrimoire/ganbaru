@@ -7,7 +7,7 @@
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import SquarePlay from "@lucide/svelte/icons/square-play";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { groupMusicIssues, type MusicIssueGroup } from "$lib/music/library/issue-presentation";
+  import { groupMusicIssues, musicIssueMessageKey, type MusicIssueGroup } from "$lib/music/library/issue-presentation";
   import type { MusicIssue, MusicItemListEntry, MusicSourceSummary } from "$lib/music/library/contracts";
   import { cn } from "$lib/utils";
 
@@ -92,12 +92,12 @@
               {#if issue.itemId}
                 <button type="button" onclick={() => onSelectIssue(issue)} class="min-w-0 flex-1 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
                   <strong class="block truncate text-[0.68rem] font-medium">{title}</strong>
-                  <span class="mt-0.5 block text-[0.61rem] leading-relaxed text-muted-foreground">{issue.message}</span>
+                  <span class="mt-0.5 block text-[0.61rem] leading-relaxed text-muted-foreground">{t(musicIssueMessageKey(issue.issueKind))}</span>
                 </button>
               {:else}
                 <span class="min-w-0 flex-1">
                   <strong class="block truncate text-[0.68rem] font-medium">{title}</strong>
-                  <span class="mt-0.5 block text-[0.61rem] leading-relaxed text-muted-foreground">{issue.message}</span>
+                  <span class="mt-0.5 block text-[0.61rem] leading-relaxed text-muted-foreground">{t(musicIssueMessageKey(issue.issueKind))}</span>
                 </span>
               {/if}
               {#if issue.actionRequired && canRepairIssue(issue)}<button type="button" onclick={() => onRepair(issue)} class="h-7 shrink-0 rounded-md px-1.5 text-[0.62rem] font-semibold text-primary hover:bg-primary/10">{t("music.builder.repair")}</button>{/if}

@@ -1,0 +1,16 @@
+{
+  "absent": [
+    {
+      "scenario": "message_steering",
+      "reason": "Cursor ACP has no steering request; the driver declares no steering and refuses steer_turn as unsupported."
+    },
+    {
+      "scenario": "compaction",
+      "reason": "No Cursor ACP session update reports context compaction; the driver handles no such frame."
+    },
+    {
+      "scenario": "usage_limit",
+      "reason": "Cursor ACP reports context usage through usage_update, which the Grok and generic ACP usage_update scenarios replay, but sends no rate limit frame, and no fixture shows a usage limit error; a refused prompt surfaces as a generic prompt error."
+    }
+  ]
+}

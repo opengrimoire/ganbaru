@@ -1,7 +1,7 @@
 //! Tauri change delivery for the core Chat event ingestor.
 
 use ganbaru_chat_contracts::models::{
-    ChatChangeNotification, ChatError, ChatErrorCode, ChatResult,
+    ChatChangeNotification, ChatError, ChatErrorCode, ChatProjectionKey, ChatResult,
 };
 use tauri::{Emitter, Runtime};
 
@@ -19,6 +19,13 @@ impl<R: Runtime> TauriChatChangeEmitter<R> {
 
 impl<R: Runtime> ChatChangeEmitter for TauriChatChangeEmitter<R> {
     fn emit(&self, notification: &ChatChangeNotification) -> ChatResult<()> {
+        if notification
+            .changed_projection_keys
+            .contains(&ChatProjectionKey::Organizational)
+        {
+            super::usage_summaries::wake(&self.app);
+        }
+        super::live_execution::wake(&self.app);
         self.app.emit(CHAT_CHANGE_EVENT, notification).map_err(|_| {
             ChatError::new(
                 ChatErrorCode::Internal,
@@ -26,5 +33,37 @@ impl<R: Runtime> ChatChangeEmitter for TauriChatChangeEmitter<R> {
                 true,
             )
         })
+    }
+}
+
+/// Tells views that a committed write changed a thread's rows without an event. Delivery is best
+/// effort: the write already committed, and the next change or reload shows it.
+pub(crate) async fn notify_rows_changed<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &sqlx::SqlitePool,
+    thread_id: &ganbaru_chat_contracts::models::ChatThreadId,
+    keys: &[ganbaru_chat_contracts::models::ChatProjectionKey],
+) {
+    let notification =
+        ganbaru_chat::repository::reads::read_change_notification(pool, thread_id, keys.to_vec())
+            .await;
+    let delivered = notification
+        .and_then(|notification| TauriChatChangeEmitter::new(app.clone()).emit(&notification));
+    if let Err(error) = delivered {
+        eprintln!("Chat change notification failed with code {:?}", error.code);
+    }
+}
+
+/// Event that tells views organizational Chat rows changed for work without a thread.
+pub(crate) const CHAT_ORGANIZATION_CHANGE_EVENT: &str = "chat://organization-change";
+
+/// Tells views that a committed write changed organizational rows of work that has no thread to
+/// name, such as work a limit stopped before its provider thread started. Delivery is best
+/// effort: the write already committed, and the next change or reload shows it.
+pub(crate) fn notify_organization_changed<R: Runtime>(app: &tauri::AppHandle<R>) {
+    super::usage_summaries::wake(app);
+    super::live_execution::wake(app);
+    if app.emit(CHAT_ORGANIZATION_CHANGE_EVENT, ()).is_err() {
+        eprintln!("Chat organization change notification failed");
     }
 }

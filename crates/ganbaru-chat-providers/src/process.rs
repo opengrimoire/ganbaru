@@ -22,6 +22,12 @@ const MAX_ARGUMENT_BYTES: usize = 32 * 1024;
 const MAX_ENVIRONMENT_ENTRIES: usize = 128;
 const MAX_ENVIRONMENT_VALUE_BYTES: usize = 32 * 1024;
 
+pub mod inventory;
+pub mod systemd_scope;
+
+pub use inventory::{ProcessRegistration, ProviderProcessPurpose};
+pub use systemd_scope::{ResourceScope, probe_resource_scope};
+
 #[derive(Clone, Debug)]
 pub struct ProviderProcessConfig {
     pub executable: PathBuf,
@@ -29,6 +35,10 @@ pub struct ProviderProcessConfig {
     pub working_directory: PathBuf,
     pub environment: BTreeMap<String, String>,
     pub stderr_limit_bytes: usize,
+    /// Why the process runs, as the process list reports it.
+    pub purpose: ProviderProcessPurpose,
+    /// Label of the provider instance that starts the process, as the process list reports it.
+    pub provider_instance_label: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,11 +59,35 @@ pub struct ProviderProcessHandle {
     stderr_truncated: Arc<AtomicBool>,
     stderr_task: Option<JoinHandle<()>>,
     stopped: bool,
+    /// Keeps the process in the Chat process list until it is stopped or the handle drops.
+    registration: Option<ProcessRegistration>,
+    /// Whether the process runs in a resource scope; `None` for purposes that are never scoped.
+    resource_scope: Option<ResourceScope>,
+    /// Reports a memory ceiling kill of a scoped process.
+    memory_limit: Option<systemd_scope::MemoryLimitWatch>,
+    /// Private directory the process uses, removed after the process is stopped.
+    retained_directory: Option<crate::probe_directory::ProbeDirectory>,
 }
 
 impl ProviderProcessHandle {
+    /// Keeps `directory` until the handle drops, so it outlives the process that uses it.
+    pub fn retain_directory(&mut self, directory: crate::probe_directory::ProbeDirectory) {
+        self.retained_directory = Some(directory);
+    }
+
     pub fn process_id(&self) -> Option<u32> {
         self.child.id()
+    }
+
+    /// Whether the process runs in a resource scope; `None` for purposes that are never scoped.
+    pub fn resource_scope(&self) -> Option<ResourceScope> {
+        self.resource_scope
+    }
+
+    /// Watch that tells whether the resource scope's memory ceiling stopped the process; `None`
+    /// when the process is not scoped.
+    pub fn memory_limit_watch(&self) -> Option<systemd_scope::MemoryLimitWatch> {
+        self.memory_limit.clone()
     }
 
     pub fn take_stdout(&mut self) -> ChatResult<ChildStdout> {
@@ -133,6 +167,7 @@ impl ProviderProcessHandle {
 
     async fn finish_stop(&mut self) -> ChatResult<()> {
         self.stopped = true;
+        self.registration = None;
         if let Some(task) = self.stderr_task.take() {
             task.await.map_err(|_| process_state_error())?;
         }
@@ -190,20 +225,37 @@ impl Drop for ProviderProcessHandle {
     }
 }
 
+/// Version manager switches that would let a shim install a missing tool while a provider
+/// starts or is probed. mise reads each as a boolean, and a provider launch must never download
+/// or install software on the user's behalf.
+const AUTO_INSTALL_GUARDS: [&str; 3] = [
+    "MISE_AUTO_INSTALL",
+    "MISE_EXEC_AUTO_INSTALL",
+    "MISE_NOT_FOUND_AUTO_INSTALL",
+];
+
+/// The child environment: `environment` with every auto install switch forced off, whatever the
+/// configured value.
+fn guarded_environment(environment: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
+    let mut guarded = environment
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    for key in AUTO_INSTALL_GUARDS {
+        guarded.insert(key, "false");
+    }
+    guarded
+}
+
+/// Starts a provider process with a cleared, guarded environment in its own process tree.
+///
+/// Sessions and local servers start inside a resource scope when [`probe_resource_scope`] found
+/// one on this device. A scoped launch that does not reach the provider is stopped and retried
+/// directly, and scoping stays off for the rest of the app run, so the scope never blocks a
+/// provider.
 pub fn spawn_provider_process(config: ProviderProcessConfig) -> ChatResult<ProviderProcessHandle> {
     validate_config(&config)?;
-    let mut command = Command::new(&config.executable);
-    command
-        .args(&config.arguments)
-        .current_dir(&config.working_directory)
-        .env_clear()
-        .envs(&config.environment)
-        .kill_on_drop(true)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    configure_process_tree(&mut command);
-    let mut child = command.spawn().map_err(spawn_error)?;
+    let (mut child, resource_scope) = spawn_provider_child(&config)?;
     #[cfg(unix)]
     let process_group_id = child
         .id()
@@ -212,6 +264,16 @@ pub fn spawn_provider_process(config: ProviderProcessConfig) -> ChatResult<Provi
         .ok_or_else(process_state_error)?;
     #[cfg(windows)]
     let process_job = claim_windows_process_tree(&mut child)?;
+    let registration = child.id().map(|pid| {
+        inventory::register_process(
+            pid,
+            &config.executable,
+            config.provider_instance_label.as_deref(),
+            config.purpose.into(),
+            resource_scope,
+        )
+    });
+    let memory_limit = scoped_memory_limit_watch(&child, resource_scope);
     let stdin = child.stdin.take().ok_or_else(process_state_error)?;
     let stdout = child.stdout.take().ok_or_else(process_state_error)?;
     let mut stderr_reader = child.stderr.take().ok_or_else(process_state_error)?;
@@ -252,7 +314,111 @@ pub fn spawn_provider_process(config: ProviderProcessConfig) -> ChatResult<Provi
         stderr_truncated,
         stderr_task: Some(stderr_task),
         stopped: false,
+        registration,
+        resource_scope,
+        memory_limit,
+        retained_directory: None,
     })
+}
+
+fn direct_provider_command(config: &ProviderProcessConfig) -> Command {
+    let mut command = Command::new(&config.executable);
+    command
+        .args(&config.arguments)
+        .env_clear()
+        .envs(guarded_environment(&config.environment));
+    command
+}
+
+fn spawn_configured(mut command: Command, working_directory: &Path) -> std::io::Result<Child> {
+    command
+        .current_dir(working_directory)
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    configure_process_tree(&mut command);
+    command.spawn()
+}
+
+/// Starts the provider child, in a resource scope when one applies, and reports which.
+fn spawn_provider_child(
+    config: &ProviderProcessConfig,
+) -> ChatResult<(Child, Option<ResourceScope>)> {
+    let scoped = matches!(
+        config.purpose,
+        ProviderProcessPurpose::Session | ProviderProcessPurpose::LocalServer
+    );
+    if !scoped {
+        let child = spawn_configured(direct_provider_command(config), &config.working_directory)
+            .map_err(spawn_error)?;
+        return Ok((child, None));
+    }
+    if let Some(child) = spawn_scoped_child(config) {
+        return Ok((child, Some(ResourceScope::Scoped)));
+    }
+    let child = spawn_configured(direct_provider_command(config), &config.working_directory)
+        .map_err(spawn_error)?;
+    Ok((child, Some(ResourceScope::Unavailable)))
+}
+
+/// Starts the provider through the cached scope launcher; `None` when no launcher applies or the
+/// launch did not reach the provider, in which case scoping is turned off for this app run.
+#[cfg(target_os = "linux")]
+fn spawn_scoped_child(config: &ProviderProcessConfig) -> Option<Child> {
+    let launcher = systemd_scope::scope_launcher()?;
+    if !systemd_scope::launchable_through_env(&config.executable) {
+        return None;
+    }
+    let mut command = Command::new(&launcher.runner);
+    command
+        .env_clear()
+        .args(systemd_scope::scope_arguments(
+            systemd_scope::device_memory_ceilings(),
+            &launcher.env,
+            &systemd_scope::wrapper_only_variables(&config.environment),
+            &config.executable,
+            &config.arguments,
+        ))
+        .envs(guarded_environment(&systemd_scope::wrapper_environment(
+            &config.environment,
+        )));
+    let Ok(mut child) = spawn_configured(command, &config.working_directory) else {
+        systemd_scope::disable_resource_scope();
+        return None;
+    };
+    if systemd_scope::confirm_scope_entry(&mut child, &launcher.runner) {
+        return Some(child);
+    }
+    systemd_scope::disable_resource_scope();
+    if let Some(pid) = child.id().and_then(|id| libc::pid_t::try_from(id).ok()) {
+        let _ = signal_process_group(pid, libc::SIGKILL);
+    }
+    let _ = child.start_kill();
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn spawn_scoped_child(_config: &ProviderProcessConfig) -> Option<Child> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn scoped_memory_limit_watch(
+    child: &Child,
+    resource_scope: Option<ResourceScope>,
+) -> Option<systemd_scope::MemoryLimitWatch> {
+    (resource_scope == Some(ResourceScope::Scoped))
+        .then(|| systemd_scope::watch_memory_limit(child))
+        .flatten()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn scoped_memory_limit_watch(
+    _child: &Child,
+    _resource_scope: Option<ResourceScope>,
+) -> Option<systemd_scope::MemoryLimitWatch> {
+    None
 }
 
 fn validate_config(config: &ProviderProcessConfig) -> ChatResult<()> {
@@ -291,6 +457,10 @@ fn validate_config(config: &ProviderProcessConfig) -> ChatResult<()> {
 pub struct ProcessTree {
     #[cfg(unix)]
     process_group_id: libc::pid_t,
+    /// Set by [`ProcessTree::retire`] before the leader is reaped. The lock is held across
+    /// every signal, so no signal can reach the group ID after it may have been reused.
+    #[cfg(unix)]
+    retired: Mutex<bool>,
     #[cfg(windows)]
     process_job: std::os::windows::io::OwnedHandle,
 }
@@ -308,7 +478,10 @@ impl ProcessTree {
                     let _ = child.kill();
                     process_state_error()
                 })?;
-            Ok(Self { process_group_id })
+            Ok(Self {
+                process_group_id,
+                retired: Mutex::new(false),
+            })
         }
         #[cfg(windows)]
         {
@@ -331,7 +504,7 @@ impl ProcessTree {
 
     /// Claims the tree of a child spawned from a command prepared with
     /// `configure_process_tree`. On failure the child is killed.
-    fn claim_tokio(child: &mut Child) -> ChatResult<Self> {
+    pub(crate) fn claim_tokio(child: &mut Child) -> ChatResult<Self> {
         #[cfg(unix)]
         {
             let process_group_id = child
@@ -342,7 +515,10 @@ impl ProcessTree {
                     let _ = child.start_kill();
                     process_state_error()
                 })?;
-            Ok(Self { process_group_id })
+            Ok(Self {
+                process_group_id,
+                retired: Mutex::new(false),
+            })
         }
         #[cfg(windows)]
         {
@@ -365,11 +541,15 @@ impl ProcessTree {
         }
     }
 
-    /// Forcefully stops every process in the tree. Already stopped trees are
-    /// not an error.
+    /// Forcefully stops every process in the tree. Already stopped and retired
+    /// trees are not an error.
     pub fn terminate(&self) {
         #[cfg(unix)]
-        let _ = signal_process_group(self.process_group_id, libc::SIGKILL);
+        if let Ok(retired) = self.retired.lock()
+            && !*retired
+        {
+            let _ = signal_process_group(self.process_group_id, libc::SIGKILL);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::io::AsRawHandle;
@@ -382,6 +562,92 @@ impl ProcessTree {
                 let _ = TerminateJobObject(HANDLE(self.process_job.as_raw_handle()), 1);
             }
         }
+    }
+
+    /// Stops all later signaling of the tree. On Unix the caller retires the tree before it
+    /// reaps the leader, because a reaped leader whose group has emptied frees the group ID for
+    /// an unrelated process. A Windows job handle pins its processes, so retiring changes
+    /// nothing there.
+    pub(crate) fn retire(&self) {
+        #[cfg(unix)]
+        match self.retired.lock() {
+            Ok(mut retired) => *retired = true,
+            Err(poisoned) => *poisoned.into_inner() = true,
+        }
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn is_retired(&self) -> bool {
+        self.retired.lock().map_or(true, |retired| *retired)
+    }
+}
+
+/// Starts a blocking wait for a child to exit that leaves it unreaped, so its process ID and
+/// process group ID stay reserved until the caller reaps it with [`Child::wait`].
+///
+/// The result is the exit code, or `None` when a signal stopped the child.
+#[cfg(unix)]
+pub(crate) fn watch_exit_unreaped(
+    child: &Child,
+) -> std::io::Result<JoinHandle<std::io::Result<Option<i32>>>> {
+    let process_id = child
+        .id()
+        .and_then(|id| libc::pid_t::try_from(id).ok())
+        .filter(|id| *id > 1)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "provider process ID is unavailable",
+            )
+        })?;
+    Ok(tokio::task::spawn_blocking(move || {
+        wait_exit_unreaped(process_id)
+    }))
+}
+
+#[cfg(unix)]
+fn wait_exit_unreaped(process_id: libc::pid_t) -> std::io::Result<Option<i32>> {
+    let id = libc::id_t::try_from(process_id).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "provider process ID is invalid",
+        )
+    })?;
+    loop {
+        // SAFETY: `siginfo_t` is a plain C structure of integers, pointers, and padding, so
+        // the all-zero bit pattern is a valid value.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a live, exclusively borrowed `siginfo_t` that outlives the call and
+        // is not retained by it. `P_PID` with an ID greater than one selects only that child,
+        // and `WNOWAIT` leaves it waitable, so nothing is reaped here.
+        let result =
+            unsafe { libc::waitid(libc::P_PID, id, &mut info, libc::WEXITED | libc::WNOWAIT) };
+        if result == 0 {
+            return unreaped_exit_code(&info);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn unreaped_exit_code(info: &libc::siginfo_t) -> std::io::Result<Option<i32>> {
+    match info.si_code {
+        libc::CLD_EXITED => {
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            // SAFETY: `waitid` succeeded with `WEXITED` and reported `CLD_EXITED`, so the
+            // kernel filled the child status member of the union that `si_status` reads.
+            let status = unsafe { info.si_status() };
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
+            let status = info.si_status;
+            Ok(Some(status))
+        }
+        libc::CLD_KILLED | libc::CLD_DUMPED => Ok(None),
+        _ => Err(std::io::Error::other(
+            "provider process exit is not recognized",
+        )),
     }
 }
 
@@ -425,7 +691,7 @@ pub async fn run_bounded_command(
         .args(command.arguments)
         .current_dir(command.working_directory)
         .env_clear()
-        .envs(command.environment)
+        .envs(guarded_environment(command.environment))
         .kill_on_drop(true)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -501,7 +767,9 @@ pub fn configure_std_process_tree(command: &mut std::process::Command) {
     let _ = command;
 }
 
-fn configure_process_tree(command: &mut Command) {
+/// Prepares a Tokio command so its descendants form one process tree that
+/// [`ProcessTree::claim_tokio`] can claim after spawning.
+pub(crate) fn configure_process_tree(command: &mut Command) {
     configure_std_process_tree(command.as_std_mut());
 }
 
@@ -710,6 +978,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn retired_trees_are_never_signaled() {
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        super::configure_std_process_tree(&mut command);
+        let mut child = command.spawn().expect("sleep should start");
+        let tree = super::ProcessTree::claim_std(&mut child).expect("tree should be claimed");
+        tree.retire();
+        tree.terminate();
+        std::thread::sleep(Duration::from_millis(100));
+        let still_running = child
+            .try_wait()
+            .expect("child should be waitable")
+            .is_none();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(still_running, "a retired tree must not be signaled");
+    }
+
+    #[tokio::test]
+    async fn unreaped_exits_keep_the_child_waitable() {
+        for (script, expected) in [("exit 7", Some(7)), ("kill -TERM $$", None)] {
+            let mut command = tokio::process::Command::new("/bin/sh");
+            command.args(["-c", script]);
+            let mut child = command.spawn().expect("shell should start");
+            let process_id = child.id().expect("child should have an ID");
+            let code = super::watch_exit_unreaped(&child)
+                .expect("watch should start")
+                .await
+                .expect("watch should finish")
+                .expect("exit should be observed");
+            assert_eq!(code, expected);
+            assert!(
+                std::path::Path::new(&format!("/proc/{process_id}")).exists()
+                    || cfg!(not(target_os = "linux")),
+                "the exited child must stay unreaped"
+            );
+            let status = child.wait().await.expect("child should be reaped");
+            assert_eq!(status.code(), expected);
+        }
+    }
+
     fn shell_probe<'a>(
         script: &'a [&'a str],
         environment: &'a BTreeMap<String, String>,
@@ -834,4 +1144,25 @@ fn process_timeout_error() -> ChatError {
         "Provider process did not stop before the force deadline",
         true,
     )
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::{AUTO_INSTALL_GUARDS, guarded_environment};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn child_environment_forces_auto_install_off() {
+        let environment = BTreeMap::from([
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("MISE_AUTO_INSTALL".to_string(), "true".to_string()),
+            ("MISE_EXEC_AUTO_INSTALL".to_string(), "1".to_string()),
+        ]);
+        let guarded = guarded_environment(&environment);
+        assert_eq!(guarded.get("PATH"), Some(&"/usr/bin"));
+        for key in AUTO_INSTALL_GUARDS {
+            assert_eq!(guarded.get(key), Some(&"false"), "{key}");
+        }
+        assert_eq!(guarded.len(), 4);
+    }
 }

@@ -589,7 +589,7 @@
     {#if musicAssignmentsAvailable}
       <div class="flex min-w-0 flex-col gap-1.5">
         {#if musicAssignmentsError}
-          <Notice class="px-1 py-1 text-xs" message={musicAssignmentsError} onRetry={onRetryMusicAssignments} />
+          <Notice class="px-1 py-1 text-xs" message={t("projects.settings.musicLoadFailed")} copy={musicAssignmentsError} onRetry={onRetryMusicAssignments} />
         {/if}
         <ProjectSettingsPlaylistRows
           assignments={musicAssignments}

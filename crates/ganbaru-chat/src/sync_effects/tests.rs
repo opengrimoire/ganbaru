@@ -1,16 +1,19 @@
 use super::*;
+use crate::coordination::access::APP_AGENT_SETTINGS_ID;
 use crate::models::UtcTimestamp;
 use crate::project_defaults::{default_channel_ids, ensure_project_chat_defaults};
 use sqlx::SqlitePool;
-use std::collections::BTreeMap;
 
 const NOW: &str = "2026-10-24T09:00:00.000Z";
+const LATER: &str = "2026-10-24T09:05:00.000Z";
 const PROJECT_ID: &str = "project-sync-effects";
-const TEAMMATE_ID: &str = "participant:sync-effects-agent";
-const PROFILE_ID: &str = "access-profile:sync-effects";
-const FIRST_PROFILE_REVISION_ID: &str = "profile-revision:sync-effects:1";
+const OTHER_PROJECT_ID: &str = "project-sync-effects-other";
+const AGENT_ID: &str = "participant:sync-effects-agent";
+const OWNER_ID: &str = "participant:local-owner";
+const FOLDER_ID: &str = "folder:sync-effects";
+const FOLDER_ENVIRONMENT_ID: &str = "environment:folder";
+const ASSIGNMENT_ID: &str = "assignment:sync-effects";
 
-type AccessStateRow = (String, i64, String);
 type SearchRow = (String, String, Option<String>, String, String);
 
 async fn migrated_pool() -> SqlitePool {
@@ -41,13 +44,25 @@ fn conversation_id() -> String {
     default_channel_ids(PROJECT_ID).unwrap().0
 }
 
-/// Seeds a project channel with one teammate using a custom profile (revision 1 allows
-/// editing), two messages, and one active assignment authorization of that teammate.
-async fn seed_organization(pool: &SqlitePool) {
+fn channel_id() -> String {
+    default_channel_ids(PROJECT_ID).unwrap().1
+}
+
+fn membership_key(conversation: &str) -> String {
+    format!("membership:{conversation}")
+}
+
+fn channel_membership_key(conversation: &str) -> String {
+    format!("channel-membership:{conversation}")
+}
+
+/// Creates a project in the seeded group with its default channel.
+async fn seed_project(pool: &SqlitePool, project_id: &str, order_key: &str) {
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO project_groups (id, name, order_key) VALUES ('group-sync', 'Sync', 'a0');
+        "INSERT OR IGNORE INTO project_groups (id, name, order_key)
+         VALUES ('group-sync', 'Sync', 'a0');
          INSERT INTO projects (id, group_id, name, order_key)
-         VALUES ('{PROJECT_ID}', 'group-sync', 'Sync', 'a0');"
+         VALUES ('{project_id}', 'group-sync', '{project_id}', '{order_key}');"
     )))
     .execute(pool)
     .await
@@ -55,43 +70,91 @@ async fn seed_organization(pool: &SqlitePool) {
     let mut connection = pool.acquire().await.unwrap();
     ensure_project_chat_defaults(
         &mut connection,
-        PROJECT_ID,
+        project_id,
         &UtcTimestamp::new(NOW.to_string()).unwrap(),
     )
     .await
     .unwrap();
-    drop(connection);
+}
+
+/// Adds a channel named after `conversation` to `project_id`.
+async fn add_channel(pool: &SqlitePool, project_id: &str, conversation: &str) {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO chat_conversations
+            (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+         VALUES ('{conversation}', '{project_id}', 'channel', '{NOW}', '{NOW}', '{NOW}');
+         INSERT INTO chat_channels
+            (id, project_id, conversation_id, name, topic, created_at, updated_at)
+         VALUES ('channel:{conversation}', '{project_id}', '{conversation}', '{conversation}', '',
+                 '{NOW}', '{NOW}');"
+    )))
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Makes the seeded agent a present member of `conversation`.
+async fn add_member(pool: &SqlitePool, conversation: &str) {
+    let membership = membership_key(conversation);
+    let channel_membership = channel_membership_key(conversation);
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO chat_conversation_memberships
+            (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
+         VALUES ('{conversation}', '{AGENT_ID}', '{membership}', 'member', '{NOW}', '{NOW}');
+         INSERT INTO chat_agent_channel_memberships
+            (conversation_id, agent_id, sync_key, created_at, updated_at)
+         VALUES ('{conversation}', '{AGENT_ID}', '{channel_membership}', '{NOW}', '{NOW}');"
+    )))
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Starts work of the seeded agent in `conversation`: a message, its reply thread, and a
+/// working assignment named `assignment`.
+async fn add_assignment(pool: &SqlitePool, conversation: &str, assignment: &str) {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
+         VALUES ('item:{assignment}', '{conversation}', 'message', 'c100', '{NOW}');
+         INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
+         VALUES ('item:{assignment}', '{OWNER_ID}', '{NOW}');
+         INSERT INTO chat_reply_threads
+            (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
+         VALUES ('reply:{assignment}', '{conversation}', 'item:{assignment}', '{NOW}', '{NOW}',
+                 '{NOW}');
+         INSERT INTO chat_work_assignments
+            (id, reply_thread_id, agent_id, triggering_message_item_id, state,
+             model_selection_schema_version, model_selection_data, created_at, updated_at)
+         VALUES ('{assignment}', 'reply:{assignment}', '{AGENT_ID}', 'item:{assignment}',
+                 'working', 1, '{{}}', '{NOW}', '{NOW}');"
+    )))
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Seeds a project channel with one present agent, two messages, a working assignment of that
+/// agent, and `authorization:first`, which only replies.
+async fn seed_organization(pool: &SqlitePool) {
+    seed_project(pool, PROJECT_ID, "a0").await;
     let conversation = conversation_id();
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-         VALUES ('{TEAMMATE_ID}', 'ai_teammate', 'Sync agent', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
-         VALUES ('{TEAMMATE_ID}', 'Test', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammate_policy_revisions
-            (id, teammate_id, provider_instance_id, model_selection_data, created_at)
-         VALUES ('policy:sync-effects', '{TEAMMATE_ID}', 'codex-personal', '{{}}', '{NOW}');
-         INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
-         VALUES ('{PROFILE_ID}', 'Sync profile', '{NOW}', '{NOW}');
-         INSERT INTO chat_access_profile_revisions
-            (id, access_profile_id, default_read_history, default_participate,
-             default_history_boundary, maximum_folder_capability, created_at)
-         VALUES ('profile-revision:sync-effects:1', '{PROFILE_ID}', 1, 1, 'entire', 'edit',
-                 '{NOW}');
-         INSERT INTO chat_conversation_memberships
-            (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
-         VALUES ('{conversation}', '{TEAMMATE_ID}', 'membership:sync-effects', 'member', '{NOW}',
-                 '{NOW}');
-         INSERT INTO chat_teammate_channel_memberships
-            (conversation_id, teammate_id, sync_key, access_profile_id,
-             read_history, participate, history_boundary, created_at, updated_at)
-         VALUES ('{conversation}', '{TEAMMATE_ID}', 'channel-membership:sync-effects',
-                 '{PROFILE_ID}', 1, 1, 'entire', '{NOW}', '{NOW}');
-         INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
+         VALUES ('{AGENT_ID}', 'ai_agent', 'Sync agent', '{NOW}', '{NOW}');
+         INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+         VALUES ('{AGENT_ID}', 'codex', '{NOW}', '{NOW}');"
+    )))
+    .execute(pool)
+    .await
+    .unwrap();
+    add_member(pool, &conversation).await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
          VALUES ('item:first', '{conversation}', 'message', 'c000', '{NOW}'),
                 ('item:second', '{conversation}', 'message', 'c001', '{NOW}');
          INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
-         VALUES ('item:first', 'participant:local-owner', '{NOW}'),
-                ('item:second', '{TEAMMATE_ID}', '{NOW}');
+         VALUES ('item:first', '{OWNER_ID}', '{NOW}'),
+                ('item:second', '{AGENT_ID}', '{NOW}');
          INSERT INTO chat_communication_message_revisions
             (id, message_item_id, normalized_markdown, created_at)
          VALUES ('revision:first', 'item:first', 'Plan the release', '{NOW}'),
@@ -102,61 +165,170 @@ async fn seed_organization(pool: &SqlitePool) {
             (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
          VALUES ('reply:sync-effects', '{conversation}', 'item:first', '{NOW}', '{NOW}', '{NOW}');
          INSERT INTO chat_work_assignments
-            (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
-             created_at, updated_at)
-         VALUES ('assignment:sync-effects', 'reply:sync-effects', '{TEAMMATE_ID}', 'item:first',
-                 'working', '{NOW}', '{NOW}');"
+            (id, reply_thread_id, agent_id, triggering_message_item_id, state,
+             model_selection_schema_version, model_selection_data, created_at, updated_at)
+         VALUES ('{ASSIGNMENT_ID}', 'reply:sync-effects', '{AGENT_ID}', 'item:first',
+                 'working', 1, '{{}}', '{NOW}', '{NOW}');"
     )))
     .execute(pool)
     .await
     .unwrap();
-    insert_authorization(pool, "authorization:first", 1, FIRST_PROFILE_REVISION_ID).await;
+    authorize(
+        pool,
+        "authorization:first",
+        ASSIGNMENT_ID,
+        &conversation,
+        "ask",
+        None,
+    )
+    .await;
 }
 
-/// Inserts an allowed authorization of the seeded assignment granted under
-/// `profile_revision_id`.
-async fn insert_authorization(
+/// Adds an external working folder to `project_id` with its current-folder environment.
+async fn add_folder(pool: &SqlitePool, project_id: &str, folder: &str, environment: &str) {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO project_working_folders (id, project_id, display_name, kind)
+         VALUES ('{folder}', '{project_id}', 'Code', 'external');
+         INSERT INTO chat_execution_environments
+            (id, working_folder_id, kind, display_name, created_at, updated_at)
+         VALUES ('{environment}', '{folder}', 'current_folder', 'Code', '{NOW}', '{NOW}');"
+    )))
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// What an authorization runs in: an execution environment, with the folder it works in when
+/// the environment is a folder's.
+struct Target<'a> {
+    environment: &'a str,
+    folder: Option<&'a str>,
+}
+
+const FOLDER_TARGET: Target<'static> = Target {
+    environment: FOLDER_ENVIRONMENT_ID,
+    folder: Some(FOLDER_ID),
+};
+
+/// Inserts an allowed authorization of `assignment` with the next revision.
+async fn authorize(
     pool: &SqlitePool,
     id: &str,
-    revision: i64,
-    profile_revision_id: &str,
+    assignment: &str,
+    conversation: &str,
+    approval: &str,
+    target: Option<Target<'_>>,
 ) {
     sqlx::query(
         "INSERT INTO chat_assignment_authorization_revisions
             (id, assignment_id, revision, requester_participant_id,
-             teammate_policy_revision_id, teammate_access_revision,
-             destination_conversation_id, access_profile_revision_id,
+             destination_conversation_id, execution_environment_id, working_folder_id,
              resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
-         VALUES (?, 'assignment:sync-effects', ?, 'participant:local-owner',
-                 'policy:sync-effects', 1, ?, ?,
-                 'ask', printf('%064d', 0), 'allowed', ?)",
+         VALUES (?1, ?2,
+                 (SELECT count(*) + 1 FROM chat_assignment_authorization_revisions
+                  WHERE assignment_id = ?2),
+                 ?3, ?4, ?5, ?6, ?7, printf('%064d', 0), 'allowed', ?8)",
     )
     .bind(id)
-    .bind(revision)
-    .bind(conversation_id())
-    .bind(profile_revision_id)
+    .bind(assignment)
+    .bind(OWNER_ID)
+    .bind(conversation)
+    .bind(target.as_ref().map(|target| target.environment))
+    .bind(target.as_ref().and_then(|target| target.folder))
+    .bind(approval)
     .bind(NOW)
     .execute(pool)
     .await
     .unwrap();
 }
 
-async fn insert_profile_revision(pool: &SqlitePool, revision: i64, capability: &str) -> String {
-    let id = format!("profile-revision:sync-effects:{revision}");
+/// Gives `authorization` the folder `folder` at `capability` with the `approval` approval. The
+/// first folder source of an authorization is its execution target.
+async fn add_folder_source(
+    pool: &SqlitePool,
+    authorization: &str,
+    folder: &str,
+    capability: &str,
+    approval: &str,
+) {
     sqlx::query(
-        "INSERT INTO chat_access_profile_revisions
-            (id, access_profile_id, default_read_history, default_participate,
-             default_history_boundary, maximum_folder_capability, created_at)
-         VALUES (?, ?, 1, 1, 'entire', ?, ?)",
+        "INSERT INTO chat_assignment_authorized_folder_sources
+            (authorization_revision_id, root_handle, working_folder_id, capability,
+             is_execution_target, resolved_runtime_approval_policy, created_at)
+         VALUES (?1, printf('%064s', ?1 || ?2), ?2, ?3,
+                 NOT EXISTS (SELECT 1 FROM chat_assignment_authorized_folder_sources
+                             WHERE authorization_revision_id = ?1),
+                 ?4, ?5)",
     )
-    .bind(&id)
-    .bind(PROFILE_ID)
+    .bind(authorization)
+    .bind(folder)
     .bind(capability)
-    .bind(format!("2026-10-24T09:0{revision}:00.000Z"))
+    .bind(approval)
+    .bind(NOW)
     .execute(pool)
     .await
     .unwrap();
-    id
+}
+
+/// Seeds the seeded project's folder and `authorization:folder`, which works in it at
+/// `capability` under the `approval` approval.
+async fn seed_folder_authorization(pool: &SqlitePool, capability: &str, approval: &str) {
+    add_folder(pool, PROJECT_ID, FOLDER_ID, FOLDER_ENVIRONMENT_ID).await;
+    authorize(
+        pool,
+        "authorization:folder",
+        ASSIGNMENT_ID,
+        &conversation_id(),
+        approval,
+        Some(FOLDER_TARGET),
+    )
+    .await;
+    add_folder_source(
+        pool,
+        "authorization:folder",
+        FOLDER_ID,
+        capability,
+        approval,
+    )
+    .await;
+}
+
+async fn set_channel_access(pool: &SqlitePool, conversation: &str, access: Option<&str>) {
+    sqlx::query(
+        "UPDATE chat_channels SET agent_access = ?, revision = revision + 1
+         WHERE conversation_id = ?",
+    )
+    .bind(access)
+    .bind(conversation)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn set_project_access(pool: &SqlitePool, project_id: &str, access: Option<&str>) {
+    sqlx::query(
+        "INSERT INTO chat_project_agent_settings (project_id, agent_access, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT (project_id) DO UPDATE
+         SET agent_access = excluded.agent_access, revision = revision + 1",
+    )
+    .bind(project_id)
+    .bind(access)
+    .bind(NOW)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn set_app_access(pool: &SqlitePool, access: &str) {
+    sqlx::query(
+        "UPDATE chat_agent_app_settings SET agent_access = ?, revision = revision + 1
+         WHERE id = 'vault'",
+    )
+    .bind(access)
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 async fn run_hook(pool: &SqlitePool, table: &str, keys: &[&str]) -> ChatSyncEffects {
@@ -170,31 +342,29 @@ async fn run_hook(pool: &SqlitePool, table: &str, keys: &[&str]) -> ChatSyncEffe
 /// Runs the hook for every seeded row the way sync reports them after a materialization.
 async fn run_hook_for_seeded_rows(pool: &SqlitePool) -> ChatSyncEffects {
     let conversation = conversation_id();
-    let mut effects = run_hook(pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
-    let conversations = run_hook(pool, CONVERSATIONS_TABLE, &[&conversation]).await;
-    effects
-        .audience_revised
-        .extend(conversations.audience_revised);
-    let profiles = run_hook(
-        pool,
-        ACCESS_PROFILE_REVISIONS_TABLE,
-        &["profile-revision:sync-effects:1"],
-    )
-    .await;
-    effects.audience_revised.extend(profiles.audience_revised);
+    let mut effects = run_hook(pool, CONVERSATIONS_TABLE, &[&conversation]).await;
+    let mut rows: Vec<(&str, String)> = Vec::new();
+    for (table, keys_sql) in [
+        (
+            MEMBERSHIPS_TABLE,
+            "SELECT sync_key FROM chat_conversation_memberships ORDER BY sync_key",
+        ),
+        (
+            CHANNEL_MEMBERSHIPS_TABLE,
+            "SELECT sync_key FROM chat_agent_channel_memberships ORDER BY sync_key",
+        ),
+    ] {
+        let keys: Vec<String> = sqlx::query_scalar(keys_sql).fetch_all(pool).await.unwrap();
+        rows.extend(keys.into_iter().map(|key| (table, key)));
+    }
+    for (table, key) in rows {
+        let members = run_hook(pool, table, &[&key]).await;
+        effects.audience_revised.extend(members.audience_revised);
+        effects.revoked_agents.extend(members.revoked_agents);
+    }
     let messages = run_hook(pool, MESSAGES_TABLE, &["item:first", "item:second"]).await;
     effects.search_rebuilt.extend(messages.search_rebuilt);
     effects
-}
-
-async fn access_state(pool: &SqlitePool) -> Vec<AccessStateRow> {
-    sqlx::query_as(
-        "SELECT teammate_id, access_revision, updated_at
-         FROM chat_teammate_access_state ORDER BY teammate_id",
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap()
 }
 
 async fn audience_revision(pool: &SqlitePool) -> Option<i64> {
@@ -228,14 +398,38 @@ async fn authorization_states(pool: &SqlitePool) -> Vec<(String, String, String)
     .unwrap()
 }
 
+async fn authorization_state(pool: &SqlitePool, id: &str) -> String {
+    sqlx::query_scalar(
+        "SELECT decision_state FROM chat_assignment_authorization_revisions WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Returns the ids of the revoked authorizations.
+async fn revoked(pool: &SqlitePool) -> Vec<String> {
+    authorization_states(pool)
+        .await
+        .into_iter()
+        .filter(|(_, state, _)| state == "revoked")
+        .map(|(id, _, _)| id)
+        .collect()
+}
+
 async fn queued_jobs(pool: &SqlitePool) -> Vec<(String, Option<String>)> {
     sqlx::query_as(
-        "SELECT teammate_id, authorization_revision_id FROM chat_access_revocation_jobs
+        "SELECT agent_id, authorization_revision_id FROM chat_access_revocation_jobs
          WHERE state = 'queued' ORDER BY authorization_revision_id",
     )
     .fetch_all(pool)
     .await
     .unwrap()
+}
+
+fn agents() -> BTreeSet<String> {
+    BTreeSet::from([AGENT_ID.to_string()])
 }
 
 #[tokio::test]
@@ -246,602 +440,390 @@ async fn hook_derives_the_state_the_gated_triggers_derive_for_commands() {
     let applied = migrated_pool().await;
     set_applying(&applied, true).await;
     seed_organization(&applied).await;
-    assert!(access_state(&applied).await.is_empty());
     assert_eq!(audience_revision(&applied).await, None);
     assert!(search_rows(&applied).await.is_empty());
 
     let effects = run_hook_for_seeded_rows(&applied).await;
     set_applying(&applied, false).await;
 
-    assert_eq!(access_state(&applied).await, access_state(&commanded).await);
     assert_eq!(search_rows(&applied).await, search_rows(&commanded).await);
     assert_eq!(search_rows(&applied).await.len(), 2);
-    assert!(audience_revision(&applied).await.is_some());
     assert_eq!(
-        effects.access_state_created,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
+        audience_revision(&applied).await,
+        audience_revision(&commanded).await
     );
     assert_eq!(
         effects.audience_revised,
         BTreeSet::from([conversation_id()])
     );
     assert_eq!(effects.search_rebuilt.len(), 2);
-    assert!(effects.revoked_teammates.is_empty());
+    assert!(effects.revoked_agents.is_empty());
     assert_eq!(
         authorization_states(&applied).await,
         authorization_states(&commanded).await
     );
 
     set_applying(&applied, true).await;
-    let access_before = access_state(&applied).await;
     let search_before = search_rows(&applied).await;
-    let again = run_hook(&applied, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
     run_hook(&applied, MESSAGES_TABLE, &["item:first", "item:second"]).await;
-    assert!(again.is_empty());
-    assert_eq!(access_state(&applied).await, access_before);
     assert_eq!(search_rows(&applied).await, search_before);
     assert!(
-        run_hook(
-            &applied,
-            "chat_teammate_channel_memberships",
-            &["unresolved"]
-        )
-        .await
-        .is_empty()
+        run_hook(&applied, CHANNEL_MEMBERSHIPS_TABLE, &["unresolved"])
+            .await
+            .is_empty()
+    );
+    assert!(
+        run_hook(&applied, CHANNELS_TABLE, &[&channel_id()])
+            .await
+            .is_empty()
     );
 }
 
 #[tokio::test]
-async fn narrowed_profile_revisions_revoke_once_and_widened_ones_keep_authority() {
+async fn a_channel_narrowing_revokes_work_above_the_new_level_and_a_widening_keeps_it() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
-    let access_before = access_state(&pool).await[0].1;
-    let audience_before = audience_revision(&pool).await.unwrap();
-
+    seed_folder_authorization(&pool, "edit", "ask").await;
+    let conversation = conversation_id();
+    let channel = channel_id();
     set_applying(&pool, true).await;
-    let narrowed = insert_profile_revision(&pool, 2, "read").await;
-    assert_eq!(audience_revision(&pool).await, Some(audience_before));
-    let effects = run_hook(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[&narrowed]).await;
 
-    assert_eq!(
-        effects.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-    assert_eq!(
-        effects.access_revised,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
+    set_channel_access(&pool, &conversation, Some("own")).await;
+    let widened = run_hook(&pool, CHANNELS_TABLE, &[&channel]).await;
+    assert!(widened.is_empty(), "{widened:?}");
+
+    set_channel_access(&pool, &conversation, Some("read")).await;
+    let narrowed = run_hook(&pool, CHANNELS_TABLE, &[&channel]).await;
+    assert_eq!(narrowed.revoked_agents, agents());
     assert_eq!(
         authorization_states(&pool).await,
-        vec![(
-            "authorization:first".to_string(),
-            "revoked".to_string(),
-            PROFILE_REDUCTION_REASON.to_string()
-        )]
+        vec![
+            (
+                "authorization:first".to_string(),
+                "allowed".to_string(),
+                String::new()
+            ),
+            (
+                "authorization:folder".to_string(),
+                "revoked".to_string(),
+                ACCESS_REDUCTION_REASON.to_string()
+            ),
+        ]
     );
     assert_eq!(
         queued_jobs(&pool).await,
         vec![(
-            TEAMMATE_ID.to_string(),
-            Some("authorization:first".to_string())
+            AGENT_ID.to_string(),
+            Some("authorization:folder".to_string())
         )]
     );
-    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
-    assert_eq!(audience_revision(&pool).await, Some(audience_before + 1));
 
-    let replayed = run_hook(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[&narrowed]).await;
-    assert!(replayed.revoked_teammates.is_empty());
-    assert_eq!(queued_jobs(&pool).await.len(), 1);
-
-    set_applying(&pool, false).await;
-    insert_authorization(&pool, "authorization:second", 2, FIRST_PROFILE_REVISION_ID).await;
-    set_applying(&pool, true).await;
-    let access_after_narrowing = access_state(&pool).await[0].1;
-    let widened = insert_profile_revision(&pool, 3, "publish").await;
-    let effects = run_hook(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[&widened]).await;
-
-    assert!(effects.revoked_teammates.is_empty());
-    assert!(effects.access_revised.is_empty());
+    // Talk still lets the agent reply, so work without a target stays.
+    set_channel_access(&pool, &conversation, Some("talk")).await;
+    let talk = run_hook(&pool, CHANNELS_TABLE, &[&channel]).await;
+    assert!(talk.revoked_agents.is_empty());
     assert_eq!(
-        effects.audience_revised,
-        BTreeSet::from([conversation_id()])
+        authorization_state(&pool, "authorization:first").await,
+        "allowed"
     );
-    assert_eq!(access_state(&pool).await[0].1, access_after_narrowing);
-    assert_eq!(authorization_states(&pool).await[1].1, "allowed");
+
+    set_channel_access(&pool, &conversation, Some("own")).await;
+    let restored = run_hook(&pool, CHANNELS_TABLE, &[&channel]).await;
+    assert!(restored.is_empty(), "{restored:?}");
+    assert_eq!(
+        revoked(&pool).await,
+        vec!["authorization:folder".to_string()]
+    );
     assert_eq!(queued_jobs(&pool).await.len(), 1);
 }
 
 #[tokio::test]
-async fn a_pointer_naming_an_older_stricter_revision_revokes_what_the_wider_one_allowed() {
+async fn read_keeps_read_only_folder_work_and_talk_revokes_any_target() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
-
+    seed_folder_authorization(&pool, "read", "ask").await;
+    let conversation = conversation_id();
     set_applying(&pool, true).await;
-    let stricter = insert_profile_revision(&pool, 2, "edit").await;
-    let wider = insert_profile_revision(&pool, 3, "publish").await;
-    point_profile_at(&pool, &wider, "publish").await;
-    let widened = run_hook(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID]).await;
-    assert!(widened.revoked_teammates.is_empty());
-    assert!(widened.access_revised.is_empty());
 
-    set_applying(&pool, false).await;
-    insert_authorization(&pool, "authorization:wider", 2, &wider).await;
+    set_channel_access(&pool, &conversation, Some("read")).await;
+    let read = run_hook(&pool, CHANNELS_TABLE, &[&channel_id()]).await;
+    assert!(read.revoked_agents.is_empty());
+
+    set_channel_access(&pool, &conversation, Some("talk")).await;
+    let talk = run_hook(&pool, CHANNELS_TABLE, &[&channel_id()]).await;
+    assert_eq!(talk.revoked_agents, agents());
+    assert_eq!(
+        revoked(&pool).await,
+        vec!["authorization:folder".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn auto_approval_needs_own_on_the_authorization_and_on_each_folder_source() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    set_app_access(&pool, "ask").await;
+    let conversation = conversation_id();
+    set_channel_access(&pool, &conversation, Some("own")).await;
+    seed_folder_authorization(&pool, "execute", "auto_approve").await;
+    authorize(
+        &pool,
+        "authorization:source-only",
+        ASSIGNMENT_ID,
+        &conversation,
+        "ask",
+        Some(FOLDER_TARGET),
+    )
+    .await;
+    add_folder_source(
+        &pool,
+        "authorization:source-only",
+        FOLDER_ID,
+        "execute",
+        "auto_approve",
+    )
+    .await;
+    authorize(
+        &pool,
+        "authorization:asks",
+        ASSIGNMENT_ID,
+        &conversation,
+        "ask",
+        Some(FOLDER_TARGET),
+    )
+    .await;
+    add_folder_source(&pool, "authorization:asks", FOLDER_ID, "publish", "ask").await;
     set_applying(&pool, true).await;
-    let access_before = access_state(&pool).await[0].1;
 
-    // The stricter revision is older than the wider one and as wide as the revision before it,
-    // so only the comparison with later revisions can find the narrowing.
-    point_profile_at(&pool, &stricter, "edit").await;
-    let effects = run_hook(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID]).await;
+    let own = run_hook(&pool, CHANNELS_TABLE, &[&channel_id()]).await;
+    assert!(own.is_empty(), "{own:?}");
 
+    set_channel_access(&pool, &conversation, None).await;
+    let inherited_ask = run_hook(&pool, CHANNELS_TABLE, &[&channel_id()]).await;
+    assert_eq!(inherited_ask.revoked_agents, agents());
     assert_eq!(
-        effects.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-    assert_eq!(
-        effects.access_revised,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
-    let states = authorization_states(&pool).await;
-    assert!(
-        states
-            .iter()
-            .all(|(_, state, reason)| state == "revoked" && reason == PROFILE_REDUCTION_REASON),
-        "{states:?}"
-    );
-    assert_eq!(
-        queued_jobs(&pool).await,
+        revoked(&pool).await,
         vec![
-            (
-                TEAMMATE_ID.to_string(),
-                Some("authorization:first".to_string())
-            ),
-            (
-                TEAMMATE_ID.to_string(),
-                Some("authorization:wider".to_string())
-            ),
+            "authorization:folder".to_string(),
+            "authorization:source-only".to_string()
         ]
     );
 }
 
-/// Points the seeded profile at `revision_id`, copying its folder capability the way commands
-/// and the coupled sync group do.
-async fn point_profile_at(pool: &SqlitePool, revision_id: &str, capability: &str) {
-    sqlx::query(
-        "UPDATE chat_access_profiles
-         SET current_revision_id = ?, current_maximum_folder_capability = ?
-         WHERE id = ?",
-    )
-    .bind(revision_id)
-    .bind(capability)
-    .bind(PROFILE_ID)
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
-/// Runs the hook for `keys` of `table` and returns the pointers it found mismatched.
-async fn mismatched(pool: &SqlitePool, table: &str, keys: &[&str]) -> Vec<String> {
-    run_hook(pool, table, keys)
-        .await
-        .mismatched_pointers
-        .into_iter()
-        .collect()
-}
-
-/// Number of effective rows `view` holds for `owner_column = owner`.
-async fn effective_rows(pool: &SqlitePool, view: &str, owner_column: &str, owner: &str) -> i64 {
-    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT COUNT(*) FROM {view} WHERE {owner_column} = ?"
-    )))
-    .bind(owner)
-    .fetch_one(pool)
-    .await
-    .unwrap()
-}
-
-/// Points the seeded teammate at its seeded policy revision with a copied `safety_mode`.
-async fn point_teammate_policy_at(pool: &SqlitePool, safety_mode: &str) {
-    sqlx::query(
-        "UPDATE chat_teammates
-         SET current_policy_revision_id = 'policy:sync-effects', current_policy_safety_mode = ?
-         WHERE participant_id = ?",
-    )
-    .bind(safety_mode)
-    .bind(TEAMMATE_ID)
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
 #[tokio::test]
-async fn pointers_whose_copied_restrictiveness_differs_from_their_revision_are_contained() {
+async fn a_project_narrowing_reaches_every_inheriting_channel() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
-    let access_before = access_state(&pool).await[0].1;
-    set_applying(&pool, true).await;
-    let teammate = vec![TEAMMATE_ID.to_string()];
-    let profile = vec![PROFILE_ID.to_string()];
-    let policies = "chat_teammate_effective_policies";
-    let profiles = "chat_access_profile_effective_revisions";
-
-    point_teammate_policy_at(&pool, "full_access").await;
-    assert_eq!(
-        mismatched(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await,
-        teammate
-    );
-    assert_eq!(
-        effective_rows(&pool, policies, "teammate_id", TEAMMATE_ID).await,
-        0
-    );
-    assert_eq!(
-        authorization_states(&pool).await,
-        vec![(
-            "authorization:first".to_string(),
-            "revoked".to_string(),
-            MISMATCHED_POINTER_REASON.to_string()
-        )]
-    );
-    assert_eq!(queued_jobs(&pool).await.len(), 1);
-    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
-    assert_eq!(
-        mismatched(&pool, POLICY_REVISIONS_TABLE, &["policy:sync-effects"]).await,
-        teammate
-    );
-    // Later rows still apply after a contained pointer.
-    run_hook(&pool, MESSAGES_TABLE, &["item:first"]).await;
-
-    point_teammate_policy_at(&pool, "ask_for_approval").await;
-    assert!(
-        mismatched(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID])
-            .await
-            .is_empty()
-    );
-    assert!(
-        mismatched(&pool, POLICY_REVISIONS_TABLE, &["policy:sync-effects"])
-            .await
-            .is_empty()
-    );
-    assert_eq!(
-        effective_rows(&pool, policies, "teammate_id", TEAMMATE_ID).await,
-        1
-    );
-
-    point_profile_at(&pool, FIRST_PROFILE_REVISION_ID, "publish").await;
-    assert_eq!(
-        mismatched(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID]).await,
-        profile
-    );
-    assert_eq!(
-        mismatched(
+    add_folder(&pool, PROJECT_ID, FOLDER_ID, FOLDER_ENVIRONMENT_ID).await;
+    let default = conversation_id();
+    let channels = [default.clone(), "conversation:second".to_string()];
+    add_channel(&pool, PROJECT_ID, "conversation:second").await;
+    add_channel(&pool, PROJECT_ID, "conversation:own").await;
+    set_channel_access(&pool, "conversation:own", Some("own")).await;
+    for conversation in ["conversation:second", "conversation:own"] {
+        add_member(&pool, conversation).await;
+    }
+    for conversation in [default.as_str(), "conversation:second", "conversation:own"] {
+        let assignment = format!("assignment:{conversation}");
+        if conversation != default {
+            add_assignment(&pool, conversation, &assignment).await;
+        }
+        let assignment = if conversation == default {
+            ASSIGNMENT_ID.to_string()
+        } else {
+            assignment
+        };
+        let authorization = format!("authorization:{conversation}");
+        authorize(
             &pool,
-            ACCESS_PROFILE_REVISIONS_TABLE,
-            &[FIRST_PROFILE_REVISION_ID]
+            &authorization,
+            &assignment,
+            conversation,
+            "ask",
+            Some(FOLDER_TARGET),
         )
-        .await,
-        profile
-    );
-    assert_eq!(
-        effective_rows(&pool, profiles, "access_profile_id", PROFILE_ID).await,
-        0
-    );
-
-    // A pointer that arrives before its revision applies, and the revision is checked on arrival.
-    let pending = "profile-revision:sync-effects:2";
-    point_profile_at(&pool, pending, "read").await;
-    assert!(
-        mismatched(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID])
-            .await
-            .is_empty()
-    );
-    insert_profile_revision(&pool, 2, "publish").await;
-    assert_eq!(
-        mismatched(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[pending]).await,
-        profile
-    );
-    point_profile_at(&pool, pending, "publish").await;
-    assert!(
-        mismatched(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[pending])
-            .await
-            .is_empty()
-    );
-    assert_eq!(
-        effective_rows(&pool, profiles, "access_profile_id", PROFILE_ID).await,
-        1
-    );
-}
-
-/// Inserts an allowed authorization of the seeded assignment that froze the `approval` policy.
-async fn insert_authorization_with_approval(pool: &SqlitePool, id: &str, approval: &str) {
-    sqlx::query(
-        "INSERT INTO chat_assignment_authorization_revisions
-            (id, assignment_id, revision, requester_participant_id,
-             teammate_policy_revision_id, teammate_access_revision,
-             destination_conversation_id, access_profile_revision_id,
-             resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
-         VALUES (?, 'assignment:sync-effects', 2, 'participant:local-owner',
-                 'policy:sync-effects', 1, ?, ?, ?, printf('%064d', 0), 'allowed', ?)",
-    )
-    .bind(id)
-    .bind(conversation_id())
-    .bind(FIRST_PROFILE_REVISION_ID)
-    .bind(approval)
-    .bind(NOW)
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
-/// Inserts a policy revision of the seeded teammate that sorts after every earlier one when
-/// `minute` grows.
-async fn insert_policy_revision(pool: &SqlitePool, id: &str, minute: u32, safety_mode: &str) {
-    sqlx::query(
-        "INSERT INTO chat_teammate_policy_revisions
-            (id, teammate_id, provider_instance_id, model_selection_data, created_at, safety_mode)
-         VALUES (?, ?, 'codex-personal', '{}', ?, ?)",
-    )
-    .bind(id)
-    .bind(TEAMMATE_ID)
-    .bind(format!("2026-10-24T09:{minute:02}:00.000Z"))
-    .bind(safety_mode)
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
-/// Seeds an authorization frozen at `auto_approve` under an approve-for-me teammate, with the
-/// rows left as sync applies them.
-async fn seed_auto_approved_work(pool: &SqlitePool) {
-    seed_organization(pool).await;
-    insert_policy_revision(pool, "policy:approving", 1, "approve_for_me").await;
-    insert_authorization_with_approval(pool, "authorization:wide", "auto_approve").await;
-    set_applying(pool, true).await;
-}
-
-#[tokio::test]
-async fn synced_policy_reduction_revokes_active_authorization() {
-    let pool = migrated_pool().await;
-    seed_auto_approved_work(&pool).await;
-    let access_before = access_state(&pool).await[0].1;
-
-    insert_policy_revision(&pool, "policy:wider", 10, "full_access").await;
-    let widened = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:wider"]).await;
-    assert!(widened.is_empty(), "{widened:?}");
-    assert_eq!(
-        authorization_state(&pool, "authorization:wide").await,
-        "allowed"
-    );
-
-    insert_policy_revision(&pool, "policy:narrower", 20, "ask_for_approval").await;
-    let narrowed = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:narrower"]).await;
-
-    assert_eq!(
-        narrowed.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-    assert_eq!(
-        narrowed.access_revised,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
-    let states = authorization_states(&pool).await;
-    assert!(
-        states.iter().all(
-            |(_, state, reason)| state == "revoked" && reason == TEAMMATE_POLICY_REDUCED_REASON
-        ),
-        "{states:?}"
-    );
-    assert_eq!(queued_jobs(&pool).await.len(), 2);
-
-    let replayed = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:narrower"]).await;
-    assert!(replayed.is_empty(), "{replayed:?}");
-    assert_eq!(queued_jobs(&pool).await.len(), 2);
-}
-
-/// A pointer can apply before or after the revision it names, deciding by its copied safety mode
-/// until the revision arrives, and a stale narrower revision that no pointer names changes
-/// nothing, so only the effective revision can revoke.
-#[tokio::test]
-async fn synced_policy_reduction_follows_the_effective_revision_in_either_arrival_order() {
-    let pool = migrated_pool().await;
-    seed_auto_approved_work(&pool).await;
-
-    sqlx::query(
-        "UPDATE chat_teammates
-         SET current_policy_revision_id = 'policy:narrower',
-             current_policy_safety_mode = 'ask_for_approval'
-         WHERE participant_id = ?",
-    )
-    .bind(TEAMMATE_ID)
-    .execute(&pool)
-    .await
-    .unwrap();
-    let pending = run_hook(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
-    assert_eq!(
-        pending.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-
-    insert_policy_revision(&pool, "policy:narrower", 10, "ask_for_approval").await;
-    let arrived = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:narrower"]).await;
-    assert!(arrived.revoked_teammates.is_empty(), "{arrived:?}");
-    assert_eq!(
-        authorization_state(&pool, "authorization:wide").await,
-        "revoked"
-    );
-
-    let pool = migrated_pool().await;
-    seed_auto_approved_work(&pool).await;
-    insert_policy_revision(&pool, "policy:unnamed", 10, "ask_for_approval").await;
-    insert_policy_revision(&pool, "policy:named", 5, "approve_for_me").await;
-    sqlx::query(
-        "UPDATE chat_teammates
-         SET current_policy_revision_id = 'policy:named',
-             current_policy_safety_mode = 'approve_for_me'
-         WHERE participant_id = ?",
-    )
-    .bind(TEAMMATE_ID)
-    .execute(&pool)
-    .await
-    .unwrap();
-    let kept = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:unnamed"]).await;
-    assert!(kept.is_empty(), "{kept:?}");
-    let kept = run_hook(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
-    assert!(kept.revoked_teammates.is_empty());
-}
-
-/// A pointer that arrives before the revision it names decides coverage by the safety mode it
-/// copied, so a concurrent newer and narrower revision cannot revoke work the pointed revision
-/// still covers, whichever hook or sweep runs before it arrives.
-#[tokio::test]
-async fn pointer_before_revision_keeps_covered_work() {
-    let pool = migrated_pool().await;
-    seed_auto_approved_work(&pool).await;
-    sqlx::query(
-        "UPDATE chat_teammates
-         SET current_policy_revision_id = 'policy:pointed',
-             current_policy_safety_mode = 'approve_for_me'
-         WHERE participant_id = ?",
-    )
-    .bind(TEAMMATE_ID)
-    .execute(&pool)
-    .await
-    .unwrap();
-    run_hook(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
-
-    insert_policy_revision(&pool, "policy:concurrent", 20, "ask_for_approval").await;
-    let concurrent = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:concurrent"]).await;
-    assert!(concurrent.revoked_teammates.is_empty(), "{concurrent:?}");
-    let teammate = run_hook(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
-    assert!(teammate.revoked_teammates.is_empty(), "{teammate:?}");
-    let swept = run_hook(&pool, CONVERSATIONS_TABLE, &["conversation:removed"]).await;
-    assert!(swept.revoked_teammates.is_empty(), "{swept:?}");
-    let access = run_hook(&pool, MEMBERSHIPS_TABLE, &["membership:sync-effects"]).await;
-    assert!(access.revoked_teammates.is_empty(), "{access:?}");
-    assert_eq!(
-        authorization_state(&pool, "authorization:wide").await,
-        "allowed"
-    );
-
-    insert_policy_revision(&pool, "policy:pointed", 10, "approve_for_me").await;
-    let arrived = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:pointed"]).await;
-    assert!(arrived.revoked_teammates.is_empty(), "{arrived:?}");
-    assert_eq!(
-        authorization_state(&pool, "authorization:wide").await,
-        "allowed"
-    );
-}
-
-/// A pointer whose revision never arrives cannot hold back revocation: its copied safety mode
-/// decides, so a copy narrower than the frozen approval revokes on every hook and sweep.
-#[tokio::test]
-async fn a_pointer_whose_revision_never_arrives_decides_by_its_copied_mode() {
-    let pool = migrated_pool().await;
-    seed_auto_approved_work(&pool).await;
-    sqlx::query(
-        "UPDATE chat_teammates
-         SET current_policy_revision_id = 'policy:never-sent',
-             current_policy_safety_mode = 'ask_for_approval'
-         WHERE participant_id = ?",
-    )
-    .bind(TEAMMATE_ID)
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    let pointed = run_hook(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
-
-    assert_eq!(
-        pointed.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-    assert_eq!(
-        revocation_reason(&pool).await,
-        TEAMMATE_POLICY_REDUCED_REASON
-    );
-}
-
-/// A pointer that copied a mode narrower than the frozen approval revokes when an access row
-/// applies before its revision arrives, and the arriving revision then revokes nothing more.
-#[tokio::test]
-async fn a_narrower_copied_mode_revokes_before_its_revision_arrives() {
-    let pool = migrated_pool().await;
-    seed_auto_approved_work(&pool).await;
-    sqlx::query(
-        "UPDATE chat_teammates
-         SET current_policy_revision_id = 'policy:pointed',
-             current_policy_safety_mode = 'ask_for_approval'
-         WHERE participant_id = ?",
-    )
-    .bind(TEAMMATE_ID)
-    .execute(&pool)
-    .await
-    .unwrap();
-    let access = run_hook(&pool, MEMBERSHIPS_TABLE, &["membership:sync-effects"]).await;
-    assert_eq!(
-        access.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-    assert_eq!(
-        revocation_reason(&pool).await,
-        TEAMMATE_POLICY_REDUCED_REASON
-    );
-    let jobs = queued_jobs(&pool).await.len();
-
-    insert_policy_revision(&pool, "policy:pointed", 10, "ask_for_approval").await;
-    let arrived = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:pointed"]).await;
-    assert!(arrived.revoked_teammates.is_empty(), "{arrived:?}");
-    assert_eq!(queued_jobs(&pool).await.len(), jobs);
-}
-
-/// A Custom teammate cannot be ranked against a grant, so the grant alone governs its host tools
-/// and a change that leaves the frozen approval covered keeps the work running.
-#[tokio::test]
-async fn synced_policy_change_keeps_work_a_grant_still_covers() {
-    let pool = migrated_pool().await;
-    seed_auto_approved_work(&pool).await;
-    set_channel_override(&pool, Some("auto_approve")).await;
-
-    insert_policy_revision(&pool, "policy:custom", 10, "custom").await;
-    let effects = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:custom"]).await;
-
-    assert!(effects.is_empty(), "{effects:?}");
-    assert_eq!(
-        authorization_state(&pool, "authorization:wide").await,
-        "allowed"
-    );
-}
-
-#[tokio::test]
-async fn synced_policy_reduction_revokes_a_wider_folder_source() {
-    let pool = migrated_pool().await;
-    seed_organization(&pool).await;
-    insert_policy_revision(&pool, "policy:approving", 1, "approve_for_me").await;
-    seed_folder_authorization(&pool, "auto_approve", "ask").await;
-    sqlx::query(
-        "INSERT INTO chat_assignment_authorized_folder_sources
-            (authorization_revision_id, root_handle, working_folder_id, capability,
-             is_execution_target, resolved_runtime_approval_policy, created_at)
-         VALUES ('authorization:first', printf('%064d', 2), 'folder:sync-effects', 'read', 0,
-                 'auto_approve', ?)",
-    )
-    .bind(NOW)
-    .execute(&pool)
-    .await
-    .unwrap();
+        .await;
+        add_folder_source(&pool, &authorization, FOLDER_ID, "edit", "ask").await;
+        add_push_approval(&pool, conversation).await;
+    }
     set_applying(&pool, true).await;
 
-    insert_policy_revision(&pool, "policy:narrower", 10, "ask_for_approval").await;
-    let effects = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:narrower"]).await;
+    set_project_access(&pool, PROJECT_ID, Some("read")).await;
+    let narrowed = run_hook(&pool, PROJECT_SETTINGS_TABLE, &[PROJECT_ID]).await;
 
+    assert_eq!(narrowed.revoked_agents, agents());
+    let mut expected: Vec<String> = channels
+        .iter()
+        .map(|conversation| format!("authorization:{conversation}"))
+        .collect();
+    expected.sort();
+    assert_eq!(revoked(&pool).await, expected);
     assert_eq!(
-        effects.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
+        authorization_state(&pool, "authorization:conversation:own").await,
+        "allowed"
+    );
+    assert_eq!(queued_jobs(&pool).await.len(), 2);
+    assert_eq!(
+        narrowed.lapsed_push_approvals,
+        channels.iter().cloned().collect::<BTreeSet<_>>()
+    );
+    let unrevoked: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM chat_push_approvals WHERE revoked_at IS NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(unrevoked, 3, "the hook never writes push approvals");
+
+    let replayed = run_hook(&pool, PROJECT_SETTINGS_TABLE, &[PROJECT_ID]).await;
+    assert!(replayed.revoked_agents.is_empty());
+    assert_eq!(queued_jobs(&pool).await.len(), 2);
+}
+
+#[tokio::test]
+async fn an_app_narrowing_reaches_inheriting_projects_and_spares_projects_with_their_own() {
+    let pool = migrated_pool().await;
+    set_app_access(&pool, "own").await;
+    seed_organization(&pool).await;
+    seed_folder_authorization(&pool, "publish", "auto_approve").await;
+    seed_project(&pool, OTHER_PROJECT_ID, "a1").await;
+    set_project_access(&pool, OTHER_PROJECT_ID, Some("own")).await;
+    let other = default_channel_ids(OTHER_PROJECT_ID).unwrap().0;
+    add_member(&pool, &other).await;
+    add_assignment(&pool, &other, "assignment:other").await;
+    add_folder(&pool, OTHER_PROJECT_ID, "folder:other", "environment:other").await;
+    authorize(
+        &pool,
+        "authorization:other",
+        "assignment:other",
+        &other,
+        "auto_approve",
+        Some(Target {
+            environment: "environment:other",
+            folder: Some("folder:other"),
+        }),
+    )
+    .await;
+    add_folder_source(
+        &pool,
+        "authorization:other",
+        "folder:other",
+        "publish",
+        "auto_approve",
+    )
+    .await;
+    set_applying(&pool, true).await;
+
+    set_app_access(&pool, "ask").await;
+    let narrowed = run_hook(&pool, APP_SETTINGS_TABLE, &[APP_AGENT_SETTINGS_ID]).await;
+
+    assert_eq!(narrowed.revoked_agents, agents());
+    assert_eq!(
+        revoked(&pool).await,
+        vec!["authorization:folder".to_string()]
     );
     assert_eq!(
-        authorization_state(&pool, "authorization:folder").await,
-        "revoked"
+        authorization_state(&pool, "authorization:other").await,
+        "allowed"
+    );
+    assert!(narrowed.lapsed_push_approvals.is_empty());
+}
+
+#[tokio::test]
+async fn a_missing_app_settings_row_fails_closed_to_talk() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    seed_folder_authorization(&pool, "read", "ask").await;
+    set_applying(&pool, true).await;
+    sqlx::query("DELETE FROM chat_agent_app_settings")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let effects = run_hook(&pool, APP_SETTINGS_TABLE, &[APP_AGENT_SETTINGS_ID]).await;
+
+    assert_eq!(effects.revoked_agents, agents());
+    assert_eq!(
+        revoked(&pool).await,
+        vec!["authorization:folder".to_string()]
+    );
+}
+
+/// Seeds a private scratch environment of the seeded reply thread and `authorization:scratch`,
+/// which works in it.
+async fn seed_scratch_authorization(pool: &SqlitePool) {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO chat_scratch_scopes (id, reply_thread_id, agent_id, created_at, updated_at)
+         VALUES ('scratch:sync-effects', 'reply:sync-effects', '{AGENT_ID}', '{NOW}', '{NOW}');
+         INSERT INTO chat_scratch_generations
+            (id, scratch_scope_id, generation, created_at, updated_at)
+         VALUES ('generation:sync-effects', 'scratch:sync-effects', 1, '{NOW}', '{NOW}');
+         INSERT INTO chat_execution_environments
+            (id, scratch_generation_id, kind, display_name, created_at, updated_at)
+         VALUES ('environment:scratch', 'generation:sync-effects', 'scratch', 'Scratch', '{NOW}',
+                 '{NOW}');"
+    )))
+    .execute(pool)
+    .await
+    .unwrap();
+    authorize(
+        pool,
+        "authorization:scratch",
+        ASSIGNMENT_ID,
+        &conversation_id(),
+        "ask",
+        Some(Target {
+            environment: "environment:scratch",
+            folder: None,
+        }),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn scratch_work_stays_under_ask_and_is_revoked_below_it() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    seed_scratch_authorization(&pool).await;
+    set_applying(&pool, true).await;
+
+    let ask = run_hook(&pool, APP_SETTINGS_TABLE, &[APP_AGENT_SETTINGS_ID]).await;
+    assert!(ask.is_empty(), "{ask:?}");
+
+    set_project_access(&pool, PROJECT_ID, Some("read")).await;
+    let read = run_hook(&pool, PROJECT_SETTINGS_TABLE, &[PROJECT_ID]).await;
+    assert_eq!(read.revoked_agents, agents());
+    assert_eq!(
+        revoked(&pool).await,
+        vec!["authorization:scratch".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn a_folder_source_outside_the_destination_project_is_revoked() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    seed_project(&pool, OTHER_PROJECT_ID, "a1").await;
+    add_folder(&pool, PROJECT_ID, FOLDER_ID, FOLDER_ENVIRONMENT_ID).await;
+    add_folder(&pool, OTHER_PROJECT_ID, "folder:other", "environment:other").await;
+    authorize(
+        &pool,
+        "authorization:folder",
+        ASSIGNMENT_ID,
+        &conversation_id(),
+        "ask",
+        Some(FOLDER_TARGET),
+    )
+    .await;
+    add_folder_source(&pool, "authorization:folder", FOLDER_ID, "edit", "ask").await;
+    add_folder_source(&pool, "authorization:folder", "folder:other", "read", "ask").await;
+    set_applying(&pool, true).await;
+
+    let effects = run_hook(&pool, CHANNELS_TABLE, &[&channel_id()]).await;
+
+    assert_eq!(effects.revoked_agents, agents());
+    assert_eq!(
+        revoked(&pool).await,
+        vec!["authorization:folder".to_string()]
     );
 }
 
@@ -858,39 +840,30 @@ async fn set_participant_archived(pool: &SqlitePool, id: &str, archived_at: Opti
 async fn synced_participant_archive_revokes_authorizations() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
-    let access_before = access_state(&pool).await[0].1;
     set_applying(&pool, true).await;
 
-    let renamed = run_hook(&pool, PARTICIPANTS_TABLE, &[TEAMMATE_ID]).await;
+    let renamed = run_hook(&pool, PARTICIPANTS_TABLE, &[AGENT_ID]).await;
     assert!(renamed.is_empty(), "{renamed:?}");
     assert_eq!(
         authorization_state(&pool, "authorization:first").await,
         "allowed"
     );
 
-    set_participant_archived(&pool, TEAMMATE_ID, Some(NOW)).await;
-    let archived = run_hook(&pool, PARTICIPANTS_TABLE, &[TEAMMATE_ID]).await;
+    set_participant_archived(&pool, AGENT_ID, Some(NOW)).await;
+    let archived = run_hook(&pool, PARTICIPANTS_TABLE, &[AGENT_ID]).await;
 
-    assert_eq!(
-        archived.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-    assert_eq!(
-        archived.access_revised,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
+    assert_eq!(archived.revoked_agents, agents());
     assert_eq!(
         authorization_states(&pool).await,
         vec![(
             "authorization:first".to_string(),
             "revoked".to_string(),
-            TEAMMATE_ARCHIVED_REASON.to_string()
+            AGENT_ARCHIVED_REASON.to_string()
         )]
     );
     assert_eq!(queued_jobs(&pool).await.len(), 1);
-    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
 
-    let replayed = run_hook(&pool, PARTICIPANTS_TABLE, &[TEAMMATE_ID]).await;
+    let replayed = run_hook(&pool, PARTICIPANTS_TABLE, &[AGENT_ID]).await;
     assert!(replayed.is_empty(), "{replayed:?}");
     assert_eq!(queued_jobs(&pool).await.len(), 1);
 }
@@ -906,7 +879,7 @@ async fn search_follows_revisions_that_arrive_after_their_message_and_deleted_me
         "INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
          VALUES ('item:late', '{conversation}', 'message', 'c002', '{NOW}');
          INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
-         VALUES ('item:late', '{TEAMMATE_ID}', '{NOW}');"
+         VALUES ('item:late', '{AGENT_ID}', '{NOW}');"
     )))
     .execute(&pool)
     .await
@@ -960,25 +933,22 @@ async fn search_follows_revisions_that_arrive_after_their_message_and_deleted_me
 async fn an_applied_membership_removal_revokes_the_authorization_it_covered_once() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
-    let access_before = access_state(&pool).await[0].1;
     let audience_before = audience_revision(&pool).await.unwrap();
+    let key = membership_key(&conversation_id());
 
     set_applying(&pool, true).await;
     sqlx::query(
-        "UPDATE chat_conversation_memberships
-         SET removed_at = '2026-10-24T09:05:00.000Z', updated_at = '2026-10-24T09:05:00.000Z'
-         WHERE participant_id = ?",
+        "UPDATE chat_conversation_memberships SET removed_at = ?1, updated_at = ?1
+         WHERE participant_id = ?2",
     )
-    .bind(TEAMMATE_ID)
+    .bind(LATER)
+    .bind(AGENT_ID)
     .execute(&pool)
     .await
     .unwrap();
-    let effects = run_hook(&pool, MEMBERSHIPS_TABLE, &["membership:sync-effects"]).await;
+    let effects = run_hook(&pool, MEMBERSHIPS_TABLE, &[&key]).await;
 
-    assert_eq!(
-        effects.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
+    assert_eq!(effects.revoked_agents, agents());
     assert_eq!(
         effects.audience_revised,
         BTreeSet::from([conversation_id()])
@@ -992,11 +962,10 @@ async fn an_applied_membership_removal_revokes_the_authorization_it_covered_once
         )]
     );
     assert_eq!(queued_jobs(&pool).await.len(), 1);
-    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
     assert_eq!(audience_revision(&pool).await, Some(audience_before + 1));
 
-    let replayed = run_hook(&pool, MEMBERSHIPS_TABLE, &["membership:sync-effects"]).await;
-    assert!(replayed.revoked_teammates.is_empty());
+    let replayed = run_hook(&pool, MEMBERSHIPS_TABLE, &[&key]).await;
+    assert!(replayed.revoked_agents.is_empty());
     assert_eq!(queued_jobs(&pool).await.len(), 1);
     assert!(
         run_hook(&pool, MEMBERSHIPS_TABLE, &["membership:unknown"])
@@ -1005,498 +974,323 @@ async fn an_applied_membership_removal_revokes_the_authorization_it_covered_once
     );
 }
 
-/// Sets the seeded teammate's grant on the seeded folder to `capability`.
-async fn set_grant_capability(pool: &SqlitePool, capability: &str) {
-    sqlx::query(
-        "UPDATE chat_teammate_working_folder_grants SET capability = ?, revision = revision + 1
-         WHERE teammate_id = ?",
-    )
-    .bind(capability)
-    .bind(TEAMMATE_ID)
-    .execute(pool)
-    .await
-    .unwrap();
+#[tokio::test]
+async fn an_applied_channel_membership_removal_or_deletion_revokes_the_authorization() {
+    for delete in [false, true] {
+        let pool = migrated_pool().await;
+        seed_organization(&pool).await;
+        let key = channel_membership_key(&conversation_id());
+
+        set_applying(&pool, true).await;
+        let statement = if delete {
+            "DELETE FROM chat_agent_channel_memberships WHERE sync_key = ?2"
+        } else {
+            "UPDATE chat_agent_channel_memberships SET removed_at = ?1, updated_at = ?1
+             WHERE sync_key = ?2"
+        };
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .bind(LATER)
+            .bind(&key)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let effects = run_hook(&pool, CHANNEL_MEMBERSHIPS_TABLE, &[&key]).await;
+
+        assert_eq!(effects.revoked_agents, agents(), "delete {delete}");
+        assert_eq!(
+            authorization_states(&pool).await,
+            vec![(
+                "authorization:first".to_string(),
+                "revoked".to_string(),
+                ACCESS_REDUCTION_REASON.to_string()
+            )]
+        );
+        let replayed = run_hook(&pool, CHANNEL_MEMBERSHIPS_TABLE, &[&key]).await;
+        assert!(replayed.revoked_agents.is_empty());
+        assert_eq!(queued_jobs(&pool).await.len(), 1);
+    }
 }
 
 #[tokio::test]
-async fn an_applied_grant_narrowing_revokes_and_a_widening_keeps_authority() {
+async fn leaving_a_disclosed_channel_revokes_the_work_that_read_it() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
-    let conversation = conversation_id();
+    add_channel(&pool, PROJECT_ID, "conversation:source").await;
+    add_member(&pool, "conversation:source").await;
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO project_working_folders
-            (id, project_id, display_name, kind, managed_relative_path, created_at, updated_at)
-         VALUES ('folder:sync-effects', '{PROJECT_ID}', 'Sync', 'managed',
-                 'projects/{PROJECT_ID}-grant', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammate_working_folder_grants
-            (conversation_id, teammate_id, working_folder_id, sync_key, project_id, capability,
-             is_default, created_at)
-         VALUES ('{conversation}', '{TEAMMATE_ID}', 'folder:sync-effects', 'grant:sync-effects',
-                 '{PROJECT_ID}', 'edit', 1, '{NOW}');
-         INSERT INTO chat_assignment_authorized_folder_sources
-            (authorization_revision_id, root_handle, working_folder_id, capability,
-             is_execution_target, resolved_runtime_approval_policy, created_at)
-         VALUES ('authorization:first', printf('%064d', 1), 'folder:sync-effects', 'edit', 1,
-                 'ask', '{NOW}');"
+        "INSERT INTO chat_message_references
+            (id, message_revision_id, reference_kind, label_snapshot, plain_text_projection,
+             start_offset, end_offset, ordinal, created_at)
+         VALUES ('reference:source', 'revision:first', 'channel', '#source', '#source', 0, 7, 0,
+                 '{NOW}');
+         INSERT INTO chat_assignment_authorized_channel_sources
+            (authorization_revision_id, source_handle, message_reference_id, conversation_id,
+             label_snapshot, lower_order_key, lower_item_id, high_order_key, high_item_id,
+             source_revision_cutoff_id, destination_audience_revision, created_at)
+         VALUES ('authorization:first', printf('%064d', 7), 'reference:source',
+                 'conversation:source', '#source', 'c000', 'item:first', 'c001', 'item:second',
+                 'revision:first', 1, '{NOW}');"
     )))
     .execute(&pool)
     .await
     .unwrap();
-    let access_before = access_state(&pool).await[0].1;
-
+    let key = membership_key("conversation:source");
     set_applying(&pool, true).await;
-    set_grant_capability(&pool, "publish").await;
-    let widened = run_hook(&pool, FOLDER_GRANTS_TABLE, &["grant:sync-effects"]).await;
-    assert!(widened.revoked_teammates.is_empty());
-    assert!(widened.audience_revised.is_empty());
-    assert_eq!(
-        widened.access_revised,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-    assert_eq!(authorization_states(&pool).await[0].1, "allowed");
-    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
 
-    set_grant_capability(&pool, "read").await;
-    let narrowed = run_hook(&pool, FOLDER_GRANTS_TABLE, &["grant:sync-effects"]).await;
+    let present = run_hook(&pool, MEMBERSHIPS_TABLE, &[&key]).await;
+    assert!(present.revoked_agents.is_empty());
+
+    sqlx::query(
+        "UPDATE chat_conversation_memberships SET removed_at = ?1, updated_at = ?1
+         WHERE sync_key = ?2",
+    )
+    .bind(LATER)
+    .bind(&key)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let left = run_hook(&pool, MEMBERSHIPS_TABLE, &[&key]).await;
+
+    assert_eq!(left.revoked_agents, agents());
     assert_eq!(
-        narrowed.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
+        revoked(&pool).await,
+        vec!["authorization:first".to_string()]
     );
-    assert_eq!(
-        authorization_states(&pool).await,
-        vec![(
-            "authorization:first".to_string(),
-            "revoked".to_string(),
-            ACCESS_REDUCTION_REASON.to_string()
-        )]
-    );
-    assert_eq!(queued_jobs(&pool).await.len(), 1);
 }
 
-/// A deleted row no longer names its teammate, so the hook sweeps every teammate that holds an
-/// active authorization.
 #[tokio::test]
-async fn an_applied_membership_deletion_revokes_the_authorization_it_covered() {
+async fn a_command_narrowing_revokes_the_same_work_as_an_applied_one() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
-    let access_before = access_state(&pool).await[0].1;
+    seed_folder_authorization(&pool, "edit", "ask").await;
+    set_channel_access(&pool, &conversation_id(), Some("read")).await;
 
-    set_applying(&pool, true).await;
-    sqlx::query("DELETE FROM chat_teammate_channel_memberships WHERE sync_key = ?")
-        .bind("channel-membership:sync-effects")
-        .execute(&pool)
+    let mut connection = pool.acquire().await.unwrap();
+    let revoked_agents = revoke_exceeding_authorizations(&mut connection, LATER)
         .await
         .unwrap();
-    let effects = run_hook(
-        &pool,
-        CHANNEL_MEMBERSHIPS_TABLE,
-        &["channel-membership:sync-effects"],
-    )
-    .await;
-
-    assert_eq!(
-        effects.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-    assert_eq!(
-        authorization_states(&pool).await,
-        vec![(
-            "authorization:first".to_string(),
-            "revoked".to_string(),
-            ACCESS_REDUCTION_REASON.to_string()
-        )]
-    );
-    assert_eq!(queued_jobs(&pool).await.len(), 1);
-    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
-
-    let replayed = run_hook(
-        &pool,
-        CHANNEL_MEMBERSHIPS_TABLE,
-        &["channel-membership:sync-effects"],
-    )
-    .await;
-    assert!(replayed.revoked_teammates.is_empty());
-    assert_eq!(queued_jobs(&pool).await.len(), 1);
-}
-
-#[tokio::test]
-async fn a_stricter_scratch_override_revokes_and_an_equal_one_keeps_authority() {
-    let pool = migrated_pool().await;
-    seed_organization(&pool).await;
-    insert_policy_revision(&pool, "policy:broad", 1, "full_access").await;
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO chat_scratch_scopes (id, reply_thread_id, teammate_id, created_at, updated_at)
-         VALUES ('scratch:sync-effects', 'reply:sync-effects', '{TEAMMATE_ID}', '{NOW}', '{NOW}');
-         INSERT INTO chat_scratch_generations
-            (id, scratch_scope_id, generation, created_at, updated_at)
-         VALUES ('generation:sync-effects', 'scratch:sync-effects', 1, '{NOW}', '{NOW}');
-         INSERT INTO chat_execution_environments
-            (id, scratch_generation_id, kind, display_name, created_at, updated_at)
-         VALUES ('environment:scratch', 'generation:sync-effects', 'scratch', 'Scratch', '{NOW}',
-                 '{NOW}');"
-    )))
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO chat_assignment_authorization_revisions
-            (id, assignment_id, revision, requester_participant_id,
-             teammate_policy_revision_id, teammate_access_revision,
-             destination_conversation_id, access_profile_revision_id, execution_environment_id,
-             resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
-         VALUES ('authorization:scratch', 'assignment:sync-effects', 2,
-                 'participant:local-owner', 'policy:sync-effects', 1, ?, ?,
-                 'environment:scratch', 'auto_approve', printf('%064d', 0), 'allowed', ?)",
-    )
-    .bind(conversation_id())
-    .bind(FIRST_PROFILE_REVISION_ID)
-    .bind(NOW)
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    set_applying(&pool, true).await;
-    set_scratch_override(&pool, "auto_approve").await;
-    let unchanged = run_hook(
-        &pool,
-        CHANNEL_MEMBERSHIPS_TABLE,
-        &["channel-membership:sync-effects"],
-    )
-    .await;
-    assert!(unchanged.revoked_teammates.is_empty());
-
-    set_scratch_override(&pool, "ask").await;
-    let effects = run_hook(
-        &pool,
-        CHANNEL_MEMBERSHIPS_TABLE,
-        &["channel-membership:sync-effects"],
-    )
-    .await;
-
-    assert_eq!(
-        effects.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-    let states: Vec<(String, String)> = authorization_states(&pool)
+    assert_eq!(revoked_agents, agents());
+    let again = revoke_exceeding_authorizations(&mut connection, LATER)
         .await
-        .into_iter()
-        .map(|(id, state, _)| (id, state))
-        .collect();
+        .unwrap();
+    assert!(again.is_empty());
+    drop(connection);
+
     assert_eq!(
-        states,
-        vec![
-            ("authorization:first".to_string(), "revoked".to_string()),
-            ("authorization:scratch".to_string(), "revoked".to_string()),
-        ]
+        revoked(&pool).await,
+        vec!["authorization:folder".to_string()]
     );
+    let revoked_at: Option<String> = sqlx::query_scalar(
+        "SELECT revoked_at FROM chat_assignment_authorization_revisions
+         WHERE id = 'authorization:folder'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(revoked_at.as_deref(), Some(LATER));
 }
 
-/// Sets the seeded channel membership's scratch runtime approval override to `policy`.
-async fn set_scratch_override(pool: &SqlitePool, policy: &str) {
+/// Inserts an approval for the seeded agent to push the seeded folder from `conversation`.
+async fn add_push_approval(pool: &SqlitePool, conversation: &str) {
     sqlx::query(
-        "UPDATE chat_teammate_channel_memberships SET scratch_runtime_approval_policy = ?
-         WHERE sync_key = 'channel-membership:sync-effects'",
+        "INSERT INTO chat_push_approvals
+            (conversation_id, agent_id, working_folder_id, push_url, destination_branch,
+             sync_key, approved_by_participant_id, approved_at)
+         VALUES (?, ?, ?, 'https://example.test/repo.git', 'main', ?, ?, ?)",
     )
-    .bind(policy)
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
-/// Seeds a managed folder, the teammate's default grant on it with the `grant_override`
-/// approval, and `authorization:folder`, which executes in that folder under the
-/// `authorized` approval.
-async fn seed_folder_authorization(pool: &SqlitePool, grant_override: &str, authorized: &str) {
-    let conversation = conversation_id();
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO project_working_folders
-            (id, project_id, display_name, kind, managed_relative_path, created_at, updated_at)
-         VALUES ('folder:sync-effects', '{PROJECT_ID}', 'Sync', 'managed',
-                 'projects/{PROJECT_ID}-grant', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammate_working_folder_grants
-            (conversation_id, teammate_id, working_folder_id, sync_key, project_id, capability,
-             is_default, runtime_approval_policy, created_at)
-         VALUES ('{conversation}', '{TEAMMATE_ID}', 'folder:sync-effects', 'grant:sync-effects',
-                 '{PROJECT_ID}', 'edit', 1, '{grant_override}', '{NOW}');
-         INSERT INTO chat_execution_environments
-            (id, working_folder_id, kind, display_name, created_at, updated_at)
-         VALUES ('environment:folder', 'folder:sync-effects', 'current_folder', 'Sync', '{NOW}',
-                 '{NOW}');"
-    )))
-    .execute(pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO chat_assignment_authorization_revisions
-            (id, assignment_id, revision, requester_participant_id,
-             teammate_policy_revision_id, teammate_access_revision,
-             destination_conversation_id, access_profile_revision_id, execution_environment_id,
-             working_folder_id, resolved_runtime_approval_policy, scope_digest, decision_state,
-             created_at)
-         VALUES ('authorization:folder', 'assignment:sync-effects', 2,
-                 'participant:local-owner', 'policy:sync-effects', 1, ?, ?,
-                 'environment:folder', 'folder:sync-effects', ?, printf('%064d', 0), 'allowed', ?)",
-    )
-    .bind(conversation_id())
-    .bind(FIRST_PROFILE_REVISION_ID)
-    .bind(authorized)
-    .bind(NOW)
-    .execute(pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO chat_assignment_authorized_folder_sources
-            (authorization_revision_id, root_handle, working_folder_id, capability,
-             is_execution_target, resolved_runtime_approval_policy, created_at)
-         VALUES ('authorization:folder', printf('%064d', 1), 'folder:sync-effects', 'edit', 1,
-                 ?, ?)",
-    )
-    .bind(authorized)
+    .bind(conversation)
+    .bind(AGENT_ID)
+    .bind(FOLDER_ID)
+    .bind(format!("push:{conversation}"))
+    .bind(OWNER_ID)
     .bind(NOW)
     .execute(pool)
     .await
     .unwrap();
 }
 
-/// Sets the seeded channel membership's runtime approval override to `policy`.
-async fn set_channel_override(pool: &SqlitePool, policy: Option<&str>) {
-    sqlx::query(
-        "UPDATE chat_teammate_channel_memberships SET runtime_approval_policy = ?
-         WHERE sync_key = 'channel-membership:sync-effects'",
+async fn push_approvals(pool: &SqlitePool) -> Vec<(String, Option<String>, i64)> {
+    sqlx::query_as(
+        "SELECT conversation_id, revoked_at, revision FROM chat_push_approvals
+         ORDER BY conversation_id",
     )
-    .bind(policy)
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
-async fn authorization_state(pool: &SqlitePool, id: &str) -> String {
-    sqlx::query_scalar(
-        "SELECT decision_state FROM chat_assignment_authorization_revisions WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_one(pool)
+    .fetch_all(pool)
     .await
     .unwrap()
 }
 
-/// A folder or scratch override replaces the channel override at runtime, so a stricter
-/// channel override does not revoke work granted under a looser target override, and clearing
-/// that override makes the channel override govern it.
 #[tokio::test]
-async fn target_overrides_govern_their_authorizations_before_the_channel_override() {
+async fn push_approvals_lapse_below_ask_and_the_caller_revokes_them_after_the_apply() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
-    insert_policy_revision(&pool, "policy:broad", 1, "full_access").await;
-    seed_folder_authorization(&pool, "unattended", "unattended").await;
+    add_folder(&pool, PROJECT_ID, FOLDER_ID, FOLDER_ENVIRONMENT_ID).await;
+    add_channel(&pool, PROJECT_ID, "conversation:kept").await;
+    add_member(&pool, "conversation:kept").await;
+    set_channel_access(&pool, "conversation:kept", Some("own")).await;
+    let conversation = conversation_id();
+    add_push_approval(&pool, &conversation).await;
+    add_push_approval(&pool, "conversation:kept").await;
+    set_applying(&pool, true).await;
+
+    let ask = run_hook(&pool, CHANNELS_TABLE, &[&channel_id()]).await;
+    assert!(ask.lapsed_push_approvals.is_empty());
+
+    set_channel_access(&pool, &conversation, Some("read")).await;
+    let read = run_hook(&pool, CHANNELS_TABLE, &[&channel_id()]).await;
+    assert_eq!(
+        read.lapsed_push_approvals,
+        BTreeSet::from([conversation.clone()])
+    );
+    assert!(
+        push_approvals(&pool)
+            .await
+            .iter()
+            .all(|(_, revoked_at, _)| revoked_at.is_none())
+    );
+    set_applying(&pool, false).await;
+
+    let mut connection = pool.acquire().await.unwrap();
+    let lapsed = revoke_lapsed_push_approvals(&mut connection, LATER)
+        .await
+        .unwrap();
+    assert_eq!(lapsed, BTreeSet::from([conversation.clone()]));
+    let again = revoke_lapsed_push_approvals(&mut connection, LATER)
+        .await
+        .unwrap();
+    assert!(again.is_empty());
+    drop(connection);
+
+    let mut expected = vec![
+        (conversation.clone(), Some(LATER.to_string()), 2),
+        ("conversation:kept".to_string(), None, 1),
+    ];
+    expected.sort();
+    assert_eq!(push_approvals(&pool).await, expected);
 
     set_applying(&pool, true).await;
-    set_channel_override(&pool, Some("ask")).await;
-    let kept = run_hook(
-        &pool,
-        CHANNEL_MEMBERSHIPS_TABLE,
-        &["channel-membership:sync-effects"],
-    )
-    .await;
-    assert!(kept.revoked_teammates.is_empty());
-    assert_eq!(
-        authorization_state(&pool, "authorization:folder").await,
-        "allowed"
-    );
-    assert_eq!(
-        authorization_state(&pool, "authorization:first").await,
-        "allowed"
-    );
-
-    sqlx::query(
-        "UPDATE chat_teammate_working_folder_grants
-         SET runtime_approval_policy = NULL, revision = revision + 1
-         WHERE sync_key = 'grant:sync-effects'",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    let inherited = run_hook(&pool, FOLDER_GRANTS_TABLE, &["grant:sync-effects"]).await;
-    assert_eq!(
-        inherited.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-    assert_eq!(
-        authorization_state(&pool, "authorization:folder").await,
-        "revoked"
-    );
+    let after = run_hook(&pool, CHANNELS_TABLE, &[&channel_id()]).await;
+    assert!(after.lapsed_push_approvals.is_empty());
 }
 
-#[tokio::test]
-async fn a_looser_scratch_override_keeps_scratch_work_under_a_stricter_channel_override() {
-    let pool = migrated_pool().await;
-    seed_organization(&pool).await;
-    insert_policy_revision(&pool, "policy:broad", 1, "full_access").await;
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO chat_scratch_scopes (id, reply_thread_id, teammate_id, created_at, updated_at)
-         VALUES ('scratch:sync-effects', 'reply:sync-effects', '{TEAMMATE_ID}', '{NOW}', '{NOW}');
-         INSERT INTO chat_scratch_generations
-            (id, scratch_scope_id, generation, created_at, updated_at)
-         VALUES ('generation:sync-effects', 'scratch:sync-effects', 1, '{NOW}', '{NOW}');
-         INSERT INTO chat_execution_environments
-            (id, scratch_generation_id, kind, display_name, created_at, updated_at)
-         VALUES ('environment:scratch', 'generation:sync-effects', 'scratch', 'Scratch', '{NOW}',
-                 '{NOW}');"
-    )))
-    .execute(&pool)
-    .await
-    .unwrap();
+/// Inserts an approval for the seeded agent to fetch from `origin` in `conversation`, granted
+/// under `access`.
+async fn add_remembered_approval(
+    pool: &SqlitePool,
+    conversation: &str,
+    origin: &str,
+    access: &str,
+) {
     sqlx::query(
-        "INSERT INTO chat_assignment_authorization_revisions
-            (id, assignment_id, revision, requester_participant_id,
-             teammate_policy_revision_id, teammate_access_revision,
-             destination_conversation_id, access_profile_revision_id, execution_environment_id,
-             resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
-         VALUES ('authorization:scratch', 'assignment:sync-effects', 2,
-                 'participant:local-owner', 'policy:sync-effects', 1, ?, ?,
-                 'environment:scratch', 'unattended', printf('%064d', 0), 'allowed', ?)",
+        "INSERT INTO chat_remembered_approvals
+            (conversation_id, agent_id, subject_kind, subject_key, sync_key,
+             approved_by_participant_id, approved_at, granted_access)
+         VALUES (?, ?, 'url_origin', ?, ?, ?, ?, ?)",
     )
-    .bind(conversation_id())
-    .bind(FIRST_PROFILE_REVISION_ID)
+    .bind(conversation)
+    .bind(AGENT_ID)
+    .bind(origin)
+    .bind(format!("remembered:{conversation}:{origin}"))
+    .bind(OWNER_ID)
     .bind(NOW)
-    .execute(&pool)
+    .bind(access)
+    .execute(pool)
     .await
     .unwrap();
-
-    set_applying(&pool, true).await;
-    set_scratch_override(&pool, "unattended").await;
-    set_channel_override(&pool, Some("ask")).await;
-    let kept = run_hook(
-        &pool,
-        CHANNEL_MEMBERSHIPS_TABLE,
-        &["channel-membership:sync-effects"],
-    )
-    .await;
-    assert!(kept.revoked_teammates.is_empty());
-    assert_eq!(
-        authorization_state(&pool, "authorization:scratch").await,
-        "allowed"
-    );
-
-    sqlx::query(
-        "UPDATE chat_teammate_channel_memberships SET scratch_runtime_approval_policy = NULL
-         WHERE sync_key = 'channel-membership:sync-effects'",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    let inherited = run_hook(
-        &pool,
-        CHANNEL_MEMBERSHIPS_TABLE,
-        &["channel-membership:sync-effects"],
-    )
-    .await;
-    assert_eq!(
-        inherited.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-    assert_eq!(
-        authorization_state(&pool, "authorization:scratch").await,
-        "revoked"
-    );
 }
 
+async fn remembered_approvals(pool: &SqlitePool) -> Vec<(String, String, Option<String>)> {
+    sqlx::query_as(
+        "SELECT conversation_id, subject_key, revoked_at FROM chat_remembered_approvals
+         ORDER BY conversation_id, subject_key",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// An approval lapses once its channel's access ranks below the access it was granted under,
+/// while one granted under a lower access stays.
 #[tokio::test]
-async fn an_applied_grant_deletion_revokes_the_folder_authorization_it_covered() {
+async fn remembered_approvals_lapse_below_their_granted_access_and_the_caller_revokes_them() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
-    seed_folder_authorization(&pool, "ask", "ask").await;
-
+    add_channel(&pool, PROJECT_ID, "conversation:kept").await;
+    add_member(&pool, "conversation:kept").await;
+    set_channel_access(&pool, "conversation:kept", Some("own")).await;
+    let conversation = conversation_id();
+    add_remembered_approval(&pool, &conversation, "https://ask.example.com", "ask").await;
+    add_remembered_approval(&pool, &conversation, "https://read.example.com", "read").await;
+    add_remembered_approval(&pool, "conversation:kept", "https://own.example.com", "own").await;
     set_applying(&pool, true).await;
-    sqlx::query("DELETE FROM chat_teammate_working_folder_grants WHERE sync_key = ?")
-        .bind("grant:sync-effects")
-        .execute(&pool)
+
+    let ask = run_hook(&pool, CHANNELS_TABLE, &[&channel_id()]).await;
+    assert!(ask.lapsed_remembered_approvals.is_empty());
+
+    set_channel_access(&pool, &conversation, Some("read")).await;
+    let read = run_hook(&pool, CHANNELS_TABLE, &[&channel_id()]).await;
+    assert_eq!(
+        read.lapsed_remembered_approvals,
+        BTreeSet::from([conversation.clone()])
+    );
+    set_applying(&pool, false).await;
+
+    let mut connection = pool.acquire().await.unwrap();
+    let lapsed = revoke_lapsed_remembered_approvals(&mut connection, LATER)
         .await
         .unwrap();
-    let effects = run_hook(&pool, FOLDER_GRANTS_TABLE, &["grant:sync-effects"]).await;
-
-    assert_eq!(
-        effects.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
+    assert_eq!(lapsed, BTreeSet::from([conversation.clone()]));
+    assert!(
+        revoke_lapsed_remembered_approvals(&mut connection, LATER)
+            .await
+            .unwrap()
+            .is_empty()
     );
-    assert_eq!(
-        authorization_state(&pool, "authorization:folder").await,
-        "revoked"
-    );
-    let jobs = queued_jobs(&pool).await.len();
-    assert!(jobs >= 1);
+    drop(connection);
 
-    let replayed = run_hook(&pool, FOLDER_GRANTS_TABLE, &["grant:sync-effects"]).await;
-    assert!(replayed.revoked_teammates.is_empty());
-    assert_eq!(queued_jobs(&pool).await.len(), jobs);
-}
+    let mut expected = vec![
+        (
+            conversation.clone(),
+            "https://ask.example.com".to_string(),
+            Some(LATER.to_string()),
+        ),
+        (
+            conversation.clone(),
+            "https://read.example.com".to_string(),
+            None,
+        ),
+        (
+            "conversation:kept".to_string(),
+            "https://own.example.com".to_string(),
+            None,
+        ),
+    ];
+    expected.sort();
+    assert_eq!(remembered_approvals(&pool).await, expected);
 
-/// A grant covers an authorization only inside the destination conversation's project, whether
-/// the grant claims another project or its folder belongs to one.
-#[tokio::test]
-async fn an_applied_grant_for_a_foreign_project_revokes_the_folder_authorization() {
-    for mismatch in [
-        "UPDATE chat_teammate_working_folder_grants SET project_id = 'project-foreign'
-         WHERE sync_key = 'grant:sync-effects'",
-        "UPDATE project_working_folders SET project_id = 'project-foreign'
-         WHERE id = 'folder:sync-effects'",
-    ] {
-        let pool = migrated_pool().await;
-        seed_organization(&pool).await;
-        seed_folder_authorization(&pool, "ask", "ask").await;
-
-        set_applying(&pool, true).await;
-        sqlx::query(
-            "INSERT INTO projects (id, group_id, name, order_key)
-             VALUES ('project-foreign', 'group-sync', 'Foreign', 'a1')",
-        )
-        .execute(&pool)
+    // An archive that arrives by sync skips the local trigger, so the sweep revokes the rest.
+    set_applying(&pool, true).await;
+    set_participant_archived(&pool, AGENT_ID, Some(LATER)).await;
+    set_applying(&pool, false).await;
+    let mut connection = pool.acquire().await.unwrap();
+    let archived = revoke_lapsed_remembered_approvals(&mut connection, LATER)
         .await
         .unwrap();
-        sqlx::query(mismatch).execute(&pool).await.unwrap();
-        let effects = run_hook(&pool, FOLDER_GRANTS_TABLE, &["grant:sync-effects"]).await;
-
-        assert_eq!(
-            effects.revoked_teammates,
-            BTreeSet::from([TEAMMATE_ID.to_string()]),
-            "{mismatch}"
-        );
-        assert_eq!(
-            authorization_state(&pool, "authorization:folder").await,
-            "revoked",
-            "{mismatch}"
-        );
-    }
+    assert_eq!(
+        archived,
+        BTreeSet::from([conversation, "conversation:kept".to_string()])
+    );
 }
 
-/// A conversation delete reports the conversation and sweeps the authorizations that remain in
-/// other conversations, here one whose channel membership an earlier apply in the same batch
-/// deleted.
 #[tokio::test]
 async fn an_applied_conversation_deletion_reports_it_and_sweeps_remaining_authorizations() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
-    sqlx::raw_sql(
-        "INSERT INTO projects (id, group_id, name, order_key)
-         VALUES ('project-sync-effects-other', 'group-sync', 'Other', 'a1');",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    let mut connection = pool.acquire().await.unwrap();
-    ensure_project_chat_defaults(
-        &mut connection,
-        "project-sync-effects-other",
-        &UtcTimestamp::new(NOW.to_string()).unwrap(),
-    )
-    .await
-    .unwrap();
-    drop(connection);
-    let other = default_channel_ids("project-sync-effects-other").unwrap().0;
+    seed_project(&pool, OTHER_PROJECT_ID, "a1").await;
+    let other = default_channel_ids(OTHER_PROJECT_ID).unwrap().0;
 
     set_applying(&pool, true).await;
-    sqlx::query("DELETE FROM chat_teammate_channel_memberships WHERE sync_key = ?")
-        .bind("channel-membership:sync-effects")
+    sqlx::query("DELETE FROM chat_agent_channel_memberships WHERE sync_key = ?")
+        .bind(channel_membership_key(&conversation_id()))
         .execute(&pool)
         .await
         .unwrap();
@@ -1516,10 +1310,7 @@ async fn an_applied_conversation_deletion_reports_it_and_sweeps_remaining_author
         effects.removed_conversations,
         BTreeSet::from([other.clone()])
     );
-    assert_eq!(
-        effects.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
+    assert_eq!(effects.revoked_agents, agents());
     assert_eq!(
         authorization_state(&pool, "authorization:first").await,
         "revoked"
@@ -1527,11 +1318,11 @@ async fn an_applied_conversation_deletion_reports_it_and_sweeps_remaining_author
     assert_eq!(queued_jobs(&pool).await.len(), 1);
 
     let replayed = run_hook(&pool, CONVERSATIONS_TABLE, &[&other]).await;
-    assert!(replayed.revoked_teammates.is_empty());
+    assert!(replayed.revoked_agents.is_empty());
     assert_eq!(queued_jobs(&pool).await.len(), 1);
 }
 
-/// The reason recorded on a revoked authorization of the seeded teammate.
+/// The reason recorded on the revoked authorization of the seeded agent.
 async fn revocation_reason(pool: &SqlitePool) -> String {
     let states = authorization_states(pool).await;
     assert!(
@@ -1541,48 +1332,57 @@ async fn revocation_reason(pool: &SqlitePool) -> String {
     states[0].2.clone()
 }
 
-/// An archive or a policy reduction can reach the sweep, or an access row of a rebuild, before
-/// the participant or teammate hook runs, and the revocation records the same reason that hook
-/// would.
+/// An archive or a narrowing can reach the sweep from any table's hook, and the revocation
+/// records the reason that fits the agent rather than the table that ran it.
 #[tokio::test]
 async fn sweep_records_the_specific_reason() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
     set_applying(&pool, true).await;
-    set_participant_archived(&pool, TEAMMATE_ID, Some(NOW)).await;
+    set_participant_archived(&pool, AGENT_ID, Some(NOW)).await;
     run_hook(&pool, CONVERSATIONS_TABLE, &["conversation:removed"]).await;
-    assert_eq!(revocation_reason(&pool).await, TEAMMATE_ARCHIVED_REASON);
+    assert_eq!(revocation_reason(&pool).await, AGENT_ARCHIVED_REASON);
 
     let pool = migrated_pool().await;
-    seed_auto_approved_work(&pool).await;
-    insert_policy_revision(&pool, "policy:narrower", 10, "ask_for_approval").await;
-    run_hook(&pool, CONVERSATIONS_TABLE, &["conversation:removed"]).await;
+    seed_organization(&pool).await;
+    seed_scratch_authorization(&pool).await;
+    set_applying(&pool, true).await;
+    set_channel_access(&pool, &conversation_id(), Some("talk")).await;
+    run_hook(&pool, PARTICIPANTS_TABLE, &[AGENT_ID]).await;
     assert_eq!(
-        revocation_reason(&pool).await,
-        TEAMMATE_POLICY_REDUCED_REASON
+        authorization_states(&pool)
+            .await
+            .into_iter()
+            .find(|(id, _, _)| id == "authorization:scratch")
+            .map(|(_, _, reason)| reason),
+        Some(ACCESS_REDUCTION_REASON.to_string())
     );
 
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
     set_applying(&pool, true).await;
-    set_participant_archived(&pool, TEAMMATE_ID, Some(NOW)).await;
-    run_hook(&pool, MEMBERSHIPS_TABLE, &["membership:sync-effects"]).await;
-    assert_eq!(revocation_reason(&pool).await, TEAMMATE_ARCHIVED_REASON);
+    set_participant_archived(&pool, AGENT_ID, Some(NOW)).await;
+    run_hook(
+        &pool,
+        MEMBERSHIPS_TABLE,
+        &[&membership_key(&conversation_id())],
+    )
+    .await;
+    assert_eq!(revocation_reason(&pool).await, AGENT_ARCHIVED_REASON);
 }
 
 async fn dispatch_job_state(pool: &SqlitePool) -> String {
-    sqlx::query_scalar(
-        "SELECT state FROM chat_assignment_dispatch_jobs
-         WHERE assignment_id = 'assignment:sync-effects'",
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap()
+    sqlx::query_scalar("SELECT state FROM chat_assignment_dispatch_jobs WHERE assignment_id = ?")
+        .bind(ASSIGNMENT_ID)
+        .fetch_one(pool)
+        .await
+        .unwrap()
 }
 
 async fn set_assignment_state(pool: &SqlitePool, state: &str) {
-    sqlx::query("UPDATE chat_work_assignments SET state = ? WHERE id = 'assignment:sync-effects'")
+    sqlx::query("UPDATE chat_work_assignments SET state = ? WHERE id = ?")
         .bind(state)
+        .bind(ASSIGNMENT_ID)
         .execute(pool)
         .await
         .unwrap();
@@ -1595,34 +1395,30 @@ async fn a_remotely_settled_assignment_ends_its_dispatch_and_revokes_its_runs_on
     sqlx::query(
         "INSERT INTO chat_assignment_dispatch_jobs
             (id, assignment_id, state, available_at, created_at, updated_at)
-         VALUES ('dispatch:sync-effects', 'assignment:sync-effects', 'claimed', ?, ?, ?)",
+         VALUES ('dispatch:sync-effects', ?1, 'claimed', ?2, ?2, ?2)",
     )
-    .bind(NOW)
-    .bind(NOW)
+    .bind(ASSIGNMENT_ID)
     .bind(NOW)
     .execute(&pool)
     .await
     .unwrap();
 
-    let working = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+    let working = run_hook(&pool, ASSIGNMENTS_TABLE, &[ASSIGNMENT_ID]).await;
     assert_eq!(
         working.started_assignments,
-        BTreeSet::from(["assignment:sync-effects".to_string()])
+        BTreeSet::from([ASSIGNMENT_ID.to_string()])
     );
     assert!(working.settled_assignments.is_empty());
-    assert!(working.revoked_teammates.is_empty());
+    assert!(working.revoked_agents.is_empty());
     assert_eq!(dispatch_job_state(&pool).await, "claimed");
 
     set_assignment_state(&pool, "cancelled").await;
-    let settled = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+    let settled = run_hook(&pool, ASSIGNMENTS_TABLE, &[ASSIGNMENT_ID]).await;
     assert_eq!(
         settled.settled_assignments,
-        BTreeSet::from(["assignment:sync-effects".to_string()])
+        BTreeSet::from([ASSIGNMENT_ID.to_string()])
     );
-    assert_eq!(
-        settled.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
+    assert_eq!(settled.revoked_agents, agents());
     assert_eq!(dispatch_job_state(&pool).await, "cancelled");
     assert_eq!(
         authorization_states(&pool).await,
@@ -1634,7 +1430,7 @@ async fn a_remotely_settled_assignment_ends_its_dispatch_and_revokes_its_runs_on
     );
     assert_eq!(queued_jobs(&pool).await.len(), 1);
 
-    let replayed = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+    let replayed = run_hook(&pool, ASSIGNMENTS_TABLE, &[ASSIGNMENT_ID]).await;
     assert!(replayed.is_empty());
     assert_eq!(queued_jobs(&pool).await.len(), 1);
 }
@@ -1656,29 +1452,24 @@ async fn a_remote_settle_stops_a_claim_that_has_not_authorized_yet() {
     sqlx::query(
         "INSERT INTO chat_assignment_dispatch_jobs
             (id, assignment_id, state, claim_token, available_at, created_at, updated_at)
-         VALUES ('dispatch:sync-effects', 'assignment:sync-effects', 'claimed', 'claim:first',
-                 ?, ?, ?)",
+         VALUES ('dispatch:sync-effects', ?1, 'claimed', 'claim:first', ?2, ?2, ?2)",
     )
-    .bind(NOW)
-    .bind(NOW)
+    .bind(ASSIGNMENT_ID)
     .bind(NOW)
     .execute(&pool)
     .await
     .unwrap();
     set_assignment_state(&pool, "cancelled").await;
 
-    let settled = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+    let settled = run_hook(&pool, ASSIGNMENTS_TABLE, &[ASSIGNMENT_ID]).await;
 
     assert_eq!(dispatch_job_state(&pool).await, "cancelled");
     assert_eq!(
         settled.settled_assignments,
-        BTreeSet::from(["assignment:sync-effects".to_string()])
+        BTreeSet::from([ASSIGNMENT_ID.to_string()])
     );
-    assert_eq!(
-        settled.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
-    );
-    let replayed = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+    assert_eq!(settled.revoked_agents, agents());
+    let replayed = run_hook(&pool, ASSIGNMENTS_TABLE, &[ASSIGNMENT_ID]).await;
     assert!(replayed.is_empty());
 }
 
@@ -1691,39 +1482,37 @@ async fn queued_assignments_and_pending_inputs_are_reported_for_their_executing_
         "INSERT INTO chat_work_assignment_inputs
             (id, assignment_id, message_item_id, ordinal, routing_kind, delivery_state,
              created_at)
-         VALUES ('input:first', 'assignment:sync-effects', 'item:first', 1, 'trigger',
-                 'delivered', ?),
-                ('input:second', 'assignment:sync-effects', 'item:second', 2, 'steer',
-                 'pending', ?)",
+         VALUES ('input:first', ?1, 'item:first', 1, 'trigger', 'delivered', ?2),
+                ('input:second', ?1, 'item:second', 2, 'steer', 'pending', ?2)",
     )
-    .bind(NOW)
+    .bind(ASSIGNMENT_ID)
     .bind(NOW)
     .execute(&pool)
     .await
     .unwrap();
 
-    let queued = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+    let queued = run_hook(&pool, ASSIGNMENTS_TABLE, &[ASSIGNMENT_ID]).await;
     assert_eq!(
         queued.queued_assignments,
-        BTreeSet::from(["assignment:sync-effects".to_string()])
+        BTreeSet::from([ASSIGNMENT_ID.to_string()])
     );
-    assert!(queued.revoked_teammates.is_empty());
+    assert!(queued.revoked_agents.is_empty());
     assert!(queued.started_assignments.is_empty());
 
     for state in ["working", "waiting_for_answer", "waiting_for_approval"] {
         set_assignment_state(&pool, state).await;
-        let started = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+        let started = run_hook(&pool, ASSIGNMENTS_TABLE, &[ASSIGNMENT_ID]).await;
         assert_eq!(
             started.started_assignments,
-            BTreeSet::from(["assignment:sync-effects".to_string()]),
+            BTreeSet::from([ASSIGNMENT_ID.to_string()]),
             "{state}"
         );
         assert!(started.queued_assignments.is_empty());
-        assert!(started.revoked_teammates.is_empty());
+        assert!(started.revoked_agents.is_empty());
     }
     set_assignment_state(&pool, "ready_for_review").await;
     assert!(
-        run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"])
+        run_hook(&pool, ASSIGNMENTS_TABLE, &[ASSIGNMENT_ID])
             .await
             .is_empty()
     );
@@ -1739,92 +1528,183 @@ async fn queued_assignments_and_pending_inputs_are_reported_for_their_executing_
     .await;
     assert_eq!(
         pending.routed_inputs,
-        BTreeSet::from(["assignment:sync-effects".to_string()])
+        BTreeSet::from([ASSIGNMENT_ID.to_string()])
     );
 }
 
-async fn settled(
-    pool: &SqlitePool,
-    winner: Option<&str>,
-    versions: &[Option<&str>],
-) -> Option<String> {
-    let mut connection = pool.acquire().await.unwrap();
-    settled_grant_approval(&mut connection, "grant:sync-effects", winner, versions)
-        .await
-        .unwrap()
-}
-
-/// An inheriting grant edit follows the channel override, so when that override is stricter
-/// than a concurrent explicit grant override the merge kept, the channel override settles the
-/// grant; otherwise the winner stands.
+/// A reply that syncs in after the turn ended is reported while its work still continues with
+/// it: on work ready for review, and on work that completed by itself with no follow-up yet.
 #[tokio::test]
-async fn an_inheriting_grant_edit_settles_onto_a_stricter_channel_override() {
+async fn a_pending_input_on_work_whose_turn_ended_is_reported_until_a_follow_up_takes_it() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
-    insert_policy_revision(&pool, "policy:broad", 1, "full_access").await;
-    seed_folder_authorization(&pool, "unattended", "unattended").await;
-    let concurrent = [Some("unattended"), None];
-
-    assert_eq!(settled(&pool, Some("unattended"), &concurrent).await, None);
-    set_channel_override(&pool, Some("ask")).await;
-    assert_eq!(
-        settled(&pool, Some("unattended"), &concurrent).await,
-        Some("ask".to_string())
-    );
-    assert_eq!(
-        settled(
-            &pool,
-            Some("unattended"),
-            &[Some("unattended"), Some("auto_approve")]
-        )
-        .await,
-        None
-    );
-    assert_eq!(
-        settled(&pool, Some("ask"), &[Some("ask"), None]).await,
-        None
-    );
-    assert_eq!(settled(&pool, None, &[None, None]).await, None);
-    set_channel_override(&pool, Some("provider_custom")).await;
-    assert_eq!(settled(&pool, Some("unattended"), &concurrent).await, None);
-
-    set_channel_override(&pool, Some("ask")).await;
     sqlx::query(
-        "UPDATE chat_teammate_channel_memberships SET removed_at = ?
-         WHERE sync_key = 'channel-membership:sync-effects'",
+        "INSERT INTO chat_work_assignment_inputs
+            (id, assignment_id, message_item_id, ordinal, routing_kind, delivery_state,
+             created_at)
+         VALUES ('input:second', ?, 'item:second', 2, 'queued_continuation', 'pending', ?)",
     )
+    .bind(ASSIGNMENT_ID)
     .bind(NOW)
     .execute(&pool)
     .await
     .unwrap();
-    assert_eq!(settled(&pool, Some("unattended"), &concurrent).await, None);
-}
+    let reported = BTreeSet::from([ASSIGNMENT_ID.to_string()]);
+    async fn routed(pool: &SqlitePool) -> BTreeSet<String> {
+        run_hook(pool, ASSIGNMENT_INPUTS_TABLE, &["input:second"])
+            .await
+            .routed_inputs
+    }
 
-/// The channel access settle reads each named profile's effective revision and its folder
-/// capability rank, leaving out a profile without one.
-#[tokio::test]
-async fn channel_access_profiles_read_effective_revisions_with_their_capability_rank() {
-    let pool = migrated_pool().await;
-    seed_organization(&pool).await;
-    let mut connection = pool.acquire().await.unwrap();
+    for state in ["ready_for_review", "completed"] {
+        set_assignment_state(&pool, state).await;
+        assert_eq!(routed(&pool).await, reported, "{state}");
+    }
+    for state in ["failed", "cancelled"] {
+        set_assignment_state(&pool, state).await;
+        assert!(routed(&pool).await.is_empty(), "{state}");
+    }
 
-    let profiles = channel_access_profiles(
-        &mut connection,
-        &[PROFILE_ID, "access-profile:unknown", PROFILE_ID],
+    sqlx::query(
+        "UPDATE chat_work_assignments
+         SET state = 'completed', review_outcome = 'accepted', reviewed_at = ?,
+             reviewed_by_participant_id = 'participant:local'
+         WHERE id = ?",
     )
+    .bind(NOW)
+    .bind(ASSIGNMENT_ID)
+    .execute(&pool)
     .await
     .unwrap();
+    assert!(routed(&pool).await.is_empty(), "reviewed");
 
-    assert_eq!(
-        profiles,
-        BTreeMap::from([(
-            PROFILE_ID.to_string(),
-            ProfileDefaults {
-                read_history: true,
-                participate: true,
-                history_boundary: "entire".to_string(),
-                folder_capability_rank: 2,
-            },
-        )])
-    );
+    sqlx::query(
+        "UPDATE chat_work_assignments
+         SET review_outcome = NULL, reviewed_at = NULL, reviewed_by_participant_id = NULL
+         WHERE id = ?",
+    )
+    .bind(ASSIGNMENT_ID)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_work_assignments
+            (id, reply_thread_id, agent_id, triggering_message_item_id,
+             previous_assignment_id, state, model_selection_schema_version,
+             model_selection_data, created_at, updated_at)
+         VALUES ('assignment:successor', 'reply:sync-effects', ?1, 'item:second',
+                 ?2, 'queued', 1, '{}', ?3, ?3)",
+    )
+    .bind(AGENT_ID)
+    .bind(ASSIGNMENT_ID)
+    .bind(NOW)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(routed(&pool).await.is_empty(), "followed");
+}
+
+#[tokio::test]
+async fn an_applied_delegated_child_in_an_outcome_state_is_reported_for_its_parent() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    let conversation = conversation_id();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO chat_reply_threads
+            (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
+         VALUES ('reply:sync-effects-child', '{conversation}', 'item:second', '{NOW}', '{NOW}',
+                 '{NOW}');
+         INSERT INTO chat_work_assignments
+            (id, reply_thread_id, agent_id, triggering_message_item_id, state,
+             parent_assignment_id, delegation_depth, delegation_objective,
+             delegation_expected_result, delegation_folder_ceiling,
+             model_selection_schema_version, model_selection_data, created_at, updated_at)
+         VALUES ('assignment:sync-effects-child', 'reply:sync-effects-child', '{AGENT_ID}',
+                 'item:second', 'working', '{ASSIGNMENT_ID}', 1, 'Draft notes',
+                 'A summary', '[]', 1, '{{}}', '{NOW}', '{NOW}');"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let child = "assignment:sync-effects-child";
+
+    let working = run_hook(&pool, ASSIGNMENTS_TABLE, &[child]).await;
+    assert!(working.delegated_outcomes.is_empty());
+    for state in ["completed", "ready_for_review", "failed", "cancelled"] {
+        sqlx::query("UPDATE chat_work_assignments SET state = ? WHERE id = ?")
+            .bind(state)
+            .bind(child)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let settled = run_hook(&pool, ASSIGNMENTS_TABLE, &[child]).await;
+        assert_eq!(
+            settled.delegated_outcomes,
+            BTreeSet::from([child.to_string()]),
+            "{state}"
+        );
+    }
+
+    set_assignment_state(&pool, "completed").await;
+    let parent = run_hook(&pool, ASSIGNMENTS_TABLE, &[ASSIGNMENT_ID]).await;
+    assert!(parent.delegated_outcomes.is_empty());
+}
+
+/// An approval lapses with its agent: an applied removal from the conversation or an applied
+/// archive reports it, and a commanded removal, which no trigger covers, is revoked by the
+/// caller's call.
+#[tokio::test]
+async fn push_approvals_lapse_when_their_agent_leaves_or_is_archived() {
+    for case in ["applied removal", "applied archive", "commanded removal"] {
+        let pool = migrated_pool().await;
+        seed_organization(&pool).await;
+        add_folder(&pool, PROJECT_ID, FOLDER_ID, FOLDER_ENVIRONMENT_ID).await;
+        let conversation = conversation_id();
+        add_push_approval(&pool, &conversation).await;
+        let key = membership_key(&conversation);
+        let applied = case != "commanded removal";
+        set_applying(&pool, applied).await;
+
+        let present = run_hook(&pool, MEMBERSHIPS_TABLE, &[&key]).await;
+        assert!(present.lapsed_push_approvals.is_empty(), "{case}");
+
+        let effects = if case == "applied archive" {
+            set_participant_archived(&pool, AGENT_ID, Some(LATER)).await;
+            run_hook(&pool, PARTICIPANTS_TABLE, &[AGENT_ID]).await
+        } else {
+            sqlx::query(
+                "UPDATE chat_conversation_memberships SET removed_at = ?1, updated_at = ?1
+                 WHERE sync_key = ?2",
+            )
+            .bind(LATER)
+            .bind(&key)
+            .execute(&pool)
+            .await
+            .unwrap();
+            run_hook(&pool, MEMBERSHIPS_TABLE, &[&key]).await
+        };
+        assert_eq!(
+            effects.lapsed_push_approvals,
+            BTreeSet::from([conversation.clone()]),
+            "{case}"
+        );
+        assert_eq!(
+            push_approvals(&pool).await,
+            vec![(conversation.clone(), None, 1)],
+            "{case}: only the caller revokes"
+        );
+
+        set_applying(&pool, false).await;
+        let mut connection = pool.acquire().await.unwrap();
+        let revoked = revoke_lapsed_push_approvals(&mut connection, LATER)
+            .await
+            .unwrap();
+        assert_eq!(revoked, BTreeSet::from([conversation.clone()]), "{case}");
+        drop(connection);
+        assert_eq!(
+            push_approvals(&pool).await,
+            vec![(conversation.clone(), Some(LATER.to_string()), 2)],
+            "{case}"
+        );
+    }
 }

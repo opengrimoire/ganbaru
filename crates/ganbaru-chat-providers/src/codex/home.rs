@@ -10,9 +10,6 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-const MAX_CUSTOM_MODELS: usize = 128;
-const MAX_CUSTOM_MODEL_BYTES: usize = 256;
-const MAX_CUSTOM_MODEL_LABEL_BYTES: usize = 160;
 #[cfg(windows)]
 const MAX_SHIM_BYTES: u64 = 64 * 1024;
 const SHARED_DIRECTORY_NAMES: &[&str] = &[
@@ -35,9 +32,6 @@ const SHADOW_LOCAL_ENTRY_NAMES: &[&str] = &["log", "memories", "tmp"];
 pub struct CodexProviderSettings {
     pub shadow_home_path: Option<String>,
     pub refresh_mcp_before_turn: bool,
-    pub allow_custom_models: bool,
-    pub custom_model_ids: Vec<String>,
-    pub custom_model_labels: BTreeMap<String, String>,
 }
 
 impl CodexProviderSettings {
@@ -52,40 +46,6 @@ impl CodexProviderSettings {
             .map_err(|_| {
                 ChatError::validation("providerConfig", "Codex provider config is invalid")
             })?;
-        if settings.custom_model_ids.len() > MAX_CUSTOM_MODELS
-            || settings.custom_model_ids.iter().any(|model| {
-                model.trim().is_empty()
-                    || model.len() > MAX_CUSTOM_MODEL_BYTES
-                    || model.chars().any(char::is_control)
-            })
-        {
-            return Err(ChatError::validation(
-                "providerConfig.customModelIds",
-                "Codex custom model configuration is invalid",
-            ));
-        }
-        if !settings.allow_custom_models && !settings.custom_model_ids.is_empty() {
-            return Err(ChatError::validation(
-                "providerConfig.customModelIds",
-                "Codex custom models require the advanced custom-model option",
-            ));
-        }
-        let custom_ids = settings.custom_model_ids.iter().collect::<BTreeSet<_>>();
-        if settings
-            .custom_model_labels
-            .iter()
-            .any(|(model_id, label)| {
-                !custom_ids.contains(model_id)
-                    || label.trim().is_empty()
-                    || label.len() > MAX_CUSTOM_MODEL_LABEL_BYTES
-                    || label.chars().any(char::is_control)
-            })
-        {
-            return Err(ChatError::validation(
-                "providerConfig.customModelLabels",
-                "Codex custom model labels are invalid",
-            ));
-        }
         if settings
             .shadow_home_path
             .as_deref()
@@ -244,7 +204,7 @@ pub fn codex_process_environment(
 ) -> ChatResult<BTreeMap<String, String>> {
     let mut environment = BTreeMap::new();
     for name in minimal_inherited_environment_names() {
-        if let Ok(value) = std::env::var(name) {
+        if let Some(value) = crate::host_path::host_variable(name) {
             if !value.contains('\0') {
                 environment.insert((*name).to_string(), value);
             }

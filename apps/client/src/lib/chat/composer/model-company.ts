@@ -12,7 +12,8 @@ export type ModelCompanyId =
   | "moonshot"
   | "minimax"
   | "cursor"
-  | "opencode";
+  | "opencode"
+  | "acp";
 
 export interface ModelCompanyIdentity {
   id: ModelCompanyId;
@@ -34,6 +35,7 @@ const COMPANIES: Record<ModelCompanyId, ModelCompanyIdentity> = {
   minimax: { id: "minimax", name: "MiniMax", iconFamilyId: "minimax", order: 9 },
   cursor: { id: "cursor", name: "Cursor", iconFamilyId: "cursor", order: 10 },
   opencode: { id: "opencode", name: "OpenCode", iconFamilyId: "opencode", order: 11 },
+  acp: { id: "acp", name: "ACP", iconFamilyId: "acp", order: 12 },
 };
 
 const FAMILY_DEFAULTS: Record<string, ModelCompanyId> = {
@@ -42,10 +44,11 @@ const FAMILY_DEFAULTS: Record<string, ModelCompanyId> = {
   cursor: "cursor",
   grok: "xai",
   opencode: "opencode",
+  acp: "acp",
 };
 
 const MODEL_MATCHERS: readonly [ModelCompanyId, RegExp][] = [
-  ["anthropic", /(?:^|[\s/_.-])(anthropic|claude|sonnet|opus|haiku)(?:$|[\s/_.-])/i],
+  ["anthropic", /(?:^|[\s/_.-])(anthropic|claude|mythos|fable|sonnet|opus|haiku)(?:$|[\s/_.-])/i],
   ["openai", /(?:^|[\s/_.-])(openai|chatgpt|gpt|codex|o[134])(?:$|[\s/_.-]|\d)/i],
   ["google", /(?:^|[\s/_.-])(google|gemini|gemma)(?:$|[\s/_.-]|\d)/i],
   ["xai", /(?:^|[\s/_.-])(xai|grok)(?:$|[\s/_.-]|\d)/i],
@@ -99,30 +102,21 @@ export function integrationCompany(familyId: string): ModelCompanyIdentity {
  *
  * Provider catalogs commonly use identifier-style hyphens in display names.
  * The UI presents those separators as spaces while preserving the catalog value
- * used for provider requests.
+ * used for provider requests. A name puts its line before its version and an
+ * OpenAI name drops "GPT", so "GPT-6-Luna" and "6 Luna" read as "Luna 6", the
+ * name of the agent a person tags; a bare "GPT-5" keeps "GPT" so it still names
+ * a model.
  *
  * @param displayName - Display name supplied by the provider catalog.
  * @returns A compact human-facing model name.
  */
 export function formatModelDisplayName(displayName: string): string {
-  return displayName.trim().replace(/-+/g, " ").replace(/\s+/g, " ");
-}
-
-/**
- * Reports whether a custom model's exact ID should accompany its display name.
- *
- * Provider-managed aliases and versioned IDs are implementation details. Custom
- * model IDs remain visible when their user-defined label does not identify the
- * exact provider value.
- *
- * @param model - Catalog model whose visible identity is being composed.
- * @returns Whether the exact custom model ID should appear below the name.
- */
-export function shouldShowModelId(
-  model: Pick<ProviderModel, "id" | "displayName" | "custom">,
-): boolean {
-  return model.custom
-    && normalizeVisibleModelIdentity(model.id) !== normalizeVisibleModelIdentity(model.displayName);
+  const spaced = displayName.trim().replace(/-+/g, " ").replace(/\s+/g, " ");
+  const words = spaced.split(" ");
+  const named = words[0]?.toLowerCase() === "gpt" && words.length > 2 ? words.slice(1) : words;
+  const [version, ...rest] = named;
+  if (version && /^\d[\d.]*$/.test(version) && rest.length > 0) return `${rest.join(" ")} ${version}`;
+  return spaced;
 }
 
 /**
@@ -169,15 +163,15 @@ function modelIdentity(model: ProviderModel): string {
   return `${model.displayName} ${model.id}`.toLowerCase();
 }
 
-function normalizeVisibleModelIdentity(value: string): string {
-  return value.trim().toLowerCase().replace(/[\s._-]+/g, " ");
+function anthropicFamilyRank(identity: string): number {
+  return familyRank(identity, ["mythos", "fable", "opus", "sonnet", "haiku"]);
 }
 
-function anthropicFamilyRank(identity: string): number {
-  if (identity.includes("opus")) return 0;
-  if (identity.includes("sonnet")) return 1;
-  if (identity.includes("haiku")) return 2;
-  return 3;
+/** The index of the first of `families`, strongest first, that `identity` names as a word. */
+function familyRank(identity: string, families: readonly string[]): number {
+  const words = new Set(identity.split(/[^a-z0-9]+/u));
+  const index = families.findIndex((family) => words.has(family));
+  return index === -1 ? families.length : index;
 }
 
 function xaiFamilyRank(identity: string): number {
@@ -187,15 +181,14 @@ function xaiFamilyRank(identity: string): number {
 }
 
 function openAiVariantRank(identity: string): number {
-  if (identity.includes("sol")) return 0;
-  if (identity.includes("terra")) return 1;
-  if (identity.includes("luna")) return 2;
-  if (identity.includes("pro")) return 3;
-  if (identity.includes("spark")) return 8;
-  if (identity.includes("nano")) return 7;
-  if (identity.includes("mini")) return 6;
-  if (identity.includes("codex")) return 5;
-  return 4;
+  const tier = familyRank(identity, ["astra", "sol", "terra", "luna"]);
+  if (tier < 4) return tier;
+  if (identity.includes("pro")) return 4;
+  if (identity.includes("spark")) return 9;
+  if (identity.includes("nano")) return 8;
+  if (identity.includes("mini")) return 7;
+  if (identity.includes("codex")) return 6;
+  return 5;
 }
 
 function genericVariantRank(identity: string): number {

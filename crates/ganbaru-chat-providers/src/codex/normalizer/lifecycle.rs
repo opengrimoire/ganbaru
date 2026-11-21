@@ -129,13 +129,26 @@ impl CodexEventNormalizer {
             .get("total")
             .and_then(Value::as_object)
             .ok_or_else(|| protocol_error("thread/tokenUsage/updated.total"))?;
+        // `total` sums the whole thread, which budgets count; `last` covers the newest model
+        // request, whose size is the current context fill.
+        let last = usage.get("last").and_then(Value::as_object);
+        let cached_input_tokens = unsigned(total, "cachedInputTokens");
+        let cache_write_input_tokens = unsigned(total, "cacheWriteInputTokens");
+        // Codex counts cache reads and writes inside `inputTokens`.
+        let input_tokens = unsigned(total, "inputTokens").map(|input| {
+            input
+                .saturating_sub(cached_input_tokens.unwrap_or(0))
+                .saturating_sub(cache_write_input_tokens.unwrap_or(0))
+        });
         let event = ThreadUsageUpdatedEvent {
-            input_tokens: unsigned(total, "inputTokens"),
+            input_tokens,
             output_tokens: unsigned(total, "outputTokens"),
-            cached_input_tokens: unsigned(total, "cachedInputTokens"),
-            context_tokens: unsigned(total, "totalTokens"),
+            cached_input_tokens,
+            cache_write_input_tokens,
+            context_tokens: last.and_then(|last| unsigned(last, "totalTokens")),
             context_limit: unsigned(usage, "modelContextWindow"),
             cost: None,
+            count_scope: Some(UsageCountScope::ThreadCumulative),
         };
         Ok(vec![self.event(
             state,
@@ -158,6 +171,12 @@ impl CodexEventNormalizer {
             .and_then(Value::as_object)
             .ok_or_else(|| protocol_error("turn/started.turn"))?;
         let provider_turn_id = required_text(turn, "id")?.to_string();
+        if state.retry_request_in_flight && state.active_chat_turn_id.is_none() {
+            // The retry's chat turn settled while its request was in flight, and no new turn
+            // starts until it resolves, so this turn has no owner.
+            state.abandon_provider_turn(&provider_turn_id);
+            return Ok(Vec::new());
+        }
         state.active_provider_turn_id = Some(provider_turn_id.clone());
         state.session_state = ProviderSessionState::Active;
         state.changed_files.clear();
@@ -191,6 +210,9 @@ impl CodexEventNormalizer {
             .and_then(Value::as_object)
             .ok_or_else(|| protocol_error("turn/completed.turn"))?;
         let provider_turn_id = required_text(turn, "id")?;
+        if !state.owns_provider_turn(provider_turn_id) {
+            return Ok(Vec::new());
+        }
         let provider_turn = provider_identifier::<ProviderTurnId>(provider_turn_id);
         let status = required_text(turn, "status")?;
         let turn_state = match status {
@@ -198,18 +220,54 @@ impl CodexEventNormalizer {
             "interrupted" => ChatTurnState::Interrupted,
             _ => ChatTurnState::Failed,
         };
-        let stop_reason = turn
-            .get("error")
-            .and_then(Value::as_object)
+        let error = turn.get("error").and_then(Value::as_object);
+        let rate_limits = state.rate_limits.projection();
+        let classified = error.and_then(|error| {
+            CodexStopReason::from_turn_error(error, rate_limits.resets_at.clone())
+        });
+        let stop_reason = error
             .and_then(|error| text(error, "message"))
-            .map(|value| bounded_text(value, MAX_PROVIDER_TEXT_BYTES));
+            .map(|value| bounded_text(value, MAX_PROVIDER_TEXT_BYTES))
+            .or_else(|| classified.as_ref().map(CodexStopReason::fallback_message));
+        let mut events = Vec::new();
+        if let Some(CodexStopReason::UsageLimit { resets_at }) = classified {
+            events.push(self.event(
+                state,
+                "turn/completed",
+                None,
+                None,
+                None,
+                CanonicalEvent::RateLimitStatus(RateLimitStatusEvent {
+                    limited: true,
+                    resets_at,
+                    detail: stop_reason.clone(),
+                    provider_data: Some(rate_limits.provider_data),
+                }),
+            )?);
+        }
+        events.push(self.settled_turn(state, provider_turn, turn_state, stop_reason)?);
+        Ok(events)
+    }
+
+    /// The terminal event of the active chat turn, clearing the turn route and any armed
+    /// capacity retry.
+    pub(in crate::codex) fn settled_turn(
+        &self,
+        state: &mut CodexRouteState,
+        provider_turn: Option<ProviderTurnId>,
+        turn_state: ChatTurnState,
+        stop_reason: Option<String>,
+    ) -> ChatResult<CanonicalRuntimeEvent> {
         let chat_turn = state.active_chat_turn_id.clone();
         state.session_state = ProviderSessionState::Ready;
         state.active_chat_turn_id = None;
         state.active_provider_turn_id = None;
         state.stream_indexes.clear();
+        if let Some(retry) = state.capacity_retry.take() {
+            retry.cancel();
+        }
         let changed_files = std::mem::take(&mut state.changed_files);
-        Ok(vec![self.event(
+        self.event(
             state,
             "turn/completed",
             chat_turn,
@@ -221,6 +279,6 @@ impl CodexEventNormalizer {
                 usage: None,
                 changed_files,
             }),
-        )?])
+        )
     }
 }

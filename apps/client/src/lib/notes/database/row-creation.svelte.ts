@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import {
   applyNotesDataSourceTemplate,
   createNotesDataSourceRowPage,
@@ -85,7 +86,7 @@ export function createNotesDatabaseRowCreation(onEdited: () => Promise<unknown>)
         edited = true;
       }
     } catch (caught) {
-      row.error = caught instanceof Error ? caught.message : String(caught);
+      row.error = notesErrorDetail(caught);
     } finally {
       row.pending = false;
     }
@@ -93,7 +94,7 @@ export function createNotesDatabaseRowCreation(onEdited: () => Promise<unknown>)
       try {
         await onEdited();
       } catch (caught) {
-        row.error = caught instanceof Error ? caught.message : String(caught);
+        row.error = notesErrorDetail(caught);
       }
     }
   }

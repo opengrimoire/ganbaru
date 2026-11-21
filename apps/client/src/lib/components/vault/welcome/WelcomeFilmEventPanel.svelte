@@ -493,7 +493,7 @@
 <div bind:this={layer} class="pointer-events-none absolute inset-0 z-49" style:visibility={placed ? undefined : "hidden"} aria-hidden="true">
   <div
     bind:this={sheetElement}
-    class={cn("panel-root absolute flex flex-col", mobileLayout && "rounded-t-floating")}
+    class={cn("panel-root absolute flex flex-col", mobileLayout && "rounded-t-sheet")}
     data-mobile={mobileLayout || undefined}
     style="box-shadow: 0 0 2px 0px var(--panel-edge), 0 1px 2px var(--panel-shadow); background-color: var(--panel-bg); {panelStyle}"
   >

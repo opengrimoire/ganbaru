@@ -1,4 +1,11 @@
-use super::{device_state_error, mapping::provider_instance_read, provider_not_found_error};
+use super::{
+    device_state_error,
+    discovery::{drop_met_install_requirements, installed_family_executables},
+    duplicates::duplicate_configurations,
+    executable_search_directories,
+    mapping::provider_instance_read,
+    provider_not_found_error,
+};
 use crate::chat::configuration::{
     on_blocking_pool, read_chat_configuration, update_chat_device_config, with_behavior,
 };
@@ -15,16 +22,30 @@ use tauri::Manager;
 pub(crate) async fn read_settings(app: &tauri::AppHandle) -> ChatResult<ChatSettingsRead> {
     let configuration = read_chat_configuration(app).await?;
     let scope = read_active_device_scope(app).map_err(device_state_error)?;
-    let provider_instances = configuration
+    let mut provider_instances: Vec<_> = configuration
         .device
         .providers
         .iter()
         .map(|portable| provider_instance_read(portable, &scope.provider_instances))
         .collect();
+    let search_directories = executable_search_directories();
+    let configurations: Vec<_> = provider_instances
+        .iter()
+        .map(|read| read.configuration.clone())
+        .collect();
+    let mut duplicates = duplicate_configurations(&configurations, &search_directories);
+    for read in &mut provider_instances {
+        read.duplicate_of = duplicates.remove(&read.configuration.instance_id);
+    }
+    let mut provider_families = ProviderDriverRegistry.list_metadata();
+    drop_met_install_requirements(&mut provider_families, &search_directories);
+    let installed_executables =
+        installed_family_executables(&provider_families, &search_directories);
     Ok(ChatSettingsRead {
         configuration,
-        provider_families: ProviderDriverRegistry.list_metadata(),
+        provider_families,
         provider_instances,
+        installed_executables,
         credential_store_availability: PlatformCredentialStore::default().availability(),
         last_selected_thread_id: scope.preferences.last_selected_thread_id,
     })

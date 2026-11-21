@@ -18,6 +18,10 @@ export interface ChatChannelRead {
   memberships: ChatConversationMembershipRead[];
   messageCount: number;
   unreadCount: number;
+  /** New replies, after the last visit and not read in their thread, in threads the person took part in. */
+  unreadReplyCount: number;
+  /** Whether a failed run in one of its threads has not been seen since it failed. */
+  unseenFailure: boolean;
   latestPreview: string | null;
   lastActivityAt: UtcTimestamp;
   attentionState: ChatWorkAssignmentState | null;

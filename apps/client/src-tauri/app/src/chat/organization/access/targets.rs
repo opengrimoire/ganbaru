@@ -1,6 +1,7 @@
 //! Device-local working-folder and scratch assignment-target discovery.
 
-use super::channels::read_teammate_access;
+use super::super::provider_agents::read_device_providers;
+use super::resolve::{read_reached_folders, resolve_channel_agent_access};
 use super::{
     ChatAssignmentTargetBindingState, ChatAssignmentTargetKind, ChatAssignmentTargetLifecycleState,
     ChatAssignmentTargetRead, ChatError, ChatErrorCode, ChatExecutionEnvironmentId,
@@ -9,43 +10,65 @@ use super::{
     ListChatAssignmentTargetsCommand,
 };
 use crate::chat::channels::{chat_pool, identifier_error, persistence_error};
-use crate::chat::organization::common::effective_runtime_approval;
+use ganbaru_chat::coordination::agent_settings::agent_is_present;
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeMap;
 
+/// Lists the targets the agent's access reaches in the channel on this device: the
+/// environments of each project folder, with the primary folder's current folder as the
+/// default, and the agent's private scratch in the reply thread when the access allows scratch.
+/// It lists nothing when the agent's provider cannot work on this device, since work posted
+/// here then runs on a linked desktop that resolves its own target.
 #[tauri::command]
 pub async fn chat_list_assignment_targets(
     app: tauri::AppHandle,
     db_url: String,
     request: ListChatAssignmentTargetsCommand,
 ) -> ChatResult<Vec<ChatAssignmentTargetRead>> {
+    let providers = read_device_providers(&app);
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let channel = crate::chat::channels::read_channel(&pool, &request.channel_id).await?;
-    let access = read_teammate_access(&pool, &request.teammate_id).await?;
-    let channel_access = access
-        .channels
-        .iter()
-        .find(|candidate| candidate.conversation_id == channel.conversation_id)
-        .ok_or_else(|| {
-            ChatError::new(
-                ChatErrorCode::NotFound,
-                "The teammate is not a member of this channel",
+    let (access, folders) = {
+        let mut connection = pool.acquire().await.map_err(persistence_error)?;
+        if !agent_is_present(
+            &mut connection,
+            channel.conversation_id.as_str(),
+            request.agent_id.as_str(),
+        )
+        .await?
+        {
+            return Err(ChatError::new(
+                ChatErrorCode::Permission,
+                "The agent cannot participate in this channel",
                 true,
-            )
-        })?;
-    if !channel_access.capabilities.participate {
-        return Err(ChatError::new(
-            ChatErrorCode::Conflict,
-            "The teammate cannot participate in this channel",
-            true,
-        ));
-    }
+            ));
+        }
+        let access = resolve_channel_agent_access(
+            &mut connection,
+            channel.conversation_id.as_str(),
+            request.agent_id.as_str(),
+            &providers,
+        )
+        .await?;
+        if !access.resolved.can_work() {
+            return Ok(Vec::new());
+        }
+        let folders = read_reached_folders(&mut connection, &access).await?;
+        (access, folders)
+    };
+    let folder_capability = access.resolved.folder_capability;
+    let runtime_approval = access.resolved.runtime_approval;
     let folder_reads =
         crate::chat::workspace::commands::projects_list_working_folders_cached(app.clone(), db_url)
             .await?;
     let bindings = folder_reads
         .into_iter()
-        .map(|read| (read.working_folder.id.clone(), read.binding_status))
+        .map(|read| {
+            (
+                read.working_folder.id.as_str().to_string(),
+                read.binding_status,
+            )
+        })
         .collect::<BTreeMap<_, _>>();
     crate::chat::channels::ensure_chat_defaults(
         &pool,
@@ -53,7 +76,11 @@ pub async fn chat_list_assignment_targets(
     )
     .await?;
     let mut targets = Vec::new();
-    for grant in &channel_access.folder_grants {
+    for folder in &folders {
+        let working_folder_id = ganbaru_chat_contracts::models::ProjectWorkingFolderId::new(
+            folder.working_folder_id.clone(),
+        )
+        .map_err(identifier_error)?;
         let rows = sqlx::query(
             "SELECT environment.id, environment.kind, environment.display_name,
                     environment.lifecycle_state, worktree.cleanup_state
@@ -65,11 +92,11 @@ pub async fn chat_list_assignment_targets(
              ORDER BY environment.kind = 'current_folder' DESC,
                       environment.created_at, environment.id",
         )
-        .bind(grant.working_folder_id.as_str())
+        .bind(folder.working_folder_id.as_str())
         .fetch_all(&pool)
         .await
         .map_err(persistence_error)?;
-        let binding_state = match bindings.get(&grant.working_folder_id) {
+        let binding_state = match bindings.get(&folder.working_folder_id) {
             Some(ganbaru_chat::workspace::WorkingFolderBindingStatus::Available) => {
                 ChatAssignmentTargetBindingState::Ready
             }
@@ -106,12 +133,12 @@ pub async fn chat_list_assignment_targets(
             .await
             .map_err(persistence_error)?;
             let is_worktree = environment_kind == "worktree";
-            let eligible = grant.capability != ChatFolderCapability::None
+            let eligible = folder_capability != ChatFolderCapability::None
                 && binding_state == ChatAssignmentTargetBindingState::Ready
                 && lifecycle_state == ChatAssignmentTargetLifecycleState::Available;
             targets.push(ChatAssignmentTargetRead {
                 execution_target: Some(ChatExecutionTarget::WorkingFolder {
-                    working_folder_id: grant.working_folder_id.clone(),
+                    working_folder_id: working_folder_id.clone(),
                     execution_environment_id: environment_id,
                 }),
                 kind: if is_worktree {
@@ -120,15 +147,9 @@ pub async fn chat_list_assignment_targets(
                     ChatAssignmentTargetKind::CurrentFolder
                 },
                 display_name: row.try_get("display_name").map_err(persistence_error)?,
-                folder_capability: Some(grant.capability),
-                effective_runtime_approval: effective_runtime_approval(
-                    access.teammate_default_runtime_approval,
-                    grant
-                        .runtime_approval_override
-                        .or(channel_access.runtime_approval_override)
-                        .unwrap_or(access.teammate_default_runtime_approval),
-                ),
-                is_default: grant.is_default && !is_worktree,
+                folder_capability: Some(folder_capability),
+                effective_runtime_approval: runtime_approval,
+                is_default: folder.is_primary && !is_worktree,
                 binding_state,
                 lifecycle_state,
                 is_busy: is_busy != 0,
@@ -141,17 +162,21 @@ pub async fn chat_list_assignment_targets(
             });
         }
     }
-    let scratch = read_scratch_assignment_target(
-        &app,
-        &pool,
-        &request.teammate_id,
-        request.reply_thread_id.as_ref(),
-        channel_access.scratch_runtime_approval_override,
-        channel_access.runtime_approval_override,
-        access.teammate_default_runtime_approval,
-    )
-    .await?;
-    targets.push(scratch);
+    if let Some(reply_thread_id) = request.reply_thread_id.as_ref() {
+        prefer_thread_folder(&pool, reply_thread_id, &mut targets).await?;
+    }
+    if access.resolved.scratch_allowed
+        && let Some(scratch) = read_scratch_assignment_target(
+            &app,
+            &pool,
+            &request.agent_id,
+            request.reply_thread_id.as_ref(),
+            access.resolved.scratch_approval,
+        )
+        .await?
+    {
+        targets.push(scratch);
+    }
     targets.sort_by(|left, right| {
         right
             .is_default
@@ -164,15 +189,69 @@ pub async fn chat_list_assignment_targets(
     Ok(targets)
 }
 
+/// Makes the folder the latest earlier work in the reply thread ran in the default target, when
+/// the agent's access still reaches it: its environment while that is still available, else the
+/// folder's current folder. Otherwise the primary folder's current folder stays the default.
+async fn prefer_thread_folder(
+    pool: &SqlitePool,
+    reply_thread_id: &ChatReplyThreadId,
+    targets: &mut [ChatAssignmentTargetRead],
+) -> ChatResult<()> {
+    let previous: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT authorization.working_folder_id, authorization.execution_environment_id
+         FROM chat_assignment_authorization_revisions authorization
+         JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
+         WHERE assignment.reply_thread_id = ?
+           AND authorization.working_folder_id IS NOT NULL
+           AND authorization.decision_state = 'allowed'
+         ORDER BY authorization.created_at DESC, authorization.id DESC
+         LIMIT 1",
+    )
+    .bind(reply_thread_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?;
+    let Some((folder_id, environment_id)) = previous else {
+        return Ok(());
+    };
+    let in_folder = |target: &ChatAssignmentTargetRead| -> Option<String> {
+        match &target.execution_target {
+            Some(ChatExecutionTarget::WorkingFolder {
+                working_folder_id,
+                execution_environment_id,
+            }) if working_folder_id.as_str() == folder_id => {
+                Some(execution_environment_id.as_str().to_owned())
+            }
+            _ => None,
+        }
+    };
+    let same_environment = targets.iter().position(|target| {
+        target.lifecycle_state == ChatAssignmentTargetLifecycleState::Available
+            && in_folder(target).is_some()
+            && in_folder(target) == environment_id
+    });
+    let chosen = same_environment.or_else(|| {
+        targets.iter().position(|target| {
+            target.kind == ChatAssignmentTargetKind::CurrentFolder && in_folder(target).is_some()
+        })
+    });
+    if let Some(chosen) = chosen {
+        for (index, target) in targets.iter_mut().enumerate() {
+            target.is_default = index == chosen;
+        }
+    }
+    Ok(())
+}
+
+/// Reads the agent's active scratch generation in the reply thread, or `None` when none exists, so the
+/// listed targets never name a scratch that is not there.
 async fn read_scratch_assignment_target(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     reply_thread_id: Option<&ChatReplyThreadId>,
-    scratch_override: Option<ChatRuntimeApprovalPolicy>,
-    channel_override: Option<ChatRuntimeApprovalPolicy>,
-    teammate_default: ChatRuntimeApprovalPolicy,
-) -> ChatResult<ChatAssignmentTargetRead> {
+    scratch_approval: ChatRuntimeApprovalPolicy,
+) -> ChatResult<Option<ChatAssignmentTargetRead>> {
     let row = match reply_thread_id {
         Some(reply_thread_id) => sqlx::query(
             "SELECT scope.id AS scratch_scope_id, generation.id AS scratch_generation_id,
@@ -185,11 +264,11 @@ async fn read_scratch_assignment_target(
              JOIN chat_execution_environments environment
                ON environment.scratch_generation_id = generation.id
               AND environment.archived_at IS NULL
-             WHERE scope.reply_thread_id = ? AND scope.teammate_id = ?
+             WHERE scope.reply_thread_id = ? AND scope.agent_id = ?
                AND scope.removed_at IS NULL",
         )
         .bind(reply_thread_id.as_str())
-        .bind(teammate_id.as_str())
+        .bind(agent_id.as_str())
         .fetch_optional(pool)
         .await
         .map_err(persistence_error)?,
@@ -250,24 +329,14 @@ async fn read_scratch_assignment_target(
                 binding_state,
             )
         }
-        None => (
-            None,
-            ChatAssignmentTargetLifecycleState::Available,
-            false,
-            ChatAssignmentTargetBindingState::Ready,
-        ),
+        None => return Ok(None),
     };
-    Ok(ChatAssignmentTargetRead {
+    Ok(Some(ChatAssignmentTargetRead {
         execution_target,
         kind: ChatAssignmentTargetKind::Scratch,
         display_name: "Private scratch".to_string(),
         folder_capability: None,
-        effective_runtime_approval: effective_runtime_approval(
-            teammate_default,
-            scratch_override
-                .or(channel_override)
-                .unwrap_or(teammate_default),
-        ),
+        effective_runtime_approval: scratch_approval,
         is_default: false,
         binding_state,
         eligible: lifecycle_state == ChatAssignmentTargetLifecycleState::Available
@@ -278,7 +347,7 @@ async fn read_scratch_assignment_target(
         unavailable_reason: (binding_state
             == ChatAssignmentTargetBindingState::UnavailableOnThisDevice)
             .then(|| "Private scratch is unavailable on this device".to_string()),
-    })
+    }))
 }
 
 fn parse_assignment_target_lifecycle(

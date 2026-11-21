@@ -1,10 +1,11 @@
 //! Immediate runtime cleanup for durable organizational access revocations.
 
 use super::internal_mcp::{InternalMcpRunScope, generate_opaque_handle};
+use ganbaru_chat::coordination::revocation::PARENT_AUTHORITY_REVOKED_REASON;
 use ganbaru_chat::runtime::ChatRuntimeRegistry;
 use ganbaru_chat_contracts::models::{
-    ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
-    ChatThreadId, ChatTurnId, ProjectWorkingFolderId,
+    ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatProjectionKey,
+    ChatResult, ChatThreadId, ChatTurnId, ProjectWorkingFolderId,
 };
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeSet;
@@ -20,7 +21,7 @@ const REVOCATION_RETRY_POLL: Duration = Duration::from_secs(5);
 const REVOCATION_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
-struct RevokedRun {
+pub(super) struct RevokedRun {
     thread_id: ChatThreadId,
     run_id: ChatAgentRunId,
     turn_id: ChatTurnId,
@@ -60,7 +61,8 @@ pub(crate) async fn revoke_active_run_authorizations(
     let now = now_timestamp();
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let rows = sqlx::query(
-        "SELECT DISTINCT authorization.id, assignment.teammate_id
+        "SELECT DISTINCT authorization.id, assignment.agent_id,
+                assignment.id AS assignment_id
          FROM chat_agent_runs run
          JOIN chat_assignment_authorization_revisions authorization
            ON authorization.id = run.authorization_revision_id
@@ -85,7 +87,7 @@ pub(crate) async fn revoke_active_run_authorizations(
     .map_err(persistence_error)?;
     for row in &rows {
         let authorization_id: String = row.try_get("id").map_err(persistence_error)?;
-        let teammate_id: String = row.try_get("teammate_id").map_err(persistence_error)?;
+        let agent_id: String = row.try_get("agent_id").map_err(persistence_error)?;
         sqlx::query(
             "UPDATE chat_assignment_authorization_revisions
              SET decision_state = 'revoked', reason = ?, revoked_at = ?
@@ -99,7 +101,7 @@ pub(crate) async fn revoke_active_run_authorizations(
         .map_err(persistence_error)?;
         sqlx::query(
             "INSERT INTO chat_access_revocation_jobs
-                (id, teammate_id, authorization_revision_id, reason,
+                (id, agent_id, authorization_revision_id, reason,
                  available_at, created_at, updated_at)
              SELECT 'access-revocation:' || lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?
              WHERE NOT EXISTS (
@@ -108,7 +110,7 @@ pub(crate) async fn revoke_active_run_authorizations(
                    AND existing.state IN ('queued', 'claimed')
              )",
         )
-        .bind(&teammate_id)
+        .bind(&agent_id)
         .bind(&authorization_id)
         .bind(reason)
         .bind(&now)
@@ -118,6 +120,13 @@ pub(crate) async fn revoke_active_run_authorizations(
         .execute(&mut *transaction)
         .await
         .map_err(persistence_error)?;
+        let assignment_id: String = row.try_get("assignment_id").map_err(persistence_error)?;
+        ganbaru_chat::coordination::revocation::revoke_delegated_authorizations(
+            &mut transaction,
+            &assignment_id,
+            &now,
+        )
+        .await?;
     }
     transaction.commit().await.map_err(persistence_error)?;
     Ok(!rows.is_empty())
@@ -142,7 +151,11 @@ pub(crate) async fn drain_access_revocation_jobs(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
 ) -> ChatResult<u64> {
+    // Callers drain after committing a revocation, and the pass settles runs, so live checks that
+    // passed before either must run again.
+    crate::chat::authority_epoch::bump_authority_epoch(app);
     let pass = run_drain_pass(app, pool).await;
+    crate::chat::authority_epoch::bump_authority_epoch(app);
     if pass.retry {
         let retry_app = app.clone();
         let retry_pool = pool.clone();
@@ -197,8 +210,6 @@ pub(crate) trait OrphanedRunHost {
     fn has_runtime_owner(&self, thread_id: &ChatThreadId) -> ChatResult<bool>;
     /// Shuts down the provider runtime of `thread_id`.
     async fn shutdown_thread(&self, thread_id: &ChatThreadId) -> ChatResult<()>;
-    /// Clears terminal access granted in `folder`.
-    fn clear_folder_terminal_access(&self, folder: &ProjectWorkingFolderId) -> ChatResult<()>;
 }
 
 /// [`OrphanedRunHost`] over the running app's registries.
@@ -241,12 +252,6 @@ impl OrphanedRunHost for AppOrphanedRunHost<'_> {
         runtime
             .shutdown_thread_and_remove(thread_id, REVOCATION_STOP_TIMEOUT, &mutations)
             .await
-    }
-
-    fn clear_folder_terminal_access(&self, folder: &ProjectWorkingFolderId) -> ChatResult<()> {
-        self.0
-            .state::<super::terminal_access::ChatTerminalAccess>()
-            .clear_folder(folder)
     }
 }
 
@@ -307,34 +312,8 @@ pub(crate) async fn stop_orphaned_run_scopes(
             continue;
         }
         host.revoke_run_scope(thread_id, scope).await;
-        if let Err(error) = clear_thread_terminal_access(host, pool, thread_id).await {
-            eprintln!(
-                "Chat revocation drain could not clear terminal access of an orphaned run: code \
-                 {:?}",
-                error.code
-            );
-        }
     }
     Ok(left)
-}
-
-/// Clears the terminal access granted in the working folder of `thread_id`, if it has one.
-async fn clear_thread_terminal_access(
-    host: &impl OrphanedRunHost,
-    pool: &SqlitePool,
-    thread_id: &ChatThreadId,
-) -> ChatResult<()> {
-    let folder: Option<String> =
-        sqlx::query_scalar("SELECT working_folder_id FROM chat_threads WHERE id = ?")
-            .bind(thread_id.as_str())
-            .fetch_optional(pool)
-            .await
-            .map_err(persistence_error)?;
-    if let Some(folder) = folder {
-        let folder = ProjectWorkingFolderId::new(folder).map_err(|_| revocation_error())?;
-        host.clear_folder_terminal_access(&folder)?;
-    }
-    Ok(())
 }
 
 /// The ids among `authorization_ids` that name no authorization row.
@@ -509,7 +488,7 @@ async fn drain_claimed_job(
     let reason: String = row.try_get("reason").map_err(persistence_error)?;
     let runs = read_revoked_runs(pool, authorization_revision_id.as_deref()).await?;
 
-    persist_revocation_before_cleanup(
+    let settled_assignment = persist_revocation_before_cleanup(
         pool,
         job_id,
         claim_token,
@@ -518,6 +497,27 @@ async fn drain_claimed_job(
         &runs,
     )
     .await?;
+    if !runs.is_empty() {
+        super::secrets::spawn_sweep(app, pool);
+    }
+    super::organization::deliver_delegation_outcomes_of_assignments(
+        app,
+        pool,
+        settled_assignment.into_iter().collect(),
+    );
+    let revoked_threads = runs
+        .iter()
+        .map(|run| &run.thread_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    for thread_id in revoked_threads {
+        super::ingestion::notify_rows_changed(
+            app,
+            pool,
+            thread_id,
+            &[ChatProjectionKey::Thread, ChatProjectionKey::Turns],
+        )
+        .await;
+    }
 
     let mcp = app.state::<super::internal_mcp::InternalMcpRegistry>();
     let runtime = app.state::<ChatRuntimeRegistry>();
@@ -555,36 +555,7 @@ async fn drain_claimed_job(
                 .await?;
         }
     }
-    clear_revoked_terminal_grants(app, pool, authorization_revision_id.as_deref()).await?;
     mark_claim_completed(pool, job_id, claim_token).await
-}
-
-/// Drops terminal start grants for the folders a revoked authorization ran in,
-/// so the next terminal there asks again.
-async fn clear_revoked_terminal_grants(
-    app: &tauri::AppHandle,
-    pool: &SqlitePool,
-    authorization_revision_id: Option<&str>,
-) -> ChatResult<()> {
-    let Some(authorization_revision_id) = authorization_revision_id else {
-        return Ok(());
-    };
-    let folders: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT thread.working_folder_id
-         FROM chat_agent_runs run
-         JOIN chat_threads thread ON thread.id = run.provider_thread_id
-         WHERE run.authorization_revision_id = ?",
-    )
-    .bind(authorization_revision_id)
-    .fetch_all(pool)
-    .await
-    .map_err(persistence_error)?;
-    let access = app.state::<super::terminal_access::ChatTerminalAccess>();
-    for folder in folders {
-        let folder = ProjectWorkingFolderId::new(folder).map_err(|_| revocation_error())?;
-        access.clear_folder(&folder)?;
-    }
-    Ok(())
 }
 
 async fn read_revoked_runs(
@@ -630,14 +601,18 @@ async fn read_revoked_runs(
         .collect()
 }
 
-async fn persist_revocation_before_cleanup(
+/// Settles the claimed job `job_id` before its runs are stopped: cancels the runs and the
+/// assignment its authorization granted, cancels the work delegated from that assignment unless
+/// the revocation is a lifecycle one, and interrupts the turns of `runs`. Returns the settled
+/// assignment.
+pub(super) async fn persist_revocation_before_cleanup(
     pool: &SqlitePool,
     job_id: &str,
     claim_token: &str,
     authorization_revision_id: Option<&str>,
     reason: &str,
     runs: &[RevokedRun],
-) -> ChatResult<()> {
+) -> ChatResult<Option<String>> {
     let settled_at = now_timestamp();
     let turn_reason = reason.chars().take(1_000).collect::<String>();
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
@@ -655,19 +630,21 @@ async fn persist_revocation_before_cleanup(
     if !owned {
         return Err(revocation_error());
     }
+    let mut settled_assignment = None;
     if let Some(authorization_revision_id) = authorization_revision_id {
-        sqlx::query(
+        let run_cancel = format!(
             "UPDATE chat_agent_runs
              SET state = 'cancelled', settled_at = coalesce(settled_at, ?), updated_at = ?
-             WHERE authorization_revision_id = ?
-               AND state IN ('queued', 'starting', 'working', 'waiting')",
-        )
-        .bind(&settled_at)
-        .bind(&settled_at)
-        .bind(authorization_revision_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
+             WHERE authorization_revision_id = ? AND {}",
+            ganbaru_chat::agent_runs::unsettled_run_state_sql("state")
+        );
+        sqlx::query(sqlx::AssertSqlSafe(run_cancel.as_str()))
+            .bind(&settled_at)
+            .bind(&settled_at)
+            .bind(authorization_revision_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(persistence_error)?;
         sqlx::query(
             "UPDATE chat_work_assignments
              SET state = 'cancelled', state_reason = ?, settled_at = coalesce(settled_at, ?),
@@ -687,6 +664,46 @@ async fn persist_revocation_before_cleanup(
         .execute(&mut *transaction)
         .await
         .map_err(persistence_error)?;
+        let assignment_id: Option<String> = sqlx::query_scalar(
+            "SELECT assignment_id FROM chat_assignment_authorization_revisions WHERE id = ?",
+        )
+        .bind(authorization_revision_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
+        if let Some(assignment_id) = &assignment_id {
+            // Descendants on other devices hold no authorization here, so their replicated
+            // state is what takes back the authority this revocation removed.
+            if !crate::chat::organization::is_lifecycle_revocation(reason) {
+                let cancelled =
+                    ganbaru_chat::coordination::delegation::cancel_descendants_of_revoked_parent(
+                        &mut transaction,
+                        assignment_id,
+                        &settled_at,
+                    )
+                    .await?;
+                for descendant_id in &cancelled {
+                    sqlx::query(
+                        "UPDATE chat_assignment_dispatch_jobs
+                         SET state = 'cancelled', last_error = ?, updated_at = ?
+                         WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
+                    )
+                    .bind(PARENT_AUTHORITY_REVOKED_REASON)
+                    .bind(&settled_at)
+                    .bind(descendant_id)
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(persistence_error)?;
+                }
+            }
+            ganbaru_chat::coordination::delegation::post_delegation_outcome(
+                &mut transaction,
+                assignment_id,
+                &settled_at,
+            )
+            .await?;
+        }
+        settled_assignment = assignment_id;
         sqlx::query(
             "UPDATE chat_assignment_dispatch_jobs
              SET state = 'cancelled', last_error = ?, updated_at = ?
@@ -738,7 +755,8 @@ async fn persist_revocation_before_cleanup(
         .await
         .map_err(persistence_error)?;
     }
-    transaction.commit().await.map_err(persistence_error)
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(settled_assignment)
 }
 
 async fn mark_claim_completed(
@@ -847,7 +865,7 @@ pub(crate) mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     const NOW: &str = "2026-10-20T12:00:00.000Z";
-    const TEAMMATE: &str = "participant:folder-agent";
+    const AGENT: &str = "participant:folder-agent";
 
     /// Seeds one working run in `workspace-1` that also holds `workspace-2` as a read source,
     /// and a queued follow-up run for the same assignment.
@@ -866,30 +884,21 @@ pub(crate) mod tests {
                  'none', 2, '{NOW}', '{NOW}');
              INSERT INTO chat_participants
                 (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('{TEAMMATE}', 'ai_teammate', 'Folder agent', '{NOW}', '{NOW}');
-             INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
-             VALUES ('{TEAMMATE}', 'Test', '{NOW}', '{NOW}');
-             INSERT INTO chat_teammate_policy_revisions
-                (id, teammate_id, provider_instance_id, model_selection_data, created_at)
-             VALUES ('policy:folders', '{TEAMMATE}', 'codex-personal', '{{}}', '{NOW}');
+             VALUES ('{AGENT}', 'ai_agent', 'Folder agent', '{NOW}', '{NOW}');
+             INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+             VALUES ('{AGENT}', 'codex', '{NOW}', '{NOW}');
+             INSERT INTO chat_agent_policy_revisions
+                (id, agent_id, model_selection_data, created_at)
+             VALUES ('policy:folders', '{AGENT}', '{{}}', '{NOW}');
              INSERT INTO chat_conversation_memberships
                 (conversation_id, participant_id, sync_key, membership_role, created_at,
                  updated_at)
-             VALUES ('{conversation}', '{TEAMMATE}', 'membership:folders', 'member',
+             VALUES ('{conversation}', '{AGENT}', 'membership:folders', 'member',
                      '{NOW}', '{NOW}');
-             INSERT INTO chat_teammate_channel_memberships
-                (conversation_id, teammate_id, sync_key, access_profile_id,
-                 read_history, participate, history_boundary, created_at, updated_at)
-             VALUES ('{conversation}', '{TEAMMATE}', 'channel-membership:folders',
-                     'access-profile:build-and-test', 1, 1, 'entire', '{NOW}', '{NOW}');
-             INSERT INTO chat_teammate_working_folder_grants
-                (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
-                 capability, capability_inherits_profile, is_default, created_at)
-             VALUES
-                ('{conversation}', '{TEAMMATE}', 'project-chat', 'workspace-1',
-                 'grant:folders-1', 'execute', 1, 1, '{NOW}'),
-                ('{conversation}', '{TEAMMATE}', 'project-chat', 'workspace-2',
-                 'grant:folders-2', 'read', 0, 0, '{NOW}');
+             INSERT INTO chat_agent_channel_memberships
+                (conversation_id, agent_id, sync_key, created_at, updated_at)
+             VALUES ('{conversation}', '{AGENT}', 'channel-membership:folders',
+                     '{NOW}', '{NOW}');
              INSERT INTO chat_conversation_items
                 (id, conversation_id, item_kind, order_key, created_at)
              VALUES ('item:folders', '{conversation}', 'message', 'a1', '{NOW}');
@@ -901,24 +910,25 @@ pub(crate) mod tests {
              VALUES ('reply:folders', '{conversation}', 'item:folders',
                      '{NOW}', '{NOW}', '{NOW}');
              INSERT INTO chat_work_assignments
-                (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
+                (id, reply_thread_id, agent_id, triggering_message_item_id,
+                 model_selection_schema_version, model_selection_data, state,
                  created_at, updated_at)
-             VALUES ('assignment:folders', 'reply:folders', '{TEAMMATE}', 'item:folders',
+             VALUES ('assignment:folders', 'reply:folders', '{AGENT}', 'item:folders',
+                     1, '{{\"providerManagedModel\":true,\"modelId\":null,\"modelOptions\":[]}}',
                      'working', '{NOW}', '{NOW}');
              INSERT INTO chat_assignment_authorization_revisions
                 (id, assignment_id, revision, requester_participant_id,
-                 teammate_policy_revision_id, teammate_access_revision,
-                 destination_conversation_id, access_profile_revision_id,
+                 destination_conversation_id,
                  execution_environment_id, working_folder_id,
                  resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
              VALUES
                 ('authorization:working', 'assignment:folders', 1, 'participant:local-owner',
-                 'policy:folders', 1, '{conversation}',
-                 'access-profile-revision:build-and-test:1', (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'),
+                 '{conversation}',
+                 (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'),
                  'workspace-1', 'ask', printf('%064d', 0), 'allowed', '{NOW}'),
                 ('authorization:queued', 'assignment:folders', 2, 'participant:local-owner',
-                 'policy:folders', 1, '{conversation}',
-                 'access-profile-revision:build-and-test:1', (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'),
+                 '{conversation}',
+                 (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'),
                  'workspace-1', 'ask', printf('%064d', 0), 'allowed', '{NOW}');
              INSERT INTO chat_assignment_authorized_folder_sources
                 (authorization_revision_id, root_handle, working_folder_id, capability,
@@ -936,15 +946,15 @@ pub(crate) mod tests {
                  '{NOW}', '{NOW}');
              INSERT INTO chat_agent_runs
                 (id, assignment_id, project_id, working_folder_id, execution_environment_id,
-                 teammate_policy_revision_id, authorization_revision_id,
+                 authorization_revision_id,
                  authorization_scope_digest, provider_turn_id, provider_thread_id, state,
                  run_ordinal, created_at, updated_at)
              VALUES
                 ('run:working', 'assignment:folders', 'project-chat', 'workspace-1',
-                 (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'), 'policy:folders', 'authorization:working',
+                 (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'), 'authorization:working',
                  printf('%064d', 0), 'turn:working', 'thread-1', 'working', 1, '{NOW}', '{NOW}'),
                 ('run:queued', 'assignment:folders', 'project-chat', 'workspace-1',
-                 (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'), 'policy:folders', 'authorization:queued',
+                 (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'), 'authorization:queued',
                  printf('%064d', 0), 'turn:queued', 'thread-1', 'queued', 2, '{NOW}', '{NOW}');"
         )))
         .execute(&pool)
@@ -1128,6 +1138,8 @@ pub(crate) mod tests {
                     runtime_approval_policy: ChatRuntimeApprovalPolicy::Ask,
                     channel_sources: Vec::new(),
                     folder_sources: Vec::new(),
+                    delegation_depth: 0,
+                    delegation_target_available: false,
                 },
             ));
             host.owned_threads
@@ -1180,10 +1192,6 @@ pub(crate) mod tests {
                 .lock()
                 .unwrap()
                 .push(thread_id.as_str().to_string());
-            Ok(())
-        }
-
-        fn clear_folder_terminal_access(&self, _folder: &ProjectWorkingFolderId) -> ChatResult<()> {
             Ok(())
         }
     }
@@ -1273,7 +1281,7 @@ pub(crate) mod tests {
                 "authorization:working".to_string()
             ])
         );
-        assert!(effects.revoked_teammates.is_empty());
+        assert!(effects.revoked_agents.is_empty());
         assert_eq!(stop_orphaned_run_scopes(&host, &pool).await.unwrap(), 0);
         assert_eq!(host.shutdowns(), vec!["thread-1".to_string()]);
     }

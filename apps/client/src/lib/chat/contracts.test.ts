@@ -2,13 +2,29 @@ import { describe, expect, it } from "vitest";
 import utcTimestamps from "../../../test-fixtures/utc-timestamps.json";
 import {
   defaultChatConfiguration,
+  parseChatAgentRun,
   parseChatChannel,
   parseChatChannelPage,
+  parseChatChannelNote,
+  parseChatChannelNotes,
+  parseChatNoteProposalStates,
+  parseChatPushApprovals,
+  parseChatRememberedApprovals,
+  parseChatRememberableApproval,
+  parseChatPushRequest,
+  parseChatPushRequestStates,
   parsePostChatMessageResult,
   parseChatMessageSearchResults,
   parseChatScheduledMessage,
   parseChatScheduledMessageDispatch,
-  parseChatTeammateAccess,
+  parseChatQuietPeriodPreferences,
+  parseChatQuietState,
+  parseChatRecurrenceSpec,
+  parseChatScheduleProposal,
+  parseChatScheduleProposalStates,
+  parseChatAppAgentSettings,
+  parseChatChannelAgentSettings,
+  parseChatProjectAgentSettings,
   parseChatConfiguration,
   parseCanonicalRuntimeEvent,
   parseCanonicalStoredEvent,
@@ -18,9 +34,12 @@ import {
   parseChatThreadShell,
   parseProjectWorkingFolderRead,
   parseProviderFamilyMetadata,
+  parseProviderUpdateRunRead,
+  parseProviderUpdates,
   parseProviderInstanceConfig,
   parseProviderInstanceRead,
   parseProviderModelCatalog,
+  parseProviderProbeResult,
   parseProviderRefreshResult,
   parseProviderFiles,
 } from "./validation";
@@ -34,6 +53,9 @@ function metadataFixture(): Record<string, unknown> {
     configurationSchemaVersion: 1,
     supportedPlatforms: ["linux", "windows", "macos"],
     minimumTestedCliVersion: null,
+    maximumTestedCliVersion: null,
+    updateCommand: null,
+    installGuide: null,
     defaultExecutableCandidates: ["codex"],
     implementationStatus: "metadata_only",
     maturity: "experimental",
@@ -82,6 +104,8 @@ describe("Chat provider contracts", () => {
       memberships: [],
       messageCount: 18,
       unreadCount: 2,
+      unreadReplyCount: 1,
+      unseenFailure: true,
       latestPreview: "Review is ready",
       lastActivityAt: timestamp,
       attentionState: "ready_for_review",
@@ -93,8 +117,11 @@ describe("Chat provider contracts", () => {
 
     expect(channel.conversationId).toBe("conversation:general");
     expect(channel.attentionState).toBe("ready_for_review");
+    expect(channel.unreadReplyCount).toBe(1);
+    expect(channel.unseenFailure).toBe(true);
     expect(() => parseChatChannel({ ...channel, unreadCount: -1 }))
       .toThrow("unreadCount must not be negative");
+    expect(() => parseChatChannel({ ...channel, unseenFailure: "yes" })).toThrow("unseenFailure");
   });
 
   it("removes absolute duplicate file summaries from stored timeline turns", () => {
@@ -115,6 +142,7 @@ describe("Chat provider contracts", () => {
         startedAt: timestamp,
         completedAt: timestamp,
         stopReason: null,
+        errorCode: null,
         modelId: null,
         modelOptions: [],
         modes: { safetyMode: "ask_for_approval", interactionMode: "build" },
@@ -127,6 +155,7 @@ describe("Chat provider contracts", () => {
       previousCursor: null,
       nextCursor: null,
       threadRevision: 1,
+      changeCursor: 0,
     });
 
     expect(page.turns[0]?.changedFiles).toEqual([relative]);
@@ -156,6 +185,7 @@ describe("Chat provider contracts", () => {
         references: [],
         replyThread: null,
         orderKey: "c001",
+        awaitingDelivery: false,
         editedAt: null,
         createdAt: timestamp,
       }],
@@ -169,7 +199,20 @@ describe("Chat provider contracts", () => {
       replyThreadId: null,
       assignment: null,
       assignmentInputQueued: false,
+      routedAs: null,
     }).replyThreadId).toBeNull();
+    const queuedResult = {
+      message: page.messages[0],
+      replyThreadId: null,
+      assignment: null,
+      assignmentInputQueued: true,
+      routedAs: "queue",
+    };
+    expect(parsePostChatMessageResult(queuedResult).routedAs).toBe("queue");
+    expect(() => parsePostChatMessageResult({ ...queuedResult, routedAs: "later" }))
+      .toThrow("routedAs");
+    expect(() => parsePostChatMessageResult({ ...queuedResult, routedAs: undefined }))
+      .toThrow("routedAs");
     expect(() => parseChatChannelPage({ ...page, revision: -1 }))
       .toThrow("revision must not be negative");
     for (const orderKey of ["", "c00:1", "c".repeat(129), 1]) {
@@ -203,7 +246,7 @@ describe("Chat provider contracts", () => {
             plainTextProjection: "@Ágata",
           },
           participantId: "participant:agata",
-          participantKind: "ai_teammate",
+          participantKind: "ai_agent",
         }],
       }],
     });
@@ -266,8 +309,23 @@ describe("Chat provider contracts", () => {
       scheduledFor: timestamp,
       lastError: null,
       createdAt: timestamp,
+      recurrence: null,
     };
     expect(parseChatScheduledMessage(scheduled)).toEqual(scheduled);
+    const repeating = {
+      ...scheduled,
+      recurrence: {
+        rule: { kind: "fixed_time", localMinute: 480, weekdays: 31 },
+        timeZone: "Europe/Madrid",
+        quietPolicy: "defer",
+        nextOccurrenceAt: timestamp,
+        firedCount: 3,
+        skippedOccurrences: 1,
+        deferredUntil: null,
+      },
+    };
+    expect(parseChatScheduledMessage(repeating)).toEqual(repeating);
+    expect(() => parseChatScheduledMessage({ ...scheduled, recurrence: undefined })).toThrow("recurrence");
     expect(parseChatScheduledMessageDispatch({
       processedCount: 2,
       dispatchedCount: 1,
@@ -311,15 +369,94 @@ describe("Chat provider contracts", () => {
       exists: true,
       contents: "sandbox_mode = \"workspace-write\"\n",
       revision: "revision-1",
+      preferences: null,
     }];
 
-    expect(parseProviderFiles(fixture)).toEqual(fixture);
-    expect(() => parseProviderFiles([{ ...fixture[0], format: "yaml" }])).toThrow(
+    expect(parseProviderFiles({ files: fixture, notes: [] })).toEqual({ files: fixture, notes: [] });
+    expect(() => parseProviderFiles({ files: [{ ...fixture[0], format: "yaml" }], notes: [] })).toThrow(
       "format has an unsupported value",
     );
-    expect(() => parseProviderFiles([{ ...fixture[0], exists: "yes" }])).toThrow(
+    expect(() => parseProviderFiles({ files: [{ ...fixture[0], exists: "yes" }], notes: [] })).toThrow(
       "exists must be a boolean",
     );
+    const notes = [{ kind: "codex_override", paths: ["~/.codex/AGENTS.override.md"] }];
+    expect(parseProviderFiles({ files: fixture, notes }).notes).toEqual(notes);
+    expect(() => parseProviderFiles({ files: fixture, notes: [{ kind: "future_source", paths: [] }] })).toThrow(
+      "kind has an unsupported value",
+    );
+    expect(() => parseProviderFiles({ files: fixture, notes: [{ kind: "claude_rules", paths: [1] }] })).toThrow(
+      "paths[0] must be a string",
+    );
+    expect(() => parseProviderFiles(fixture)).toThrow("provider files must be an object");
+  });
+
+  it("validates typed agent preferences on provider files", () => {
+    const entry = {
+      id: "CLAUDE_CODE_DISABLE_1M_CONTEXT",
+      valueType: "switch",
+      variable: true,
+      value: true,
+      ignored: false,
+      maxBytes: null,
+      multiline: false,
+      emptyAllowed: false,
+      options: [] as string[],
+    };
+    const fixture = [{
+      fileId: "configuration",
+      name: "settings.json",
+      kind: "configuration",
+      format: "json",
+      path: "/home/user/.claude/settings.json",
+      exists: true,
+      contents: "{}\n",
+      revision: "revision-1",
+      preferences: { editable: true, entries: [entry, { ...entry, id: "language", valueType: "text", variable: false, value: null, maxBytes: 64 }] },
+    }];
+
+    expect(parseProviderFiles({ files: fixture, notes: [] })).toEqual({ files: fixture, notes: [] });
+    expect(() => parseProviderFiles({ files: [{ ...fixture[0], preferences: { editable: true, entries: [{ ...entry, value: "1" }] } }], notes: [] })).toThrow(
+      "value must be a boolean",
+    );
+    expect(() => parseProviderFiles({ files: [{ ...fixture[0], preferences: { editable: true, entries: [{ ...entry, valueType: "list" }] } }], notes: [] })).toThrow(
+      "valueType has an unsupported value",
+    );
+  });
+
+  it("keeps choice preferences to the options they list", () => {
+    const choice = {
+      id: "web_search",
+      valueType: "choice",
+      variable: false,
+      value: "live",
+      ignored: false,
+      maxBytes: null,
+      multiline: false,
+      emptyAllowed: false,
+      options: ["disabled", "cached", "live"],
+    };
+    const files = (entry: Record<string, unknown>) => ({
+      files: [{
+        fileId: "configuration",
+        name: "config.toml",
+        kind: "configuration",
+        format: "toml",
+        path: "~/.codex/config.toml",
+        exists: true,
+        contents: "web_search = \"live\"\n",
+        revision: "revision-1",
+        preferences: { editable: true, entries: [entry] },
+      }],
+      notes: [],
+    });
+
+    expect(parseProviderFiles(files(choice)).files[0].preferences?.entries[0]).toEqual(choice);
+    expect(parseProviderFiles(files({ ...choice, value: null })).files[0].preferences?.entries[0].value).toBeNull();
+    expect(() => parseProviderFiles(files({ ...choice, value: "indexed" }))).toThrow("must be one of the options");
+    expect(() => parseProviderFiles(files({ ...choice, options: [] }))).toThrow("options must list the choices");
+    expect(() => parseProviderFiles(files({ ...choice, options: [1] }))).toThrow("options[0] must be a string");
+    const { options: _options, ...withoutOptions } = choice;
+    expect(() => parseProviderFiles(files(withoutOptions))).toThrow("options must be an array");
   });
 
   it("validates internal checkpoint restore audit events", () => {
@@ -348,8 +485,6 @@ describe("Chat provider contracts", () => {
       launchArguments: ["serve"],
       environment: { SAFE_MODE: "1" },
       credentialReferences: { API_TOKEN: "credential-1" },
-      visibleModelIds: ["model-1"],
-      favoriteModelIds: [],
       providerConfig: {
         schemaVersion: 7,
         value: { futureOption: [true, 4, "value"] },
@@ -378,8 +513,8 @@ describe("Chat provider contracts", () => {
           options: [{ value: "high", label: "High", description: null }],
           defaultValue: "high",
         }],
-        custom: false,
       }],
+      recommendedModelId: null,
       source: "provider",
       discoveredAt: timestamp,
       stale: false,
@@ -399,24 +534,25 @@ describe("Chat provider contracts", () => {
         availability: "deprecated",
         capabilities: [],
         options: [],
-        custom: false,
       }],
+      recommendedModelId: "gpt-old",
       source: "provider",
       discoveredAt: timestamp,
       stale: false,
     });
 
     expect(parsed.models).toEqual([]);
+    expect(parsed.recommendedModelId).toBeNull();
   });
 
-  it.each([false, true])("preserves native Claude routes and capabilities with stale=%s", (stale) => {
+  it.each([false, true])("preserves native Claude aliases and capabilities with stale=%s", (stale) => {
     const catalog = {
       instanceId: "claude",
       models: [
         {
-          id: "default",
-          displayName: "Default (Opus 4.8)",
-          description: "Use the default model (currently Opus 4.8)",
+          id: "opus",
+          displayName: "Opus 4.8",
+          description: "Opus 4.8 · Most capable for complex work",
           contextLimit: null,
           availability: "available",
           capabilities: [],
@@ -427,7 +563,6 @@ describe("Chat provider contracts", () => {
             description: null,
             defaultValue: false,
           }],
-          custom: false,
         },
         {
           id: "opus",
@@ -437,7 +572,6 @@ describe("Chat provider contracts", () => {
           availability: "available",
           capabilities: [],
           options: [],
-          custom: false,
         },
         {
           id: "claude-opus-9",
@@ -447,7 +581,6 @@ describe("Chat provider contracts", () => {
           availability: "available",
           capabilities: [],
           options: [],
-          custom: true,
         },
         {
           id: "custom-unicode",
@@ -457,9 +590,9 @@ describe("Chat provider contracts", () => {
           availability: "unknown",
           capabilities: [],
           options: [],
-          custom: true,
         },
       ],
+      recommendedModelId: "opus",
       source: "provider",
       discoveredAt: timestamp,
       stale,
@@ -476,8 +609,6 @@ describe("Chat provider contracts", () => {
         launchArguments: [],
         environment: {},
         credentialReferences: {},
-        visibleModelIds: [],
-        favoriteModelIds: [],
         providerConfig: { schemaVersion: 1, value: {} },
       },
       lastProbe: null,
@@ -499,6 +630,101 @@ describe("Chat provider contracts", () => {
       ...provider,
       runtimeReview: [{ label: 3, widensPermissions: true }],
     })).toThrow();
+    expect(provider).toMatchObject({ usageLimits: null, lastUsedAt: null, duplicateOf: null });
+    expect(parseProviderInstanceRead({ ...provider, duplicateOf: "claude-default" }).duplicateOf).toBe("claude-default");
+    expect(() => parseProviderInstanceRead({ ...provider, duplicateOf: 3 })).toThrow();
+    const observed = parseProviderInstanceRead({
+      ...provider,
+      usageLimits: {
+        observedAt: timestamp,
+        usageReadAt: timestamp,
+        status: { limited: false, resetsAt: null, detail: null, providerData: null },
+      },
+      lastUsedAt: timestamp,
+    });
+    expect(observed.usageLimits?.observedAt).toBe(timestamp);
+    expect(observed.usageLimits?.usageReadAt).toBe(timestamp);
+    expect(observed.lastUsedAt).toBe(timestamp);
+    expect(() => parseProviderInstanceRead({
+      ...provider,
+      usageLimits: { observedAt: "yesterday", status: { limited: false, resetsAt: null, detail: null, providerData: null } },
+    })).toThrow();
+  });
+
+  it("parses a probe's version admission and refuses unknown admissions", () => {
+    const probe = {
+      instanceId: "claude",
+      state: "healthy",
+      version: "2.1.400",
+      negotiatedProtocolVersion: "stream-json",
+      accountLabel: null,
+      authSource: "api_key",
+      accountPlan: "subscription",
+      capabilities: { entries: [] },
+      authoritySupport: {
+        isolatedConversation: true,
+        internalHostTools: true,
+        denyShell: false,
+        readOnlyRoot: false,
+        writableRoot: false,
+        confinedCommands: false,
+        networkBoundary: false,
+        classifiedPublish: false,
+        personApprovedCommands: false,
+      },
+      checkedAt: timestamp,
+      detail: "Newer than the tested version 2.1.322",
+      versionAdmission: "untested_newer",
+      agentMinimumVersion: null,
+    };
+    expect(parseProviderProbeResult(probe)).toEqual(probe);
+    expect(parseProviderProbeResult({ ...probe, versionAdmission: null }).versionAdmission).toBeNull();
+    expect(() => parseProviderProbeResult({ ...probe, versionAdmission: "too_new" }))
+      .toThrow("versionAdmission has an unsupported value");
+    expect(parseProviderProbeResult({ ...probe, authSource: "account_login" }).authSource).toBe("account_login");
+    expect(parseProviderProbeResult({ ...probe, authSource: null }).authSource).toBeNull();
+    expect(() => parseProviderProbeResult({ ...probe, authSource: "browser" }))
+      .toThrow("authSource has an unsupported value");
+    expect(parseProviderProbeResult({ ...probe, accountPlan: "free" }).accountPlan).toBe("free");
+    expect(parseProviderProbeResult({ ...probe, accountPlan: null }).accountPlan).toBeNull();
+    expect(() => parseProviderProbeResult({ ...probe, accountPlan: "plus" }))
+      .toThrow("accountPlan has an unsupported value");
+    expect(parseProviderProbeResult({ ...probe, agentMinimumVersion: "2.1.325" }).agentMinimumVersion).toBe("2.1.325");
+    expect(() => parseProviderProbeResult({ ...probe, agentMinimumVersion: 2 }))
+      .toThrow("agentMinimumVersion must be a string");
+  });
+
+  it("reads the newest tested CLI version from provider metadata", () => {
+    expect(parseProviderFamilyMetadata({ ...metadataFixture(), maximumTestedCliVersion: "0.147.0" }).maximumTestedCliVersion)
+      .toBe("0.147.0");
+    expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), maximumTestedCliVersion: 147 }))
+      .toThrow("maximumTestedCliVersion must be a string");
+    expect(parseProviderFamilyMetadata({ ...metadataFixture(), updateCommand: "claude update" }).updateCommand)
+      .toBe("claude update");
+  });
+
+  it("reads an install guide and refuses a documentation link that is not https", () => {
+    const installGuide = { shell: "terminal", command: "curl -fsSL https://claude.ai/install.sh | bash", signInCommand: "claude auth login", signInAfterInstallCommand: "~/.local/bin/claude auth login", docsUrl: "https://code.claude.com/docs/en/setup", requirement: null };
+    const requirement = { name: "Node.js", program: "node", command: "winget install OpenJS.NodeJS.LTS" };
+    expect(parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { ...installGuide, requirement } }).installGuide?.requirement).toEqual(requirement);
+    expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { ...installGuide, requirement: { ...requirement, command: 1 } } }))
+      .toThrow("installGuide.requirement.command must be a string");
+    expect(parseProviderFamilyMetadata({ ...metadataFixture(), installGuide }).installGuide).toEqual(installGuide);
+    expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { ...installGuide, docsUrl: "http://example.com" } }))
+      .toThrow("installGuide.docsUrl must use https");
+    expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { ...installGuide, command: undefined } }))
+      .toThrow("installGuide.command must be a string");
+    expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { ...installGuide, shell: "cmd" } }))
+      .toThrow("installGuide.shell");
+  });
+
+  it("reads provider updates and their run results", () => {
+    const update = { instanceId: "codex", currentVersion: "0.167.1", latestVersion: "0.169.0", updateCommand: "codex update", runsInApp: false };
+    expect(parseProviderUpdates([update])).toEqual([update]);
+    expect(() => parseProviderUpdates([{ ...update, runsInApp: "yes" }])).toThrow("runsInApp must be a boolean");
+    expect(() => parseProviderUpdates({})).toThrow();
+    expect(parseProviderUpdateRunRead({ successful: false, output: "denied" })).toEqual({ successful: false, output: "denied" });
+    expect(() => parseProviderUpdateRunRead({ successful: true })).toThrow("output");
   });
 
   it("rejects partial metadata and unsupported capability values", () => {
@@ -523,8 +749,8 @@ describe("Chat provider contracts", () => {
         availability: "available",
         capabilities: [],
         options: [],
-        custom: false,
       }],
+      recommendedModelId: null,
       source: "provider",
       discoveredAt: timestamp,
       stale: false,
@@ -535,9 +761,20 @@ describe("Chat provider contracts", () => {
 describe("Chat configuration", () => {
   it("uses explicit safe defaults that parse as a complete read", () => {
     const defaults = defaultChatConfiguration();
-    expect(defaults.panels).toEqual({ inspectorWidthPx: 520 });
+    expect(defaults.panels).toEqual({ inspectorWidthPx: 520, replyThreadWidthPx: 440 });
     expect(defaults.behavior.sendKey).toBe("enter");
+    expect(defaults.behavior.timelineDensity).toBe("comfortable");
     expect(parseChatConfiguration(defaults)).toEqual(defaults);
+  });
+
+  it("refuses a timeline density outside the known choices", () => {
+    const defaults = defaultChatConfiguration();
+    for (const timelineDensity of ["dense", "Compact", 1]) {
+      expect(() => parseChatConfiguration({
+        ...defaults,
+        behavior: { ...defaults.behavior, timelineDensity },
+      }), String(timelineDensity)).toThrow("timelineDensity");
+    }
   });
 
   it("drops retired and unknown top-level fields from a read", () => {
@@ -560,8 +797,6 @@ describe("Chat configuration", () => {
         launchArguments: [],
         environment: {},
         credentialReferences: { API_TOKEN: "credential-1" },
-        visibleModelIds: ["gpt-5-codex"],
-        favoriteModelIds: ["gpt-5-codex"],
         providerConfig: { schemaVersion: 1, value: {} },
         futurePortableOption: { enabled: true },
       }],
@@ -576,19 +811,41 @@ describe("Chat configuration", () => {
         interactionMode: "build",
       }],
       workingFolderProviderPreferences: {},
-      panels: { inspectorWidthPx: 420 },
+      panels: { inspectorWidthPx: 420, replyThreadWidthPx: 520 },
       behavior: {
         sendKey: "enter",
         restoreLastSelectedThread: true,
         showReasoningSummaries: true,
         automaticallyFoldSettledWork: true,
+        timelineDensity: "compact",
         terminalScrollbackLines: 12_000,
-        idleSessionTimeoutSeconds: 900,
+        idleSessionTimeoutSeconds: 1_800,
         confirmMultilineTerminalPaste: true,
+        notifyWaitingForYou: true,
+        notifyReviewReady: false,
+        notifyFailures: true,
+        announceBackgroundWork: false,
+        notificationIncludeContent: true,
       },
     };
 
     expect(parseChatConfiguration(fixture)).toEqual(fixture);
+  });
+
+  it("defaults notification preferences to notify without content and refuses other shapes", () => {
+    const configuration = defaultChatConfiguration();
+
+    expect(configuration.behavior).toMatchObject({
+      notifyWaitingForYou: true,
+      notifyReviewReady: true,
+      notifyFailures: true,
+      announceBackgroundWork: true,
+      notificationIncludeContent: false,
+    });
+    expect(() => parseChatConfiguration({
+      ...configuration,
+      behavior: { ...configuration.behavior, notifyFailures: "false" },
+    })).toThrow("notifyFailures");
   });
 
   it("requires every current field inside an existing Chat branch", () => {
@@ -615,8 +872,6 @@ describe("Chat configuration", () => {
       launchArguments: [],
       environment: {},
       credentialReferences: {},
-      visibleModelIds: [],
-      favoriteModelIds: [],
       providerConfig: { schemaVersion: 1, value: {} },
     };
     for (const field of [
@@ -624,8 +879,6 @@ describe("Chat configuration", () => {
       "launchArguments",
       "environment",
       "credentialReferences",
-      "visibleModelIds",
-      "favoriteModelIds",
     ] as const) {
       const incomplete = { ...provider };
       delete incomplete[field];
@@ -657,6 +910,16 @@ describe("Chat configuration", () => {
       ...defaultChatConfiguration(),
       panels: {},
     })).toThrow("inspectorWidthPx");
+    expect(() => parseChatConfiguration({
+      ...defaultChatConfiguration(),
+      panels: { inspectorWidthPx: 520 },
+    })).toThrow("replyThreadWidthPx");
+    for (const replyThreadWidthPx of [279, 801]) {
+      expect(() => parseChatConfiguration({
+        ...defaultChatConfiguration(),
+        panels: { inspectorWidthPx: 520, replyThreadWidthPx },
+      })).toThrow("replyThreadWidthPx is out of range");
+    }
 
     for (const field of Object.keys(defaultChatConfiguration().behavior)) {
       const behavior: Record<string, unknown> = { ...defaultChatConfiguration().behavior };
@@ -681,8 +944,6 @@ describe("Chat configuration", () => {
         launchArguments: [],
         environment: {},
         credentialReferences: {},
-        visibleModelIds: [],
-        favoriteModelIds: [],
         providerConfig: { schemaVersion: 1, value: {} },
       }],
     })).toThrow("contains machine-specific field executable");
@@ -869,6 +1130,39 @@ describe("Chat read and error contracts", () => {
     expect(() => parseChatDiagnosticsRead({ ...fixture, preferences: { captureEnabled: true, retentionDays: 31 } })).toThrow("between 1 and 30");
   });
 
+  it("parses each agent run attempt reason and rejects unknown or inconsistent ones", () => {
+    const fixture = {
+      id: "run:1",
+      assignmentId: "assignment:1",
+      projectId: "project-1",
+      workingFolderId: "workspace-1",
+      executionEnvironmentId: "current-folder:workspace-1",
+      scratchGenerationId: null,
+      providerExecutionTurnId: "turn-1",
+      providerExecutionThreadId: "thread-1",
+      state: "completed",
+      runOrdinal: 1,
+      attemptReason: "fresh",
+      handoffReason: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    for (const attemptReason of ["fresh", "continuation", "retry"]) {
+      expect(parseChatAgentRun({ ...fixture, attemptReason })).toEqual({ ...fixture, attemptReason });
+    }
+    for (const handoffReason of ["key_changed", "authority_revoked", "native_session_lost"]) {
+      const handoff = { ...fixture, attemptReason: "handoff", handoffReason };
+      expect(parseChatAgentRun(handoff)).toEqual(handoff);
+    }
+    expect(() => parseChatAgentRun({ ...fixture, attemptReason: "resumed" })).toThrow("attemptReason has an unsupported value");
+    expect(() => parseChatAgentRun({ ...fixture, attemptReason: undefined })).toThrow("attemptReason");
+    expect(() => parseChatAgentRun({
+      ...fixture, attemptReason: "handoff", handoffReason: "provider_changed",
+    })).toThrow("handoffReason has an unsupported value");
+    expect(() => parseChatAgentRun({ ...fixture, attemptReason: "handoff" })).toThrow("set exactly when");
+    expect(() => parseChatAgentRun({ ...fixture, handoffReason: "key_changed" })).toThrow("set exactly when");
+  });
+
   it("parses lightweight thread shells without message history", () => {
     const fixture = {
       id: "thread-1",
@@ -920,42 +1214,261 @@ describe("Chat read and error contracts", () => {
     expect(() => parseChatError({ ...fixture, details: undefined })).toThrow("details is not valid JSON");
   });
 
-  it("keeps the effective profile revision id of teammate channel access", () => {
-    const channel = {
+  it("parses channel agent settings and refuses unknown access levels", () => {
+    const settings = {
       channelId: "channel:general",
       conversationId: "conversation:general",
-      projectId: "project-1",
-      groupId: "group-1",
-      channelName: "general",
-      accessProfileId: "access-profile:build",
-      accessProfileRevisionId: "access-profile-revision:build:2",
-      accessProfileRevision: 2,
-      capabilities: { readHistory: true, participate: true },
-      historyBoundary: { kind: "entire" },
-      runtimeApprovalOverride: null,
-      scratchRuntimeApprovalOverride: "ask",
-      folderGrants: [],
-      membershipRevision: 1,
-      removedAt: null,
-    };
-    const access = {
-      teammateId: "participant:agent",
-      accessRevision: 3,
-      teammateDefaultRuntimeApproval: "autoApprove",
-      channels: [channel],
+      access: null,
+      instructions: "Prefer small commits.",
+      effective: { access: "read", source: "project" },
+      agents: [
+        { agentId: "participant:codex", requested: "read", effective: "read", downgradeReason: null, installed: true, ownOffered: true },
+        { agentId: "participant:cursor", requested: "ask", effective: "read", downgradeReason: "cannot_ask_before_commands", installed: true, ownOffered: false },
+        { agentId: "participant:claude", requested: "ask", effective: null, downgradeReason: null, installed: false, ownOffered: false },
+      ],
+      pushApprovals: [],
+      revision: 4,
     };
 
-    expect(parseChatTeammateAccess(access)).toEqual(access);
-    expect(() => parseChatTeammateAccess({
-      ...access,
-      channels: [{ ...channel, accessProfileRevisionId: undefined }],
-    })).toThrow("accessProfileRevisionId");
+    expect(parseChatChannelAgentSettings(settings)).toEqual(settings);
+    expect(parseChatChannelAgentSettings({ ...settings, access: "own" }).access).toBe("own");
+    expect(() => parseChatChannelAgentSettings({ ...settings, access: "write" })).toThrow("access");
+    expect(() => parseChatChannelAgentSettings({ ...settings, effective: { access: "read", source: "device" } })).toThrow("source");
+    expect(() => parseChatChannelAgentSettings({
+      ...settings,
+      agents: [{ ...settings.agents[0], effective: "write" }],
+    })).toThrow("effective");
+    expect(() => parseChatChannelAgentSettings({
+      ...settings,
+      agents: [{ ...settings.agents[1], downgradeReason: "unknown" }],
+    })).toThrow("downgradeReason");
+  });
 
-    const ungrouped = { ...access, channels: [{ ...channel, groupId: null }] };
-    expect(parseChatTeammateAccess(ungrouped)).toEqual(ungrouped);
-    expect(() => parseChatTeammateAccess({
-      ...access,
-      channels: [{ ...channel, groupId: "" }],
-    })).toThrow("groupId");
+  it("requires a project's effective access and an app scope's own access", () => {
+    const project = { projectId: "project-1", access: null, instructions: "", effective: { access: "ask", source: "app" }, revision: 0 };
+    expect(parseChatProjectAgentSettings(project)).toEqual(project);
+    expect(() => parseChatProjectAgentSettings({ ...project, effective: undefined })).toThrow("effective");
+
+    const app = { access: "talk", instructions: "Be brief.", revision: 2, updatedAt: timestamp };
+    expect(parseChatAppAgentSettings(app)).toEqual(app);
+    expect(() => parseChatAppAgentSettings({ ...app, access: null })).toThrow("access");
+  });
+});
+
+describe("chat scheduling contracts", () => {
+  const interval = { rule: { kind: "interval", minutes: 90 }, timeZone: "UTC", quietPolicy: "ignore" };
+  const fixedTime = { rule: { kind: "fixed_time", localMinute: 1_439, weekdays: 127 }, timeZone: "America/Mexico_City", quietPolicy: "defer" };
+
+  it("accepts repeat rules at the backend bounds", () => {
+    expect(parseChatRecurrenceSpec(interval)).toEqual(interval);
+    expect(parseChatRecurrenceSpec(fixedTime)).toEqual(fixedTime);
+    expect(parseChatRecurrenceSpec({ ...interval, rule: { kind: "interval", minutes: 43_200 } }).rule)
+      .toEqual({ kind: "interval", minutes: 43_200 });
+  });
+
+  it("refuses repeat rules outside the backend bounds", () => {
+    expect(() => parseChatRecurrenceSpec({ ...interval, rule: { kind: "interval", minutes: 59 } })).toThrow("minutes");
+    expect(() => parseChatRecurrenceSpec({ ...interval, rule: { kind: "interval", minutes: 43_201 } })).toThrow("minutes");
+    expect(() => parseChatRecurrenceSpec({ ...fixedTime, rule: { ...fixedTime.rule, localMinute: 1_440 } })).toThrow("localMinute");
+    expect(() => parseChatRecurrenceSpec({ ...fixedTime, rule: { ...fixedTime.rule, weekdays: 0 } })).toThrow("weekdays");
+    expect(() => parseChatRecurrenceSpec({ ...fixedTime, rule: { ...fixedTime.rule, weekdays: 128 } })).toThrow("weekdays");
+    expect(() => parseChatRecurrenceSpec({ ...interval, rule: { kind: "monthly" } })).toThrow("kind");
+    expect(() => parseChatRecurrenceSpec({ ...interval, timeZone: " " })).toThrow("timeZone");
+    expect(() => parseChatRecurrenceSpec({ ...interval, timeZone: "Z".repeat(65) })).toThrow("timeZone");
+    expect(() => parseChatRecurrenceSpec({ ...interval, quietPolicy: "skip" })).toThrow("quietPolicy");
+  });
+
+  it("validates quiet windows and their count", () => {
+    const window = { weekdays: 31, startMinute: 1_320, endMinute: 420 };
+    expect(parseChatQuietPeriodPreferences({ windows: [window] })).toEqual({ windows: [window] });
+    expect(() => parseChatQuietPeriodPreferences({ windows: [{ ...window, endMinute: 1_320 }] })).toThrow("another minute");
+    expect(() => parseChatQuietPeriodPreferences({ windows: Array.from({ length: 9 }, () => window) })).toThrow("at most 8");
+    expect(() => parseChatQuietPeriodPreferences({ windows: [{ ...window, weekdays: 0 }] })).toThrow("weekdays");
+  });
+
+  it("requires a quiet state to name its reason exactly when quiet", () => {
+    expect(parseChatQuietState({ quiet: false, reason: null, endsAt: null })).toEqual({ quiet: false, reason: null, endsAt: null });
+    expect(parseChatQuietState({ quiet: true, reason: "focus", endsAt: timestamp }))
+      .toEqual({ quiet: true, reason: "focus", endsAt: timestamp });
+    expect(parseChatQuietState({ quiet: true, reason: "window", endsAt: null }).endsAt).toBeNull();
+    expect(() => parseChatQuietState({ quiet: true, reason: null, endsAt: null })).toThrow("reason");
+    expect(() => parseChatQuietState({ quiet: false, reason: "window", endsAt: null })).toThrow("reason");
+    expect(() => parseChatQuietState({ quiet: false, reason: null, endsAt: timestamp })).toThrow("reason");
+  });
+
+  it("parses schedule proposals and refuses malformed ones", () => {
+    const proposal = { message: " Post the summary ", firstAt: timestamp, recurrence: fixedTime, reason: " You asked ", source: "host_tool" };
+    expect(parseChatScheduleProposal(proposal)).toEqual({
+      message: "Post the summary",
+      firstAt: timestamp,
+      recurrence: fixedTime,
+      reason: "You asked",
+    });
+    expect(parseChatScheduleProposal({ ...proposal, recurrence: null, reason: "" }).recurrence).toBeNull();
+    expect(() => parseChatScheduleProposal({ ...proposal, message: "  " })).toThrow("message");
+    expect(() => parseChatScheduleProposal({ ...proposal, message: "é".repeat(4_001) })).toThrow("message");
+    expect(() => parseChatScheduleProposal({ ...proposal, reason: "a".repeat(501) })).toThrow("reason");
+    expect(() => parseChatScheduleProposal({ ...proposal, firstAt: "tomorrow" })).toThrow("firstAt");
+    expect(() => parseChatScheduleProposal({ ...proposal, recurrence: undefined })).toThrow("recurrence");
+  });
+
+  it("parses proposal states", () => {
+    const states = [{ proposalItemId: "item:a", state: "pending" }, { proposalItemId: "item:b", state: "dismissed" }];
+    expect(parseChatScheduleProposalStates(states)).toEqual(states);
+    expect(() => parseChatScheduleProposalStates([{ proposalItemId: "item:a", state: "expired" }])).toThrow("state");
+  });
+});
+
+describe("chat push request contracts", () => {
+  const push = {
+    workingFolderId: "folder:1",
+    executionEnvironmentId: "environment:1",
+    localBranch: "topic",
+    remote: "origin",
+    destinationBranch: "topic",
+    pushUrl: "git@example.invalid:org/repo.git",
+    objectId: "a".repeat(64),
+    gitConfigDigest: "b".repeat(64),
+  };
+
+  it("parses a push target and accepts a user name without a password", () => {
+    expect(parseChatPushRequest(push)).toEqual(push);
+    for (const pushUrl of ["ssh://git@example.invalid/r", "https://example.invalid/r?a=b@c:d", "/srv/repo.git"]) {
+      expect(parseChatPushRequest({ ...push, pushUrl }).pushUrl).toBe(pushUrl);
+    }
+  });
+
+  it("refuses passwords, unprintable URLs, and malformed ids", () => {
+    for (const pushUrl of ["https://me:secret@example.invalid/r", "ssh://a:b@c@example.invalid/r", "", "a b", "a\u0007", "x".repeat(2_049)]) {
+      expect(() => parseChatPushRequest({ ...push, pushUrl }), pushUrl).toThrow("pushUrl");
+    }
+    expect(() => parseChatPushRequest({ ...push, objectId: "a".repeat(41) })).toThrow("objectId");
+    expect(() => parseChatPushRequest({ ...push, objectId: "A".repeat(40) })).toThrow("objectId");
+    expect(() => parseChatPushRequest({ ...push, gitConfigDigest: "b".repeat(40) })).toThrow("gitConfigDigest");
+    expect(() => parseChatPushRequest({ ...push, remote: "" })).toThrow("remote");
+    expect(() => parseChatPushRequest({ ...push, executionEnvironmentId: undefined })).toThrow("executionEnvironmentId");
+  });
+
+  it("parses a commit the request asks Ganbaru to make", () => {
+    const commit = {
+      message: "feat: add search\n\nIndexes titles.",
+      treeId: "c".repeat(40),
+      author: "Ada Lovelace <ada@example.invalid>",
+      signed: true,
+      changedPaths: ["src/search.ts", "docs/search.md"],
+      changedPathCount: 2,
+    };
+    expect(parseChatPushRequest({ ...push, commit })).toEqual({ ...push, commit });
+    expect(parseChatPushRequest(push)).not.toHaveProperty("commit");
+    const unlisted = { ...commit, changedPaths: [], changedPathCount: 400 };
+    expect(parseChatPushRequest({ ...push, commit: unlisted }).commit).toEqual(unlisted);
+  });
+
+  it("refuses commits whose message, author, or paths Rust never writes", () => {
+    const commit = {
+      message: "fix: guard",
+      treeId: "c".repeat(40),
+      author: "Ada <ada@example.invalid>",
+      signed: false,
+      changedPaths: ["a.ts"],
+      changedPathCount: 1,
+    };
+    for (const message of ["", " fix: guard", "fix\u0007", "fix\r\nguard", "x".repeat(5_001)]) {
+      expect(() => parseChatPushRequest({ ...push, commit: { ...commit, message } }), message).toThrow("message");
+    }
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, author: "Ada\u001b[31m" } })).toThrow("author");
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, author: "" } })).toThrow("author");
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, changedPaths: ["a\nb"] } })).toThrow("changedPaths");
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, changedPaths: ["é".repeat(513)] } })).toThrow("changedPaths");
+    const tooMany = Array.from({ length: 51 }, (_, index) => `f${index}`);
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, changedPaths: tooMany, changedPathCount: 51 } })).toThrow("changedPaths");
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, changedPathCount: 0 } })).toThrow("changedPaths");
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, changedPaths: [], changedPathCount: 0 } })).toThrow("changedPaths");
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, treeId: "c".repeat(39) } })).toThrow("treeId");
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, signed: "yes" } })).toThrow("signed");
+  });
+
+  it("parses push request states", () => {
+    const states = [{ requestItemId: "item:a", state: "waiting" }, { requestItemId: "item:b", state: "pushed" }];
+    expect(parseChatPushRequestStates(states)).toEqual(states);
+    expect(() => parseChatPushRequestStates([{ requestItemId: "item:a", state: "pending" }])).toThrow("state");
+  });
+
+  it("parses standing push approvals and refuses a push URL with a password", () => {
+    const approval = {
+      approvalId: "push-approval-1",
+      channelId: "channel:1",
+      agentId: "participant:atlas",
+      workingFolderId: "folder:1",
+      workingFolderName: "App",
+      pushUrl: "git@example.invalid:org/repo.git",
+      destinationBranch: "main",
+      approvedAt: "2026-11-14T12:00:00.000Z",
+    };
+    expect(parseChatPushApprovals([approval])).toEqual([approval]);
+    expect(() => parseChatPushApprovals([{ ...approval, pushUrl: "https://me:secret@example.invalid/r" }])).toThrow("pushUrl");
+    expect(() => parseChatPushApprovals([{ ...approval, approvalId: "" }])).toThrow("approvalId");
+    expect(() => parseChatPushApprovals([{ ...approval, destinationBranch: "main\u0007" }])).toThrow("destinationBranch");
+    expect(() => parseChatPushApprovals([{ ...approval, approvedAt: "yesterday" }])).toThrow("approvedAt");
+  });
+
+  it("parses remembered approvals and refuses unknown kinds and unsafe subjects", () => {
+    const approval = {
+      approvalId: "remembered-1",
+      channelId: "channel:1",
+      agentId: "participant:atlas",
+      kind: "command",
+      key: "pnpm test",
+      approvedAt: "2026-11-20T12:00:00.000Z",
+    };
+    expect(parseChatRememberedApprovals([approval])).toEqual([approval]);
+    expect(() => parseChatRememberedApprovals([{ ...approval, kind: "path" }])).toThrow("kind");
+    expect(() => parseChatRememberedApprovals([{ ...approval, key: "pnpm test\nrm -rf /" }])).toThrow("key");
+    expect(() => parseChatRememberedApprovals([{ ...approval, key: " " }])).toThrow("key");
+    expect(() => parseChatRememberedApprovals([{ ...approval, key: "a".repeat(2_049) }])).toThrow("key");
+    expect(() => parseChatRememberedApprovals([{ ...approval, approvalId: "" }])).toThrow("approvalId");
+    expect(parseChatRememberableApproval({ kind: "url_origin", key: "https://docs.example.org" }))
+      .toEqual({ kind: "url_origin", key: "https://docs.example.org" });
+    expect(() => parseChatRememberableApproval({ kind: "tool" })).toThrow("key");
+  });
+});
+
+describe("chat channel note contracts", () => {
+  const note = {
+    id: "note:1",
+    channelId: "channel:general",
+    body: "Reply in English",
+    sourceItemId: "item:proposal",
+    proposedBy: "participant:atlas",
+    editedBy: null,
+    revision: 2,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+
+  it("parses a note with and without provenance", () => {
+    expect(parseChatChannelNote(note)).toEqual(note);
+    const written = { ...note, sourceItemId: null, proposedBy: null, editedBy: "participant:local-owner" };
+    expect(parseChatChannelNotes([written, note])).toEqual([written, note]);
+    expect(parseChatChannelNote({ ...note, body: "é".repeat(1_000) }).body).toHaveLength(1_000);
+  });
+
+  it("rejects an oversize or blank body, unknown fields, and malformed provenance", () => {
+    expect(() => parseChatChannelNote({ ...note, body: "é".repeat(1_001) })).toThrow("body");
+    expect(() => parseChatChannelNote({ ...note, body: " \n " })).toThrow("body");
+    expect(() => parseChatChannelNote({ ...note, deletedAt: null })).toThrow("deletedAt");
+    expect(() => parseChatChannelNote({ ...note, proposedBy: undefined })).toThrow("proposedBy");
+    expect(() => parseChatChannelNote({ ...note, revision: -1 })).toThrow("revision");
+    expect(() => parseChatChannelNote({ ...note, updatedAt: "today" })).toThrow("updatedAt");
+  });
+
+  it("parses note proposal states", () => {
+    const states = [
+      { proposalItemId: "item:a", state: "pending" },
+      { proposalItemId: "item:b", state: "saved" },
+      { proposalItemId: "item:c", state: "dismissed" },
+    ];
+    expect(parseChatNoteProposalStates(states)).toEqual(states);
+    expect(() => parseChatNoteProposalStates([{ proposalItemId: "item:a", state: "confirmed" }])).toThrow("state");
   });
 });

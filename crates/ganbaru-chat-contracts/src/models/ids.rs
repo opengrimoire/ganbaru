@@ -111,13 +111,18 @@ chat_identifier!(
     MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
 );
 chat_identifier!(
-    ChatTeammatePolicyRevisionId,
-    "Chat teammate policy revision ID",
+    ChatAgentPolicyRevisionId,
+    "Chat agent policy revision ID",
     MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
 );
 chat_identifier!(
     ChatWorkAssignmentId,
     "Chat work assignment ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
+);
+chat_identifier!(
+    ChatAssignmentInputId,
+    "Chat assignment input ID",
     MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
 );
 chat_identifier!(ChatAgentRunId, "Chat agent run ID");
@@ -136,13 +141,8 @@ chat_identifier!(
     MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
 );
 chat_identifier!(
-    ChatAccessProfileId,
-    "Chat access profile ID",
-    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
-);
-chat_identifier!(
-    ChatAccessProfileRevisionId,
-    "Chat access profile revision ID",
+    ChatChannelNoteId,
+    "Chat channel note ID",
     MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
 );
 chat_identifier!(

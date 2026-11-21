@@ -117,7 +117,7 @@
     <div class="flex flex-col gap-1 text-xs">
       <MusicSoundscapeActiveLevel idPrefix="builder-soundscape" />
       {#if soundscape.error}
-        <Notice class="text-xs" message={t("music.soundscape.genericError")} />
+        <Notice class="text-xs" message={soundscape.error} />
       {/if}
     </div>
 
@@ -152,9 +152,9 @@
           <form class="mt-1.5 rounded-xl bg-secondary/35 p-3" onsubmit={(event) => { event.preventDefault(); void saveSound(); }}>
             <div class="flex items-center gap-2">
               <IconPicker value={soundIconDraft} onChange={(value) => soundIconDraft = value} ariaLabel={t("music.soundscape.soundIcon")} showUpload={false} showRemove={false}>
-                {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-background text-foreground hover:bg-accent" aria-label={t("music.soundscape.soundIcon")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeIcon icon={soundIconDraft} /></button>{/snippet}
+                {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid size-(--control-height) shrink-0 place-items-center rounded-lg bg-background text-foreground hover:bg-accent" aria-label={t("music.soundscape.soundIcon")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeIcon icon={soundIconDraft} /></button>{/snippet}
               </IconPicker>
-              <input class="field h-9 min-w-0 flex-1 px-3 text-xs" bind:value={soundNameDraft} aria-label={t("music.soundscape.name")} placeholder={t("music.soundscape.name")} maxlength="200" />
+              <input class="field min-w-0 flex-1 px-3 text-xs" bind:value={soundNameDraft} aria-label={t("music.soundscape.name")} placeholder={t("music.soundscape.name")} maxlength="200" />
             </div>
             <div class="mt-2 flex justify-end gap-2"><button type="button" class="h-8 rounded-lg px-3 text-xs hover:bg-accent" onclick={() => pendingLayerPath = null}>{t("common.cancel")}</button><button type="submit" disabled={!soundNameDraft.trim() || soundscape.saving} class="h-8 rounded-lg bg-primary px-3 text-xs text-primary-foreground disabled:opacity-40">{t("music.soundscape.addLoop")}</button></div>
           </form>

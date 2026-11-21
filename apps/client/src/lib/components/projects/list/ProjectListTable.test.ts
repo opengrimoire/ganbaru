@@ -102,7 +102,7 @@ describe("Projects table property configuration", () => {
     rejectWrite(new Error("Disk full"));
     await vi.waitFor(() => expect(query.presentationSaving).toBe(false));
     expect(query.listPresentation.wrappedColumns).toEqual([]);
-    expect(target.querySelector('[role="alert"]')?.textContent).toContain("Disk full");
+    expect(target.querySelector('[role="alert"]')?.textContent).toContain("Could not save table presentation.");
     expect(button("Wrap content", panel).disabled).toBe(false);
   });
 
@@ -113,7 +113,7 @@ describe("Projects table property configuration", () => {
     await createProperty(draft, "Budget", "number");
     await vi.waitFor(() => expect(query.propertySaving).toBe(false));
     expect(addField).toHaveBeenCalledWith("project", "Budget", "number", null);
-    expect(target.querySelector('[role="alert"]')?.textContent).toContain("Vault unavailable");
+    expect(target.querySelector('[role="alert"]')?.textContent).toContain("Could not save property.");
     expect(draft.isConnected).toBe(true);
     expect(saveColumns).not.toHaveBeenCalled();
     await createProperty(draft, "Budget", "number");

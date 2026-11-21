@@ -8,6 +8,7 @@ import type {
   ProviderFamilyMetadataRead,
   ProviderInstanceRead,
 } from "$lib/chat/contracts";
+import type { ConfirmationRequest } from "$lib/components/ui/confirmation.svelte";
 import ProjectSettingsWorkingFoldersSection from "$lib/components/projects/settings/ProjectSettingsWorkingFoldersSection.svelte";
 import type { ProjectSettingsWorkingFoldersPorts, WorkingFolderSelection } from "$lib/projects/settings/working-folders-draft.svelte";
 
@@ -63,6 +64,10 @@ const trustApi = vi.hoisted(() => ({
   revokeProjectWorkingFolderTrust: vi.fn<(id: string) => Promise<ProjectWorkingFolderRead>>(),
 }));
 vi.mock("$lib/api/working-folder-trust", () => trustApi);
+const confirmation = vi.hoisted(() => ({
+  requestConfirmation: vi.fn<(request: ConfirmationRequest) => Promise<boolean>>(),
+}));
+vi.mock("$lib/components/ui/confirmation.svelte", () => confirmation);
 
 let component: (ReturnType<typeof mount> & { saveDraft: () => Promise<void>; discardDraft: () => void }) | undefined;
 let target: HTMLDivElement;
@@ -78,6 +83,7 @@ beforeEach(() => {
   chat.locateWorkingFolder.mockResolvedValue(undefined);
   chat.recreateManagedWorkingFolder.mockResolvedValue(undefined);
   folderApi.pickProjectWorkingFolder.mockResolvedValue(null);
+  confirmation.requestConfirmation.mockResolvedValue(false);
   folderApi.recreateManagedProjectWorkingFolder.mockImplementation(async (id) => folder(id, "managed"));
   api.setChatProjectPrimaryWorkingFolder.mockResolvedValue({ projectId: "project", workingFolderId: "external", revision: 4 });
   api.readChatProjectPrimaryWorkingFolder.mockResolvedValue({ projectId: "project", workingFolderId: "managed", revision: 3 });
@@ -119,7 +125,7 @@ function folder(id: string, kind: "managed" | "external"): ProjectWorkingFolderR
 function family(familyId: string, displayName: string): ProviderFamilyMetadataRead {
   return {
     familyId, displayName, configurationSchemaVersion: 1, supportedPlatforms: ["linux"],
-    minimumTestedCliVersion: null, defaultExecutableCandidates: [],
+    minimumTestedCliVersion: null, maximumTestedCliVersion: null, updateCommand: null, installGuide: null, defaultExecutableCandidates: [],
     implementationStatus: "available", maturity: "experimental", protocolName: "test",
     potentialCapabilities: [], unavailableReason: null,
   };
@@ -131,10 +137,10 @@ function provider(instanceId: string, familyId: string, label: string): Provider
     configuration: {
       schemaVersion: 1, instanceId, familyId, label, enabled: true,
       executable: "provider", providerHome: null, launchArguments: [], environment: {},
-      credentialReferences: {}, visibleModelIds: [], favoriteModelIds: [],
+      credentialReferences: {},
       providerConfig: { schemaVersion: 1, value: {} },
     },
-    lastProbe: null, modelCatalog: null, lastSuccessfulProbeAt: null, runtimeReview: [],
+    lastProbe: null, modelCatalog: null, lastSuccessfulProbeAt: null, runtimeReview: [], usageLimits: null, lastUsedAt: null, duplicateOf: null,
   };
 }
 
@@ -236,7 +242,7 @@ describe("Project working folder settings", () => {
 
   it("shows the full managed path and keeps protected actions visible without allowing changes", async () => {
     const prompt = vi.spyOn(window, "prompt");
-    const confirm = vi.spyOn(window, "confirm");
+    const confirm = confirmation.requestConfirmation;
     await render();
     const menu = await openFolderOptions("managed");
     expect(menu.textContent).toContain("/folders/managed");
@@ -352,13 +358,17 @@ describe("Project working folder settings", () => {
     await vi.waitFor(() => expect(folderApi.pickProjectWorkingFolder).toHaveBeenCalledExactlyOnceWith("project", "Choose a project working folder", "external"));
     expect(chat.locateWorkingFolder).not.toHaveBeenCalled();
     await tick();
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const confirm = confirmation.requestConfirmation.mockResolvedValue(false);
     menu = await openFolderOptions("external");
     action(menu, "Remove from project").click();
     await tick();
-    expect(confirm).toHaveBeenCalledWith("Remove external from this project? Files on disk will not be deleted.");
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      message: "Remove external from this project? Files on disk will not be deleted.",
+      confirmLabel: "Remove from project",
+      danger: true,
+    }));
     expect(chat.removeWorkingFolder).not.toHaveBeenCalled();
-    confirm.mockReturnValue(true);
+    confirm.mockResolvedValue(true);
     menu = await openFolderOptions("external");
     action(menu, "Remove from project").click();
     await tick();
@@ -423,7 +433,7 @@ describe("Project working folder settings", () => {
     expect(target.querySelector<HTMLButtonElement>('[aria-label="AI provider for external"]')?.disabled).toBe(true);
     expect(target.querySelector<HTMLButtonElement>('[aria-label="Options for external"]')?.disabled).toBe(true);
     rejectOpen(new Error("Folder could not be opened"));
-    await vi.waitFor(() => expect(target.querySelector('[role="alert"]')?.textContent?.trim()).toBe("Folder could not be opened"));
+    await vi.waitFor(() => expect(target.querySelector('[role="alert"]')?.textContent?.trim()).toBe("The working folder action could not be completed."));
     expect(target.querySelector<HTMLButtonElement>('[aria-label="AI provider for external"]')?.disabled).toBe(false);
   });
 });

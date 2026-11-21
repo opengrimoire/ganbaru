@@ -1,5 +1,6 @@
 //! OpenCode event normalization into provider-neutral Chat events.
 
+use super::permissions::{OpenCodeOrganizationalPolicy, OpenCodeSessionRule, OpenCodeSessionRules};
 use super::protocol::{MAX_EVENT_DATA_BYTES, protocol_error, validate_identifier};
 use crate::events::*;
 use crate::models::*;
@@ -25,21 +26,50 @@ const MAX_OPTIONS: usize = 64;
 const MAX_SESSION_GRANT_PATTERNS: usize = 32;
 /// Longest "always" pattern the prompt shows as a session grant.
 const MAX_SESSION_GRANT_PATTERN_BYTES: usize = 4096;
+/// Provider option recorded on approvals the driver answered from a session rule.
+pub const SESSION_RULE_OPTION_ID: &str = "session_rule";
 
 #[derive(Clone, Debug)]
 pub struct OpenCodeRouteState {
     pub provider_thread_id: String,
     pub active_turn_id: Option<ChatTurnId>,
+    /// The turn the user interrupted or stopped; when OpenCode reports idle for it before the abort
+    /// returns, the turn settles as interrupted rather than completed.
+    interrupt_requested: Option<ChatTurnId>,
     pub session_state: ProviderSessionState,
     pub modes: TurnModeSnapshot,
     message_roles: HashMap<String, String>,
     rollback_message_id: Option<String>,
     part_text: HashMap<String, String>,
     completed_parts: HashSet<String>,
-    pending_permissions: HashSet<String>,
+    pending_permissions: HashMap<String, OpenCodePendingPermission>,
+    session_rules: OpenCodeSessionRules,
+    /// Requests the driver answered from a session rule; their `permission.replied` echo is dropped.
+    auto_answered_permissions: HashSet<String>,
+    /// Requests a session rule covers that still need their `once` reply sent.
+    auto_answer_queue: Vec<ProviderRequestId>,
+    /// Requests the user allowed for the session; OpenCode echoes their reply as `once`.
+    session_approved_permissions: HashSet<String>,
+    /// Host-side routing of an organizational session, which offers no session grants and
+    /// rejects requests outside the scope before they reach the person.
+    organizational: Option<OpenCodeOrganizationalPolicy>,
+    /// Requests outside the organizational scope that still need their `reject` reply sent.
+    auto_reject_queue: Vec<ProviderRequestId>,
     pending_questions: HashMap<String, Vec<OpenCodeQuestionMapping>>,
+    /// Questions OpenCode asked while no turn ran, waiting for their rejection to be sent.
+    unprompted_questions: Vec<ProviderRequestId>,
+    /// Questions asked outside a turn; their `question.rejected` echo is dropped.
+    unprompted_question_ids: HashSet<String>,
     deduplication_order: VecDeque<String>,
     deduplication_set: HashSet<String>,
+}
+
+/// A permission request still waiting for an answer.
+#[derive(Clone, Debug)]
+struct OpenCodePendingPermission {
+    permission: String,
+    patterns: Vec<String>,
+    always: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -54,21 +84,140 @@ impl OpenCodeRouteState {
         Self {
             provider_thread_id,
             active_turn_id: None,
+            interrupt_requested: None,
             session_state: ProviderSessionState::Ready,
             modes,
             message_roles: HashMap::new(),
             rollback_message_id: None,
             part_text: HashMap::new(),
             completed_parts: HashSet::new(),
-            pending_permissions: HashSet::new(),
+            pending_permissions: HashMap::new(),
+            session_rules: OpenCodeSessionRules::default(),
+            auto_answered_permissions: HashSet::new(),
+            auto_answer_queue: Vec::new(),
+            session_approved_permissions: HashSet::new(),
+            organizational: None,
+            auto_reject_queue: Vec::new(),
             pending_questions: HashMap::new(),
+            unprompted_questions: Vec::new(),
+            unprompted_question_ids: HashSet::new(),
             deduplication_order: VecDeque::new(),
             deduplication_set: HashSet::new(),
         }
     }
 
+    /// Routes the session's permission requests through an organizational policy.
+    pub fn with_organizational(mut self, policy: OpenCodeOrganizationalPolicy) -> Self {
+        self.organizational = Some(policy);
+        self
+    }
+
+    /// Whether the session runs under an organizational policy.
+    pub fn is_organizational(&self) -> bool {
+        self.organizational.is_some()
+    }
+
+    /// Requests outside the organizational scope seen during the last normalization, in arrival
+    /// order, which the driver rejects at OpenCode.
+    pub fn take_auto_rejections(&mut self) -> Vec<ProviderRequestId> {
+        std::mem::take(&mut self.auto_reject_queue)
+    }
+
     pub fn has_permission(&self, request_id: &ProviderRequestId) -> bool {
-        self.pending_permissions.contains(request_id.as_str())
+        self.pending_permissions.contains_key(request_id.as_str())
+    }
+
+    /// Whether a permission or question is waiting for the user, so the session may stay silent
+    /// for as long as the user takes to answer.
+    pub fn awaiting_user(&self) -> bool {
+        !self.pending_permissions.is_empty() || !self.pending_questions.is_empty()
+    }
+
+    /// Marks the active turn as interrupted by the user and returns it, or returns `None` when
+    /// no turn is active.
+    pub fn request_interrupt(&mut self) -> Option<ChatTurnId> {
+        self.interrupt_requested = self.active_turn_id.clone();
+        self.interrupt_requested.clone()
+    }
+
+    /// Clears an interrupt mark after the abort request failed, so a later idle completes the turn.
+    pub fn cancel_interrupt(&mut self) {
+        self.interrupt_requested = None;
+    }
+
+    /// Takes the active turn when it is still the interrupted one, so the caller settles it.
+    pub fn take_interrupted_turn(&mut self, turn_id: &ChatTurnId) -> Option<ChatTurnId> {
+        if self.active_turn_id.as_ref() != Some(turn_id) {
+            return None;
+        }
+        self.interrupt_requested = None;
+        self.active_turn_id.take()
+    }
+
+    /// Questions asked outside a turn during the last normalization, in arrival order, which the
+    /// driver rejects at OpenCode.
+    pub fn take_unprompted_questions(&mut self) -> Vec<ProviderRequestId> {
+        std::mem::take(&mut self.unprompted_questions)
+    }
+
+    /// Session rules an allow-for-session answer to a pending request would grant.
+    ///
+    /// The rules follow the patterns OpenCode offered for `always`, then the requested patterns,
+    /// then the bare permission.
+    pub fn session_rules_for(&self, request_id: &ProviderRequestId) -> Vec<OpenCodeSessionRule> {
+        let Some(pending) = self.pending_permissions.get(request_id.as_str()) else {
+            return Vec::new();
+        };
+        let patterns = if pending.always.is_empty() {
+            &pending.patterns
+        } else {
+            &pending.always
+        };
+        if patterns.is_empty() {
+            return vec![OpenCodeSessionRule {
+                permission: pending.permission.clone(),
+                pattern: None,
+            }];
+        }
+        patterns
+            .iter()
+            .map(|pattern| OpenCodeSessionRule {
+                permission: pending.permission.clone(),
+                pattern: Some(pattern.clone()),
+            })
+            .collect()
+    }
+
+    /// Marks a pending request as allowed for the session, or clears the mark when the reply
+    /// failed, so the reply echo keeps the session decision.
+    pub fn set_session_approval(&mut self, request_id: &ProviderRequestId, approved: bool) {
+        if approved {
+            self.session_approved_permissions
+                .insert(request_id.as_str().to_string());
+        } else {
+            self.session_approved_permissions
+                .remove(request_id.as_str());
+        }
+    }
+
+    /// Remembers session approvals and returns how many older rules were dropped.
+    pub fn grant_session_rules(&mut self, rules: Vec<OpenCodeSessionRule>) -> usize {
+        self.session_rules.grant(rules)
+    }
+
+    /// Requests a session rule answered during the last normalization, in arrival order.
+    pub fn take_auto_answers(&mut self) -> Vec<ProviderRequestId> {
+        std::mem::take(&mut self.auto_answer_queue)
+    }
+
+    /// Returns an automatically answered request to the user after its reply failed.
+    pub fn release_auto_answer(&mut self, request_id: &ProviderRequestId) {
+        self.auto_answered_permissions.remove(request_id.as_str());
+    }
+
+    /// Forgets a request answered from a session rule once OpenCode accepted the reply.
+    pub fn complete_auto_answer(&mut self, request_id: &ProviderRequestId) {
+        self.pending_permissions.remove(request_id.as_str());
     }
 
     pub fn question_answers(
@@ -136,10 +285,20 @@ impl OpenCodeRouteState {
             .collect()
     }
 
+    /// Whether `value` is new to this route. A repeated record envelope is a redelivery and is
+    /// dropped; a transition or increment repeats legitimately with identical bytes, such as the
+    /// busy and idle status of every turn or the same delta twice, so it is never dropped.
     fn observe(&mut self, value: &Value) -> ChatResult<bool> {
         let encoded = serde_json::to_vec(value).map_err(|_| protocol_error("event envelope"))?;
         if encoded.len() > MAX_EVENT_DATA_BYTES {
             return Err(protocol_error("event envelope size"));
+        }
+        if value
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(repeats_legitimately)
+        {
+            return Ok(true);
         }
         let fingerprint = format!("{:x}", Sha256::digest(encoded));
         if self.deduplication_set.contains(&fingerprint) {
@@ -154,6 +313,18 @@ impl OpenCodeRouteState {
         }
         Ok(true)
     }
+}
+
+/// Whether events of `event_type` are transitions or increments that may repeat byte for byte.
+fn repeats_legitimately(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "session.status"
+            | "session.error"
+            | "message.part.delta"
+            | "server.connected"
+            | "server.heartbeat"
+    )
 }
 
 /// Whether an event names a session other than `session_id`. Events carry the session at the
@@ -273,6 +444,26 @@ impl OpenCodeEventNormalizer {
         event: CanonicalEvent,
     ) -> ChatResult<CanonicalRuntimeEvent> {
         self.event(state, source, None, None, event)
+    }
+
+    /// Settles a turn the user interrupted.
+    pub fn interrupted_turn(
+        &self,
+        state: &OpenCodeRouteState,
+        source: &str,
+        turn_id: ChatTurnId,
+    ) -> ChatResult<CanonicalRuntimeEvent> {
+        self.event(
+            state,
+            source,
+            None,
+            Some(turn_id),
+            CanonicalEvent::TurnAborted(TurnAbortedEvent {
+                state: ChatTurnState::Interrupted,
+                reason: "Interrupted by user".to_string(),
+                recoverable: true,
+            }),
+        )
     }
 
     fn item_event(

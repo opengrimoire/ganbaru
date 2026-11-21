@@ -1,6 +1,9 @@
 //! Steering, approval, and structured user-input operations.
 
-use super::persistence::persist_steer_message;
+use super::persistence::{
+    AttachmentFolderScope, persist_steer_message, read_attachment_references,
+    read_thread_runtime_data,
+};
 use super::support::{
     TURN_OPERATION_TIMEOUT, chat_pool, json_error, now_timestamp, operation_context,
     persistence_error, runtime_not_running_error,
@@ -57,6 +60,13 @@ pub(crate) async fn steer_turn(
     if let Err(error) = persist_steer_message(&pool, &request, &turn_id, &now_timestamp()?).await {
         return complete_driver_operation(&pool, &command_id, Err(error)).await;
     }
+    crate::chat::ingestion::notify_rows_changed(
+        &app,
+        &pool,
+        &request.thread_id,
+        &[ChatProjectionKey::Thread, ChatProjectionKey::Messages],
+    )
+    .await;
     let result = owner
         .steer_turn(
             SteerTurnRequest {
@@ -77,6 +87,17 @@ pub(crate) async fn resolve_approval(
     request: ResolveChatApprovalCommand,
 ) -> ChatResult<DriverOperationReceipt> {
     let pool = chat_pool(app.clone(), db_url).await?;
+    resolve_approval_in(&app, &pool, request).await
+}
+
+/// Resolves an open approval through `pool`. A choice to remember the approval is recorded
+/// after every check passed and before the provider receives the choice.
+pub(super) async fn resolve_approval_in(
+    app: &tauri::AppHandle,
+    pool: &sqlx::SqlitePool,
+    request: ResolveChatApprovalCommand,
+) -> ChatResult<DriverOperationReceipt> {
+    let pool = pool.clone();
     validate_pending_request(
         &pool,
         &request.thread_id,
@@ -119,6 +140,11 @@ pub(crate) async fn resolve_approval(
         CommandReceiptClaim::Claimed(_) => {}
     }
     let command_id = request.command.client_command_id.clone();
+    if request.remember {
+        if let Err(error) = super::remembered_approvals::remember_choice(&pool, &request).await {
+            return complete_driver_operation(&pool, &command_id, Err(error)).await;
+        }
+    }
     let result = owner
         .resolve_approval(
             ResolveApprovalRequest {
@@ -190,21 +216,13 @@ pub(crate) async fn resolve_user_input(
         CommandReceiptClaim::Replay(receipt) => return replay_driver_receipt(receipt),
         CommandReceiptClaim::Claimed(_) => {}
     }
-    let now = now_timestamp()?;
-    let answer_persistence = sqlx::query(
-        "INSERT INTO chat_user_input_drafts (request_id, answers_data, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(request_id) DO UPDATE SET answers_data = excluded.answers_data,
-             updated_at = excluded.updated_at",
-    )
-    .bind(request.request_id.as_str())
-    .bind(serde_json::to_string(&request.answers).map_err(json_error)?)
-    .bind(now.as_str())
-    .execute(&pool)
-    .await
-    .map_err(persistence_error);
     let command_id = request.command.client_command_id.clone();
-    if let Err(error) = answer_persistence {
+    let provider_answers = match resolve_answer_attachments(&app, &pool, &request).await {
+        Ok(answers) => answers,
+        Err(error) => return complete_driver_operation(&pool, &command_id, Err(error)).await,
+    };
+    let now = now_timestamp()?;
+    if let Err(error) = persist_answer_authorization(&pool, &request, &now).await {
         return complete_driver_operation(&pool, &command_id, Err(error)).await;
     }
     let request_id = request.request_id.clone();
@@ -215,7 +233,7 @@ pub(crate) async fn resolve_user_input(
                 session_id,
                 request_id: request.request_id.clone(),
                 provider_request_id: request.provider_request_id,
-                answers: request.answers,
+                answers: provider_answers,
             },
             operation_context("resolve-user-input", TURN_OPERATION_TIMEOUT),
         )
@@ -227,4 +245,136 @@ pub(crate) async fn resolve_user_input(
         .await
         .map_err(persistence_error)?;
     Ok(result)
+}
+
+/// Resolves the attachments of each answer in the thread's working folder and returns the
+/// answers the provider receives, with one `Attached:` line per attachment.
+async fn resolve_answer_attachments(
+    app: &tauri::AppHandle,
+    pool: &sqlx::SqlitePool,
+    request: &ResolveChatUserInputCommand,
+) -> ChatResult<Vec<UserInputAnswer>> {
+    if request
+        .answers
+        .iter()
+        .all(|answer| answer.attachment_ids.is_empty())
+    {
+        return Ok(request.answers.clone());
+    }
+    let working_folder_id = read_thread_runtime_data(pool, &request.thread_id)
+        .await?
+        .working_folder_id
+        .ok_or_else(|| {
+            ChatError::validation(
+                "answers",
+                "Answer attachments need a thread with a working folder",
+            )
+        })?;
+    let mut answers = Vec::with_capacity(request.answers.len());
+    for answer in &request.answers {
+        let attachments = read_attachment_references(
+            app,
+            pool,
+            AttachmentFolderScope::Folder(Some(&working_folder_id)),
+            &answer.attachment_ids,
+        )
+        .await?;
+        answers.push(answer_with_attachment_lines(answer.clone(), &attachments));
+    }
+    Ok(answers)
+}
+
+/// Saves the submitted answers and exposes their attachments to the thread's internal MCP
+/// resource reads in one transaction, so the provider can read every attachment it is told about.
+async fn persist_answer_authorization(
+    pool: &sqlx::SqlitePool,
+    request: &ResolveChatUserInputCommand,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    sqlx::query(
+        "INSERT INTO chat_user_input_drafts (request_id, answers_data, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(request_id) DO UPDATE SET answers_data = excluded.answers_data,
+             updated_at = excluded.updated_at",
+    )
+    .bind(request.request_id.as_str())
+    .bind(serde_json::to_string(&request.answers).map_err(json_error)?)
+    .bind(now.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    for answer in &request.answers {
+        expose_attachments_to_thread(
+            &mut transaction,
+            &request.thread_id,
+            &answer.attachment_ids,
+            now,
+        )
+        .await?;
+    }
+    transaction.commit().await.map_err(persistence_error)
+}
+
+/// Records that a thread may read these attachments as Chat resources. A reference that already
+/// exists keeps its first message.
+pub(super) async fn expose_attachments_to_thread(
+    connection: &mut sqlx::SqliteConnection,
+    thread_id: &ChatThreadId,
+    attachment_ids: &[ChatAttachmentId],
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    for attachment_id in attachment_ids {
+        sqlx::query(
+            "INSERT OR IGNORE INTO chat_resource_thread_references
+                (resource_id, thread_id, first_message_id, created_at)
+             SELECT id, ?, NULL, ? FROM chat_resources WHERE attachment_id = ?",
+        )
+        .bind(thread_id.as_str())
+        .bind(now.as_str())
+        .bind(attachment_id.as_str())
+        .execute(&mut *connection)
+        .await
+        .map_err(persistence_error)?;
+    }
+    Ok(())
+}
+
+/// Appends one `Attached: <display name> <resource URI>` line per attachment to the answer's
+/// free-form text and clears its attachment list, because provider answer channels carry text
+/// only. Line breaks and other control characters in a display name become spaces so each
+/// attachment stays on its own line.
+pub(super) fn answer_with_attachment_lines(
+    mut answer: UserInputAnswer,
+    attachments: &[PromptAttachmentReference],
+) -> UserInputAnswer {
+    answer.attachment_ids.clear();
+    if attachments.is_empty() {
+        return answer;
+    }
+    let lines = attachments
+        .iter()
+        .map(|attachment| {
+            let name: String = attachment
+                .display_name
+                .chars()
+                .map(|character| {
+                    if character.is_control() {
+                        ' '
+                    } else {
+                        character
+                    }
+                })
+                .collect();
+            format!("Attached: {} {}", name.trim(), attachment.resource_uri)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    answer.free_form_text = Some(match answer.free_form_text.take() {
+        Some(text) if text.is_empty() => lines,
+        Some(text) if text.ends_with('\n') => format!("{text}{lines}"),
+        Some(text) => format!("{text}\n{lines}"),
+        None => lines,
+    });
+    answer
 }

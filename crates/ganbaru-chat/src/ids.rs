@@ -16,9 +16,15 @@ const RANDOM_ID_BYTES: usize = 16;
 pub const REPLY_THREAD_ID_PREFIX: &str = "reply-thread";
 /// Derived id prefix of a work assignment input, keyed by its message item id.
 pub const ASSIGNMENT_INPUT_ID_PREFIX: &str = "assignment-input";
-/// Derived id prefix of a work assignment, keyed by its triggering message, its teammate, and
+/// Derived id prefix of a work assignment, keyed by its triggering message, its agent, and
 /// the assignment it follows when it has one.
 pub const WORK_ASSIGNMENT_ID_PREFIX: &str = "work-assignment";
+/// Derived id prefix of a scheduled message recurrence, keyed by its scheduled message id.
+pub const SCHEDULED_RECURRENCE_ID_PREFIX: &str =
+    ganbaru_sync_contracts::chat_recurrence::RECURRENCE_KEY_PREFIX;
+/// Derived id prefix of the command one occurrence of a repeating scheduled message posts
+/// under, keyed by the scheduled request's command id and the occurrence key.
+pub const SCHEDULED_OCCURRENCE_COMMAND_ID_PREFIX: &str = "scheduled-occurrence-command";
 
 /// Returns `{prefix}:{32 lowercase hex}` built from 16 bytes of the operating system's secure
 /// random generator.

@@ -125,9 +125,24 @@ fn mobile_runtime_registers_portable_core_commands() {
         "chat::conflicts::chat_resolve_conflict",
         "chat::provenance::chat_message_provenance",
         "chat::organization::chat_post_message",
+        "chat::organization::chat_read_project_primary_working_folder",
+        "chat::attachment_commands::chat_import_image",
+        "chat::attachment_commands::chat_import_text_snippet",
+        "chat::attachment_commands::chat_read_attachments",
+        "chat::attachment_commands::chat_attachment_data_url",
         "chat::organization::chat_read_channel_page",
         "chat::organization::chat_read_reply_thread_page",
+        "chat::organization::chat_cancel_assignment",
+        "chat::organization::chat_list_assignment_inputs",
+        "chat::organization::chat_list_review_queue",
+        "chat::organization::chat_edit_assignment_input",
+        "chat::organization::chat_cancel_assignment_input",
+        "chat::organization::chat_set_assignment_input_held",
+        "chat::organization::chat_steer_assignment_input",
+        "chat::organization::chat_reorder_assignment_inputs",
         "chat::settings_commands::chat_read_settings",
+        "chat::live_execution::follow::chat_read_live_execution",
+        "chat::live_execution::answer::chat_resolve_remote_approval",
     ] {
         assert!(
             MOBILE_RUNTIME.contains(command),
@@ -145,6 +160,9 @@ fn mobile_runtime_excludes_desktop_only_commands() {
         "chat::workspace::commands::",
         "chat::interaction_commands::",
         "chat::preview::",
+        "chat::organization::chat_review_assignment",
+        "chat::organization::chat_remove_custom_agent",
+        "chat::organization::chat_restore_custom_agent",
         "distractions::commands::",
         "crate::sync::commands::sync_reset_state",
         "crate::sync::commands::sync_take_anchor",
@@ -166,6 +184,7 @@ fn mobile_runtime_excludes_desktop_only_commands() {
         "distractions::catalog::",
         "distractions::android::distractions_mobile_sync_events",
         "distractions::android::distractions_mobile_list_usage_samples",
+        "notifications::desktop::show_chat_notification",
         "notifications::desktop::show_event_notification",
         "notifications::desktop::show_project_task_notification",
         "projects::task_commands::projects_list_upcoming_task_reminders",
@@ -486,5 +505,21 @@ fn desktop_runtime_starts_the_chat_cleanup_service() {
     assert!(
         DESKTOP_RUNTIME.contains("chat::cleanup_service::start(app.handle());"),
         "permanently deleted Chat files are removed only while the cleanup service runs"
+    );
+}
+
+#[test]
+fn desktop_runtime_starts_the_chat_usage_summary_flush() {
+    assert!(
+        DESKTOP_RUNTIME.contains("chat::usage_summaries::start(app.handle());"),
+        "agent usage reaches other devices only while the flush loop runs"
+    );
+}
+
+#[test]
+fn desktop_runtime_starts_the_chat_provider_status_publisher() {
+    assert!(
+        DESKTOP_RUNTIME.contains("chat::provider_status::start(app.handle());"),
+        "linked phones see this desktop's providers only while the publish loop runs"
     );
 }

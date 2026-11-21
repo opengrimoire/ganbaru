@@ -1,6 +1,7 @@
 <script lang="ts">
   import Plus from "@lucide/svelte/icons/plus";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesDatabaseTableRelationItems, type NotesDatabaseTableColumn } from "$lib/notes/database/table";
   import type { NotesPage } from "$lib/notes/types";
@@ -30,21 +31,17 @@
 
   let addButton: HTMLButtonElement | undefined = $state();
   let pickerOpen = $state(false);
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
 
   const items = $derived(notesDatabaseTableRelationItems(row, column));
   const relationIds = $derived(items.map((item) => item.id));
-
-  function messageOf(caught: unknown): string {
-    return caught instanceof Error ? caught.message : String(caught);
-  }
 
   async function remove(pageId: string): Promise<void> {
     error = null;
     try {
       await onSave(relationIds.filter((id) => id !== pageId));
     } catch (caught) {
-      error = messageOf(caught);
+      error = notesFailure(caught, t("notes.databaseRowPageRelationFailed"));
     }
   }
 
@@ -83,7 +80,7 @@
       </button>
     {/if}
   </div>
-  {#if error}<Notice class="px-1.5 text-panel-detail" message={error} />{/if}
+  {#if error}<Notice class="px-1.5 text-panel-detail" message={error.message} copy={error.detail} />{/if}
 </div>
 
 {#if pickerOpen && addButton && column.relationDataSourceId}

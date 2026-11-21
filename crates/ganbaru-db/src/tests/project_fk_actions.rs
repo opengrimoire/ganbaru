@@ -3,7 +3,7 @@ use sqlx::{AssertSqlSafe, SqlitePool};
 use std::collections::BTreeMap;
 
 /// Tables with foreign keys into the project graph.
-const REBUILT_TABLES: [&str; 14] = [
+const PROJECT_REFERENCING_TABLES: [&str; 15] = [
     "project_tasks",
     "chat_threads",
     "chat_agent_runs",
@@ -15,7 +15,8 @@ const REBUILT_TABLES: [&str; 14] = [
     "chat_scheduled_message_references",
     "chat_scratch_promotions",
     "chat_scratch_cleanup_jobs",
-    "chat_teammate_working_folder_grants",
+    "chat_push_approvals",
+    "chat_project_agent_settings",
     "chat_working_folder_reference_targets",
     "chat_workspace_path_reference_targets",
 ];
@@ -97,7 +98,7 @@ fn project_owned_foreign_keys_cascade() {
         let pool = migrated_memory_pool().await;
         load_project_chat_graph(&pool).await;
 
-        for table in REBUILT_TABLES {
+        for table in PROJECT_REFERENCING_TABLES {
             for (parent, column, action) in foreign_keys(&pool, table).await {
                 let cascades = parent == "projects"
                     || parent == "project_working_folders"
@@ -164,7 +165,7 @@ fn deleting_a_working_folder_removes_only_its_chat_rows() {
                 "working_folder_id",
             ),
             ("chat_scheduled_message_references", "working_folder_id"),
-            ("chat_teammate_working_folder_grants", "working_folder_id"),
+            ("chat_push_approvals", "working_folder_id"),
         ] {
             assert_eq!(
                 count_where(&pool, table, &format!("{column} = 'folder-archived'")).await,
@@ -213,7 +214,10 @@ fn deleting_a_group_ungroups_its_projects_and_keeps_their_rows() {
             .unwrap();
 
         let remaining = row_counts(&pool).await;
-        for table in PROJECT_ROW_TABLES.iter().chain(REBUILT_TABLES.iter()) {
+        for table in PROJECT_ROW_TABLES
+            .iter()
+            .chain(PROJECT_REFERENCING_TABLES.iter())
+        {
             assert_eq!(remaining[*table], loaded[*table], "{table} keeps its rows");
         }
         let group: Option<String> =
@@ -227,42 +231,10 @@ fn deleting_a_group_ungroups_its_projects_and_keeps_their_rows() {
 }
 
 #[test]
-fn rebuilding_projects_for_optional_groups_keeps_every_dependent_row() {
+fn ungrouping_a_project_captures_the_group_change_for_sync() {
     super::block_on(async {
-        let versions = crate::up_migrations().collect::<Vec<_>>();
-        let rebuild = versions
-            .iter()
-            .position(|migration| migration.description == "projects optional group")
-            .expect("the projects rebuild migration is embedded");
-        let previous = versions[rebuild - 1].version;
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(
-                sqlx::sqlite::SqliteConnectOptions::new()
-                    .in_memory(true)
-                    .foreign_keys(true),
-            )
-            .await
-            .unwrap();
-        crate::MIGRATOR.run_to(previous, &pool).await.unwrap();
+        let pool = migrated_memory_pool().await;
         load_project_chat_graph(&pool).await;
-        let loaded = row_counts(&pool).await;
-
-        crate::run_migrations(&pool).await.unwrap();
-
-        assert_eq!(
-            row_counts(&pool).await,
-            loaded,
-            "every row survives the rebuild"
-        );
-        assert_eq!(foreign_key_violations(&pool).await, 0);
-        let action: String = sqlx::query_scalar(
-            "SELECT on_delete FROM pragma_foreign_key_list('projects') WHERE \"from\" = 'group_id'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(action, "SET NULL");
         sqlx::raw_sql(
             "DELETE FROM sync_capture;
              UPDATE projects SET group_id = NULL WHERE id = 'project-chat';",
@@ -276,11 +248,8 @@ fn rebuilding_projects_for_optional_groups_keeps_every_dependent_row() {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(
-            mask, 2,
-            "the rebuilt table captures the group change for sync"
-        );
-        pool.close().await;
+        assert_eq!(mask, 2, "the group change is captured for sync");
+        assert_eq!(foreign_key_violations(&pool).await, 0);
     });
 }
 

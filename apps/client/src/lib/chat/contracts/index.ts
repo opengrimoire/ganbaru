@@ -1,5 +1,6 @@
 export * from "./commands";
 export * from "./channels";
+export * from "./channel-notes";
 export * from "./common";
 export * from "./config";
 export * from "./drafts";
@@ -11,4 +12,6 @@ export * from "./provider";
 export * from "./workspace";
 export * from "./workspace-tools";
 export * from "./reads";
+export * from "./push-requests";
+export * from "./scheduling";
 export * from "./settings";

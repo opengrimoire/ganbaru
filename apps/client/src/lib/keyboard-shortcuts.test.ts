@@ -5,6 +5,8 @@ import {
   hasOnlyShortcutModifier,
   hasShortcutModifier,
   isApplePlatform,
+  isNewItemShortcut,
+  menuDigitIndex,
   shortcutParts,
 } from "./keyboard-shortcuts";
 
@@ -90,5 +92,48 @@ describe("app navigation shortcuts", () => {
       key({ key: "t", code: "KeyT", altKey: true, ctrlKey: true }),
       key({ key: "b", code: "KeyB", ctrlKey: true }),
     ]) expect(appNavigationShortcut(event)).toBeNull();
+  });
+});
+
+describe("menuDigitIndex", () => {
+  const key = (overrides: Partial<Parameters<typeof menuDigitIndex>[0]>): Parameters<typeof menuDigitIndex>[0] => ({
+    key: "1", code: "Digit1", altKey: false, ctrlKey: false, metaKey: false,
+    shiftKey: false, isComposing: false, ...overrides,
+  });
+
+  it("numbers rows from 1 through 9, then 0 for the tenth, by typed or physical digit", () => {
+    expect(menuDigitIndex(key({ key: "0", code: "Digit0" }))).toBe(9);
+    expect(menuDigitIndex(key({ key: "à", code: "Digit0", shiftKey: true }))).toBe(9);
+    expect(menuDigitIndex(key({ key: "0", code: "Numpad0" }))).toBe(9);
+    expect(menuDigitIndex(key({}))).toBe(0);
+    expect(menuDigitIndex(key({ key: "9", code: "Digit9" }))).toBe(8);
+    expect(menuDigitIndex(key({ key: "&", code: "Digit1", shiftKey: true }))).toBe(0);
+    expect(menuDigitIndex(key({ key: "4", code: "Numpad4" }))).toBe(3);
+  });
+
+  it("ignores letters, modified keys, and composition", () => {
+    for (const event of [
+      key({ key: "a", code: "KeyA" }),
+      key({ ctrlKey: true }), key({ altKey: true }), key({ metaKey: true }), key({ isComposing: true }),
+    ]) expect(menuDigitIndex(event)).toBeNull();
+  });
+});
+
+describe("isNewItemShortcut", () => {
+  const key = (overrides: Partial<Parameters<typeof isNewItemShortcut>[0]>): Parameters<typeof isNewItemShortcut>[0] => ({
+    key: "n", altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, isComposing: false, ...overrides,
+  });
+
+  it("matches the platform modifier with N in either case", () => {
+    expect(isNewItemShortcut(key({ ctrlKey: true }), "Linux x86_64")).toBe(true);
+    expect(isNewItemShortcut(key({ key: "N", ctrlKey: true }), "Win32")).toBe(true);
+    expect(isNewItemShortcut(key({ metaKey: true }), "MacIntel")).toBe(true);
+  });
+
+  it("ignores the other platform's modifier, extra modifiers, other keys, and composition", () => {
+    for (const event of [
+      key({ metaKey: true }), key({}), key({ ctrlKey: true, shiftKey: true }), key({ ctrlKey: true, altKey: true }),
+      key({ key: "m", ctrlKey: true }), key({ ctrlKey: true, isComposing: true }),
+    ]) expect(isNewItemShortcut(event, "Linux x86_64")).toBe(false);
   });
 });

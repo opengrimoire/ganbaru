@@ -40,7 +40,7 @@ A theme contains:
 
 The editable catalog is defined by `APP_TOKEN_KEYS` and `CALENDAR_TOKEN_KEYS` in `apps/client/src/lib/themes/definitions.ts`, currently 35 app tokens and 7 Calendar tokens. Token identities are the compatibility contract; the counts are only a current fact.
 
-User themes store every editable token as a resolved hex snapshot. Runtime-only implementation colors (hover tints, borders, and similar paint details) are derived from stored values and are never exported or shown as editable rows. Add a new editable token only for a stable, user-meaningful color decision; see the theme token rules in `AGENTS.md`.
+User themes store every editable token as a resolved hex snapshot. Runtime-only implementation colors (hover tints, borders, and similar paint details) are derived from stored values and are never exported or shown as editable rows. The confirm signal used for status dots, success labels, and addition counts is derived from the confirm color, lifted or darkened until it reads at 4.5:1 on the canvas, so a deep confirm button fill on a dark theme never makes those marks disappear. Add a new editable token only for a stable, user-meaningful color decision; see the theme token rules in `AGENTS.md`.
 
 Adding, renaming, or removing an editable token requires, in the same change:
 

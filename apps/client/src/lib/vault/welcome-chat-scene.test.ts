@@ -9,17 +9,18 @@ import {
   CHAT_SCENE_QUERY,
   CHAT_SCENE_STEPS,
   CHAT_STILL,
+  CHAT_COMPOSER_EXPAND_MS,
   CHAT_THREAD_OPEN_MS,
   chatActiveSince,
   chatComposerCaretOn,
   chatComposerDraft,
+  chatComposerExpanded,
   chatComposerFocused,
   chatMentioned,
   chatMessageIn,
   chatPickerNarrowed,
   chatPickerOpen,
   chatPickerShown,
-  chatPreviewShown,
   chatReplyIn,
   chatReplyStripShown,
   chatSent,
@@ -52,7 +53,6 @@ describe("welcome chat scene", () => {
     for (const elapsed of moments()) {
       const values = [
         chatPickerShown(elapsed),
-        chatPreviewShown(elapsed),
         chatMessageIn(elapsed),
         chatThreadShown(elapsed),
         chatReplyIn(elapsed),
@@ -85,14 +85,12 @@ describe("welcome chat scene", () => {
     expect(chatPickerShown(B.pick - 1)).toBe(1);
   });
 
-  it("turns the query into a mention as the agent is accepted, closing the picker and showing the assignment", () => {
+  it("turns the query into a mention as the agent is accepted, closing the picker", () => {
     expect(chatMentioned(B.pick - 1)).toBe(false);
-    expect(chatPreviewShown(B.pick - 1)).toBe(0);
     expect(chatMentioned(B.pick)).toBe(true);
     expect(chatPickerOpen(B.pick)).toBe(false);
     expect(chatComposerDraft(B.pick, QUESTION)).toEqual({ query: "", mention: true, text: "" });
     expect(chatPickerShown(B.typeStart)).toBe(0);
-    expect(chatPreviewShown(B.typeStart)).toBe(1);
   });
 
   it("types the question after the mention, steady caret while typing, and clears the composer as it sends", () => {
@@ -103,7 +101,17 @@ describe("welcome chat scene", () => {
     expect(chatSent(B.sendTap)).toBe(true);
     expect(chatComposerDraft(B.sendTap, QUESTION)).toEqual({ query: "", mention: false, text: "" });
     expect(chatComposerCaretOn(B.sendTap)).toBe(false);
-    expect(chatPreviewShown(B.sendTap)).toBe(0);
+  });
+
+  it("keeps the phone composer to one row until it is tapped, and shrinks it back as the thread opens", () => {
+    expect(chatComposerExpanded(0)).toBe(0);
+    expect(chatComposerExpanded(B.editorTap)).toBe(0);
+    expect(chatComposerExpanded(B.editorTap + CHAT_COMPOSER_EXPAND_MS / 2)).toBeCloseTo(0.5);
+    expect(chatComposerExpanded(B.editorTap + CHAT_COMPOSER_EXPAND_MS)).toBe(1);
+    expect(chatComposerExpanded(B.sendTap)).toBe(1);
+    expect(chatComposerExpanded(B.threadOpen)).toBe(1);
+    expect(chatComposerExpanded(B.threadOpen + CHAT_COMPOSER_EXPAND_MS)).toBe(0);
+    expect(chatComposerExpanded(CHAT_STILL)).toBe(0);
   });
 
   it("posts the message, then opens its thread, where the reply starts and the channel shows its reply strip", () => {
@@ -163,7 +171,6 @@ describe("welcome chat scene", () => {
     expect(chatStepsFolded(CHAT_STILL)).toBe(1);
     expect(chatReplyStripShown(CHAT_STILL)).toBe(true);
     expect(chatPickerShown(CHAT_STILL)).toBe(0);
-    expect(chatPreviewShown(CHAT_STILL)).toBe(0);
     expect(chatWorking(CHAT_STILL)).toBe(false);
     expect(Object.values(chatTouches(CHAT_STILL)).every((touch) => touch === 0)).toBe(true);
   });
@@ -183,7 +190,7 @@ describe("welcome chat scene", () => {
     }
   });
 
-  it("leaves Claude to the keyboard, waits for the question before Send, and for the thread before resting on it", () => {
+  it("leaves Opus to the keyboard, waits for the question before Send, and for the thread before resting on it", () => {
     expect(CHAT_CURSOR.some((stop) => stop.target === "chat-pick")).toBe(false);
     expect(CHAT_CURSOR.find((stop) => stop.target === "chat-send")?.depart).toBeGreaterThanOrEqual(B.typeEnd);
     expect(CHAT_CURSOR.find((stop) => stop.target === "chat-thread")?.depart).toBeGreaterThanOrEqual(B.threadOpen + CHAT_THREAD_OPEN_MS);

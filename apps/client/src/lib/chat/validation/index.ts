@@ -1,5 +1,6 @@
 export * from "./config";
 export * from "./channels";
+export * from "./channel-notes";
 export * from "./drafts";
 export * from "./diagnostics";
 export * from "./events";
@@ -8,6 +9,9 @@ export * from "./organizational";
 export * from "./provider";
 export * from "./workspace";
 export * from "./workspace-tools";
+export * from "./push-requests";
+export * from "./scheduling";
 export * from "./settings";
 export * from "./reads";
 export * from "./readers";
+export * from "./remembered-approvals";

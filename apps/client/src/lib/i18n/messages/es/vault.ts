@@ -146,13 +146,20 @@ export const vaultSetup = {
     headline: "Suma la IA solo cuando la quieras",
     body: "Conversa con agentes de IA como Claude, Codex o Cursor que trabajan dentro de la carpeta de tu proyecto.",
     sceneDescription:
-      "Una breve animación del chat en el proyecto Novela, donde se menciona a Claude en una pregunta sobre lo que Mateo sabe de Clara y responde en el hilo del mensaje tras leer el capítulo 2 y buscar a Mateo.",
+      "Una breve animación del chat en el proyecto Novela, donde se menciona a Opus en una pregunta sobre lo que Mateo sabe de Clara y responde en el hilo del mensaje tras leer el capítulo 2 y buscar a Mateo.",
     channel: "general",
     roles: { claude: "Comentarios de la historia", codex: "Versiones del libro electrónico" },
     prompt: "lee el capítulo 2 y dime qué sabe Mateo de Clara.",
     chapterPath: "capitulos/02.md",
     reply:
       "En el capítulo 2, Mateo ve a Clara salir de la estación con la carta, pero nunca se lo cuenta a Tomás. Ese silencio podría preparar su discusión en el capítulo 3.",
+  },
+  agents: {
+    headline: "Usa los agentes de IA que ya tienes",
+    body: "Ganbaru trabaja con los agentes de IA de esta computadora, con tus propias cuentas.",
+    listLabel: "Agentes de IA en esta computadora",
+    checkFailed: "Ganbaru no pudo revisar los agentes de IA de esta computadora.",
+    setupFailed: "Ganbaru no pudo abrir el formulario de configuración.",
   },
   about: {
     headline: "Gratis y de código abierto",
@@ -321,8 +328,6 @@ export const vaultHandoff = {
     installLink: "esta guía",
     installSuffix: "para instalar ganbaru-server en una computadora que siempre esté encendida, como un servidor doméstico o un NAS",
     run: "En ese servidor, ejecuta",
-    copyCommand: "Copiar comando",
-    commandCopied: "Comando copiado",
     outcome: "Esta computadora se une a la bóveda del servidor en una carpeta nueva.",
     startOutcome: "Si el servidor es nuevo, recibe una copia de esta bóveda. Si ya tiene una, esta computadora se une a esa bóveda en una carpeta nueva.",
     scan: "Escanear el código QR del servidor",
@@ -382,7 +387,7 @@ export const vaultHandoff = {
   recovered: "Esta copia ahora es una bóveda propia en este dispositivo.",
   localBackup:
     "Cuando la bóveda vinculada reemplaza la bóveda de este teléfono, Ganbaru guarda una copia de la reemplazada en Ajustes > Datos.",
-  failed: (details: string) => `Falló la acción del dispositivo vinculado: ${details}`,
+  failed: "Falló la acción del dispositivo vinculado.",
   blockerChat: "Termina o detén el trabajo activo de Chat antes de mover la bóveda.",
   blockerTerminal: "Cierra las terminales de Chat en ejecución antes de mover la bóveda.",
   blockerFocus: "Termina o detén la sesión activa de Pomodoro antes de mover la bóveda.",
@@ -412,5 +417,5 @@ export const vaultHandoff = {
     "La computadora coordinadora está atendiendo demasiadas conexiones en este momento. Espera un momento y reintenta.",
   unreachable:
     "Este dispositivo no pudo comunicarse con la computadora coordinadora. Mantén ambas aplicaciones abiertas en la misma red local y reintenta.",
-  unknownError: "Error desconocido",
+  unknownError: "No se pudo abrir la vinculación de dispositivos.",
 } as const satisfies MessageShape<typeof enVaultHandoff>;

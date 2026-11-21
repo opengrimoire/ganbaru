@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import type { EventColor } from "$lib/calendar/types";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
   import { quickNoteChipClass } from "$lib/quick-notes/tags";
   import type { QuickNoteTag } from "$lib/quick-notes/types";
@@ -90,7 +91,7 @@
       renaming = false;
       void tick().then(() => chip?.focus());
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = userErrorMessage(cause, t("quickNotes.tag.updateFailed"));
     } finally {
       busy = false;
     }

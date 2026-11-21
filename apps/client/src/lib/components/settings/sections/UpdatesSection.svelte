@@ -7,6 +7,7 @@
   import { onDestroy } from "svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
+  import { SETTINGS_PRIMARY_BUTTON_CLASS, SETTINGS_SECONDARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
   import { BUILD_REF } from "$lib/build-info";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -18,11 +19,6 @@
   const { t } = localization;
   let commandCopied = $state(false);
   let commandCopyTimer: ReturnType<typeof setTimeout> | undefined;
-
-  const actionButtonClass =
-    "inline-flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 rounded-md border border-border px-2.5 text-[0.8rem] font-medium transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-55";
-  const primaryButtonClass = `${actionButtonClass} border-primary bg-primary text-primary-foreground hover:bg-primary/90`;
-  const secondaryButtonClass = `${actionButtonClass} bg-card text-foreground hover:bg-accent dark:bg-transparent`;
 
   function formatLastAutomaticCheck(value: string): string {
     return formatDateTime(localization.locale, new Date(value), {
@@ -73,7 +69,7 @@
     />
   </section>
 
-  <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+  <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 
   <section class="flex flex-col gap-4">
     <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("settings.updates.buildHeading")}</h2>
@@ -102,7 +98,7 @@
 
         <button
           type="button"
-          class={secondaryButtonClass}
+          class={SETTINGS_SECONDARY_BUTTON_CLASS}
           disabled={updates.status === "checking" || updates.status === "downloading" || updates.status === "installed"}
           onclick={() => {
             void updates.checkForUpdates();
@@ -161,7 +157,7 @@
   </section>
 
   {#if updates.status === "available"}
-    <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+    <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 
     <section class="flex flex-col gap-4">
       <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("settings.updates.availableUpdateHeading")}</h2>
@@ -182,7 +178,7 @@
             {#if updates.primaryAction === "self-updater"}
               <button
                 type="button"
-                class={primaryButtonClass}
+                class={SETTINGS_PRIMARY_BUTTON_CLASS}
                 onclick={() => {
                   void updates.installUpdate();
                 }}
@@ -193,7 +189,7 @@
             {:else if updates.primaryAction === "copy-command" && updates.copyCommand}
               <button
                 type="button"
-                class={primaryButtonClass}
+                class={SETTINGS_PRIMARY_BUTTON_CLASS}
                 onclick={() => {
                   void copyUpdateCommand();
                 }}
@@ -204,7 +200,7 @@
             {/if}
             <button
               type="button"
-              class={secondaryButtonClass}
+              class={SETTINGS_SECONDARY_BUTTON_CLASS}
               disabled={!updates.releasePageUrl}
               onclick={() => {
                 void openReleasePage();

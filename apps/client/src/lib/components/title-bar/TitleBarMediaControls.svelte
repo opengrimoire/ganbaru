@@ -4,6 +4,7 @@
   import PomodoroMenuContent from "$lib/components/pomodoro/PomodoroMenuContent.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import LinkedDeviceControl from "$lib/components/vault/handoff/LinkedDeviceControl.svelte";
+  import UpdatesControl from "$lib/components/updates/UpdatesControl.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
@@ -84,6 +85,13 @@
   }
 
 </script>
+
+    <UpdatesControl
+      onOpened={() => {
+        showMenu = false;
+        onMenuOpened();
+      }}
+    />
 
     <!-- Pomodoro progress ring with dropdown -->
     {#if showPomodoro}

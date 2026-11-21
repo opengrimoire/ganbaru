@@ -1,11 +1,13 @@
 import * as chatApi from "$lib/api/chat";
 import * as workingFolderApi from "$lib/api/project-working-folders";
 import type {
+  ChatChangeNotification,
   ChatBehaviorPreferences,
   ChatChannelId,
   ChatChannelRead,
   ChatChannelPageRead,
-  ChatWaitingAssignmentRead,
+  ChatReviewQueueItemRead,
+  ChatReviewQueueRead,
   ChatProjectPrimaryWorkingFolderRead,
   ChatReplyThreadId,
   ChatReplyThreadPageRead,
@@ -14,8 +16,9 @@ import type {
   ChatScheduledMessageDispatchRead,
   ChatScheduledMessageId,
   ChatScheduledMessageRead,
-  ChatAiTeammateRead,
+  ChatAiAgentRead,
   ChatWorkAssignmentId,
+  ChatAssignmentReviewRequest,
   ChatAttachmentRead,
   ChatDraftMention,
   ChatInteractionStateRead,
@@ -28,7 +31,6 @@ import type {
   ProjectWorkingFolderRead,
   CreateProjectWorkingFolderRequest,
   InteractionMode,
-  ModelId,
   ProviderInstanceConfig,
   ProviderInstanceId,
   ProviderInstanceRead,
@@ -42,31 +44,46 @@ import type {
   VersionedJson,
 } from "$lib/chat/contracts";
 import type { ChatComposerSnapshot } from "$lib/chat/composer/controller";
+import type { ChatOpenReviewDetail } from "$lib/chat/workspace/events";
 import { chatErrorCode, chatErrorMessage } from "$lib/chat/error-presentation";
+import { translate } from "$lib/i18n/translator.svelte";
 import { listenForChatChanges, publishChatChanges, type ChatWindowChanges } from "$lib/chat/window-sync";
 import { listenForChatSyncChanges, onChatSyncChanged } from "$lib/chat/sync-events";
-import { CHAT_SYNC_TABLES } from "$lib/chat/sync-presentation";
+import { CHAT_PROVIDER_STATUS_SYNC_TABLE, CHAT_SYNC_TABLES } from "$lib/chat/sync-presentation";
 import { listenSyncApplied } from "$lib/api/sync";
 import { ChatPaneStores, chatWindowChanges, type ChatChangeIds } from "$lib/stores/chat/pane-stores";
 import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
 import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
 import { registerWindowCloseFlusher } from "$lib/windows/close-flush";
-import { AsyncFrameCoalescer } from "$lib/chat/timeline/frame-coalescer";
+import { AsyncFrameKeyedCoalescer } from "$lib/chat/timeline/frame-coalescer";
 import {
   toggleChatMessageReactionParticipant,
   type ChatMessageReaction,
 } from "$lib/chat/timeline/organizational-message-model";
-import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
+import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/agents/participant-display";
+import { providerBecameReady, readyProviderInstances } from "$lib/chat/agents/agent-setup";
 import { getProjectsStore, type ProjectsStore } from "$lib/stores/projects.svelte";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
 import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
+import { chatPanelScope, chatPanelVisibility, type ChatPanelScope } from "$lib/chat/workspace/panel-visibility.svelte";
 import { readLastChatChannelId, saveLastChatChannelId } from "$lib/chat/channel-sections";
 import {
   ChatOrganizationalController,
   type ChatOrganizationalDraft,
+  type ChatOrganizationalPostOptions,
 } from "$lib/stores/chat/organizational-controller.svelte";
 import { ChatCommunicationController } from "$lib/stores/chat/communication-controller.svelte";
+import { ChatReviewQueueController } from "$lib/stores/chat/review-queue-controller.svelte";
+import { channelNeedsVisit, type ChatBatchAcceptSummary } from "$lib/chat/review-queue/model";
 import { ChatTimelineController } from "$lib/stores/chat/timeline-controller.svelte";
+import { ExactExecutionReadCache, type ExactExecutionRead } from "$lib/chat/timeline/reply-thread-model";
+import {
+  fullNativeChange,
+  mergeNativeChanges,
+  nativeChangeFromNotification,
+  planNativeRefresh,
+  type ChatNativeChange,
+} from "$lib/stores/chat/native-change-routing";
 import { ChatConfigurationController } from "$lib/stores/chat/configuration-controller.svelte";
 import { ChatChannelNavigationController } from "$lib/stores/chat/channel-navigation-controller.svelte";
 import { ChatThreadCollectionController } from "$lib/stores/chat/thread-collection-controller.svelte";
@@ -75,16 +92,21 @@ import {
   ChatComposerRuntimeController,
   composerSeedForThread,
   type ChatComposerSendOptions,
+  type ChatThreadTurnRef,
 } from "$lib/stores/chat/composer-runtime-controller.svelte";
 
-export type { ChatOrganizationalDraft } from "$lib/stores/chat/organizational-controller.svelte";
+export type { ChatOrganizationalDraft, ChatOrganizationalPostOptions } from "$lib/stores/chat/organizational-controller.svelte";
 
 const localExecutionAvailable = platformHasCapability(
   BUILD_PLATFORM_PROFILE,
   "chat.local-execution",
 );
-export type { ChatComposerSendOptions } from "$lib/stores/chat/composer-runtime-controller.svelte";
+export type { ChatComposerSendOptions, ChatThreadTurnRef } from "$lib/stores/chat/composer-runtime-controller.svelte";
 
+/** Channels whose open reply thread is remembered, matching the bound on per-channel panel state. */
+const MAX_REMEMBERED_CHANNEL_REPLY_THREADS = 64;
+/** Reply threads whose exact execution reads are kept for an instant return to them. */
+const EXACT_EXECUTION_READ_THREADS = 8;
 const paneStores = new ChatPaneStores<ChatStore>();
 
 /**
@@ -93,12 +115,74 @@ const paneStores = new ChatPaneStores<ChatStore>();
  * WebView.
  */
 class ChatSharedState {
-  teammates = $state<ChatAiTeammateRead[]>([]);
-  archivedTeammates = $state<ChatAiTeammateRead[]>([]);
+  agents = $state<ChatAiAgentRead[]>([]);
+  archivedAgents = $state<ChatAiAgentRead[]>([]);
   providerDiscoveryStarted = false;
+  /** Bumped by {@link resetAgents}, so an agent read started for an earlier vault is dropped. */
+  private agentReadGeneration = 0;
   readonly configuration = new ChatConfigurationController({
     onSettingsChanged: () => {
       for (const store of paneStores.all()) store.scheduleComposerDefaults();
+      this.refreshAgentsForNewProviders();
+      this.startWorkForReadyProviders();
+    },
+  });
+  /** The providers ready on this device in the last settings seen, `null` before the first settings of a vault. */
+  private readyProviders: Set<ProviderInstanceId> | null = null;
+
+  /**
+   * Starts the work a linked device sent here that waited for its provider, once a provider turns ready on this
+   * device. The first settings of a vault only record the ready providers, since loading Chat already recovers work.
+   */
+  private startWorkForReadyProviders(): void {
+    const settings = this.configuration.settings;
+    if (!localExecutionAvailable || !settings) {
+      this.readyProviders = null;
+      return;
+    }
+    const ready = readyProviderInstances(settings.providerInstances);
+    const previous = this.readyProviders;
+    this.readyProviders = ready;
+    if (!previous || !providerBecameReady(previous, ready)) return;
+    void chatApi.recoverChatAssignmentDispatchJobs().catch((error: unknown) => {
+      console.error("Chat work recovery after a provider turned ready failed", error);
+    });
+  }
+
+  /**
+   * Rereads the agents when the settings name a provider family that no agent covers yet. Reading the agents creates
+   * the agent of each provider this device has, so a provider found by discovery or set up in Settings becomes
+   * mentionable without reopening Chat.
+   */
+  private refreshAgentsForNewProviders(): void {
+    const settings = this.configuration.settings;
+    if (!settings) return;
+    const covered = new Set([...this.agents, ...this.archivedAgents].map((agent) => agent.providerFamilyId));
+    if (settings.providerInstances.every((provider) => covered.has(provider.configuration.familyId))) return;
+    const generation = this.agentReadGeneration;
+    void Promise.all([chatApi.listChatAgents(false), chatApi.listChatAgents(true)])
+      .then(([agents, archivedAgents]) => {
+        if (generation !== this.agentReadGeneration) return;
+        this.agents = agents;
+        this.archivedAgents = archivedAgents;
+      })
+      .catch((error: unknown) => {
+        if (generation === this.agentReadGeneration) console.error("Chat agent refresh after a provider change failed", error);
+      });
+  }
+
+  /** Forgets the agents of the previous vault and any read still in flight for it. */
+  resetAgents(): void {
+    this.agentReadGeneration += 1;
+    this.agents = [];
+    this.archivedAgents = [];
+  }
+  /** The vault-wide queue of work that waits for the person, which every pane's rail shows. */
+  readonly reviewQueue = new ChatReviewQueueController({
+    onReviewed: (channelIds) => {
+      const changes = chatWindowChanges({ channelIds });
+      publishChatChanges(changes);
+      for (const store of paneStores.all()) store.refreshFromOtherPane(changes);
     },
   });
 }
@@ -107,7 +191,7 @@ const shared = new ChatSharedState();
 
 /**
  * The Chat state of one split pane: its channel, thread, reply thread, composer, timeline, and panels. Settings,
- * working folders, and teammates are shared by every pane, and only the primary pane's store loads them and
+ * working folders, and agents are shared by every pane, and only the primary pane's store loads them and
  * remembers its selection for the next launch.
  */
 export class ChatStore {
@@ -119,9 +203,16 @@ export class ChatStore {
   private readonly organizationalController: ChatOrganizationalController;
   private readonly threadCollectionController: ChatThreadCollectionController;
   private readonly timelineController: ChatTimelineController;
+  /** Exact execution reads of recently shown reply threads, kept across remounts of the reply thread view. */
+  readonly exactExecutionReads = new ExactExecutionReadCache<ExactExecutionRead>(EXACT_EXECUTION_READ_THREADS);
   selectedChannelId = $state<ChatChannelId | null>(null);
-  teammateIdentities = $derived([...this.teammates, ...this.archivedTeammates]);
+  agentIdentities = $derived([...this.agents, ...this.archivedAgents]);
   openReplyThreadId = $state<ChatReplyThreadId | null>(null);
+  /**
+   * The reply thread this pane shows on its own, as a workspace tab of its own, or null while it shows a channel.
+   * The thread keeps its channel selected for folders and authority, but has panels of its own.
+   */
+  replyThreadTabId = $state<ChatReplyThreadId | null>(null);
   selectedExecutionRunId = $state<string | null>(null);
   messageAnchorId = $state<string | null>(null);
   loading = $state(false);
@@ -129,23 +220,51 @@ export class ChatStore {
   selectedWorkingFolderId = $state<ProjectWorkingFolderId | null>(null);
   /** The primary working folder of the selected channel's project. */
   primaryWorkingFolder = $state<ChatProjectPrimaryWorkingFolderRead | null>(null);
-  /** Work that waits for a local action on this device across the vault, newest first. */
-  waitingAssignments = $state<ChatWaitingAssignmentRead[]>([]);
   selectedThreadId = $state<ChatThreadId | null>(null);
   selectedExecutionEnvironmentId = $state<string | null>(null);
   railOpen = $state(true);
-  inspectorOpen = $state(false);
+
+  /** The owner of the workspace panels shown now: the selected channel, or the reply thread shown on its own. */
+  get panelScope(): ChatPanelScope | null {
+    return chatPanelScope(this.selectedChannelId, this.replyThreadTabId);
+  }
+
+  /** Whether the panel scope shows its secondary panel; each channel and reply thread tab keeps its own answer. */
+  get inspectorOpen(): boolean {
+    return chatPanelVisibility.isOpen(this.panelScope, "inspector");
+  }
+
+  set inspectorOpen(open: boolean) {
+    chatPanelVisibility.setOpen(this.panelScope, "inspector", open);
+  }
+
+  /** Whether the panel scope shows its bottom panel; each channel and reply thread tab keeps its own answer. */
+  get bottomPanelOpen(): boolean {
+    return chatPanelVisibility.isOpen(this.panelScope, "bottom");
+  }
+
+  set bottomPanelOpen(open: boolean) {
+    chatPanelVisibility.setOpen(this.panelScope, "bottom", open);
+  }
+
   loaded = $state(false);
   private loadRequest = 0;
   private projectSelectionProjectId: string | null = null;
   private projectSelectionPromise: Promise<void> | null = null;
   private channelSelectionRequest = 0;
+  /** The latest channel selection that finished or failed; another value means a selection is still loading. */
+  private settledChannelSelectionRequest = 0;
+  /** The reply thread each channel had open when it was left, in memory for this app session. */
+  private readonly openReplyThreadByChannel = new Map<ChatChannelId, ChatReplyThreadId>();
   private channelReadPromise: { channelId: ChatChannelId; promise: Promise<void> } | null = null;
   private sessionMessageReactions = $state<Record<string, ChatMessageReaction[]>>({});
   private loadPromise: Promise<void> | null = null;
-  private readonly nativeChanges = new AsyncFrameCoalescer<string>(
-    (threadId) => this.refreshNativeChange(threadId),
+  private readonly nativeChanges = new AsyncFrameKeyedCoalescer<string, ChatNativeChange>(
+    (threadId, change) => this.refreshNativeChange(threadId, change),
+    mergeNativeChanges,
   );
+  /** The newest native event sequence handled per thread, so a skipped notification forces a full reread. */
+  private readonly lastNativeSequences = new Map<string, number>();
   private vaultGeneration = 0;
   private otherWindowListening = false;
   private syncListening = false;
@@ -206,7 +325,7 @@ export class ChatStore {
       selectedExecutionEnvironmentId: () => this.selectedExecutionEnvironmentId,
       setSelectedThreadId: (threadId) => { this.selectedThreadId = threadId; },
       upsertThread: (thread) => this.threadCollectionController.upsert(thread),
-      loadTimeline: (threadId) => this.loadTimeline(threadId),
+      refreshTimeline: (threadId) => this.timelineController.refreshLatest(threadId),
       clearTimeline: () => this.timelineController.clear(),
       setSettings: (settings) => { this.settings = settings; },
       onComposerChanged: () => this.composerDefaultsCoordinator.schedule(),
@@ -233,10 +352,15 @@ export class ChatStore {
     this.configurationController.setSettings(settings);
   }
 
-  get teammates(): ChatAiTeammateRead[] { return shared.teammates; }
-  set teammates(teammates: ChatAiTeammateRead[]) { shared.teammates = teammates; }
-  get archivedTeammates(): ChatAiTeammateRead[] { return shared.archivedTeammates; }
-  set archivedTeammates(teammates: ChatAiTeammateRead[]) { shared.archivedTeammates = teammates; }
+  get agents(): ChatAiAgentRead[] { return shared.agents; }
+  set agents(agents: ChatAiAgentRead[]) { shared.agents = agents; }
+  get archivedAgents(): ChatAiAgentRead[] { return shared.archivedAgents; }
+  set archivedAgents(agents: ChatAiAgentRead[]) { shared.archivedAgents = agents; }
+  /** The vault-wide queue of work that waits for the person, or `null` before the first read. */
+  get reviewQueue(): ChatReviewQueueRead | null { return shared.reviewQueue.queue; }
+  set reviewQueue(queue: ChatReviewQueueRead | null) { shared.reviewQueue.queue = queue; }
+  /** Why the last review queue refresh failed, while the previous queue stays shown. */
+  get reviewQueueError(): string | null { return shared.reviewQueue.error; }
 
   /** Applies changed shared settings to this pane's composer defaults. */
   scheduleComposerDefaults(): void {
@@ -303,6 +427,15 @@ export class ChatStore {
 
   set channelMessages(messages: ChatMessageRead[]) {
     this.communicationController.channelMessages = messages;
+  }
+
+  /** The channel the loaded channel history belongs to, which trails the selection while a switch loads. */
+  get channelMessagesChannelId(): ChatChannelId | null {
+    return this.communicationController.channelMessagesChannelId;
+  }
+
+  set channelMessagesChannelId(channelId: ChatChannelId | null) {
+    this.communicationController.channelMessagesChannelId = channelId;
   }
 
   get channelMessagesLoading(): boolean {
@@ -374,6 +507,21 @@ export class ChatStore {
     return this.organizationalController.scheduledMessagesVersion;
   }
 
+  /** Changes when channel notes or note proposal states may have changed in this or another pane. */
+  get channelNotesVersion(): number {
+    return this.organizationalController.channelNotesVersion;
+  }
+
+  /** Changes when channel, project, or app agent settings may have changed in this or another pane or device. */
+  get agentSettingsVersion(): number {
+    return this.organizationalController.agentSettingsVersion;
+  }
+
+  /** Changes when push request states may have changed, including a push that ran after a turn without a person. */
+  get pushRequestsVersion(): number {
+    return this.organizationalController.pushRequestsVersion;
+  }
+
   get selectedChannel(): ChatChannelRead | null {
     return this.selectedChannelId
       ? this.channelNavigationController.find(this.selectedChannelId)
@@ -405,10 +553,10 @@ export class ChatStore {
     if (vaultGeneration === this.vaultGeneration && this.loaded) this.startProviderDiscovery();
   }
 
-  /** Shares workspace hydration without starting provider discovery during prewarming. */
+  /** Shares workspace hydration, which also starts provider discovery for the vault. */
   private async ensureCachedLoaded(): Promise<void> {
     if (this.loaded) return;
-    this.loadPromise ??= this.reload(false).finally(() => {
+    this.loadPromise ??= this.reload().finally(() => {
       this.loadPromise = null;
     });
     await this.loadPromise;
@@ -425,11 +573,13 @@ export class ChatStore {
   /** Invalidates this pane's vault-scoped Chat state; {@link resetChatForVault} also resets the shared state. */
   resetPaneForVault(): void {
     this.vaultGeneration += 1;
+    this.lastNativeSequences.clear();
     this.loadRequest += 1;
     this.channelSelectionRequest += 1;
+    this.settledChannelSelectionRequest = this.channelSelectionRequest;
     this.loaded = false;
-    this.waitingAssignments = [];
     this.communicationController.reset();
+    this.exactExecutionReads.clear();
     this.channelNavigationController.reset();
     this.organizationalController.reset();
     this.threadCollectionController.reset();
@@ -441,6 +591,8 @@ export class ChatStore {
     this.sessionMessageReactions = {};
     this.selectedChannelId = null;
     this.openReplyThreadId = null;
+    this.openReplyThreadByChannel.clear();
+    this.replyThreadTabId = null;
     this.selectedExecutionRunId = null;
     this.messageAnchorId = null;
     this.selectedWorkingFolderId = null;
@@ -451,8 +603,8 @@ export class ChatStore {
     this.composerRuntimeController.reset();
   }
 
-  /** Refreshes local Chat data; background prewarming leaves provider CLIs dormant. */
-  async reload(discoverProviders = true): Promise<void> {
+  /** Refreshes local Chat data and starts provider discovery without waiting for it. */
+  async reload(): Promise<void> {
     const request = ++this.loadRequest;
     const vaultGeneration = this.vaultGeneration;
     this.loading = true;
@@ -463,7 +615,7 @@ export class ChatStore {
       const { settings, navigationChannels } = loaded;
       this.channelNavigationController.hydrateNavigation(navigationChannels);
       this.threadCollectionController.resetWindow();
-      if (discoverProviders) this.startProviderDiscovery();
+      this.startProviderDiscovery();
       if (this.owner && localExecutionAvailable) this.recoverAssignments();
       await this.projects.ensureLoaded();
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
@@ -489,7 +641,7 @@ export class ChatStore {
       );
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
       this.loaded = true;
-      this.refreshWaitingAssignments();
+      this.refreshReviewQueue();
       this.listenForOtherWindows();
       this.listenForSync();
       if (!this.owner) return;
@@ -499,30 +651,30 @@ export class ChatStore {
       });
     } catch (error: unknown) {
       if (request !== this.loadRequest) return;
-      this.error = chatErrorMessage(error, "Chat could not be loaded");
+      this.error = chatErrorMessage(error, translate("chatErrors.actions.loadChat"));
       throw error;
     } finally {
       if (request === this.loadRequest) this.loading = false;
     }
   }
 
-  /** Recovers interrupted turns and loads the settings, working folders, and teammates every pane shows. */
+  /** Recovers interrupted turns and loads the settings, working folders, and agents every pane shows. */
   private async loadSharedState(): Promise<{ settings: ChatSettingsRead; navigationChannels: ChatChannelRead[] }> {
     const vaultGeneration = this.vaultGeneration;
     if (localExecutionAvailable) await chatApi.recoverInterruptedChatTurns();
-    const [settings, workingFolders, navigationChannels, teammates, archivedTeammates] = await Promise.all([
+    const [settings, workingFolders, navigationChannels, agents, archivedAgents] = await Promise.all([
       chatApi.readChatSettings(),
       localExecutionAvailable
         ? workingFolderApi.listCachedProjectWorkingFolders()
         : Promise.resolve([]),
       chatApi.listChatNavigationChannels(),
-      chatApi.listChatTeammates(false),
-      chatApi.listChatTeammates(true),
+      chatApi.listChatAgents(false),
+      chatApi.listChatAgents(true),
     ]);
     if (vaultGeneration === this.vaultGeneration) {
+      this.agents = agents;
+      this.archivedAgents = archivedAgents;
       this.configurationController.hydrate(settings, workingFolders);
-      this.teammates = teammates;
-      this.archivedTeammates = archivedTeammates;
     }
     return { settings, navigationChannels };
   }
@@ -602,9 +754,14 @@ export class ChatStore {
     return tracked;
   }
 
+  /**
+   * Follows a project selection to that project's remembered channel. A channel or reply thread shown meanwhile,
+   * such as the place a workspace tab restores after selecting its project, wins over the remembered channel.
+   */
   private async performProjectSelection(projectId: string): Promise<void> {
+    const channelRequest = this.channelSelectionRequest;
     if (!await this.loadProjectChannels(projectId)) return;
-    if (this.projects.selectedProjectId !== projectId) return;
+    if (this.projects.selectedProjectId !== projectId || channelRequest !== this.channelSelectionRequest) return;
     const rememberedChannelId = readLastChatChannelId(projectId);
     const selected = this.activeChannels.find((channel) => channel.id === rememberedChannelId)
       ?? this.activeChannels.find((channel) => channel.isDefault)
@@ -617,19 +774,83 @@ export class ChatStore {
     return this.channelNavigationController.loadProject(projectId);
   }
 
+  /** Shows a channel with its conversation, leaving any reply thread this pane showed on its own. */
   async selectChannel(channelId: ChatChannelId): Promise<void> {
+    return this.showChannel(channelId, null);
+  }
+
+  /**
+   * Shows one reply thread of a channel on its own, as a workspace tab does. The channel stays selected for its
+   * folders and authority, but the thread keeps panels of its own and never becomes the channel's open reply thread.
+   */
+  async showReplyThreadTab(channelId: ChatChannelId, replyThreadId: ChatReplyThreadId): Promise<void> {
+    return this.showChannel(channelId, replyThreadId);
+  }
+
+  private async showChannel(channelId: ChatChannelId, replyThreadTabId: ChatReplyThreadId | null): Promise<void> {
+    const settled = this.settledChannelSelectionRequest === this.channelSelectionRequest;
     const request = ++this.channelSelectionRequest;
+    if (settled && this.switchChannelMode(channelId, replyThreadTabId)) {
+      this.settledChannelSelectionRequest = request;
+      return;
+    }
+    try {
+      await this.loadShownChannel(request, channelId, replyThreadTabId);
+    } finally {
+      if (request === this.channelSelectionRequest) this.settledChannelSelectionRequest = request;
+    }
+  }
+
+  /**
+   * Switches a settled channel between its feed and one of its reply thread tabs without reading the channel again.
+   *
+   * @param channelId - Channel that must already be shown.
+   * @param replyThreadTabId - Reply thread of the thread tab, or null for the channel feed.
+   * @returns Whether the switch happened; false when a full channel load is needed.
+   */
+  private switchChannelMode(channelId: ChatChannelId, replyThreadTabId: ChatReplyThreadId | null): boolean {
+    const channel = this.selectedChannel;
+    if (!channel || channel.id !== channelId || this.replyThreadTabId === replyThreadTabId) return false;
+    if (this.projects.selectedProjectId !== channel.projectId) return false;
+    this.replyThreadTabId = replyThreadTabId;
+    this.channelArchiveOpen = false;
+    if (replyThreadTabId) this.showReplyThreadOfTab(channelId, replyThreadTabId);
+    else this.restoreChannelReplyThread(channelId);
+    this.selectedThreadId = null;
+    this.selectedExecutionRunId = null;
+    this.selectedExecutionEnvironmentId = null;
+    if (this.selectedWorkingFolderId) {
+      this.composerRuntimeController.ensureDraftThread(this.selectedWorkingFolderId);
+    } else {
+      this.composerRuntimeController.discardDraft();
+    }
+    this.interaction = null;
+    if (!replyThreadTabId && channelNeedsVisit(channel)) void this.markSelectedChannelRead();
+    return true;
+  }
+
+  /** Reads and shows a channel for one selection request, stopping when a newer request starts. */
+  private async loadShownChannel(
+    request: number,
+    channelId: ChatChannelId,
+    replyThreadTabId: ChatReplyThreadId | null,
+  ): Promise<void> {
     const channel = this.channelNavigationController.find(channelId)
       ?? await chatApi.readChatChannel(channelId);
     if (request !== this.channelSelectionRequest) return;
     this.channelNavigationController.upsert(channel);
     const changedChannel = this.selectedChannelId !== channelId;
+    const changedMode = this.replyThreadTabId !== replyThreadTabId;
     this.selectedChannelId = channelId;
+    this.replyThreadTabId = replyThreadTabId;
+    // A cached history and the open reply thread appear with the channel instead of after the reads below.
+    if (changedChannel) this.communicationController.showCachedChannel(channelId);
+    if (replyThreadTabId) this.showReplyThreadOfTab(channelId, replyThreadTabId);
+    else if (changedChannel || changedMode) this.restoreChannelReplyThread(channelId);
     if (this.owner) saveLastChatChannelId(channel.projectId, channelId);
     this.channelArchiveOpen = false;
     await this.projects.selectProject(channel.projectId);
     if (request !== this.channelSelectionRequest) return;
-    if (changedChannel) this.closeReplyThread();
     try {
       this.primaryWorkingFolder = await this.configurationController.readPrimaryWorkingFolder(channel.projectId);
     } catch {
@@ -645,7 +866,7 @@ export class ChatStore {
     this.selectedThreadId = null;
     this.selectedExecutionRunId = null;
     this.selectedExecutionEnvironmentId = null;
-    // Workspace tools such as the terminal are scoped to a thread, so a channel without a session keeps a draft one.
+    // The composer and the preview browser address the next session by a draft thread ID until a message starts it.
     if (this.selectedWorkingFolderId) {
       this.composerRuntimeController.ensureDraftThread(this.selectedWorkingFolderId);
     } else {
@@ -654,12 +875,23 @@ export class ChatStore {
     await this.loadChannelMessages(channel.id);
     if (request !== this.channelSelectionRequest) return;
     this.interaction = null;
-    if (channel.unreadCount > 0) void this.markSelectedChannelRead();
+    if (!replyThreadTabId && channelNeedsVisit(channel)) void this.markSelectedChannelRead();
+  }
+
+  /** Shows the reply thread of a thread tab, leaving the channel's remembered reply thread as it was. */
+  private showReplyThreadOfTab(channelId: ChatChannelId, replyThreadId: ChatReplyThreadId): void {
+    if (this.openReplyThreadId === replyThreadId) return;
+    this.hideReplyThread();
+    this.openReplyThreadId = replyThreadId;
+    void this.loadReplyThread(replyThreadId).catch((error: unknown) => {
+      if (this.selectedChannelId !== channelId || this.replyThreadTabId !== replyThreadId) return;
+      console.error("Could not open the reply thread of this tab", error);
+    });
   }
 
   async markSelectedChannelRead(): Promise<void> {
     const channel = this.selectedChannel;
-    if (!channel || channel.unreadCount === 0) return;
+    if (!channel || !channelNeedsVisit(channel)) return;
     if (this.channelReadPromise?.channelId === channel.id) return this.channelReadPromise.promise;
     const vaultGeneration = this.vaultGeneration;
     const promise = chatApi.setChatChannelRead(channel.id, true)
@@ -704,13 +936,13 @@ export class ChatStore {
     return this.channelNavigationController.updateDetails(channel, name, topic);
   }
 
-  async refreshTeammates(): Promise<void> {
-    const [teammates, archivedTeammates] = await Promise.all([
-      chatApi.listChatTeammates(false),
-      chatApi.listChatTeammates(true),
+  async refreshAgents(): Promise<void> {
+    const [agents, archivedAgents] = await Promise.all([
+      chatApi.listChatAgents(false),
+      chatApi.listChatAgents(true),
     ]);
-    this.teammates = teammates;
-    this.archivedTeammates = archivedTeammates;
+    this.agents = agents;
+    this.archivedAgents = archivedAgents;
     if (this.selectedChannelId) {
       this.channelNavigationController.upsert(await chatApi.readChatChannel(this.selectedChannelId));
     }
@@ -730,7 +962,7 @@ export class ChatStore {
 
   async postOrganizationalMessage(
     destination: string,
-    options: { alsoSendToChannel?: boolean } = {},
+    options: ChatOrganizationalPostOptions = {},
   ): Promise<import("$lib/chat/contracts").PostChatMessageResult> {
     const result = await this.organizationalController.post(destination, options);
     await this.markSelectedChannelRead();
@@ -752,10 +984,30 @@ export class ChatStore {
     return this.organizationalController.listScheduled(destination);
   }
 
+  /** The last scheduled messages read for a destination, or `null` before the first read settles. */
+  knownScheduledMessages(destination: string): ChatScheduledMessageRead[] | null {
+    return this.organizationalController.scheduledMessagesByDestination[destination] ?? null;
+  }
+
+  /** Records the scheduled messages a composer changed, so its summary reopens as it was left. */
+  rememberScheduledMessages(destination: string, messages: ChatScheduledMessageRead[]): void {
+    this.organizationalController.rememberScheduled(destination, messages);
+  }
+
   async cancelScheduledOrganizationalMessage(id: ChatScheduledMessageId): Promise<void> {
     const channelId = this.selectedChannelId;
     await this.organizationalController.cancelScheduled(id);
     this.publishChannelChange(channelId);
+  }
+
+  /** Replaces the content, time, and repeat rule of a scheduled message in the selected channel. */
+  async updateScheduledOrganizationalMessage(
+    request: import("$lib/chat/contracts").UpdateScheduledChatMessageRequest,
+  ): Promise<ChatScheduledMessageRead> {
+    const channelId = this.selectedChannelId;
+    const scheduled = await this.organizationalController.updateScheduled(request);
+    this.publishChannelChange(channelId);
+    return scheduled;
   }
 
   async retryScheduledOrganizationalMessage(id: ChatScheduledMessageId): Promise<ChatScheduledMessageRead> {
@@ -763,6 +1015,49 @@ export class ChatStore {
     const scheduled = await this.organizationalController.retryScheduled(id);
     this.publishChannelChange(channelId);
     return scheduled;
+  }
+
+  /**
+   * Records that this pane changed agent settings, so open settings views here reread; a channel id also tells other
+   * panes and windows to reread that channel.
+   */
+  agentSettingsChanged(channelId: ChatChannelId | null): void {
+    this.organizationalController.agentSettingsVersion += 1;
+    if (channelId) this.publishChannelChange(channelId);
+  }
+
+  /** Rereads a channel's members and the agents after this pane added or removed agents there. */
+  async channelAgentsChanged(channelId: ChatChannelId): Promise<void> {
+    this.channelNavigationController.upsert(await chatApi.readChatChannel(channelId));
+    await this.refreshAgents();
+    this.agentSettingsChanged(channelId);
+  }
+
+  /** Records that this pane changed the notes of `channelId`, so open note views here and in other panes and windows reread. */
+  channelNotesChanged(channelId: ChatChannelId): void {
+    this.organizationalController.channelNotesVersion += 1;
+    this.publishChannelChange(channelId);
+  }
+
+  /** Schedules the message a person confirmed from an agent's schedule proposal in the selected channel. */
+  async confirmScheduleProposal(
+    request: import("$lib/chat/contracts").ConfirmScheduleProposalRequest,
+  ): Promise<ChatScheduledMessageRead> {
+    const channelId = this.selectedChannelId;
+    const scheduled = await this.organizationalController.confirmScheduleProposal(request);
+    this.publishChannelChange(channelId);
+    return scheduled;
+  }
+
+  /** Pushes the commit of an agent's push request in `workingFolderId` and posts the confirming reply. */
+  async confirmPushRequest(
+    request: import("$lib/chat/contracts").ConfirmPushRequestRequest,
+    workingFolderId: string,
+  ): Promise<import("$lib/chat/contracts").PostChatMessageResult> {
+    const channelId = this.selectedChannelId;
+    const result = await this.organizationalController.confirmPushRequest(request, workingFolderId);
+    this.publishChannelChange(channelId);
+    return result;
   }
 
   async sendScheduledOrganizationalMessageNow(
@@ -775,8 +1070,11 @@ export class ChatStore {
     return this.organizationalController.dispatchDue();
   }
 
+  /** Opens a reply thread beside its channel, or in place of the thread a reply thread tab shows. */
   async openReplyThread(replyThreadId: ChatReplyThreadId): Promise<void> {
     this.openReplyThreadId = replyThreadId;
+    if (this.replyThreadTabId !== null) this.replyThreadTabId = replyThreadId;
+    this.rememberChannelReplyThread(replyThreadId);
     this.selectedExecutionRunId = null;
     await this.loadReplyThread(replyThreadId, true);
   }
@@ -794,6 +1092,7 @@ export class ChatStore {
     await this.selectChannel(result.channelId);
     if (result.replyThreadId) {
       this.openReplyThreadId = result.replyThreadId;
+      this.rememberChannelReplyThread(result.replyThreadId);
       this.selectedExecutionRunId = null;
       await this.communicationController.loadReplyThreadAtCursor(result.replyThreadId, result.anchorCursor);
     } else {
@@ -806,10 +1105,49 @@ export class ChatStore {
     if (this.messageAnchorId === messageItemId) this.messageAnchorId = null;
   }
 
+  /** Closes the reply thread a person dismissed, so its channel opens without it next time. */
   closeReplyThread(): void {
+    this.rememberChannelReplyThread(null);
+    this.hideReplyThread();
+  }
+
+  /** Takes the open reply thread off screen while its channel keeps it for the next visit. */
+  private hideReplyThread(): void {
     this.openReplyThreadId = null;
     this.communicationController.clearReplyThread();
     this.selectedExecutionRunId = null;
+  }
+
+  /** Records the reply thread the selected channel shows, or that it shows none. */
+  private rememberChannelReplyThread(replyThreadId: ChatReplyThreadId | null): void {
+    const channelId = this.selectedChannelId;
+    // A reply thread tab never changes which reply thread its channel shows.
+    if (!channelId || this.replyThreadTabId !== null) return;
+    this.openReplyThreadByChannel.delete(channelId);
+    if (!replyThreadId) return;
+    this.openReplyThreadByChannel.set(channelId, replyThreadId);
+    while (this.openReplyThreadByChannel.size > MAX_REMEMBERED_CHANNEL_REPLY_THREADS) {
+      const oldest = this.openReplyThreadByChannel.keys().next().value;
+      if (oldest === undefined) break;
+      this.openReplyThreadByChannel.delete(oldest);
+    }
+  }
+
+  /**
+   * Shows the reply thread a channel had open when it was left, or none. A thread that can no longer be read is
+   * forgotten and stays closed.
+   */
+  private restoreChannelReplyThread(channelId: ChatChannelId): void {
+    const replyThreadId = this.openReplyThreadByChannel.get(channelId) ?? null;
+    if (replyThreadId === this.openReplyThreadId) return;
+    this.hideReplyThread();
+    if (!replyThreadId) return;
+    this.openReplyThreadId = replyThreadId;
+    void this.loadReplyThread(replyThreadId).catch((error: unknown) => {
+      if (this.selectedChannelId !== channelId || this.openReplyThreadId !== replyThreadId) return;
+      console.error("Could not reopen the channel's reply thread", error);
+      this.closeReplyThread();
+    });
   }
 
   async selectAssignmentExecution(runId: string): Promise<void> {
@@ -840,8 +1178,32 @@ export class ChatStore {
     if (expectedRevision === null) throw new Error("Work assignment was not loaded");
     await chatApi.cancelChatAssignment(assignmentId, expectedRevision);
     this.publishChannelChange(this.selectedChannelId);
+    this.refreshReviewQueue();
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
     if (this.selectedChannelId) await this.loadChannelMessages(this.selectedChannelId, true);
+  }
+
+  /**
+   * Accepts reviewed work or requests changes with a note, then rereads the thread. Resolves false when the work
+   * changed since it was loaded, which records nothing and refreshes the thread instead.
+   */
+  async reviewAssignment(assignmentId: ChatWorkAssignmentId, review: ChatAssignmentReviewRequest): Promise<boolean> {
+    const expectedRevision = this.replyThread?.assignment?.id === assignmentId
+      ? this.replyThread.assignment.revision
+      : null;
+    if (expectedRevision === null) throw new Error("Work assignment was not loaded");
+    let reviewed = true;
+    try {
+      await chatApi.reviewChatAssignment(assignmentId, expectedRevision, review);
+    } catch (error: unknown) {
+      if (chatErrorCode(error) !== "stale_revision") throw error;
+      reviewed = false;
+    }
+    this.publishChannelChange(this.selectedChannelId);
+    this.refreshReviewQueue();
+    if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
+    if (this.selectedChannelId) await this.loadChannelMessages(this.selectedChannelId, true);
+    return reviewed;
   }
 
   async retryAssignment(assignmentId: ChatWorkAssignmentId): Promise<void> {
@@ -851,39 +1213,61 @@ export class ChatStore {
     if (expectedRevision === null) throw new Error("Work assignment was not loaded");
     await chatApi.retryChatAssignment(assignmentId, expectedRevision);
     this.publishChannelChange(this.selectedChannelId);
+    this.refreshReviewQueue();
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
+  }
+
+  /** Opens the reply thread of a review queue item, where its question, approval, review, or failure lives. */
+  async openReviewItem(
+    item: Pick<ChatReviewQueueItemRead, "projectId" | "channelId" | "replyThreadId">,
+  ): Promise<void> {
+    await this.openAssignmentReplyThread(item);
   }
 
   /**
-   * Starts waiting work with the details the user saw and rereads what it changed. Resolves false when the work
-   * changed since then, which started nothing and refreshes the offer instead.
+   * Builds the request that opens the whole change set of an assignment in the review panel. When the open reply
+   * thread ran that assignment here, the review reads the working folder its execution thread used.
+   *
+   * @param assignmentId Assignment whose authored changes the review shows.
    */
-  async acceptAssignmentHere(assignmentId: ChatWorkAssignmentId, seenDigest: string): Promise<boolean> {
-    const started = await chatApi.acceptChatAssignmentHere(assignmentId, seenDigest);
-    this.publishChannelChange(this.selectedChannelId);
-    this.refreshWaitingAssignments();
-    if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
-    return started !== null;
+  async assignmentReviewDetail(assignmentId: ChatWorkAssignmentId): Promise<ChatOpenReviewDetail> {
+    const detail: ChatOpenReviewDetail = { source: { kind: "assignment", assignmentId }, relativePath: null };
+    const assignment = this.replyThread?.assignment;
+    const executionThreadId = assignment?.id === assignmentId ? assignment.latestRunProviderThreadId : null;
+    if (!executionThreadId) return detail;
+    const thread = [...this.activeThreads, ...this.archivedThreads].find((entry) => entry.id === executionThreadId)
+      ?? await chatApi.readChatThreadShell(executionThreadId);
+    if (thread.workingFolderId === null) return detail;
+    return { ...detail, sourceThreadId: thread.id, sourceWorkingFolderId: thread.workingFolderId };
   }
 
-  /** Opens the reply thread of waiting work, where its details and Start here live. */
-  async openWaitingAssignment(waiting: ChatWaitingAssignmentRead): Promise<void> {
+  /** Selects the project and channel of an assignment and opens its reply thread. */
+  private async openAssignmentReplyThread(
+    target: Pick<ChatReviewQueueItemRead, "projectId" | "channelId" | "replyThreadId">,
+  ): Promise<void> {
     this.messageAnchorId = null;
-    await this.projects.selectProject(waiting.projectId);
-    await this.loadProjectChannels(waiting.projectId);
-    await this.selectChannel(waiting.channelId);
-    await this.openReplyThread(waiting.replyThreadId);
+    await this.projects.selectProject(target.projectId);
+    await this.loadProjectChannels(target.projectId);
+    await this.selectChannel(target.channelId);
+    await this.openReplyThread(target.replyThreadId);
   }
 
-  /** Rereads the work waiting for a local action here, which only its own reply thread would otherwise reveal. */
-  private refreshWaitingAssignments(): void {
-    if (!localExecutionAvailable) return;
-    const vaultGeneration = this.vaultGeneration;
-    void chatApi.listChatWaitingAssignments().then((waiting) => {
-      if (vaultGeneration === this.vaultGeneration) this.waitingAssignments = waiting;
-    }).catch((error: unknown) => {
-      console.error("Chat waiting work could not be read", error);
-    });
+  /**
+   * Accepts the selected reviews of the queue against the revisions it showed, then rereads the queue. Work that
+   * changed since then is counted as stale and stays in the queue.
+   */
+  async acceptReviewItems(assignmentIds: readonly ChatWorkAssignmentId[]): Promise<ChatBatchAcceptSummary> {
+    return shared.reviewQueue.acceptReviewItems(assignmentIds);
+  }
+
+  /** Rereads the vault-wide review queue and resolves once the read settled; a failure sets `reviewQueueError`. */
+  reloadReviewQueue(): Promise<void> {
+    return shared.reviewQueue.refresh();
+  }
+
+  /** Rereads the vault-wide review queue; overlapping requests from every pane coalesce. */
+  private refreshReviewQueue(): void {
+    void shared.reviewQueue.refresh();
   }
 
   async archiveChannel(channel: ChatChannelRead): Promise<void> {
@@ -918,6 +1302,11 @@ export class ChatStore {
     return this.configurationController.probeProvider(instanceId);
   }
 
+  /** Rereads a provider's plan limits when they are missing or out of date; see the configuration controller. */
+  refreshStaleProviderLimits(provider: ProviderInstanceRead): void {
+    this.configurationController.refreshStaleProviderLimits(provider);
+  }
+
   async refreshAllProviders(): Promise<ProviderRefreshResult> {
     return this.configurationController.refreshAllProviders();
   }
@@ -932,10 +1321,6 @@ export class ChatStore {
 
   async refreshModels(instanceId: ProviderInstanceId): Promise<void> {
     return this.configurationController.refreshModels(instanceId);
-  }
-
-  async updateModels(instanceId: ProviderInstanceId, visible: ModelId[], favorites: ModelId[]): Promise<void> {
-    return this.configurationController.updateModels(instanceId, visible, favorites);
   }
 
   async updateBehavior(behavior: ChatBehaviorPreferences): Promise<void> {
@@ -1107,6 +1492,8 @@ export class ChatStore {
   flushComposer(): Promise<void> { return this.composerRuntimeController.flush(); }
   refreshInteraction(threadId = this.selectedThreadId): Promise<void> { return this.composerRuntimeController.refreshInteraction(threadId); }
   sendComposer(options: ChatComposerSendOptions = {}): Promise<void> { return this.composerRuntimeController.send(options); }
+  /** Sends a turn in the selected thread with its own configuration, leaving the composer untouched. */
+  sendThreadTurn(prompt: string): Promise<ChatThreadTurnRef> { return this.composerRuntimeController.sendThreadTurn(prompt); }
   retryFailedSend(): Promise<void> { return this.composerRuntimeController.retryFailedSend(); }
   editFailedSend(): Promise<void> { return this.composerRuntimeController.editFailedSend(); }
   changeProviderAfterFailure(): Promise<void> { return this.composerRuntimeController.changeProviderAfterFailure(); }
@@ -1116,27 +1503,54 @@ export class ChatStore {
   cancelQueuedFollowup(): Promise<void> { return this.composerRuntimeController.cancelQueuedFollowup(); }
   editQueuedFollowup(): Promise<void> { return this.composerRuntimeController.editQueuedFollowup(); }
   stop(force = false): Promise<void> { return this.composerRuntimeController.stop(force); }
-  resolveApproval(decision: import("$lib/chat/contracts").ApprovalDecision): Promise<void> { return this.composerRuntimeController.resolveApproval(decision); }
+  /** Resolves the open approval; `remember` also records its offered rule, so matching requests in the channel are allowed without asking. */
+  resolveApproval(decision: import("$lib/chat/contracts").ApprovalDecision, remember = false): Promise<void> { return this.composerRuntimeController.resolveApproval(decision, remember); }
   resolveUserInput(answers: UserInputAnswer[]): Promise<void> { return this.composerRuntimeController.resolveUserInput(answers); }
   importComposerImages(files: File[]): Promise<void> { return this.composerRuntimeController.importImages(files); }
   pickComposerImages(title: string): Promise<void> { return this.composerRuntimeController.pickImages(title); }
+  importComposerTextSnippet(text: string, displayName: string): Promise<void> { return this.composerRuntimeController.importTextSnippet(text, displayName); }
   removeComposerAttachment(attachmentId: string): void { this.composerRuntimeController.removeAttachment(attachmentId); }
 
-  async handleNativeChange(threadId: string): Promise<void> {
-    await this.nativeChanges.push(threadId);
+  /**
+   * Queues a native change to one thread for the next frame. Without a notification, as after a checkpoint restore
+   * this window ran, everything the thread shows rereads.
+   */
+  async handleNativeChange(threadId: string, notification: ChatChangeNotification | null = null): Promise<void> {
+    await this.nativeChanges.push(
+      threadId,
+      notification ? nativeChangeFromNotification(notification) : fullNativeChange(),
+    );
   }
 
-  private async refreshNativeChange(threadId: string): Promise<void> {
-    const thread = await chatApi.readChatThreadShell(threadId);
-    if (thread.workingFolderId !== null && thread.scratchGenerationId === null) {
-      this.threadCollectionController.upsert(thread);
+  private async refreshNativeChange(threadId: string, change: ChatNativeChange): Promise<void> {
+    const plan = planNativeRefresh(
+      change,
+      threadId === this.selectedThreadId,
+      this.lastNativeSequences.get(threadId) ?? null,
+    );
+    if (change.sequence !== null) {
+      this.lastNativeSequences.set(threadId, Math.max(change.sequence, this.lastNativeSequences.get(threadId) ?? 0));
     }
+    if (plan.shell) {
+      const thread = await chatApi.readChatThreadShell(threadId);
+      if (thread.workingFolderId !== null && thread.scratchGenerationId === null) {
+        this.threadCollectionController.upsert(thread);
+      }
+    }
+    if (plan.organizational) await this.handleOrganizationChange();
+    if (threadId !== this.selectedThreadId) return;
+    if (plan.timeline) await this.timelineController.refreshLatest(threadId);
+    if (plan.interaction) await this.refreshInteraction(threadId);
+  }
+
+  /** Rereads the review queue, push request states, the open channel, and the open reply thread after organizational rows changed natively. */
+  async handleOrganizationChange(): Promise<void> {
+    this.organizationalController.pushRequestsVersion += 1;
+    this.organizationalController.agentSettingsVersion += 1;
+    this.refreshReviewQueue();
     const channelId = this.selectedChannelId;
     if (channelId) await this.loadChannelMessages(channelId, true);
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
-    if (threadId !== this.selectedThreadId) return;
-    await this.loadTimeline(threadId);
-    await this.refreshInteraction(threadId);
   }
 
   private publishChannelChange(channelId: ChatChannelId | null): void {
@@ -1172,7 +1586,8 @@ export class ChatStore {
   }
 
   /**
-   * Starts rereading Chat rows that linked devices changed through sync, once per store. Pane stores live as long as
+   * Starts rereading Chat rows that linked devices changed through sync, and settings after a turn changed a
+   * provider's last use or plan limits, once per store. Pane stores live as long as
    * the WebView, so the listeners are never removed and end with it.
    */
   private listenForSync(): void {
@@ -1189,13 +1604,27 @@ export class ChatStore {
     });
     void listenSyncApplied((tables) => {
       if (tables.some((table) => CHAT_SYNC_TABLES.includes(table))) refresh();
+      else if (this.owner && this.loaded && tables.includes(CHAT_PROVIDER_STATUS_SYNC_TABLE)) {
+        void this.refreshAgents().catch((error: unknown) => {
+          console.error("Chat could not reread agents after a linked desktop shared its providers", error);
+        });
+      }
     }).catch((error: unknown) => {
       console.error("Chat could not listen for sync", error);
+    });
+    if (!this.owner) return;
+    // The window's primary store owns the shared settings, so one listener per window rereads them.
+    void chatApi.listenForProviderActivity(() => {
+      void this.configurationController.refreshSettings().catch((error: unknown) => {
+        console.error("Chat settings refresh after provider activity failed", error);
+      });
+    }).catch((error: unknown) => {
+      console.error("Chat could not listen for provider activity", error);
     });
   }
 
   /**
-   * Rereads channels, teammates, and the open conversation after sync changed Chat rows. Sync names tables, not
+   * Rereads channels, agents, and the open conversation after sync changed Chat rows. Sync names tables, not
    * rows, so this rereads what the pane shows. Receiving never publishes, so windows do not echo each other.
    */
   private async refreshFromSync(): Promise<void> {
@@ -1205,11 +1634,14 @@ export class ChatStore {
     const channels = await chatApi.listChatNavigationChannels();
     if (!isCurrentVault()) return;
     this.channelNavigationController.refreshNavigation(channels);
-    this.refreshWaitingAssignments();
-    if (this.owner) await this.refreshTeammates();
+    this.refreshReviewQueue();
+    if (this.owner) await this.refreshAgents();
     const channelId = this.selectedChannelId;
     if (!isCurrentVault() || !channelId || !this.channelNavigationController.find(channelId)) return;
     this.organizationalController.scheduledMessagesVersion += 1;
+    this.organizationalController.channelNotesVersion += 1;
+    this.organizationalController.pushRequestsVersion += 1;
+    this.organizationalController.agentSettingsVersion += 1;
     await this.loadChannelMessages(channelId, true);
     if (this.openReplyThreadId && isCurrentVault()) await this.loadReplyThread(this.openReplyThreadId, true);
   }
@@ -1219,7 +1651,7 @@ export class ChatStore {
     const vaultGeneration = this.vaultGeneration;
     if (!this.loaded) return;
     const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
-    this.refreshWaitingAssignments();
+    this.refreshReviewQueue();
     await Promise.all([
       ...[...changes.threadIds].map((threadId) => this.refreshThreadFromOtherWindow(threadId, isCurrentVault)),
       ...[...changes.channelIds].map((channelId) => this.refreshChannelFromOtherWindow(channelId, isCurrentVault)),
@@ -1227,6 +1659,9 @@ export class ChatStore {
     const channelId = this.selectedChannelId;
     if (!isCurrentVault() || !channelId || !changes.channelIds.has(channelId)) return;
     this.organizationalController.scheduledMessagesVersion += 1;
+    this.organizationalController.channelNotesVersion += 1;
+    this.organizationalController.pushRequestsVersion += 1;
+    this.organizationalController.agentSettingsVersion += 1;
     await this.loadChannelMessages(channelId, true);
     if (this.openReplyThreadId && isCurrentVault()) await this.loadReplyThread(this.openReplyThreadId, true);
   }
@@ -1323,7 +1758,26 @@ export class ChatStore {
   }
 
   async loadReplyThread(replyThreadId: ChatReplyThreadId, force = false): Promise<void> {
-    return this.communicationController.loadReplyThread(replyThreadId, force);
+    await this.communicationController.loadReplyThread(replyThreadId, force);
+    void this.refreshSelectedChannelAfterThreadRead();
+  }
+
+  /**
+   * Rereads the selected channel after a reply thread was read, when its row still counts new replies or marks an
+   * unseen failure, since reading the thread may have cleared them.
+   */
+  private async refreshSelectedChannelAfterThreadRead(): Promise<void> {
+    const channel = this.selectedChannel;
+    if (!channel || (channel.unreadReplyCount === 0 && !channel.unseenFailure)) return;
+    const vaultGeneration = this.vaultGeneration;
+    try {
+      const updated = await chatApi.readChatChannel(channel.id);
+      if (this.vaultGeneration !== vaultGeneration) return;
+      this.channelNavigationController.upsert(updated);
+      this.publishChanges({ channelIds: [updated.id] });
+    } catch (error: unknown) {
+      console.error(`Could not refresh #${channel.name} after reading a reply thread`, error);
+    }
   }
 
   async loadOlderReplyThreadMessages(): Promise<void> {
@@ -1365,9 +1819,10 @@ export function useChat(): ChatStore {
 export function resetChatForVault(): void {
   for (const store of paneStores.all()) store.resetPaneForVault();
   shared.providerDiscoveryStarted = false;
-  shared.teammates = [];
-  shared.archivedTeammates = [];
+  shared.resetAgents();
   shared.configuration.reset();
+  shared.reviewQueue.reset();
+  chatPanelVisibility.clear();
 }
 
 /** Show a project's newly saved primary working folder in every pane whose channel belongs to that project. */

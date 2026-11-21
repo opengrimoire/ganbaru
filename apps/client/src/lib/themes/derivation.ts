@@ -2,6 +2,7 @@ import {
   pickBrightForeground,
   pickReadableBorder,
   pickReadableForeground,
+  pickReadableSignal,
   relativeLuminance,
   shiftPerceptualL,
   walkFraction,
@@ -30,6 +31,7 @@ const DERIVED_APP_TOKEN_KEYS: readonly string[] = Object.freeze([
   "--event-panel-input-text",
   "--event-panel-placeholder",
   "--form-indicator",
+  "--action-confirm-signal",
 ] as const);
 
 /**
@@ -236,6 +238,8 @@ export function deriveAppTokens(
     "--status-declined-foreground": destructiveText,
     "--action-confirm": confirm,
     "--action-confirm-foreground": confirmText,
+    // Body-text contrast because the signal also colors short labels and addition counts.
+    "--action-confirm-signal": pickReadableSignal(confirm, canvas, 4.5),
     "--status-accepted": confirm,
     "--status-accepted-foreground": confirmText,
     "--status-tentative": warning,

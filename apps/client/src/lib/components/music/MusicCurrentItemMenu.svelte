@@ -13,6 +13,7 @@
     getMusicPlaylistSummaries,
   } from "$lib/api/music-library";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { musicErrorMessage } from "$lib/music/user-errors";
   import { notifyMusicLibraryChanged } from "$lib/music/library/events";
   import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
   import { sortReviewPlaylists } from "$lib/music/review";
@@ -99,7 +100,7 @@
       savedIds = new Set(matrix.map((entry) => entry.playlistId));
       draftIds = new Set(savedIds);
     } catch (cause) {
-      if (open && request === generation && itemId === targetItemId) error = cause instanceof Error ? cause.message : String(cause);
+      if (open && request === generation && itemId === targetItemId) error = musicErrorMessage(cause, t("music.errors.playlistsLoadFailed"));
     } finally {
       if (request === generation) loading = false;
     }
@@ -151,7 +152,7 @@
         trigger?.focus();
       }
     } catch (cause) {
-      if (open && request === generation && itemId === targetItemId) error = cause instanceof Error ? cause.message : String(cause);
+      if (open && request === generation && itemId === targetItemId) error = musicErrorMessage(cause, t("music.errors.membershipSaveFailed"));
       else console.error("Could not save playlists for the previous track", cause);
     } finally {
       saving = false;

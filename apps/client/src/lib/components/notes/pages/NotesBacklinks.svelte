@@ -75,7 +75,7 @@
   {#if panelOpen}
     <div class={embedded ? "min-w-0 rounded-md bg-background/70 p-1" : "mt-1 max-w-2xl rounded-md border border-border bg-background/70 p-1"}>
       {#if notes.backlinksError}
-        <Notice class="px-2 py-1.5 text-[0.8rem]" message={t("notes.loadBacklinksFailed", notes.backlinksError)} copy={notes.backlinksError} onRetry={retryBacklinks} />
+        <Notice class="px-2 py-1.5 text-[0.8rem]" message={t("notes.loadBacklinksFailed")} copy={notes.backlinksError} onRetry={retryBacklinks} />
       {:else if notes.backlinks.length === 0}
         <div class="px-2 py-1.5 text-[0.8rem] text-muted-foreground">
           {t("notes.noBacklinks")}

@@ -12,6 +12,8 @@ use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio_rustls::TlsAcceptor;
+use tokio_rustls::server::TlsStream;
 
 pub mod admission;
 #[cfg(desktop)]
@@ -20,6 +22,8 @@ pub mod bundles;
 pub mod coordinator;
 pub mod limits;
 pub mod listener;
+#[cfg(desktop)]
+pub mod live;
 pub mod member;
 pub mod server;
 
@@ -146,6 +150,43 @@ impl<R: Routes> Routes for Option<R> {
     }
 }
 
+/// Two route sets on one listener: a request goes to the first that handles it.
+impl<A: Routes, B: Routes> Routes for (A, B) {
+    fn handles(&self, request: &ControlMessage) -> bool {
+        self.0.handles(request) || self.1.handles(request)
+    }
+
+    async fn serve(
+        &self,
+        stream: &mut ServerStream,
+        peer: Peer<'_>,
+        request: ControlMessage,
+    ) -> Result<(), String> {
+        if self.0.handles(&request) {
+            self.0.serve(stream, peer, request).await
+        } else {
+            self.1.serve(stream, peer, request).await
+        }
+    }
+
+    async fn serve_unauthenticated(
+        &self,
+        stream: &mut ServerStream,
+        peer: Peer<'_>,
+        request: ControlMessage,
+        gate: &PreAuthGate,
+    ) -> Result<(), String> {
+        if self.0.handles(&request) {
+            self.0
+                .serve_unauthenticated(stream, peer, request, gate)
+                .await
+        } else {
+            self.1
+                .serve_unauthenticated(stream, peer, request, gate)
+                .await
+        }
+    }
+}
 /// Runs one control frame read or write within [`CONTROL_TIMEOUT`].
 pub async fn timeout_control<T>(
     future: impl Future<Output = Result<T, String>>,
@@ -153,6 +194,37 @@ pub async fn timeout_control<T>(
     tokio::time::timeout(CONTROL_TIMEOUT, future)
         .await
         .map_err(|_| "handoff control message timed out".to_string())?
+}
+
+/// Completes the server side of a TLS handshake on `socket` within `timeout`.
+///
+/// Gives `None` when the peer closes the connection before the handshake finishes. A device
+/// dials several addresses of this one at once and closes every connection but the first to
+/// answer, so such a close is part of an ordinary dial rather than a failure to report.
+pub async fn accept_tls(
+    acceptor: TlsAcceptor,
+    socket: TcpStream,
+    timeout: Duration,
+) -> Result<Option<TlsStream<TcpStream>>, String> {
+    match tokio::time::timeout(timeout, acceptor.accept(socket))
+        .await
+        .map_err(|_| "TLS handshake timed out".to_string())?
+    {
+        Ok(stream) => Ok(Some(stream)),
+        Err(error) if peer_left_handshake(&error) => Ok(None),
+        Err(error) => Err(format!("accept TLS connection: {error}")),
+    }
+}
+
+/// Whether `error` means the peer closed the connection, rather than sent something invalid.
+fn peer_left_handshake(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::BrokenPipe
+    )
 }
 
 /// Loads the device ID and TLS identity on a blocking thread, because the first load may wait on
@@ -229,4 +301,65 @@ where
         },
     ))
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustls::server::{ClientHello, ResolvesServerCert};
+    use rustls::sign::CertifiedKey;
+    use std::sync::Arc;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    /// Holds no certificate; these handshakes end before the server would present one.
+    #[derive(Debug)]
+    struct NoCertificate;
+
+    impl ResolvesServerCert for NoCertificate {
+        fn resolve(&self, _hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+            None
+        }
+    }
+
+    /// Accepts one connection whose client sends `bytes` and then closes.
+    async fn accept_after(bytes: &[u8]) -> Result<Option<TlsStream<TcpStream>>, String> {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        let config =
+            rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+                .with_no_client_auth()
+                .with_cert_resolver(Arc::new(NoCertificate));
+        let bytes = bytes.to_vec();
+        let client = tokio::spawn(async move {
+            let mut socket = TcpStream::connect(address).await.expect("connect");
+            socket.write_all(&bytes).await.expect("write");
+            socket.shutdown().await.expect("shutdown");
+            socket
+        });
+        let (socket, _) = listener.accept().await.expect("accept");
+        let accepted = accept_tls(
+            TlsAcceptor::from(Arc::new(config)),
+            socket,
+            Duration::from_secs(5),
+        )
+        .await;
+        drop(client.await.expect("client"));
+        accepted
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_closes_before_the_handshake_is_not_a_failure() {
+        assert!(matches!(accept_after(b"").await, Ok(None)));
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_sends_something_other_than_tls_is_a_failure() {
+        let Err(error) = accept_after(b"GET / HTTP/1.1\r\n\r\n").await else {
+            panic!("a request that is not TLS is refused");
+        };
+        assert!(error.starts_with("accept TLS connection:"), "{error}");
+    }
 }

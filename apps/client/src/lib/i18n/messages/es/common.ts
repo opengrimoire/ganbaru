@@ -18,7 +18,10 @@ export const common = {
   loading: "Cargando",
   loadMore: "Cargar más",
   retry: "Reintentar",
+  pressKey: (key: string) => `(pulsa ${key})`,
   viewLoadFailed: (label: string) => `No se pudo cargar ${label}.`,
+  copyCommand: "Copiar comando",
+  commandCopied: "Comando copiado",
   notice: {
     copy: "Copiar mensaje",
     copied: "Mensaje copiado",

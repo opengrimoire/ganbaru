@@ -3,6 +3,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
   import { anchoredPanelStyle } from "$lib/utils/anchored-panel";
   import { portal } from "$lib/utils/portal";
   import type { NotesDatabasePasteController } from "$lib/stores/notes/database-paste.svelte";
@@ -15,7 +16,7 @@
   /** Retries a paste whose writes already started, rejecting while it still fails. */
   async function retryStartedPaste(): Promise<void> {
     await controller.linkedView();
-    if (controller.error) throw new Error(controller.error);
+    if (controller.error) throw new LocalizedError(t("notes.databasePasteFailed"));
   }
 
   /** Keep paste choices attached to their row without taking space in the document. */
@@ -77,7 +78,7 @@
       <button type="button" class="menu-item disabled:pointer-events-none" disabled={controller.busy} onclick={controller.dismiss}>{t("notes.databasePasteDismiss")}</button>
     {/if}
     {#if controller.error}
-      <Notice class="px-2 py-1.5 text-panel-detail" message={t("notes.databasePasteFailed", controller.error)} copy={controller.error} onRetry={controller.started ? retryStartedPaste : undefined} />
+      <Notice class="px-2 py-1.5 text-panel-detail" message={t("notes.databasePasteFailed")} copy={controller.error} onRetry={controller.started ? retryStartedPaste : undefined} />
     {/if}
   </div>
 {/if}

@@ -252,6 +252,8 @@ export const calendar = {
     searchProjects: "Search projects...",
     createGroup: "Create a group",
     createProject: "Create project",
+    newGroup: "New group",
+    newProject: "New project",
     noProjectsFound: "No projects found",
     tasks: "Tasks",
     searchTasks: "Search tasks...",
@@ -261,6 +263,7 @@ export const calendar = {
     taskLinksRecurring: "Task links are available for single events.",
     music: "Music",
     musicPlaylist: "Playlist",
+    musicLoadFailed: "Could not load the music settings.",
     musicSound: "Soundscape",
     musicPhasePlaylist: (phase: string) => `${phase} playlist`,
     musicPhaseSound: (phase: string) => `${phase} soundscape`,
@@ -345,7 +348,7 @@ export const calendar = {
     saveUncertain: "Save could not be confirmed. Retry to check its result.",
     deleteUncertain: "Delete or Undo could not be confirmed. Retry to check the original operation.",
     deleteRefreshPending: "The operation was saved. Retry to refresh the calendar.",
-    deleteFailed: (message: string) => `Delete or Undo failed: ${message}`,
+    deleteFailed: "Could not delete or undo the change.",
     previewFailed: "Could not preview this change",
     historyUnavailable: "The recorded Focus timeline could not be loaded. Try a shorter Calendar range or retry.",
     eventsUnreadable: (count: number) =>
@@ -354,8 +357,7 @@ export const calendar = {
       `${count} ${count === 1 ? "event" : "events"} in this range ${count === 1 ? "is" : "are"} not shown because the range holds more than the Calendar can display.`,
     eventsLoadFailed: "Calendar events could not be loaded.",
     saved: "Saved",
-    unknownSaveError: "Unknown save error",
-    saveFailed: (message: string) => `Save failed: ${message}`,
+    saveFailed: "Could not save the change.",
     tooManyChangedOccurrences:
       "This event has too many changed occurrences. Remove some changes to repeated occurrences and try again.",
     valueTooLarge:

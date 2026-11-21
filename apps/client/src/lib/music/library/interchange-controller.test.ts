@@ -67,7 +67,7 @@ describe("native Music transfer dialog", () => {
     expect(await controller.commitImport()).toBe(false);
     expect(calls.commit).toHaveBeenCalledTimes(1);
     expect(controller.m3u8Preview?.revision).toBe("b".repeat(64));
-    expect(controller.error).toBe("Preview changed");
+    expect(controller.error).toBe("The music library changed during the import, so check the updated preview and import again.");
     expect(await controller.commitImport()).toBe(true);
     expect(calls.commit.mock.calls[1]![1].expectedRevision).toBe("b".repeat(64));
   });

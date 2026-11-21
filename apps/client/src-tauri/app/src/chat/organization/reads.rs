@@ -1,20 +1,91 @@
 //! SQLite read models for organizational Chat state.
 
 use super::common::{
-    ACTIVE_FOLDER_GRANTS_SQL, PageCursor, parse_access_profile_builtin_key, parse_approval_policy,
-    parse_folder_capability, parse_history_boundary, parse_json, parse_participant_kind,
-    parse_runtime_approval_policy, parse_work_state, u32_value,
+    PageCursor, parse_json, parse_participant_kind, parse_review_outcome, parse_work_state,
+    stored_value_error, u32_value,
 };
+use super::inputs::AWAITING_DELIVERY_SQL;
 use super::workflow::{parse_model_selection, read_message_references};
 use super::{
     LOCAL_PARTICIPANT_ID, identifier_error, now_timestamp, optional_timestamp, persistence_error,
     timestamp, u64_value,
 };
-use crate::chat::channels::sync_key;
+use crate::chat::channels::{sync_key, unseen_thread_failure_sql};
 use ganbaru_chat::conversion::reply_cursor_key;
-use ganbaru_chat::coordination::access::history_boundary_is_expansion;
 use ganbaru_chat_contracts::models::*;
-use sqlx::{Row, SqlitePool};
+use sqlx::{AssertSqlSafe, Row, SqlitePool};
+
+/// The provider instance that runs each provider family's agent on this device, by family id.
+/// On a device that runs no provider it also carries this device's id, so agent reads show the
+/// provider status that the linked desktop that would run each agent shares.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LocalProviderInstances {
+    by_family: std::collections::BTreeMap<String, ProviderInstanceId>,
+    linked_reader: Option<String>,
+}
+
+impl LocalProviderInstances {
+    /// No provider instance and no linked provider status.
+    #[cfg(any(mobile, test))]
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// No provider instance, reading linked provider status as the device `device_id`.
+    #[cfg(any(mobile, test))]
+    pub(crate) fn linked_reader(device_id: String) -> Self {
+        Self {
+            by_family: std::collections::BTreeMap::new(),
+            linked_reader: Some(device_id),
+        }
+    }
+
+    /// How many provider families have an instance on this device.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.by_family.len()
+    }
+
+    fn get(&self, family_id: &str) -> Option<&ProviderInstanceId> {
+        self.by_family.get(family_id)
+    }
+}
+
+impl FromIterator<(String, ProviderInstanceId)> for LocalProviderInstances {
+    fn from_iter<I: IntoIterator<Item = (String, ProviderInstanceId)>>(iter: I) -> Self {
+        Self {
+            by_family: iter.into_iter().collect(),
+            linked_reader: None,
+        }
+    }
+}
+
+/// What the linked desktop that would run new work of `agent_id` shares about the provider
+/// family `family_id`, as read by `device_id`. Only linked devices that still write Chat count.
+async fn read_linked_provider_status(
+    pool: &SqlitePool,
+    agent_id: &ChatParticipantId,
+    family_id: &str,
+    device_id: &str,
+) -> ChatResult<Option<ChatLinkedProviderStatusRead>> {
+    let linked = super::common::active_writer_devices(pool).await?;
+    let writers =
+        super::workflow::ChatWriters::new(std::iter::once(device_id.to_owned()).chain(linked));
+    let mut connection = pool.acquire().await.map_err(persistence_error)?;
+    let Some(executor) = super::workflow::linked_executing_device(
+        &mut connection,
+        agent_id,
+        None,
+        device_id,
+        &writers,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    drop(connection);
+    ganbaru_chat::provider_status::read_provider_status(pool, &executor, family_id).await
+}
 
 pub(crate) async fn read_memberships_for_conversation(
     pool: &SqlitePool,
@@ -50,9 +121,15 @@ pub(super) async fn read_membership(
     participant_id: &ChatParticipantId,
 ) -> ChatResult<ChatConversationMembershipRead> {
     let row = sqlx::query(
-        "SELECT revision, removed_at
-         FROM chat_conversation_memberships
-         WHERE conversation_id = ? AND participant_id = ?",
+        "SELECT membership.revision, membership.removed_at,
+                EXISTS(
+                    SELECT 1 FROM chat_agent_channel_memberships agent_membership
+                    WHERE agent_membership.conversation_id = membership.conversation_id
+                      AND agent_membership.agent_id = membership.participant_id
+                      AND agent_membership.removed_at IS NULL
+                ) AS agent_in_channel
+         FROM chat_conversation_memberships membership
+         WHERE membership.conversation_id = ? AND membership.participant_id = ?",
     )
     .bind(conversation_id.as_str())
     .bind(participant_id.as_str())
@@ -67,208 +144,20 @@ pub(super) async fn read_membership(
         )
     })?;
     let participant = read_participant(pool, participant_id).await?;
-    let ai_access = if participant.kind == ChatParticipantKind::AiTeammate {
-        read_roster_ai_access(pool, conversation_id, participant_id).await?
-    } else {
-        None
-    };
+    let removed_at = optional_timestamp(row.try_get("removed_at").map_err(persistence_error)?)?;
+    let agent_in_channel = participant.kind == ChatParticipantKind::AiAgent
+        && removed_at.is_none()
+        && row
+            .try_get::<i64, _>("agent_in_channel")
+            .map_err(persistence_error)?
+            != 0;
     Ok(ChatConversationMembershipRead {
         conversation_id: conversation_id.clone(),
         participant,
-        ai_access,
+        agent_in_channel,
         revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
-        removed_at: optional_timestamp(row.try_get("removed_at").map_err(persistence_error)?)?,
+        removed_at,
     })
-}
-
-async fn read_roster_ai_access(
-    pool: &SqlitePool,
-    conversation_id: &ChatConversationId,
-    teammate_id: &ChatParticipantId,
-) -> ChatResult<Option<ChatChannelRosterAiSummary>> {
-    let row = sqlx::query(
-        "SELECT membership.access_profile_id, profile_revision.revision AS latest_revision,
-                profile.builtin_key, profile.display_name,
-                profile_revision.default_read_history AS profile_read_history,
-                profile_revision.default_participate AS profile_participate,
-                profile_revision.default_history_boundary AS profile_history_boundary,
-                profile_revision.maximum_folder_capability AS profile_folder_capability,
-                membership.read_history, membership.read_history_inherits_profile,
-                membership.participate, membership.participate_inherits_profile,
-                membership.history_boundary,
-                membership.history_boundary_inherits_profile,
-                membership.history_from_order_key,
-                membership.runtime_approval_policy,
-                membership.scratch_runtime_approval_policy
-         FROM chat_teammate_channel_memberships membership
-         JOIN chat_access_profiles profile ON profile.id = membership.access_profile_id
-         JOIN chat_access_profile_effective_revisions profile_revision
-           ON profile_revision.access_profile_id = profile.id
-         WHERE membership.conversation_id = ? AND membership.teammate_id = ?
-           AND membership.removed_at IS NULL",
-    )
-    .bind(conversation_id.as_str())
-    .bind(teammate_id.as_str())
-    .fetch_optional(pool)
-    .await
-    .map_err(persistence_error)?;
-    let Some(row) = row else {
-        return Ok(None);
-    };
-    let grant_rows = sqlx::query(ACTIVE_FOLDER_GRANTS_SQL)
-        .bind(conversation_id.as_str())
-        .bind(teammate_id.as_str())
-        .fetch_all(pool)
-        .await
-        .map_err(persistence_error)?;
-    let mut folder_grants = Vec::with_capacity(grant_rows.len());
-    let profile_folder_capability = parse_folder_capability(
-        &row.try_get::<String, _>("profile_folder_capability")
-            .map_err(persistence_error)?,
-    )?;
-    for grant in grant_rows {
-        folder_grants.push(ChatFolderGrantRead {
-            working_folder_id: ProjectWorkingFolderId::new(
-                grant
-                    .try_get::<String, _>("working_folder_id")
-                    .map_err(persistence_error)?,
-            )
-            .map_err(identifier_error)?,
-            display_name: grant.try_get("display_name").map_err(persistence_error)?,
-            capability: if grant
-                .try_get::<i64, _>("capability_inherits_profile")
-                .map_err(persistence_error)?
-                != 0
-            {
-                profile_folder_capability
-            } else {
-                parse_folder_capability(
-                    &grant
-                        .try_get::<String, _>("capability")
-                        .map_err(persistence_error)?,
-                )?
-                .intersect(profile_folder_capability)
-            },
-            is_default: grant
-                .try_get::<i64, _>("is_default")
-                .map_err(persistence_error)?
-                != 0,
-            runtime_approval_override: grant
-                .try_get::<Option<String>, _>("runtime_approval_policy")
-                .map_err(persistence_error)?
-                .as_deref()
-                .map(parse_runtime_approval_policy)
-                .transpose()?,
-            revision: u64_value(grant.try_get("revision").map_err(persistence_error)?)?,
-            revoked_at: optional_timestamp(
-                grant.try_get("revoked_at").map_err(persistence_error)?,
-            )?,
-        });
-    }
-    let profile_history_boundary = parse_history_boundary(
-        &row.try_get::<String, _>("profile_history_boundary")
-            .map_err(persistence_error)?,
-        None,
-    )?;
-    let stored_history_boundary = parse_history_boundary(
-        &row.try_get::<String, _>("history_boundary")
-            .map_err(persistence_error)?,
-        row.try_get("history_from_order_key")
-            .map_err(persistence_error)?,
-    )?;
-    let history_inherits_profile = row
-        .try_get::<i64, _>("history_boundary_inherits_profile")
-        .map_err(persistence_error)?
-        != 0;
-    let effective_history_boundary = if history_inherits_profile {
-        match profile_history_boundary {
-            ChatHistoryBoundary::Entire => ChatHistoryBoundary::Entire,
-            ChatHistoryBoundary::FromGrant { .. } => ChatHistoryBoundary::FromGrant {
-                lower_order_key: match stored_history_boundary {
-                    ChatHistoryBoundary::FromGrant { lower_order_key } => lower_order_key,
-                    ChatHistoryBoundary::Entire => None,
-                },
-            },
-        }
-    } else if history_boundary_is_expansion(&profile_history_boundary, &stored_history_boundary) {
-        ChatHistoryBoundary::FromGrant {
-            lower_order_key: Some(
-                super::common::from_grant_lower_order_key(
-                    &mut *pool.acquire().await.map_err(persistence_error)?,
-                    conversation_id.as_str(),
-                )
-                .await?,
-            ),
-        }
-    } else {
-        stored_history_boundary
-    };
-    Ok(Some(ChatChannelRosterAiSummary {
-        access_profile_id: ChatAccessProfileId::new(
-            row.try_get::<String, _>("access_profile_id")
-                .map_err(persistence_error)?,
-        )
-        .map_err(identifier_error)?,
-        access_profile_revision: u64_value(
-            row.try_get("latest_revision").map_err(persistence_error)?,
-        )?,
-        access_profile_builtin_key: parse_access_profile_builtin_key(
-            row.try_get::<Option<String>, _>("builtin_key")
-                .map_err(persistence_error)?
-                .as_deref(),
-        )?,
-        access_profile_name: row.try_get("display_name").map_err(persistence_error)?,
-        capabilities: ChatChannelCapabilities {
-            read_history: if row
-                .try_get::<i64, _>("read_history_inherits_profile")
-                .map_err(persistence_error)?
-                != 0
-            {
-                row.try_get::<i64, _>("profile_read_history")
-                    .map_err(persistence_error)?
-                    != 0
-            } else {
-                row.try_get::<i64, _>("read_history")
-                    .map_err(persistence_error)?
-                    != 0
-                    && row
-                        .try_get::<i64, _>("profile_read_history")
-                        .map_err(persistence_error)?
-                        != 0
-            },
-            participate: if row
-                .try_get::<i64, _>("participate_inherits_profile")
-                .map_err(persistence_error)?
-                != 0
-            {
-                row.try_get::<i64, _>("profile_participate")
-                    .map_err(persistence_error)?
-                    != 0
-            } else {
-                row.try_get::<i64, _>("participate")
-                    .map_err(persistence_error)?
-                    != 0
-                    && row
-                        .try_get::<i64, _>("profile_participate")
-                        .map_err(persistence_error)?
-                        != 0
-            },
-        },
-        history_boundary: effective_history_boundary,
-        runtime_approval_override: row
-            .try_get::<Option<String>, _>("runtime_approval_policy")
-            .map_err(persistence_error)?
-            .as_deref()
-            .map(parse_runtime_approval_policy)
-            .transpose()?,
-        scratch_runtime_approval_override: row
-            .try_get::<Option<String>, _>("scratch_runtime_approval_policy")
-            .map_err(persistence_error)?
-            .as_deref()
-            .map(parse_runtime_approval_policy)
-            .transpose()?,
-        folder_grants,
-    }))
 }
 
 pub(super) async fn read_participant(
@@ -310,101 +199,112 @@ pub(super) async fn read_participant(
     })
 }
 
-pub(super) async fn read_teammate(
+/// Reads one agent. `local_instances` maps each provider family to the provider instance that
+/// runs it on this device, so the read says whether the agent is installed here.
+pub(super) async fn read_agent(
     pool: &SqlitePool,
-    teammate_id: &ChatParticipantId,
-) -> ChatResult<ChatAiTeammateRead> {
-    let lifecycle = super::teammate_lifecycle::read_teammate_lifecycle(pool, teammate_id).await?;
+    agent_id: &ChatParticipantId,
+    local_instances: &LocalProviderInstances,
+) -> ChatResult<ChatAiAgentRead> {
+    let lifecycle = super::agent_lifecycle::read_agent_lifecycle(pool, agent_id).await?;
     let row = sqlx::query(
-        "SELECT teammate.role, teammate.instructions, policy.id AS policy_revision_id,
-                (SELECT count(*) FROM chat_conversation_memberships membership
-                 WHERE membership.participant_id = teammate.participant_id
+        "SELECT agent.provider_family_id, policy.id AS policy_revision_id,
+                participant.hidden_at,
+                (SELECT count(*) FROM chat_agent_channel_memberships membership
+                 WHERE membership.agent_id = agent.participant_id
                    AND membership.removed_at IS NULL) AS channel_count
-         FROM chat_teammates teammate
-         LEFT JOIN chat_teammate_effective_policies policy
-           ON policy.teammate_id = teammate.participant_id
-         WHERE teammate.participant_id = ?",
+         FROM chat_agents agent
+         JOIN chat_participants participant ON participant.id = agent.participant_id
+         LEFT JOIN chat_agent_effective_policies policy
+           ON policy.agent_id = agent.participant_id
+         WHERE agent.participant_id = ?",
     )
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .fetch_optional(pool)
     .await
     .map_err(persistence_error)?
-    .ok_or_else(|| ChatError::new(ChatErrorCode::NotFound, "AI teammate was not found", true))?;
+    .ok_or_else(|| ChatError::new(ChatErrorCode::NotFound, "AI agent was not found", true))?;
     let policy_revision_id: Option<String> = row
         .try_get("policy_revision_id")
         .map_err(persistence_error)?;
     let latest_policy = match policy_revision_id {
-        Some(policy_revision_id) => {
-            Some(read_policy(pool, teammate_id, &policy_revision_id).await?)
-        }
+        Some(policy_revision_id) => Some(read_policy(pool, agent_id, &policy_revision_id).await?),
         None => None,
     };
-    Ok(ChatAiTeammateRead {
-        participant: read_participant(pool, teammate_id).await?,
-        role: row.try_get("role").map_err(persistence_error)?,
-        instructions: row.try_get("instructions").map_err(persistence_error)?,
-        configuration_state: if latest_policy.is_some() {
-            ChatTeammateConfigurationState::Healthy
+    let provider_family_id = ProviderFamilyId::new(
+        row.try_get::<String, _>("provider_family_id")
+            .map_err(persistence_error)?,
+    )
+    .map_err(identifier_error)?;
+    let local_provider_instance_id = local_instances.get(provider_family_id.as_str()).cloned();
+    let linked_provider_status = match (&local_provider_instance_id, &local_instances.linked_reader)
+    {
+        (None, Some(device_id)) => {
+            read_linked_provider_status(pool, agent_id, provider_family_id.as_str(), device_id)
+                .await?
+        }
+        _ => None,
+    };
+    let agent_kind = super::agent_kinds::agent_kind(
+        provider_family_id.as_str(),
+        agent_id.as_str(),
+        latest_policy
+            .as_ref()
+            .and_then(|policy| policy.model_id.as_ref())
+            .map(|model_id| model_id.as_str()),
+    );
+    Ok(ChatAiAgentRead {
+        agent_kind,
+        participant: read_participant(pool, agent_id).await?,
+        configuration_state: if local_provider_instance_id.is_some() {
+            ChatAgentConfigurationState::Healthy
         } else {
-            ChatTeammateConfigurationState::NeedsSetup
+            ChatAgentConfigurationState::ProviderUnavailable
         },
+        provider_family_id,
+        local_provider_instance_id,
         latest_policy,
         channel_count: u64_value(row.try_get("channel_count").map_err(persistence_error)?)?,
         active_assignment_count: lifecycle.active_assignment_count,
+        hidden_at: optional_timestamp(row.try_get("hidden_at").map_err(persistence_error)?)?,
+        linked_provider_status,
     })
 }
 
-/// Reads one teammate policy revision together with its display number.
+/// Reads one agent policy revision together with its display number.
 pub(super) async fn read_policy(
     pool: &SqlitePool,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     policy_revision_id: &str,
-) -> ChatResult<ChatTeammatePolicyRead> {
+) -> ChatResult<ChatAgentPolicyRead> {
     let row = sqlx::query(
-        "SELECT id, revision, provider_instance_id, safety_mode, model_selection_schema_version,
-                model_selection_data, effort, speed, provider_options_schema_version,
-                provider_options_data, created_at
-         FROM chat_teammate_policy_revisions_numbered
-         WHERE teammate_id = ? AND id = ?",
+        "SELECT numbered.id, numbered.revision, numbered.model_selection_data,
+                numbered.provider_options_schema_version, numbered.provider_options_data,
+                numbered.interaction_mode, numbered.created_at
+         FROM chat_agent_policy_revisions_numbered numbered
+         WHERE numbered.agent_id = ? AND numbered.id = ?",
     )
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .bind(policy_revision_id)
     .fetch_optional(pool)
     .await
     .map_err(persistence_error)?
-    .ok_or_else(|| {
-        ChatError::new(
-            ChatErrorCode::NotFound,
-            "Teammate policy was not found",
-            true,
-        )
-    })?;
+    .ok_or_else(|| ChatError::new(ChatErrorCode::NotFound, "Agent policy was not found", true))?;
     let selection = parse_model_selection(
         row.try_get("model_selection_data")
             .map_err(persistence_error)?,
     )?;
-    Ok(ChatTeammatePolicyRead {
-        id: ChatTeammatePolicyRevisionId::new(
+    let interaction_mode: String = row.try_get("interaction_mode").map_err(persistence_error)?;
+    Ok(ChatAgentPolicyRead {
+        id: ChatAgentPolicyRevisionId::new(
             row.try_get::<String, _>("id").map_err(persistence_error)?,
         )
         .map_err(identifier_error)?,
-        teammate_id: teammate_id.clone(),
+        agent_id: agent_id.clone(),
         revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
-        provider_instance_id: ProviderInstanceId::new(
-            row.try_get::<String, _>("provider_instance_id")
-                .map_err(persistence_error)?,
-        )
-        .map_err(identifier_error)?,
-        safety_mode: parse_approval_policy(
-            row.try_get::<String, _>("safety_mode")
-                .map_err(persistence_error)?
-                .as_str(),
-        )?,
         provider_managed_model: selection.provider_managed_model,
         model_id: selection.model_id,
         model_options: selection.model_options,
-        effort: row.try_get("effort").map_err(persistence_error)?,
-        speed: row.try_get("speed").map_err(persistence_error)?,
         provider_options: VersionedJson {
             schema_version: u32_value(
                 row.try_get("provider_options_schema_version")
@@ -415,6 +315,11 @@ pub(super) async fn read_policy(
                     .map_err(persistence_error)?,
             )?,
         },
+        interaction_mode: match interaction_mode.as_str() {
+            "build" => InteractionMode::Build,
+            "plan" => InteractionMode::Plan,
+            _ => return Err(stored_value_error("interaction mode")),
+        },
         created_at: timestamp(row.try_get("created_at").map_err(persistence_error)?)?,
     })
 }
@@ -423,8 +328,9 @@ pub(super) async fn read_message(
     pool: &SqlitePool,
     item_id: &ChatConversationItemId,
 ) -> ChatResult<ChatMessageRead> {
-    let row = sqlx::query(
+    let row = sqlx::query(AssertSqlSafe(format!(
         "SELECT item.conversation_id, item.reply_thread_id, item.order_key, item.created_at,
+                {AWAITING_DELIVERY_SQL} AS awaiting_delivery,
                 message.author_participant_id, message.author_label_snapshot,
                 message.current_revision_id,
                 message.edited_at, revision.revision, revision.normalized_markdown,
@@ -433,8 +339,8 @@ pub(super) async fn read_message(
          JOIN chat_communication_messages message ON message.item_id = item.id
          JOIN chat_communication_message_revisions_numbered revision
            ON revision.id = message.current_revision_id
-         WHERE item.id = ?",
-    )
+         WHERE item.id = ?"
+    )))
     .bind(item_id.as_str())
     .fetch_optional(pool)
     .await
@@ -522,23 +428,27 @@ pub(super) async fn read_message(
         order_key: row.try_get("order_key").map_err(persistence_error)?,
         edited_at: optional_timestamp(row.try_get("edited_at").map_err(persistence_error)?)?,
         created_at: timestamp(row.try_get("created_at").map_err(persistence_error)?)?,
+        awaiting_delivery: row
+            .try_get("awaiting_delivery")
+            .map_err(persistence_error)?,
     })
 }
 
-pub(super) async fn read_reply_thread_summary(
+pub(crate) async fn read_reply_thread_summary(
     pool: &SqlitePool,
     reply_thread_id: &ChatReplyThreadId,
 ) -> ChatResult<ChatReplyThreadSummaryRead> {
-    let row = sqlx::query(
+    let row = sqlx::query(AssertSqlSafe(format!(
         "SELECT thread.last_activity_at,
             (SELECT count(*)
              FROM chat_conversation_items item
              JOIN chat_communication_messages message ON message.item_id = item.id
              WHERE item.reply_thread_id = thread.id
                AND item.item_kind = 'message'
-               AND message.deleted_at IS NULL) AS reply_count
-         FROM chat_reply_threads thread WHERE thread.id = ?",
-    )
+               AND message.deleted_at IS NULL
+               AND NOT {AWAITING_DELIVERY_SQL}) AS reply_count
+         FROM chat_reply_threads thread WHERE thread.id = ?"
+    )))
     .bind(reply_thread_id.as_str())
     .fetch_optional(pool)
     .await
@@ -589,12 +499,21 @@ pub(super) async fn read_reply_thread_summary(
     .fetch_one(pool)
     .await
     .map_err(persistence_error)?;
+    let unseen_failure: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT {} FROM chat_reply_threads thread WHERE thread.id = ?",
+        unseen_thread_failure_sql("")
+    )))
+    .bind(reply_thread_id.as_str())
+    .fetch_one(pool)
+    .await
+    .map_err(persistence_error)?;
     Ok(ChatReplyThreadSummaryRead {
         id: reply_thread_id.clone(),
         reply_count,
         last_activity_at: timestamp(row.try_get("last_activity_at").map_err(persistence_error)?)?,
         participants: participant_reads,
         unread: unread != 0,
+        unseen_failure: unseen_failure != 0,
         work_state: read_active_or_latest_assignment(pool, reply_thread_id)
             .await?
             .map(|assignment| assignment.state),
@@ -670,12 +589,14 @@ pub(super) async fn read_reply_thread_page(
     Ok(ChatReplyThreadPageRead {
         thread: ChatReplyThreadSummaryRead {
             unread: false,
+            unseen_failure: false,
             ..summary
         },
         root_message: read_message(pool, &root_id).await?,
         replies,
         assignment: read_active_or_latest_assignment(pool, reply_thread_id).await?,
         agent_runs: runs,
+        delegated_children: read_delegated_children(pool, reply_thread_id).await?,
         previous_cursor,
         revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
     })
@@ -735,9 +656,10 @@ pub(super) async fn read_assignment(
     assignment_id: &ChatWorkAssignmentId,
 ) -> ChatResult<ChatWorkAssignmentRead> {
     let row = sqlx::query(
-        "SELECT reply_thread_id, teammate_id, triggering_message_item_id,
+        "SELECT reply_thread_id, agent_id, triggering_message_item_id,
                 previous_assignment_id, state, state_reason, revision, settled_at,
-                created_at, updated_at
+                review_outcome, reviewed_at, reviewed_by_participant_id, created_at, updated_at,
+                model_selection_data, instructions, model_label
          FROM chat_work_assignments WHERE id = ?",
     )
     .bind(assignment_id.as_str())
@@ -751,19 +673,22 @@ pub(super) async fn read_assignment(
             true,
         )
     })?;
-    let teammate_id = ChatParticipantId::new(
-        row.try_get::<String, _>("teammate_id")
+    let agent_id = ChatParticipantId::new(
+        row.try_get::<String, _>("agent_id")
+            .map_err(persistence_error)?,
+    )
+    .map_err(identifier_error)?;
+    let reply_thread_id = ChatReplyThreadId::new(
+        row.try_get::<String, _>("reply_thread_id")
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
     Ok(ChatWorkAssignmentRead {
         id: assignment_id.clone(),
-        reply_thread_id: ChatReplyThreadId::new(
-            row.try_get::<String, _>("reply_thread_id")
-                .map_err(persistence_error)?,
-        )
-        .map_err(identifier_error)?,
-        teammate: read_participant(pool, &teammate_id).await?,
+        latest_run_provider_thread_id: latest_run_provider_thread_id(pool, &reply_thread_id)
+            .await?,
+        reply_thread_id,
+        agent: read_participant(pool, &agent_id).await?,
         triggering_message_item_id: ChatConversationItemId::new(
             row.try_get::<String, _>("triggering_message_item_id")
                 .map_err(persistence_error)?,
@@ -780,12 +705,167 @@ pub(super) async fn read_assignment(
                 .map_err(persistence_error)?,
         )?,
         state_reason: row.try_get("state_reason").map_err(persistence_error)?,
+        delegation: read_assignment_delegation(pool, assignment_id).await?,
+        model_selection: parse_model_selection(
+            row.try_get("model_selection_data")
+                .map_err(persistence_error)?,
+        )?,
+        instructions: row.try_get("instructions").map_err(persistence_error)?,
+        model_label: row.try_get("model_label").map_err(persistence_error)?,
         revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
         settled_at: optional_timestamp(row.try_get("settled_at").map_err(persistence_error)?)?,
         created_at: timestamp(row.try_get("created_at").map_err(persistence_error)?)?,
         updated_at: timestamp(row.try_get("updated_at").map_err(persistence_error)?)?,
-        local_acceptance: None,
+        review: read_assignment_review(&row)?,
     })
+}
+
+/// The provider thread of the newest run in a reply thread that executed on this device.
+///
+/// Runs are device-local, so a reply thread whose work ran elsewhere has none and the composer
+/// shows no usage instead of inventing it.
+async fn latest_run_provider_thread_id(
+    pool: &SqlitePool,
+    reply_thread_id: &ChatReplyThreadId,
+) -> ChatResult<Option<ChatThreadId>> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT run.provider_thread_id
+         FROM chat_agent_runs run
+         JOIN chat_work_assignments assignment ON assignment.id = run.assignment_id
+         WHERE assignment.reply_thread_id = ? AND run.provider_thread_id IS NOT NULL
+         ORDER BY assignment.created_at DESC, assignment.id DESC, run.run_ordinal DESC
+         LIMIT 1",
+    )
+    .bind(reply_thread_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?
+    .map(ChatThreadId::new)
+    .transpose()
+    .map_err(identifier_error)
+}
+
+/// The review stored on an assignment row: all three review columns, or none.
+fn read_assignment_review(
+    row: &sqlx::sqlite::SqliteRow,
+) -> ChatResult<Option<ChatAssignmentReviewRead>> {
+    let outcome: Option<String> = row.try_get("review_outcome").map_err(persistence_error)?;
+    let reviewed_at: Option<String> = row.try_get("reviewed_at").map_err(persistence_error)?;
+    let reviewer: Option<String> = row
+        .try_get("reviewed_by_participant_id")
+        .map_err(persistence_error)?;
+    match (outcome, reviewed_at, reviewer) {
+        (None, None, None) => Ok(None),
+        (Some(outcome), Some(reviewed_at), Some(reviewer)) => Ok(Some(ChatAssignmentReviewRead {
+            outcome: parse_review_outcome(&outcome)?,
+            reviewed_at: timestamp(reviewed_at)?,
+            reviewed_by_participant_id: ChatParticipantId::new(reviewer)
+                .map_err(identifier_error)?,
+        })),
+        _ => Err(stored_value_error("assignment review")),
+    }
+}
+
+/// Where an assignment came from when an agent delegated it, or none for work a person started.
+async fn read_assignment_delegation(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<Option<ChatAssignmentDelegationRead>> {
+    let row = sqlx::query(
+        "SELECT child.parent_assignment_id, child.delegation_depth, child.delegation_objective,
+                child.delegation_expected_result, parent.reply_thread_id AS parent_reply_thread_id
+         FROM chat_work_assignments child
+         LEFT JOIN chat_work_assignments parent ON parent.id = child.parent_assignment_id
+         WHERE child.id = ? AND child.parent_assignment_id IS NOT NULL",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let depth: i64 = row.try_get("delegation_depth").map_err(persistence_error)?;
+    let objective: Option<String> = row
+        .try_get("delegation_objective")
+        .map_err(persistence_error)?;
+    let expected_result: Option<String> = row
+        .try_get("delegation_expected_result")
+        .map_err(persistence_error)?;
+    let (Some(objective), Some(expected_result)) = (objective, expected_result) else {
+        return Err(stored_value_error("assignment delegation"));
+    };
+    Ok(Some(ChatAssignmentDelegationRead {
+        parent_assignment_id: ChatWorkAssignmentId::new(
+            row.try_get::<String, _>("parent_assignment_id")
+                .map_err(persistence_error)?,
+        )
+        .map_err(identifier_error)?,
+        parent_reply_thread_id: row
+            .try_get::<Option<String>, _>("parent_reply_thread_id")
+            .map_err(persistence_error)?
+            .map(ChatReplyThreadId::new)
+            .transpose()
+            .map_err(identifier_error)?,
+        depth: u8::try_from(depth).map_err(|_| stored_value_error("delegation depth"))?,
+        objective,
+        expected_result,
+    }))
+}
+
+/// Work delegated from any assignment of a reply thread, oldest first, with its live state.
+pub(super) async fn read_delegated_children(
+    pool: &SqlitePool,
+    reply_thread_id: &ChatReplyThreadId,
+) -> ChatResult<Vec<ChatDelegatedChildRead>> {
+    let rows = sqlx::query(
+        "SELECT child.id, child.parent_assignment_id, child.reply_thread_id, child.agent_id,
+                child.delegation_objective, child.state, child.state_reason, child.created_at
+         FROM chat_work_assignments child
+         JOIN chat_work_assignments parent ON parent.id = child.parent_assignment_id
+         WHERE parent.reply_thread_id = ?
+         ORDER BY child.created_at, child.id",
+    )
+    .bind(reply_thread_id.as_str())
+    .fetch_all(pool)
+    .await
+    .map_err(persistence_error)?;
+    let mut children = Vec::with_capacity(rows.len());
+    for row in rows {
+        let agent_id = ChatParticipantId::new(
+            row.try_get::<String, _>("agent_id")
+                .map_err(persistence_error)?,
+        )
+        .map_err(identifier_error)?;
+        children.push(ChatDelegatedChildRead {
+            assignment_id: ChatWorkAssignmentId::new(
+                row.try_get::<String, _>("id").map_err(persistence_error)?,
+            )
+            .map_err(identifier_error)?,
+            parent_assignment_id: ChatWorkAssignmentId::new(
+                row.try_get::<String, _>("parent_assignment_id")
+                    .map_err(persistence_error)?,
+            )
+            .map_err(identifier_error)?,
+            reply_thread_id: ChatReplyThreadId::new(
+                row.try_get::<String, _>("reply_thread_id")
+                    .map_err(persistence_error)?,
+            )
+            .map_err(identifier_error)?,
+            agent: read_participant(pool, &agent_id).await?,
+            objective: row
+                .try_get::<Option<String>, _>("delegation_objective")
+                .map_err(persistence_error)?
+                .ok_or_else(|| stored_value_error("assignment delegation"))?,
+            state: parse_work_state(
+                &row.try_get::<String, _>("state")
+                    .map_err(persistence_error)?,
+            )?,
+            state_reason: row.try_get("state_reason").map_err(persistence_error)?,
+            created_at: timestamp(row.try_get("created_at").map_err(persistence_error)?)?,
+        });
+    }
+    Ok(children)
 }
 
 pub(super) async fn read_active_or_latest_assignment(
@@ -825,12 +905,12 @@ pub(super) async fn read_agent_runs(
     let rows = sqlx::query(
         "SELECT run.id, run.assignment_id, run.project_id, run.working_folder_id,
                 run.execution_environment_id, run.scratch_generation_id,
-                run.teammate_policy_revision_id, policy.effort, run.provider_turn_id,
+                run.provider_turn_id,
                 run.provider_thread_id, run.state,
-                run.run_ordinal, run.created_at, run.updated_at
+                run.run_ordinal, run.attempt_reason, run.handoff_reason, run.created_at,
+                run.updated_at
          FROM chat_agent_runs run
          JOIN chat_work_assignments assignment ON assignment.id = run.assignment_id
-         JOIN chat_teammate_policy_revisions policy ON policy.id = run.teammate_policy_revision_id
          WHERE assignment.reply_thread_id = ?
          ORDER BY assignment.created_at, run.run_ordinal",
     )
@@ -866,12 +946,6 @@ pub(super) async fn read_agent_runs(
                     .map(ChatScratchGenerationId::new)
                     .transpose()
                     .map_err(identifier_error)?,
-                teammate_policy_revision_id: ChatTeammatePolicyRevisionId::new(
-                    row.try_get::<String, _>("teammate_policy_revision_id")
-                        .map_err(persistence_error)?,
-                )
-                .map_err(identifier_error)?,
-                effort: row.try_get("effort").map_err(persistence_error)?,
                 provider_execution_turn_id: ChatTurnId::new(
                     row.try_get::<String, _>("provider_turn_id")
                         .map_err(persistence_error)?,
@@ -885,6 +959,8 @@ pub(super) async fn read_agent_runs(
                     .map_err(identifier_error)?,
                 state: row.try_get("state").map_err(persistence_error)?,
                 run_ordinal: u64_value(row.try_get("run_ordinal").map_err(persistence_error)?)?,
+                attempt_reason: row.try_get("attempt_reason").map_err(persistence_error)?,
+                handoff_reason: row.try_get("handoff_reason").map_err(persistence_error)?,
                 created_at: timestamp(row.try_get("created_at").map_err(persistence_error)?)?,
                 updated_at: timestamp(row.try_get("updated_at").map_err(persistence_error)?)?,
             })

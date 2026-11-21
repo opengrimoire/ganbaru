@@ -7,7 +7,7 @@
   import Menu from "@lucide/svelte/icons/menu";
   import MessageSquare from "@lucide/svelte/icons/message-square";
   import type { ChatChannelRead } from "$lib/chat/contracts";
-  import { summarizeChannelMembers } from "$lib/chat/teammates/channel-members";
+  import { summarizeChannelMembers } from "$lib/chat/agents/channel-members";
   import {
     COMPACT_IDENTITY_EMOJI_SCALE,
     COMPACT_IDENTITY_ICON_SIZE,
@@ -15,6 +15,7 @@
   } from "$lib/icon-sizing";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { projectNavigatorPanelGeometry, type ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
@@ -34,6 +35,7 @@
   import ChatProjectNavigator from "$lib/components/chat/channels/ChatProjectNavigator.svelte";
   import { createHoverMenu } from "$lib/utils/menu-aim";
   import { CHAT_OPEN_MEMBERS_EVENT, readChatOpenMembersDetail } from "$lib/components/chat/channels/members-panel-events";
+  import { CHAT_OPEN_CHANNEL_NOTES_EVENT, readChatOpenChannelNotesDetail } from "$lib/components/chat/channels/channel-notes-panel-events";
   import ChatTitleEditor from "./ChatTitleEditor.svelte";
   import MobileContextSwitcher from "$lib/components/mobile/MobileContextSwitcher.svelte";
 
@@ -87,6 +89,10 @@
   let MembersPanel = $state<ChatChannelMembersPanelComponent | null>(null);
   let membersPanelLoad: Promise<void> | null = null;
   let membersTrigger = $state<HTMLButtonElement | null>(null);
+  type ChatChannelNotesPanelComponent =
+    typeof import("$lib/components/chat/channels/ChatChannelNotesPanel.svelte").default;
+  let notesChannelId = $state<string | null>(null);
+  let NotesPanel = $state<ChatChannelNotesPanelComponent | null>(null);
   let navigatorMode = $state<ChatNavigatorMode>("groups");
   let navigatorAnchorElement = $state<HTMLButtonElement | null>(null);
   let groupTriggerElement = $state<HTMLButtonElement | null>(null);
@@ -121,8 +127,8 @@
   );
   const selectedFolder = $derived(chat.selectedWorkingFolder);
   const memberSummary = $derived(summarizeChannelMembers(selectedChannel?.memberships ?? []));
-  const memberStackTeammates = $derived(chat.teammates
-    .filter((teammate) => memberSummary.teammateIds.has(teammate.participant.id))
+  const memberStackAgents = $derived(chat.agents
+    .filter((agent) => memberSummary.agentIds.has(agent.participant.id))
     .slice(0, MEMBER_STACK_LIMIT - 1));
 
   function triggerForMode(mode: ChatNavigatorMode): HTMLButtonElement | null {
@@ -239,6 +245,26 @@
     return () => paneEvents.removeEventListener(CHAT_OPEN_MEMBERS_EVENT, openMembers);
   });
 
+  const notesOpen = $derived(notesChannelId !== null && notesChannelId === chat.selectedChannelId);
+
+  /** Opens the notes panel the members panel asked for, loading it on first use. */
+  $effect(() => {
+    const openNotes = (event: Event): void => {
+      const detail = readChatOpenChannelNotesDetail(event);
+      if (!detail || detail.channelId !== chat.selectedChannelId) return;
+      notesChannelId = detail.channelId;
+      if (NotesPanel) return;
+      import("$lib/components/chat/channels/ChatChannelNotesPanel.svelte")
+        .then((module) => { NotesPanel = module.default; })
+        .catch((error: unknown) => {
+          console.error("Load Chat channel notes panel failed", error);
+          notesChannelId = null;
+        });
+    };
+    paneEvents.addEventListener(CHAT_OPEN_CHANNEL_NOTES_EVENT, openNotes);
+    return () => paneEvents.removeEventListener(CHAT_OPEN_CHANNEL_NOTES_EVENT, openNotes);
+  });
+
   async function commitTitle(title: string): Promise<void> {
     if (!selectedChannel || selectedChannel.isDefault || !editingTitle) return;
     await chat.updateChannelDetails(selectedChannel, title, selectedChannel.topic);
@@ -247,7 +273,7 @@
 
   function run(action: () => Promise<unknown>): void {
     actionError = null;
-    void action().catch((error: unknown) => { actionError = error instanceof Error ? error.message : String(error); });
+    void action().catch((error: unknown) => { actionError = chatErrorMessage(error, t("chatErrors.actions.channelAction")); });
   }
 
   $effect(() => {
@@ -391,7 +417,7 @@
       <button bind:this={membersTrigger} type="button" class={toolbarMembersTriggerClass} class:open={membersOpen} aria-label={t("chat.organization.membersPanel", memberSummary.count)} data-app-tooltip={t("chat.organization.members")} aria-haspopup="dialog" aria-expanded={membersOpen} data-chat-members-trigger onpointerenter={() => { void loadMembersPanel(); }} onfocus={() => { void loadMembersPanel(); }} onclick={toggleChannelMembers}>
         <span class="chat-members-stack" aria-hidden="true">
           <LocalPersonAvatar size={MEMBER_STACK_AVATAR_SIZE} />
-          {#each memberStackTeammates as teammate (teammate.participant.id)}<ChatParticipantAvatar participant={teammate.participant} {teammate} size={MEMBER_STACK_AVATAR_SIZE} />{/each}
+          {#each memberStackAgents as agent (agent.participant.id)}<ChatParticipantAvatar participant={agent.participant} {agent} size={MEMBER_STACK_AVATAR_SIZE} />{/each}
         </span>
         <span class="chat-members-count tabular-nums">{formatNumber(locale, memberSummary.count)}</span>
       </button>
@@ -404,6 +430,11 @@
 {#if membersOpen && selectedChannel && MembersPanel}
   {@const LoadedMembersPanel = MembersPanel}
   <LoadedMembersPanel anchor={membersTrigger} channel={selectedChannel} mobileLayout={mobilePresentation} initialPickerOpen={membersPickerOnOpen} onClose={closeChannelMembers} />
+{/if}
+
+{#if notesOpen && selectedChannel && NotesPanel}
+  {@const LoadedNotesPanel = NotesPanel}
+  <LoadedNotesPanel anchor={membersTrigger} channel={selectedChannel} mobileLayout={mobilePresentation} onClose={() => { notesChannelId = null; }} />
 {/if}
 
 <style>

@@ -6,6 +6,7 @@ import {
   type PlaybackStatus,
 } from "$lib/music/playback";
 import type { MusicSource } from "$lib/music/sources";
+import { localMediaErrorCode, musicPlaybackErrorMessage, type MusicPlaybackErrorCode } from "$lib/music/playback-errors";
 
 const PLAYABLE_START_KICK_MS = 650;
 const PLAYABLE_START_NUDGE_MS = 1_000;
@@ -242,12 +243,7 @@ export function createMusicWebviewLocalAdapter(
   async function play(): Promise<void> {
     const element = state.localMediaElement;
     if (!element) {
-      state.playerError = "Media is still loading.";
-      state.snapshot = {
-        ...state.snapshot,
-        status: "error",
-        error: state.playerError,
-      };
+      failPlayback("local-not-ready");
       return;
     }
     try {
@@ -262,13 +258,19 @@ export function createMusicWebviewLocalAdapter(
       state.playerError = null;
       context.updateExternalControls();
     } catch (error) {
-      state.playerError = error instanceof Error ? error.message : String(error);
-      state.snapshot = {
-        ...state.snapshot,
-        status: "error",
-        error: state.playerError,
-      };
+      console.error("Unable to start local playback.", error);
+      failPlayback("local-play-rejected");
     }
+  }
+
+  /** Shows a localized playback failure and reports its stable code to the native session. */
+  function failPlayback(code: MusicPlaybackErrorCode): void {
+    state.playerError = musicPlaybackErrorMessage(code);
+    state.snapshot = {
+      ...state.snapshot,
+      status: "error",
+      error: code,
+    };
   }
 
   function pause(): void {
@@ -377,23 +379,14 @@ export function createMusicWebviewLocalAdapter(
     await context.persist(true);
   }
 
-  function errorMessage(element: HTMLMediaElement): string {
-    switch (element.error?.code) {
-      case 1: return "Local playback was interrupted.";
-      case 2: return "The local media file could not be read.";
-      case 3: return "The WebView could not decode this media file.";
-      case 4: return "This file or codec is not supported by the current WebView player.";
-      default: return "Local playback failed.";
-    }
-  }
-
   function handleError(event: Event): void {
     const element = elementFromEvent(event);
     if (!element || state.currentSource?.kind !== "local-file") return;
-    state.playerError = errorMessage(element);
+    const code = localMediaErrorCode(element.error?.code);
+    state.playerError = musicPlaybackErrorMessage(code);
     state.snapshot = {
       ...snapshotFromElement(element, "error"),
-      error: state.playerError,
+      error: code,
     };
     context.updateExternalControls();
     void context.persist(true);

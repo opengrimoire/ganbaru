@@ -10,21 +10,20 @@
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import ChevronsLeft from "@lucide/svelte/icons/chevrons-left";
   import ChevronsRight from "@lucide/svelte/icons/chevrons-right";
-  import ContactRound from "@lucide/svelte/icons/contact-round";
   import EllipsisVertical from "@lucide/svelte/icons/ellipsis-vertical";
   import Folder from "@lucide/svelte/icons/folder";
   import FolderInput from "@lucide/svelte/icons/folder-input";
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import Hash from "@lucide/svelte/icons/hash";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
-  import Mail from "@lucide/svelte/icons/mail";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
   import Star from "@lucide/svelte/icons/star";
   import Trash2 from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
   import type { ChatChannelRead, ChatMessageSearchResultRead } from "$lib/chat/contracts";
-  import { chatParticipantDisplayName } from "$lib/chat/teammates/participant-display";
+  import { channelAttentionMarker, channelUnreadBadge, reviewQueueCount } from "$lib/chat/review-queue/model";
+  import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
   import {
     moveChatChannelToSection,
     normalizeChatSidebarSections,
@@ -36,12 +35,12 @@
     type ChatSidebarSection,
   } from "$lib/chat/channel-sections";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
-  import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { onActiveVaultIdentityChange } from "$lib/vault/active-vault";
   import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
@@ -52,20 +51,18 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";
+  import ChatReviewQueueSection from "./ChatReviewQueueSection.svelte";
   import MoveStepMenuItems from "$lib/components/ui/MoveStepMenuItems.svelte";
   import { placedNextTo, starredSiblingGroups, steppedBy, type SidebarDropPlacement } from "$lib/utils/sidebar-order";
   import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
   import { suppressClickAfterRelease } from "$lib/utils/click-suppression";
   import { TouchHoldArbiter } from "$lib/utils/touch-hold";
 
-  /** Which header opened the section menu: the default Channels group, a custom section, or Direct messages. */
+  /** Which header opened the section menu: the default Channels group or a custom section. */
   type SectionMenuTarget =
     | { kind: "channels" }
-    | { kind: "section"; section: ChatSidebarSection }
-    | { kind: "directMessages" };
+    | { kind: "section"; section: ChatSidebarSection };
   type ChatChannelSetupDialogComponent = typeof import("./ChatChannelSetupDialog.svelte").default;
-  type ParticipantPickerComponent =
-    typeof import("$lib/components/contacts/ParticipantPicker.svelte").default;
   /** A pending custom order drop: the dragged channel lands before or after `targetId`. */
   interface RailReorder {
     targetId: string;
@@ -99,15 +96,11 @@
   const chatSidebarOrder = getChatSidebarOrder();
   const preferences = getPreferences();
   const projects = useProjects();
-  const settings = getSettingsLauncher();
   const tabs = getWorkspaceTabs();
   /** The phone panel leaves out new tabs; the docked rail opens channels in them. */
   const canOpenChannelTabs = $derived(tabs.canOpenTabs && !panel);
   const { t } = getLocalization();
   let query = $state("");
-  let directMessagesCollapsed = $state(false);
-  let directMessageButton = $state<HTMLButtonElement | null>(null);
-  let directMessagePickerOpen = $state(false);
   let railElement = $state<HTMLElement | null>(null);
   let expandButton = $state<HTMLButtonElement>();
   let collapseButton = $state<HTMLButtonElement>();
@@ -133,13 +126,14 @@
   let setupSectionId = $state<string | null>(null);
   let SetupDialog = $state<ChatChannelSetupDialogComponent | null>(null);
   let setupDialogLoad: Promise<void> | null = null;
-  let DirectMessagePicker = $state<ParticipantPickerComponent | null>(null);
-  let directMessagePickerLoad: Promise<void> | null = null;
   let sections = $state<ChatSidebarSection[]>([]);
   let loadedProjectId = $state<string | null>(null);
   let newSectionName = $state("");
   let creatingSection = $state(false);
   let channelsCollapsed = $state(false);
+  let reviewQueueCollapsed = $state(false);
+  /** Answers, approvals, and reviews waiting across every project; failures are marked on channels instead. */
+  const reviewQueueTotal = $derived(reviewQueueCount(chat.reviewQueue));
   let archiveCandidate = $state<ChatChannelRead | null>(null);
   let deleteSectionCandidate = $state<ChatSidebarSection | null>(null);
   let railError = $state<string | null>(null);
@@ -219,7 +213,7 @@
         })
         .catch((cause: unknown) => {
           if (request === messageSearchRequest) {
-            railError = cause instanceof Error ? cause.message : String(cause);
+            railError = chatErrorMessage(cause, t("chatErrors.actions.channelAction"));
           }
         })
         .finally(() => {
@@ -402,11 +396,6 @@
     const section = contextMenuSection();
     closeSectionContextMenu();
     if (section) deleteSectionCandidate = section;
-  }
-
-  function openContactsFromContextMenu(contactsTab: "contacts" | "invitations"): void {
-    closeSectionContextMenu();
-    settings.open("contacts", { contactsTab });
   }
 
   function moveChannel(channelId: string, sectionId: string | null): void {
@@ -682,7 +671,7 @@
     try {
       await chat.archiveChannel(channel);
     } catch (cause: unknown) {
-      railError = cause instanceof Error ? cause.message : String(cause);
+      railError = chatErrorMessage(cause, t("chatErrors.actions.channelAction"));
     }
   }
 
@@ -716,30 +705,12 @@
     setupDialogLoad ??= import("./ChatChannelSetupDialog.svelte")
       .then((module) => { SetupDialog = module.default; })
       .catch((cause: unknown) => {
-        railError = cause instanceof Error ? cause.message : String(cause);
+        railError = chatErrorMessage(cause, t("chatErrors.actions.channelAction"));
         setupChannel = undefined;
         setupSectionId = null;
       })
       .finally(() => { setupDialogLoad = null; });
     return setupDialogLoad;
-  }
-
-  /** Load the direct message picker only when the rail approaches or opens it. */
-  function loadDirectMessagePicker(): Promise<void> {
-    if (DirectMessagePicker) return Promise.resolve();
-    directMessagePickerLoad ??= import("$lib/components/contacts/ParticipantPicker.svelte")
-      .then((module) => { DirectMessagePicker = module.default; })
-      .catch((cause: unknown) => {
-        railError = cause instanceof Error ? cause.message : String(cause);
-        directMessagePickerOpen = false;
-      })
-      .finally(() => { directMessagePickerLoad = null; });
-    return directMessagePickerLoad;
-  }
-
-  function openDirectMessagePicker(): void {
-    directMessagePickerOpen = true;
-    void loadDirectMessagePicker();
   }
 
   function openCreate(sectionId: string | null = null): void {
@@ -773,7 +744,7 @@
       await chat.selectChannel(channelId);
       if (panel) onCollapse();
     } catch (cause: unknown) {
-      railError = cause instanceof Error ? cause.message : String(cause);
+      railError = chatErrorMessage(cause, t("chatErrors.actions.channelAction"));
     }
   }
 
@@ -809,7 +780,7 @@
       query = "";
       if (panel) onCollapse();
     } catch (cause: unknown) {
-      railError = cause instanceof Error ? cause.message : String(cause);
+      railError = chatErrorMessage(cause, t("chatErrors.actions.channelAction"));
     }
   }
 
@@ -920,6 +891,20 @@
             {/each}
             {#if !messageSearchLoading && messageSearchResults.length === 0}<p class="px-2 py-1 text-xs text-muted-foreground">{t("chat.organization.noMessageSearchResults")}</p>{/if}
           </section>
+        {:else}
+          {#if reviewQueueTotal > 0}
+            <section class="channel-section" aria-label={t("chat.reviewQueue.label", reviewQueueTotal)} data-chat-review-queue>
+              <div class="section-heading">
+                <button type="button" class="section-toggle" class:collapsed={reviewQueueCollapsed} aria-label={sectionToggleLabel(t("chat.reviewQueue.heading"), reviewQueueCollapsed)} aria-expanded={!reviewQueueCollapsed} onclick={() => { reviewQueueCollapsed = !reviewQueueCollapsed; }}>
+                  <span use:overflowTooltip={t("chat.reviewQueue.heading")}>{t("chat.reviewQueue.heading")}</span>
+                  {#if reviewQueueCollapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
+                </button>
+              </div>
+              {#if !reviewQueueCollapsed}
+                <ChatReviewQueueSection {panel} onOpened={() => { if (panel) onCollapse(); }} />
+              {/if}
+            </section>
+          {/if}
         {/if}
         <section class="channel-section" role="group" data-chat-section-drop="" class:rail-drop-section={touchDropSectionId === null} ondragover={handleSectionDragOver} ondrop={(event) => handleDrop(event, null)}>
           <div class="section-heading">
@@ -989,20 +974,6 @@
             {/if}
           </section>
         {/each}
-
-        {#if !query.trim()}
-          <section class="channel-section" role="group" data-chat-direct-messages>
-            <div class="section-heading">
-              <button type="button" class="section-toggle" class:collapsed={directMessagesCollapsed} aria-label={sectionToggleLabel(t("chat.channels.directMessages"), directMessagesCollapsed)} aria-expanded={!directMessagesCollapsed} onclick={() => { directMessagesCollapsed = !directMessagesCollapsed; }}>
-                <span use:overflowTooltip={t("chat.channels.directMessages")}>{t("chat.channels.directMessages")}</span>
-                {#if directMessagesCollapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
-              </button>
-              <button bind:this={directMessageButton} type="button" class="section-create-action" aria-label={t("chat.channels.newDirectMessage")} data-app-tooltip={t("chat.channels.newDirectMessage")} aria-haspopup="dialog" aria-expanded={directMessagePickerOpen} onpointerenter={() => { void loadDirectMessagePicker(); }} onfocus={() => { void loadDirectMessagePicker(); }} onclick={openDirectMessagePicker}><Plus size={13} /></button>
-              <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.moreActions")}: ${t("chat.channels.directMessages")}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "directMessages"} onclick={(event) => void toggleSectionContextMenu(event, { kind: "directMessages" })}><EllipsisVertical size={14} /></button>
-            </div>
-          </section>
-        {/if}
-
       </div>
 {/snippet}
 
@@ -1026,9 +997,6 @@
   >
     {#if sectionContextMenu.target.kind === "channels"}
       <button type="button" role="menuitem" disabled={!projects.selectedProjectId} class="menu-item" onclick={createSectionFromContextMenu}><FolderPlus class="size-4" /><span>{t("chat.channels.newSection")}</span></button>
-    {:else if sectionContextMenu.target.kind === "directMessages"}
-      <button type="button" role="menuitem" class="menu-item" onclick={() => openContactsFromContextMenu("contacts")}><ContactRound class="size-4" /><span>{t("contacts.tabs.contacts")}</span></button>
-      <button type="button" role="menuitem" class="menu-item" data-chat-invitations onclick={() => openContactsFromContextMenu("invitations")}><Mail class="size-4" /><span>{t("contacts.tabs.invitations")}</span></button>
     {:else}
       {@const sectionStarred = sectionContextMenu.target.section.starred === true}
       <button type="button" role="menuitem" class="menu-item" onclick={renameSectionFromContextMenu}><Pencil class="size-4" /><span>{t("chat.rename")}</span></button>
@@ -1110,10 +1078,15 @@
 {/snippet}
 
 {#snippet ChannelRow({ channel }: { channel: ChatChannelRead })}
+  {@const attention = channelAttentionMarker(channel.attentionState)}
+  {@const unread = channelUnreadBadge(channel)}
   <div class="channel-row-group explorer-row" class:explorer-selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} role="group" aria-label={channel.name} data-chat-channel-id={channel.id} class:rail-touch-dragged={draggedChannelId === channel.id && channelTouchPress !== null} onpointerdown={(event) => handleChannelPointerDown(event, channel.id)} class:rail-reorder-before={reorderLine(channel.id, "before")} class:rail-reorder-after={reorderLine(channel.id, "after")} draggable="true" ondragstart={(event) => beginDrag(event, channel.id)} ondragend={clearRailDrag} ondragover={(event) => handleChannelDragOver(event, channel.id)} ondrop={(event) => handleChannelDrop(event, channel.id)}>
     <button type="button" class="channel-row explorer-row-label" class:selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} aria-current={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen ? "page" : undefined} onmousedown={preventMiddleClickAutoscroll} onclick={(event) => handleChannelRowClick(event, channel)} onauxclick={(event) => handleChannelRowClick(event, channel)} oncontextmenu={(event) => void openChannelContextMenu(event, channel)}>
       <Hash size={COMPACT_IDENTITY_ICON_SIZE} strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH} class="explorer-row-icon" />
       <span class="min-w-0 flex-1 truncate" use:overflowTooltip={channel.name}>{channel.name}</span>
+      {#if attention}<span class="attention-marker" role="img" data-attention={attention} aria-label={t(`chat.reviewQueue.attention.${attention}`)}></span>{/if}
+      {#if unread.count > 0}<span class="unread-count" aria-label={t("chat.channels.unreadCount", unread.count)}>{unread.count}</span>{/if}
+      {#if unread.failure}<span class="failure-marker" role="img" aria-label={t("chat.channels.unseenFailure")} data-chat-unseen-failure></span>{/if}
     </button>
     <span class="explorer-row-trailing">
       {#if chatSidebarOrder.isChannelStarred(channel.id)}<ExplorerRowStar />{/if}
@@ -1126,19 +1099,6 @@
 {#if setupChannel !== undefined && SetupDialog}
   {@const LoadedSetupDialog = SetupDialog}
   <LoadedSetupDialog channel={setupChannel} sections={orderedSections} initialSectionId={setupSectionId} onSaved={savedChannel} onCancel={() => { setupChannel = undefined; setupSectionId = null; }} />
-{/if}
-
-{#if directMessagePickerOpen && DirectMessagePicker}
-  {@const LoadedDirectMessagePicker = DirectMessagePicker}
-  <LoadedDirectMessagePicker
-    anchor={directMessageButton}
-    title={t("chat.channels.newDirectMessage")}
-    includeContacts
-    includeTeammates={false}
-    horizontalAlign="start"
-    confirmLabel={t("chat.channels.startDirectMessage")}
-    onClose={() => { directMessagePickerOpen = false; }}
-  />
 {/if}
 
 {#if archiveCandidate}<ConfirmDialog title={t("chat.channels.archiveConfirmTitle", archiveCandidate.name)} message={t("chat.channels.archiveConfirmMessage")} confirmLabel={t("chat.archive")} cancelLabel={t("chat.cancel")} onConfirm={() => void confirmArchive()} onCancel={() => { archiveCandidate = null; }} />{/if}
@@ -1186,4 +1146,7 @@
   /* Touch headings keep the row action end inset, so their actions line up with the channel rows below. */
   .explorer-touch .channel-section > .section-heading > .explorer-row-action { margin-inline-end: var(--explorer-row-action-end-inset); }
   .channel-loading { padding-right: 0.55rem; opacity: 0.72; }
+  .attention-marker { flex: 0 0 auto; width: 0.45rem; height: 0.45rem; border-radius: 999px; background: var(--primary); }
+  .unread-count { flex: 0 0 auto; color: var(--muted-foreground); font-size: calc(0.68rem * var(--type-scale)); font-variant-numeric: tabular-nums; }
+  .failure-marker { flex: 0 0 auto; width: 0.45rem; height: 0.45rem; border-radius: 999px; background: var(--destructive); }
 </style>

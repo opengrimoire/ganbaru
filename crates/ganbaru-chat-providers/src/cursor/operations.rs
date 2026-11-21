@@ -1,21 +1,24 @@
 //! Cursor provider driver operations.
 
 use super::driver::*;
-use super::executable::acp_continuation_group;
+use super::executable::{CursorVersion, acp_continuation_group, cursor_agent_minimum_version};
 use super::interactions::{
     PendingCursorRequestKind, resolve_approval_result, resolve_question_result,
+    terminal_approval_runs,
 };
 use super::protocol::*;
 use super::session::*;
 use crate::events::*;
 use crate::models::*;
+use crate::registry::{CoreVersion, admit_version, refused_version};
 use crate::{
     DriverCancellation, DriverFuture, DriverOperationContext, ProviderAuthoritySupport,
     ProviderDriver, ProviderEventSink,
 };
 use base64::{Engine as _, engine::general_purpose};
+use ganbaru_chat_contracts::model_recommendation::recommended_model_id;
 use serde_json::{Value, json};
-use std::fs;
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::{Arc, atomic::Ordering};
 use std::time::{Duration, Instant};
@@ -30,6 +33,7 @@ impl ProviderDriver for CursorProviderDriver {
         match self.flavor {
             AcpProviderFlavor::Cursor => Self::metadata_read(),
             AcpProviderFlavor::Grok => Self::grok_metadata_read(),
+            AcpProviderFlavor::Generic => Self::generic_metadata_read(),
         }
     }
 
@@ -50,6 +54,8 @@ impl ProviderDriver for CursorProviderDriver {
     /// `.claude/settings.json`, Cursor hooks from `.cursor/hooks.json`, and Claude Code skills,
     /// agents, and other assets. Claude compatibility is documented without a file list, so
     /// every Claude path stays listed, and `.cursorrules` stays with the rest of Cursor's files.
+    ///
+    /// A generic agent may load any of them and documents none, so every known path is listed.
     fn project_configuration_paths(&self) -> &'static [ProviderConfigurationPath] {
         match self.flavor {
             AcpProviderFlavor::Cursor => &[
@@ -74,6 +80,7 @@ impl ProviderDriver for CursorProviderDriver {
                 ProviderConfigurationPath::Cursor,
                 ProviderConfigurationPath::Grok,
             ],
+            AcpProviderFlavor::Generic => ProviderConfigurationPath::ALL,
         }
     }
 
@@ -81,11 +88,50 @@ impl ProviderDriver for CursorProviderDriver {
         &self.configuration
     }
 
+    fn cli_command(&self, arguments: &[&str]) -> ChatResult<crate::ProviderCliCommand> {
+        if self.flavor == AcpProviderFlavor::Generic {
+            return Err(ChatError::unsupported(
+                "Generic ACP agents run no maintenance commands",
+            ));
+        }
+        let environment = super::executable::process_environment_for(
+            &self.configuration,
+            self.flavor.display_name(),
+        )?;
+        let executable =
+            super::executable::resolve_executable(&self.configuration.executable, &environment)?;
+        Ok(crate::ProviderCliCommand::new(
+            executable,
+            &[],
+            arguments,
+            environment,
+        ))
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         potential_capabilities_for(self.flavor)
     }
 
+    fn session_process_id(&self) -> Option<u32> {
+        self.live.as_ref()?.connection.process_id()
+    }
+
+    /// Boundaries any ACP agent of this flavor can hold; a probe narrows `internal_host_tools` to
+    /// the agent's HTTP MCP support.
+    ///
+    /// Generic agents hold no folder boundary, because they document nothing. Grok and Cursor
+    /// hold folder boundaries exactly when the sandbox helper confines their process on this
+    /// device; see [`super::confinement::grok_authority_support`] and
+    /// [`super::confinement::cursor_authority_support`].
     fn authority_support(&self) -> ProviderAuthoritySupport {
+        let confined = super::confinement::sandbox_helper().is_some();
+        match self.flavor {
+            AcpProviderFlavor::Grok => return super::confinement::grok_authority_support(confined),
+            AcpProviderFlavor::Cursor => {
+                return super::confinement::cursor_authority_support(confined);
+            }
+            AcpProviderFlavor::Generic => {}
+        }
         ProviderAuthoritySupport {
             isolated_conversation: true,
             internal_host_tools: true,
@@ -95,6 +141,7 @@ impl ProviderDriver for CursorProviderDriver {
             confined_commands: false,
             network_boundary: false,
             classified_publish: false,
+            person_approved_commands: false,
         }
     }
 
@@ -128,46 +175,84 @@ impl ProviderDriver for CursorProviderDriver {
     ) -> DriverFuture<'a, ProviderProbeResult> {
         Box::pin(async move {
             let checked_at = now_utc()?;
-            match self.probe_snapshot(context).await {
-                Ok((started, about)) => {
-                    let capabilities = negotiated_capabilities_for(
-                        self.flavor,
-                        &started.initialize,
-                        &started.setup,
-                    );
-                    self.cached_models = Some(ProviderModelCatalog {
-                        instance_id: self.configuration.instance_id.clone(),
-                        models: started.models,
-                        source: ModelCatalogSource::Provider,
-                        discovered_at: checked_at.clone(),
-                        stale: false,
-                    });
+            let outcome = self
+                .probe_initialize(context)
+                .await
+                .and_then(|(initialize, about)| {
+                    select_auth_method(
+                        self.flavor.display_name(),
+                        self.auth_preference(),
+                        &initialize,
+                    )?;
+                    Ok((initialize, about))
+                });
+            match outcome {
+                Ok((initialize, about)) => {
+                    let version_admission = match self.flavor {
+                        AcpProviderFlavor::Cursor => Some(admit_version::<CursorVersion>(
+                            &CURSOR_COMPATIBILITY,
+                            &about.version,
+                        )?),
+                        AcpProviderFlavor::Grok => Some(admit_version::<CoreVersion>(
+                            &GROK_COMPATIBILITY,
+                            &about.version,
+                        )?),
+                        // Generic agents have unrelated version schemes, so they have no range.
+                        AcpProviderFlavor::Generic => None,
+                    };
+                    let agent_minimum_version = agent_minimum_version(self.flavor, &about.version);
+                    let capabilities =
+                        negotiated_capabilities_for(self.flavor, &initialize, None, self.observed);
+                    // Publication is classified only by the push request host tool, which needs
+                    // the internal MCP endpoint.
+                    let accepts_http_mcp =
+                        initialize.agent_capabilities.accepts_http_mcp(self.flavor);
+                    let base = self.authority_support();
+                    let authority_support = ProviderAuthoritySupport {
+                        internal_host_tools: accepts_http_mcp,
+                        classified_publish: base.classified_publish && accepts_http_mcp,
+                        ..base
+                    };
                     Ok(ProviderProbeResult {
                         instance_id: self.configuration.instance_id.clone(),
                         state: ProbeState::Healthy,
-                        version: Some(about.version),
-                        negotiated_protocol_version: Some(
-                            started.initialize.protocol_version.to_string(),
-                        ),
+                        version: Some(about.version).filter(|version| !version.is_empty()),
+                        negotiated_protocol_version: Some(initialize.protocol_version.to_string()),
                         account_label: about.account_label,
+                        auth_source: self.auth_source(),
+                        account_plan: self.account_plan(),
                         capabilities,
-                        authority_support: self.authority_support(),
+                        authority_support,
                         checked_at,
                         detail: None,
+                        version_admission,
+                        agent_minimum_version,
+                        usage_limits: None,
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),
-                Err(error) => Ok(ProviderProbeResult {
-                    instance_id: self.configuration.instance_id.clone(),
-                    state: probe_state(error.code),
-                    version: None,
-                    negotiated_protocol_version: None,
-                    account_label: None,
-                    capabilities: potential_capabilities_for(self.flavor),
-                    authority_support: self.authority_support(),
-                    checked_at,
-                    detail: Some(probe_detail(self.flavor, error.code)),
-                }),
+                Err(error) => {
+                    let refusal = refused_version(&error);
+                    let agent_minimum = refusal
+                        .as_ref()
+                        .and_then(|(_, version)| agent_minimum_version(self.flavor, version));
+                    Ok(ProviderProbeResult {
+                        instance_id: self.configuration.instance_id.clone(),
+                        state: probe_state(error.code),
+                        version: refusal.as_ref().map(|(_, version)| version.clone()),
+                        negotiated_protocol_version: None,
+                        account_label: None,
+                        auth_source: self.auth_source(),
+                        account_plan: None,
+                        capabilities: potential_capabilities_for(self.flavor),
+                        authority_support: self.authority_support(),
+                        checked_at,
+                        detail: Some(probe_detail(self.flavor, &error)),
+                        version_admission: refusal.map(|(admission, _)| admission),
+                        agent_minimum_version: agent_minimum,
+                        usage_limits: None,
+                    })
+                }
             }
         })
     }
@@ -180,6 +265,10 @@ impl ProviderDriver for CursorProviderDriver {
             let (started, _) = self.probe_snapshot(context).await?;
             let catalog = ProviderModelCatalog {
                 instance_id: self.configuration.instance_id.clone(),
+                recommended_model_id: recommended_model_id(
+                    self.flavor.native_company(),
+                    &started.models,
+                ),
                 models: started.models,
                 source: ModelCatalogSource::Provider,
                 discovered_at: now_utc()?,
@@ -247,7 +336,24 @@ impl ProviderDriver for CursorProviderDriver {
         Box::pin(async move {
             let flavor = self.flavor;
             let provider_name = flavor.display_name();
-            let prompt = build_prompt(&request, flavor)?;
+            let (delivered, workspace) = {
+                let live = self.live_mut(&request.session_id)?;
+                let delivered = *live
+                    .delivered_instructions
+                    .lock()
+                    .map_err(|_| driver_state_error())?;
+                let workspace = live
+                    .route
+                    .lock()
+                    .map_err(|_| driver_state_error())?
+                    .workspace
+                    .clone();
+                (delivered, workspace)
+            };
+            let AcpPrompt {
+                content: prompt,
+                instructions: sent_instructions,
+            } = build_prompt(&request, flavor, &workspace, delivered).await?;
             let live = self.live_mut(&request.session_id)?;
             if live
                 .prompt_task
@@ -334,6 +440,8 @@ impl ProviderDriver for CursorProviderDriver {
             let sink = Arc::clone(&live.sink);
             let terminal_error = Arc::clone(&live.terminal_error);
             let prompt_completions = Arc::clone(&live.prompt_completions);
+            let delivered_instructions = Arc::clone(&live.delivered_instructions);
+            let terminal_callbacks = live.terminal_callbacks.clone();
             let prompt_context = DriverOperationContext {
                 operation_id: context.operation_id.clone(),
                 deadline: Instant::now() + PROMPT_TIMEOUT,
@@ -385,7 +493,17 @@ impl ProviderDriver for CursorProviderDriver {
                         .await
                 };
                 let events = match response {
+                    // A folder change trips the guard, whose signal ends the turn and the
+                    // session in the router.
+                    Ok(_) if terminal_callbacks.verify_direct_writes().is_err() => Ok(Vec::new()),
                     Ok(response) => {
+                        // The agent answered the prompt, so its context holds the instructions
+                        // whatever the stop reason.
+                        if let (Some(digest), Ok(mut delivered)) =
+                            (sent_instructions, delivered_instructions.lock())
+                        {
+                            *delivered = Some(digest);
+                        }
                         let stop_reason = response
                             .get("stopReason")
                             .and_then(Value::as_str)
@@ -489,6 +607,39 @@ impl ProviderDriver for CursorProviderDriver {
             let provider_name = self.flavor.display_name();
             let live = self.live_mut(&request.session_id)?;
             let pending = take_pending(&live.pending, &request.provider_request_id)?;
+            if let PendingCursorRequestKind::Terminal { request: terminal } = &pending.kind {
+                let runs = match terminal_approval_runs(&request.decision) {
+                    Ok(runs) => runs,
+                    Err(error) => {
+                        restore_pending(
+                            &live.pending,
+                            request.provider_request_id.clone(),
+                            pending,
+                        );
+                        return Err(error);
+                    }
+                };
+                answer_held_terminal(live, pending.rpc_id.clone(), (**terminal).clone(), runs)
+                    .await?;
+                let event = {
+                    let state = live.route.lock().map_err(|_| driver_state_error())?;
+                    live.normalizer.external_event(
+                        &state,
+                        "terminal/create/resolved",
+                        Some(request.provider_request_id.clone()),
+                        CanonicalEvent::RequestResolved(RequestResolvedEvent {
+                            request_id: request.provider_request_id.clone(),
+                            state: RequestResolutionState::Resolved,
+                            decision: Some(request.decision.clone()),
+                        }),
+                    )?
+                };
+                live.sink.emit(event).await?;
+                return Ok(operation_receipt(
+                    request.command.client_command_id.as_str(),
+                    &format!("{provider_name} command approval accepted"),
+                ));
+            }
             if !matches!(&pending.kind, PendingCursorRequestKind::Approval { .. }) {
                 restore_pending(&live.pending, request.provider_request_id.clone(), pending);
                 return Err(ChatError::new(
@@ -659,6 +810,9 @@ impl ProviderDriver for CursorProviderDriver {
                 .map_err(|_| driver_state_error())?
                 .provider_thread_id
                 .clone();
+            if let Ok(state) = live.route.lock() {
+                self.observed.merge(state.observed);
+            }
             let _ = live
                 .connection
                 .client()
@@ -709,7 +863,53 @@ impl ProviderDriver for CursorProviderDriver {
     }
 }
 
-fn build_prompt(request: &SendTurnRequest, flavor: AcpProviderFlavor) -> ChatResult<Vec<Value>> {
+/// SHA-256 of normalized developer instructions, naming what a live session already received.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct InstructionsDigest([u8; 32]);
+
+impl InstructionsDigest {
+    fn of(normalized: &str) -> Self {
+        Self(Sha256::digest(normalized.as_bytes()).into())
+    }
+
+    /// Digest of `instructions` as `build_prompt` would send them, or `None` when they
+    /// normalize to nothing.
+    pub(super) fn of_instructions(instructions: &str) -> Option<Self> {
+        normalized_instructions(instructions).map(|normalized| Self::of(&normalized))
+    }
+}
+
+/// Developer instructions with line endings unified and outer whitespace removed, or `None`
+/// when nothing is left.
+fn normalized_instructions(instructions: &str) -> Option<String> {
+    let normalized = instructions.replace("\r\n", "\n");
+    let trimmed = normalized.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// One `session/prompt` content list and the instructions it delivers.
+pub(super) struct AcpPrompt {
+    pub content: Vec<Value>,
+    /// Digest of the instructions this prompt carries, recorded once the agent answers it.
+    pub instructions: Option<InstructionsDigest>,
+}
+
+/// Builds the prompt content for one turn.
+///
+/// ACP has no session instruction field the current agents advertise, so developer instructions
+/// ride in the prompt text, once per native session: they are omitted when `delivered` already
+/// names the same normalized text, and sent again when they change or the session is new. A
+/// session loaded for resume starts with `delivered` set when the caller reports that the
+/// native session already received the same instructions.
+///
+/// Cursor and Grok read `@path` mentions in the text. A generic agent gets each mention as a
+/// `resource_link` block under `workspace`, which every ACP agent must accept.
+pub(super) async fn build_prompt(
+    request: &SendTurnRequest,
+    flavor: AcpProviderFlavor,
+    workspace: &Path,
+    delivered: Option<InstructionsDigest>,
+) -> ChatResult<AcpPrompt> {
     let provider_name = flavor.display_name();
     if request.prompt.len() > MAX_PROMPT_BYTES || request.prompt.contains('\0') {
         return Err(ChatError::validation(
@@ -718,7 +918,16 @@ fn build_prompt(request: &SendTurnRequest, flavor: AcpProviderFlavor) -> ChatRes
         ));
     }
     let mut text = request.prompt.clone();
-    if !request.mentions.is_empty() {
+    let resource_links = if flavor == AcpProviderFlavor::Generic {
+        request
+            .mentions
+            .iter()
+            .map(|mention| resource_link(workspace, &mention.relative_path, provider_name))
+            .collect::<ChatResult<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    if !request.mentions.is_empty() && flavor != AcpProviderFlavor::Generic {
         text.push_str("\n\nReferenced workspace paths:\n");
         text.push_str(
             &request
@@ -729,6 +938,7 @@ fn build_prompt(request: &SendTurnRequest, flavor: AcpProviderFlavor) -> ChatRes
                 .join("\n"),
         );
     }
+    let mut sent_instructions = None;
     if let Some(instructions) = request.developer_instructions.as_deref() {
         if instructions.len() > MAX_TEXT_ATTACHMENT_BYTES || instructions.contains('\0') {
             return Err(ChatError::validation(
@@ -736,16 +946,23 @@ fn build_prompt(request: &SendTurnRequest, flavor: AcpProviderFlavor) -> ChatRes
                 format!("{provider_name} developer instructions exceed the supported limit"),
             ));
         }
-        text.push_str("\n\nAdditional Ganbaru instructions:\n");
-        text.push_str(instructions);
+        if let Some(normalized) = normalized_instructions(instructions) {
+            let digest = InstructionsDigest::of(&normalized);
+            if delivered != Some(digest) {
+                text.push_str("\n\nAdditional Ganbaru instructions:\n");
+                text.push_str(&normalized);
+                sent_instructions = Some(digest);
+            }
+        }
     }
     let mut content = Vec::new();
     if !text.trim().is_empty() {
         content.push(json!({ "type": "text", "text": text }));
     }
+    content.extend(resource_links);
     for attachment in &request.attachments {
         match attachment.kind.as_str() {
-            "image" => content.push(image_content(attachment, flavor)?),
+            "image" => content.push(image_content(attachment, flavor).await?),
             "text_snippet" => {
                 let text = attachment.text_content.as_deref().ok_or_else(|| {
                     ChatError::validation(
@@ -774,10 +991,46 @@ fn build_prompt(request: &SendTurnRequest, flavor: AcpProviderFlavor) -> ChatRes
             format!("{provider_name} turn requires text or an image"),
         ));
     }
-    Ok(content)
+    Ok(AcpPrompt {
+        content,
+        instructions: sent_instructions,
+    })
 }
 
-fn image_content(
+/// A `resource_link` prompt block for a workspace-relative mention.
+pub(super) fn resource_link(
+    workspace: &Path,
+    relative_path: &str,
+    provider_name: &str,
+) -> ChatResult<Value> {
+    let invalid = || {
+        ChatError::validation(
+            "mentions",
+            format!("{provider_name} file reference is outside the workspace"),
+        )
+    };
+    let relative = Path::new(relative_path);
+    if relative_path.contains('\0')
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(invalid());
+    }
+    let uri = reqwest::Url::from_file_path(workspace.join(relative)).map_err(|()| invalid())?;
+    let name = relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(invalid)?;
+    Ok(json!({
+        "type": "resource_link",
+        "uri": uri.as_str(),
+        "name": name,
+        "title": relative_path,
+    }))
+}
+
+async fn image_content(
     attachment: &PromptAttachmentReference,
     flavor: AcpProviderFlavor,
 ) -> ChatResult<Value> {
@@ -789,7 +1042,7 @@ fn image_content(
         )
     })?;
     let path = Path::new(path);
-    let metadata = fs::metadata(path).map_err(|_| {
+    let metadata = tokio::fs::metadata(path).await.map_err(|_| {
         ChatError::validation(
             "attachments",
             format!("{provider_name} image attachment is unavailable"),
@@ -816,7 +1069,7 @@ fn image_content(
                 format!("{provider_name} image type is unsupported"),
             )
         })?;
-    let bytes = fs::read(path).map_err(|_| {
+    let bytes = tokio::fs::read(path).await.map_err(|_| {
         ChatError::validation(
             "attachments",
             format!("{provider_name} image attachment could not be read"),
@@ -827,6 +1080,41 @@ fn image_content(
         "data": general_purpose::STANDARD.encode(bytes),
         "mimeType": mime,
     }))
+}
+
+/// Answers a held `terminal/create`: starts the command on an allow and reports its terminal,
+/// or refuses it when the person declined or the command could not start. A terminal whose
+/// answer never reached the agent is stopped.
+async fn answer_held_terminal(
+    live: &CursorLiveSession,
+    rpc_id: Value,
+    terminal: agent_client_protocol::schema::v1::CreateTerminalRequest,
+    runs: bool,
+) -> ChatResult<()> {
+    let client = live.connection.client();
+    if !runs {
+        return client
+            .respond_error(
+                rpc_id,
+                -32602,
+                "acp_command_declined: the person declined this command",
+            )
+            .await
+            .map_err(|error| error.to_chat_error("terminal decline response"));
+    }
+    match live.terminal_callbacks.create_approved(terminal).await {
+        Ok(response) => {
+            if let Err(error) = client.respond(rpc_id, response.clone()).await {
+                live.terminal_callbacks.discard(&response);
+                return Err(error.to_chat_error("terminal create response"));
+            }
+            Ok(())
+        }
+        Err(error) => client
+            .respond_error(rpc_id, -32602, &error.message)
+            .await
+            .map_err(|error| error.to_chat_error("terminal create rejection")),
+    }
 }
 
 async fn cancel_pending(live: &CursorLiveSession) {
@@ -857,6 +1145,17 @@ fn operation_receipt(operation_id: &str, detail: &str) -> DriverOperationReceipt
     }
 }
 
+/// The oldest CLI version this device's agent runs of `flavor` accept, when `version` is
+/// older.
+fn agent_minimum_version(flavor: AcpProviderFlavor, version: &str) -> Option<String> {
+    match flavor {
+        AcpProviderFlavor::Cursor => {
+            cursor_agent_minimum_version(version, super::confinement::sandbox_helper().is_some())
+        }
+        AcpProviderFlavor::Grok | AcpProviderFlavor::Generic => None,
+    }
+}
+
 fn probe_state(code: ChatErrorCode) -> ProbeState {
     match code {
         ChatErrorCode::ExecutableMissing => ProbeState::ExecutableMissing,
@@ -869,9 +1168,14 @@ fn probe_state(code: ChatErrorCode) -> ProbeState {
     }
 }
 
-fn probe_detail(flavor: AcpProviderFlavor, code: ChatErrorCode) -> String {
+/// The probe detail of a failure; a generic agent's authentication refusal keeps the advertised
+/// method names so the user can configure one.
+fn probe_detail(flavor: AcpProviderFlavor, error: &ChatError) -> String {
     let provider_name = flavor.display_name();
-    match code {
+    match error.code {
+        ChatErrorCode::AuthenticationRequired if flavor == AcpProviderFlavor::Generic => {
+            error.message.clone()
+        }
         ChatErrorCode::ExecutableMissing => {
             format!("{provider_name} executable is unavailable")
         }

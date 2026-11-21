@@ -2203,8 +2203,9 @@ fn manifests_are_well_formed() {
             31, 511, 7, 127, 31, 7, 3, 7, 1023, 7, 127, 31, 63, 15, 63, 3, 2047, 15, 31, 31, 15,
             255, 127, 65535, 31, 7, 31, 255, 127, 31, 8191, 31, 15, 7, 31, 15, 15, 1, 15, 15, 31,
             31, 15, 63, 134217727, 65535, 3, 15, 63, 15, 7, 1, 63, 3, 7, 31, 31, 31, 7, 15, 1, 15,
-            1023, 127, 255, 255, 31, 7, 31, 127, 7, 7, 63, 31, 15, 15, 31, 7, 7, 3, 15, 31, 1, 31,
-            1, 15, 31, 31, 15, 15, 31, 1, 15, 3, 1, 1, 1, 1, 1, 1, 15, 15, 15, 15, 31, 1
+            1023, 127, 255, 255, 31, 7, 31, 127, 7, 7, 63, 31, 15, 15, 31, 7, 7, 3, 15, 7, 1, 7,
+            15, 15, 31, 63, 7, 7, 63, 31, 3, 31, 15, 3, 1, 1, 1, 1, 1, 1, 15, 15, 15, 63, 63, 127,
+            1, 15, 15
         ]
     );
 }
@@ -2349,6 +2350,13 @@ fn never_deleted() -> BTreeSet<&'static str> {
         .collect()
 }
 
+/// Ungated delete refusals that hold only while a parent row exists, so the parent's cascade still
+/// deletes the row on every replica.
+const CONDITIONAL_DELETE_REFUSALS: &[(&str, &str)] = &[(
+    "chat_agent_policy_immutable_delete",
+    "a policy revision leaves only with its agent",
+)];
+
 /// A delete the schema refuses for every writer could only ever stop on a replica, so the table
 /// must be marked and no replicated operation may delete from it, directly or through a cascade
 /// from a table a tombstone can reach.
@@ -2367,7 +2375,13 @@ fn never_deleted_tables_cover_every_ungated_delete_refusal() {
         let mut refusing = 0;
         for (name, table, sql) in triggers {
             let replicated = VAULT_MANIFEST.tables.iter().any(|spec| spec.name == table);
-            if !replicated || sql.contains("applying") || !sql.contains("RAISE(ABORT") {
+            if !replicated
+                || sql.contains("applying")
+                || !sql.contains("RAISE(ABORT")
+                || CONDITIONAL_DELETE_REFUSALS
+                    .iter()
+                    .any(|(conditional, _)| *conditional == name)
+            {
                 continue;
             }
             refusing += 1;
@@ -2400,27 +2414,33 @@ fn manifest_refuses_a_never_table_under_a_deletable_cascade_parent() {
     };
     const KEY_CHILD: TableSpec = TableSpec {
         deletion: Deletion::Never,
-        ..chat::TEAMMATES
+        ..chat::AGENTS
     };
-    const PROFILE: TableSpec = TableSpec {
-        deletion: Deletion::Ordinary,
-        ..chat::PROFILES
-    };
-    const REFERENCING: TableSpec = TableSpec {
-        deletion: Deletion::Never,
-        ..chat::PROFILE_REVISIONS
-    };
-    const REFUSED: DomainManifest = DomainManifest {
-        tables: &[PARENT, KEY_CHILD, PROFILE, REFERENCING],
+    const KEY_PARENT_REFUSED: DomainManifest = DomainManifest {
+        tables: &[PARENT, KEY_CHILD],
         ..chat::DOMAIN
     };
-    let problems = validation_error(&[&REFUSED]);
-    for problem in [
-        "chat_teammates: the key parent of a never-deleted table is never deleted",
-        "chat_access_profile_revisions: access_profile_id cascades from a table that is not never deleted",
-    ] {
-        assert!(problems.contains(problem), "{problems}");
-    }
+    let problems = validation_error(&[&KEY_PARENT_REFUSED]);
+    assert!(
+        problems.contains("chat_agents: the key parent of a never-deleted table is never deleted"),
+        "{problems}"
+    );
+
+    const POLICY: TableSpec = TableSpec {
+        deletion: Deletion::Never,
+        ..chat::POLICY_REVISIONS
+    };
+    const REFERENCE_REFUSED: DomainManifest = DomainManifest {
+        tables: &[chat::PARTICIPANTS, chat::AGENTS, POLICY],
+        ..chat::DOMAIN
+    };
+    let problems = validation_error(&[&REFERENCE_REFUSED]);
+    assert!(
+        problems.contains(
+            "chat_agent_policy_revisions: agent_id cascades from a table that is not never deleted"
+        ),
+        "{problems}"
+    );
 }
 
 #[test]
@@ -2816,37 +2836,13 @@ fn engine_construction_checks_adapters_both_ways() {
     );
 }
 
-/// Recorded manifests by version. Operations of every version up to the current one validate
-/// against the current manifest. The snapshot of a version no release carries yet is rerecorded
-/// in place when that version changes, tightening included. A released version's snapshot never
-/// changes; a new version may only add tables and groups, loosen rules, or refuse values the
-/// schema could never store, and it records its own snapshot here.
-const RECORDED_MANIFESTS: &[(u16, &str)] = &[
-    (1, include_str!("fixtures/vault_manifest_v1.txt")),
-    (2, include_str!("fixtures/vault_manifest_v2.txt")),
-    (3, include_str!("fixtures/vault_manifest_v3.txt")),
-    (4, include_str!("fixtures/vault_manifest_v4.txt")),
-    (5, include_str!("fixtures/vault_manifest_v5.txt")),
-    (6, include_str!("fixtures/vault_manifest_v6.txt")),
-    (7, include_str!("fixtures/vault_manifest_v7.txt")),
-    (8, include_str!("fixtures/vault_manifest_v8.txt")),
-    (9, include_str!("fixtures/vault_manifest_v9.txt")),
-    (10, include_str!("fixtures/vault_manifest_v10.txt")),
-    (11, include_str!("fixtures/vault_manifest_v11.txt")),
-    (12, include_str!("fixtures/vault_manifest_v12.txt")),
-    (13, include_str!("fixtures/vault_manifest_v13.txt")),
-    (14, include_str!("fixtures/vault_manifest_v14.txt")),
-    (15, include_str!("fixtures/vault_manifest_v15.txt")),
-    (16, include_str!("fixtures/vault_manifest_v16.txt")),
-    (17, include_str!("fixtures/vault_manifest_v17.txt")),
-    (18, include_str!("fixtures/vault_manifest_v18.txt")),
-    (19, include_str!("fixtures/vault_manifest_v19.txt")),
-    (20, include_str!("fixtures/vault_manifest_v20.txt")),
-    (21, include_str!("fixtures/vault_manifest_v21.txt")),
-    (22, include_str!("fixtures/vault_manifest_v22.txt")),
-    (23, include_str!("fixtures/vault_manifest_v23.txt")),
-    (24, include_str!("fixtures/vault_manifest_v24.txt")),
-];
+/// Recorded manifests by version. Version 24 is the pre-user starting point: no release carries
+/// it, so its snapshot is rerecorded in place whenever the manifest changes, and fields may join
+/// existing groups or groups may change shape. Once a release carries a version, its snapshot
+/// never changes; a later version may only add tables and groups, loosen rules, or refuse values
+/// the schema could never store, and it records its own snapshot here. Operations of every
+/// recorded version validate against the current manifest.
+const RECORDED_MANIFESTS: &[(u16, &str)] = &[(24, include_str!("fixtures/vault_manifest_v24.txt"))];
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {
     let (version, recorded) = RECORDED_MANIFESTS

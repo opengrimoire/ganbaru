@@ -351,6 +351,7 @@ describe("deriveAppTokens", () => {
       "--sidebar-accent-foreground",
       "--event-panel-contrast",
       "--form-indicator",
+      "--action-confirm-signal",
       "--action-confirm",
       "--action-danger-armed",
       "--action-danger-armed-foreground",
@@ -365,6 +366,12 @@ describe("deriveAppTokens", () => {
         BASE_APP_TOKENS.dark[key].toLowerCase(),
       );
     }
+  });
+
+  it("keeps the confirm signal readable on the canvas when the confirm fill is deep", () => {
+    const tokens = deriveAppTokens({ ...DARK_SOURCES, canvas: "#101014", confirm: "#064E3B" });
+    expect(contrastRatio(tokens["--action-confirm-signal"]!, tokens["--background"]!)).toBeGreaterThanOrEqual(4.5);
+    expect(tokens["--action-confirm"]).toBe("#064E3B");
   });
 
   it("lands within 2 OKLab-L units of BASE.dark on shift-derived surfaces", () => {

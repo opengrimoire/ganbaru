@@ -4,6 +4,8 @@ export interface CommandActivityPresentation {
   command: string | null;
   cwd: string | null;
   output: string | null;
+  /** Whether `output` is a shortened preview of the whole command output. */
+  outputTruncated: boolean;
   exitCode: number | null;
   durationMs: number | null;
   running: boolean;
@@ -33,6 +35,7 @@ export type ActivitySummaryKind =
   | "file_reads"
   | "file_searches"
   | "web_searches"
+  | "web_fetches"
   | "image_views"
   | "tools"
   | "collaboration"
@@ -110,6 +113,67 @@ export function fileSearchActivityPresentation(
   };
 }
 
+/** One page a web search returned. */
+export interface WebLinkPresentation {
+  url: string;
+  title: string | null;
+  host: string;
+}
+
+/**
+ * A web search or page fetch an agent made through its own web tool. A search has `links` only
+ * once its structured result arrived, so a denied, failed, or still running search has `null`.
+ */
+export type WebActivityPresentation =
+  | { kind: "search"; query: string | null; links: WebLinkPresentation[] | null }
+  | { kind: "fetch"; link: WebLinkPresentation | null; statusCode: number | null };
+
+/**
+ * Extracts the query and result links of an agent's web search, or the page and status of a
+ * web fetch, from the tool name and bounded result in the activity metadata. Links other than
+ * http or https are dropped so the timeline only offers pages a browser can open.
+ */
+export function webActivityPresentation(activity: TimelineActivityRow): WebActivityPresentation | null {
+  if (activity.activityKind !== "web_search") return null;
+  const metadata = record(activity.metadata?.value);
+  const tool = stringValue(metadata?.toolName);
+  const input = record(metadata?.toolInput);
+  const result = record(metadata?.webResult);
+  if (tool === "WebSearch") {
+    const links = Array.isArray(result?.links) ? result.links : null;
+    return {
+      kind: "search",
+      query: stringValue(input?.query),
+      links: links?.flatMap((link) => {
+        const entry = record(link);
+        const presented = webLink(entry?.url, entry?.title);
+        return presented ? [presented] : [];
+      }) ?? null,
+    };
+  }
+  if (tool === "WebFetch") {
+    return {
+      kind: "fetch",
+      link: webLink(result?.url ?? input?.url, null),
+      statusCode: integerValue(result?.code),
+    };
+  }
+  return null;
+}
+
+function webLink(url: unknown, title: unknown): WebLinkPresentation | null {
+  const href = stringValue(url);
+  if (!href) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(href);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  return { url: href, title: stringValue(title), host: parsed.hostname.replace(/^www\./u, "") };
+}
+
 /** Returns whether an activity is a provider-neutral image inspection action. */
 export function isImageViewActivity(activity: TimelineActivityRow): boolean {
   if (activity.activityKind === "image_view") return true;
@@ -133,7 +197,7 @@ export function summarizeActivityKinds(
 /** Returns a bounded provider-designated summary suitable for a temporary live status row. */
 export function transientActivitySummary(activity: TimelineActivityRow): string | null {
   if (activity.activityKind !== "reasoning_summary") return null;
-  const lines = activity.detail
+  const lines = activity.detailPreview
     ?.split(/\r?\n/u)
     .map((line) => line.trim().replace(/^(?:#{1,6}|>|\*|-)\s+/u, ""))
     .filter(Boolean);
@@ -154,11 +218,12 @@ export function commandActivityPresentation(
     && rawCommand !== "command output"
     ? rawCommand
     : null;
-  const output = activity.detail?.trim() || null;
+  const output = activity.detailPreview?.trim() || null;
   return {
     command,
     cwd: stringValue(metadata?.cwd),
     output,
+    outputTruncated: activity.detailTruncated,
     exitCode: integerValue(metadata?.exitCode),
     durationMs: nonNegativeNumber(metadata?.durationMs),
     running: activity.status === "pending"
@@ -226,7 +291,9 @@ function activitySummaryKind(activity: TimelineActivityRow): ActivitySummaryKind
   if (isFileChangeActivity(activity)) return "file_changes";
   if (isImageViewActivity(activity)) return "image_views";
   if (isFileSearchActivity(activity)) return "file_searches";
-  if (activity.activityKind === "web_search") return "web_searches";
+  if (activity.activityKind === "web_search") {
+    return webActivityPresentation(activity)?.kind === "fetch" ? "web_fetches" : "web_searches";
+  }
   if (isFileReadActivity(activity)) return "file_reads";
   if (isCommandActivity(activity)) return "commands";
   if (activity.activityKind === "collaboration_task") return "collaboration";

@@ -4,6 +4,7 @@
   import Plus from "@lucide/svelte/icons/plus";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { cn } from "$lib/utils";
   let { label, draft = $bindable(""), active = $bindable(false), disabled = false, inputAttributes, contentColumn, indent, onDraftChange, onActiveChange, onSubmit, onCreate }: {
     label: string;
@@ -47,7 +48,7 @@
     try {
       if (await onSubmit(draft.trim())) { draft = ""; onDraftChange?.(""); }
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = userErrorMessage(caught, t("collections.items.addFailed"));
     } finally {
       pending = false;
       await tick();

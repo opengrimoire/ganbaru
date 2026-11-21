@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import Pencil from "@lucide/svelte/icons/pencil";
+import Trash2 from "@lucide/svelte/icons/trash";
 import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessageActionTarget } from "$lib/chat/timeline/message-action-target";
@@ -202,5 +204,36 @@ describe("ChatMessageActionToolbar", () => {
       expect(actions[1]?.getAttribute("title")).toBe("Copied");
       expect(actions[1]?.querySelector(".lucide-check")).not.toBeNull();
     });
+  });
+
+  it("renders custom actions in the given order with tooltips and keeps a disabled one inert", () => {
+    const onEdit = vi.fn();
+    const onCancel = vi.fn();
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatMessageActionToolbar, {
+      target,
+      props: {
+        target: { ...ORGANIZATIONAL_TARGET, kind: "scheduled" },
+        visible: true,
+        actions: [
+          "copy",
+          { id: "edit", label: "Edit scheduled message", icon: Pencil, onSelect: onEdit },
+          { id: "cancel", label: "Cancel scheduled message", icon: Trash2, disabled: true, onSelect: onCancel },
+        ],
+      },
+    });
+
+    const actions = [...target.querySelectorAll<HTMLButtonElement>("button")];
+    expect(actions.map((button) => button.dataset.messageAction)).toEqual(["copy", "edit", "cancel"]);
+    expect(actions[1]?.dataset.appTooltip).toBe("Edit scheduled message");
+    expect(actions[1]?.querySelector(".lucide-pencil")).not.toBeNull();
+    expect(actions[2]?.disabled).toBe(true);
+    actions[1]?.click();
+    actions[2]?.click();
+
+    expect(onEdit).toHaveBeenCalledOnce();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(target.querySelector("button[aria-label='Add reaction']")).toBeNull();
   });
 });

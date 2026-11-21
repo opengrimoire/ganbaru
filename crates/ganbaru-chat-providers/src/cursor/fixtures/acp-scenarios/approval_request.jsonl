@@ -1,0 +1,10 @@
+{"type":"transcript_start","provider":"acp","protocol":"acp","cli_version":"1.0.0","scenario":"approval_request","generated_by":"authored"}
+{"type":"expect_outbound","label":"initialize","frame":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true},"clientInfo":{"name":"ganbaru","version":"<redacted>"}}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"<ref:initialize>","result":{"protocolVersion":1,"agentCapabilities":{"loadSession":false,"promptCapabilities":{"image":false,"audio":false,"embeddedContext":false}},"authMethods":[],"agentInfo":{"name":"fixture-agent","title":"Fixture agent","version":"1.0.0"}}}}
+{"type":"expect_outbound","label":"session-new","frame":{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"<workspace>","mcpServers":[]}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"<ref:session-new>","result":{"sessionId":"acp-session-fixture"}}}
+{"type":"expect_outbound","label":"prompt-1","frame":{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"acp-session-fixture","prompt":[{"type":"text","text":"Run the tests"}]}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"permission-1","method":"session/request_permission","params":{"sessionId":"acp-session-fixture","toolCall":{"toolCallId":"tool-execute","kind":"execute","title":"Run cargo test","rawInput":{"command":"cargo test"}},"options":[{"optionId":"run","name":"Run it","kind":"allow_once"},{"optionId":"skip","name":"Skip it","kind":"reject_once"}]}}}
+{"type":"expect_outbound","label":"permission-reply","frame":{"jsonrpc":"2.0","id":"permission-1","result":{"outcome":{"outcome":"selected","optionId":"run"}}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-session-fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Tests passed"}}}}}
+{"type":"emit_inbound","frame":{"jsonrpc":"2.0","id":"<ref:prompt-1>","result":{"stopReason":"end_turn"}}}

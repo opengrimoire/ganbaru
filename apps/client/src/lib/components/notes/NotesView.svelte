@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, untrack, type Snippet } from "svelte";
+  import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import {
@@ -265,12 +266,14 @@
     if (!mobileLayout || notes.selectedPageId === null) return;
     return mobileBackStack.activate({
       handle: () => {
-        if (!beforeDocumentNavigation()) return;
-        if (notes.selectedDatabaseBlockId) {
-          notes.closeDatabase();
-          return;
-        }
-        closePagePeek();
+        void beforeDocumentNavigation().then((leave) => {
+          if (!leave) return;
+          if (notes.selectedDatabaseBlockId) {
+            notes.closeDatabase();
+            return;
+          }
+          closePagePeek();
+        });
       },
     });
   });
@@ -352,18 +355,31 @@
     }
   });
 
-  function showProjectHome(): Promise<void> {
-    if (!beforeDocumentNavigation()) return Promise.resolve();
+  async function showProjectHome(): Promise<void> {
+    if (!(await beforeDocumentNavigation())) return;
     if (notes.viewMode === "archive") notes.closeArchive();
     if (notes.viewMode === "trash") notes.closeTrash();
     return notes.selectPage(null);
   }
 
+  /**
+   * Loads the selected project's notes. Unsaved working Markdown is confirmed first: declining returns the selection
+   * to the file's project, and discarding reruns the selection unless another project was chosen meanwhile.
+   */
   function handleProjectSelected(): void {
-    if (!beforeDocumentNavigation()) {
-      if (workingMarkdownProjectId) projects.selectedProjectId = workingMarkdownProjectId;
+    if (workingMarkdownDirty) {
+      const requestedProjectId = projects.selectedProjectId;
+      const fileProjectId = workingMarkdownProjectId;
+      void beforeDocumentNavigation().then((leave) => {
+        if (!leave) {
+          if (fileProjectId) projects.selectedProjectId = fileProjectId;
+          return;
+        }
+        if (projects.selectedProjectId === requestedProjectId) handleProjectSelected();
+      });
       return;
     }
+    releaseWorkingMarkdown();
     const projectId = projects.selectedProjectId;
     if (projectSelectionInFlight && projectSelectionInFlight.projectId === projectId) return;
     const selection = { projectId };
@@ -451,25 +467,39 @@
     if (firstPage) await notes.selectPage(firstPage.id, { openMode: "full" });
   }
 
-  function beforeDocumentNavigation(): boolean {
-    if (!workingMarkdownDirty) {
-      selectedWorkingMarkdownFile = null;
-      workingMarkdownProjectId = null;
-      return true;
-    }
-    if (!window.confirm(t("notes.workingMarkdown.discardConfirm"))) return false;
+  /** Closes the working Markdown file and forgets its unsaved state. */
+  function releaseWorkingMarkdown(): void {
     workingMarkdownDirty = false;
     selectedWorkingMarkdownFile = null;
     workingMarkdownProjectId = null;
+  }
+
+  /**
+   * Leaves the open working Markdown file before another document opens, confirming first when it has unsaved
+   * changes. The answer only counts while the same file is still open.
+   *
+   * @returns Whether navigation may continue.
+   */
+  async function beforeDocumentNavigation(): Promise<boolean> {
+    if (workingMarkdownDirty) {
+      const file = selectedWorkingMarkdownFile;
+      const confirmed = await requestConfirmation({
+        message: t("notes.workingMarkdown.discardConfirm"),
+        confirmLabel: t("notes.workingMarkdown.discardConfirmAction"),
+        danger: true,
+      });
+      if (!confirmed || selectedWorkingMarkdownFile !== file) return false;
+    }
+    releaseWorkingMarkdown();
     return true;
   }
 
-  function selectWorkingMarkdownFile(file: NotesWorkingMarkdownFileRef): void {
+  async function selectWorkingMarkdownFile(file: NotesWorkingMarkdownFileRef): Promise<void> {
     if (mobileLayout) return;
     const unchanged = selectedWorkingMarkdownFile?.workingFolderId === file.workingFolderId
       && selectedWorkingMarkdownFile.relativePath === file.relativePath;
     if (unchanged) return;
-    if (!beforeDocumentNavigation()) return;
+    if (!(await beforeDocumentNavigation())) return;
     if (notes.viewMode === "archive") notes.closeArchive();
     if (notes.viewMode === "trash") notes.closeTrash();
     void notes.selectPage(null);
@@ -769,7 +799,7 @@
         bind:explorerCollapsed={notes.explorerCollapsed}
         {creationFolderId}
         {selectedWorkingMarkdownFile}
-        onSelectWorkingMarkdownFile={selectWorkingMarkdownFile}
+        onSelectWorkingMarkdownFile={(file) => void selectWorkingMarkdownFile(file)}
         onBeforeDocumentNavigation={beforeDocumentNavigation}
         onCreationFolderChange={(folderId) => {
           creationFolderOverride = folderId;
@@ -782,7 +812,7 @@
         <div class="flex min-h-0 min-w-0 flex-1 overflow-hidden">
           {#if !notes.loaded && notes.loadError}
             <div class="flex min-w-0 flex-1 text-sm" data-notes-first-use-state>
-              <Notice layout="fill" message={t("notes.loadFailed", notes.loadError)} onRetry={() => notes.load()} />
+              <Notice layout="fill" message={t("notes.loadFailed")} copy={notes.loadError} onRetry={() => notes.load()} />
             </div>
           {:else if !mobileLayout && selectedWorkingMarkdownFile}
             <NotesWorkingMarkdownEditor
@@ -878,7 +908,7 @@
                             />
                           {:else if store.loadError}
                             <div class="flex min-w-0 flex-1 text-sm">
-                              <Notice layout="fill" message={t("notes.loadFailed", store.loadError)} onRetry={() => store.selectPageLocally(store.selectedPageId)}>
+                              <Notice layout="fill" message={t("notes.loadFailed")} copy={store.loadError} onRetry={() => store.selectPageLocally(store.selectedPageId)}>
                                 {#snippet actions()}
                                   {#if isContextual && showPagePeek}
                                     <button type="button" class="notice-action-text" onclick={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}>{t("notes.closePeek")}</button>

@@ -1,9 +1,10 @@
 use super::{
-    ChatActivityId, ChatExecutionEnvironmentId, ChatScratchGenerationId, ChatThreadId,
-    ChatThreadState, ChatTurnId, ChatTurnState, ContinuationGroupId, ModelId, ModelOptionSelection,
-    ProjectConfigurationAccess, ProjectWorkingFolderId, ProviderCapabilities, ProviderFamilyId,
-    ProviderInstanceId, ProviderSessionId, ProviderSessionState, ProviderThreadId,
-    TurnModeSnapshot, UtcTimestamp, VersionedJson,
+    ChatActivityId, ChatAgentRunId, ChatErrorCode, ChatExecutionEnvironmentId,
+    ChatScratchGenerationId, ChatThreadId, ChatThreadState, ChatTurnId, ChatTurnState,
+    ContinuationGroupId, ModelId, ModelOptionSelection, ProjectConfigurationAccess,
+    ProjectWorkingFolderId, ProviderCapabilities, ProviderFamilyId, ProviderInstanceId,
+    ProviderSessionId, ProviderSessionState, ProviderThreadId, TurnModeSnapshot, UtcTimestamp,
+    VersionedJson,
 };
 use crate::events::{ChangedFileSummary, ThreadUsageUpdatedEvent};
 use serde::{Deserialize, Serialize};
@@ -134,9 +135,27 @@ pub struct ChatThreadShellRead {
 #[serde(rename_all = "camelCase")]
 pub struct ChatChangeNotification {
     pub thread_id: ChatThreadId,
+    /// The newest event sequence the notification covers, or the thread's last event sequence
+    /// when a writer changed rows without an event.
     pub sequence: u64,
+    /// The first event sequence the notification covers; equal to `sequence` for one event or
+    /// for a change without an event.
+    pub since_sequence: u64,
     pub revision: u64,
-    pub changed_projection_keys: Vec<String>,
+    pub changed_projection_keys: Vec<ChatProjectionKey>,
+}
+
+/// A projection a change notification touched, so a reader rereads only what changed.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatProjectionKey {
+    Thread,
+    Turns,
+    Messages,
+    Activities,
+    Plans,
+    PendingRequests,
+    Organizational,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -145,6 +164,8 @@ pub struct ChatTimelineItemRead {
     pub activity_id: ChatActivityId,
     pub turn_id: Option<ChatTurnId>,
     pub sequence_anchor: u64,
+    /// The thread change clock value of the row's last write.
+    pub change_sequence: u64,
     pub kind: String,
     pub data: VersionedJson,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -159,6 +180,8 @@ pub struct ChatTimelineTurnRead {
     pub started_at: Option<UtcTimestamp>,
     pub completed_at: Option<UtcTimestamp>,
     pub stop_reason: Option<String>,
+    /// Code of the error that failed the turn, when it failed with a stored structured error.
+    pub error_code: Option<ChatErrorCode>,
     pub model_id: Option<ModelId>,
     pub model_options: Vec<ModelOptionSelection>,
     pub modes: TurnModeSnapshot,
@@ -175,4 +198,65 @@ pub struct ChatTimelinePageRead {
     pub previous_cursor: Option<String>,
     pub next_cursor: Option<String>,
     pub thread_revision: u64,
+    /// The thread change clock the rows were read at; a since-read after it returns later changes.
+    pub change_cursor: u64,
+}
+
+/// Timeline rows that changed after a change clock value.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatTimelineDeltaRead {
+    pub thread_id: ChatThreadId,
+    /// Visible rows written after the cursor, ordered by change.
+    pub items: Vec<ChatTimelineItemRead>,
+    /// Visible turns written after the cursor and the turns of the returned rows.
+    pub turns: Vec<ChatTimelineTurnRead>,
+    /// Rows deleted or hidden by an invalidated turn after the cursor and not visible again.
+    pub removed_item_ids: Vec<ChatActivityId>,
+    pub change_cursor: u64,
+    /// More changes follow `change_cursor` than one read returns.
+    pub has_more: bool,
+    /// Removals after the cursor were pruned, so the reader must reload the timeline.
+    pub reset_required: bool,
+    pub thread_revision: u64,
+}
+
+/// The live execution of one work assignment, read by a linked phone from the device that
+/// executes it. Rows carry only the presentation fields the read-only timeline needs, with long
+/// text shortened, and no request, approval, provider, environment, or folder data.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLiveExecutionRead {
+    pub assignment_id: String,
+    /// The newest run, once a run started; the agent posts the run projects into the thread name it.
+    pub run_id: Option<ChatAgentRunId>,
+    /// The thread the newest run writes, once a run started.
+    pub thread_id: Option<ChatThreadId>,
+    /// The turn of the newest run, once a run started.
+    pub turn_id: Option<ChatTurnId>,
+    pub provider_family_id: Option<ProviderFamilyId>,
+    pub model_id: Option<ModelId>,
+    /// Rows of the run's turn written after the cursor, ordered by change.
+    pub items: Vec<ChatTimelineItemRead>,
+    /// The run's turn, with no changed files.
+    pub turns: Vec<ChatTimelineTurnRead>,
+    /// Rows of the run's turn deleted or hidden after the cursor.
+    pub removed_item_ids: Vec<ChatActivityId>,
+    pub change_cursor: u64,
+    /// More changes follow `change_cursor` than one read returns.
+    pub has_more: bool,
+    /// The cursor no longer applies, so the reader must read again from the start.
+    pub reset_required: bool,
+    /// The run ended or the assignment left its active states, so no further changes follow.
+    pub settled: bool,
+}
+
+/// The whole detail of one activity, read when its disclosure opens because timeline reads carry
+/// only a shortened preview.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatActivityDetailRead {
+    pub activity_id: ChatActivityId,
+    pub detail: Option<String>,
+    pub updated_at: UtcTimestamp,
 }

@@ -1,15 +1,18 @@
 //! Device-local Chat bindings and provider runtime metadata.
 
-#[cfg(desktop)]
 use crate::vault::{active_vault_id, ensure_device_id, read_app_state, update_app_state};
+use ganbaru_chat::scheduling::QuietPeriodPreferences;
+use ganbaru_chat_contracts::events::RateLimitStatusEvent;
 use ganbaru_chat_contracts::models::{
     ChatThreadId, ProjectWorkingFolderId, ProviderInstanceId, ProviderModelCatalog,
     ProviderProbeResult, UtcTimestamp,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(desktop)]
 use tauri::Runtime;
+
+#[cfg(desktop)]
+mod usage_limits;
 
 pub const CHAT_DEVICE_STATE_SCHEMA_VERSION: u32 = 1;
 
@@ -24,6 +27,86 @@ pub struct ChatProviderDeviceState {
     /// Digests of portable runtime values this device confirmed for the instance.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub approved_runtime_items: BTreeSet<String>,
+    /// The newest usage limits the provider reported on this device, from a probe or a turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_limits: Option<ProviderUsageLimitsObservation>,
+    /// When a turn last started on this instance on this device. Only the order across
+    /// instances matters, so it is written only when the instance becomes the most recent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<UtcTimestamp>,
+}
+
+impl ChatProviderDeviceState {
+    /// Stores the usage limits a provider reported unless a newer report is already stored, and
+    /// reports whether it was stored. A probe and a turn can report in either order, so the
+    /// newest observation wins. A report without usage numbers keeps the numbers the stored
+    /// report read for the same windows, as [`usage_limits::carry_usage_numbers`] describes, and
+    /// keeps when they were read.
+    #[cfg(desktop)]
+    pub fn observe_usage_limits(
+        &mut self,
+        mut status: RateLimitStatusEvent,
+        observed_at: UtcTimestamp,
+    ) -> bool {
+        if self
+            .usage_limits
+            .as_ref()
+            .is_some_and(|current| !is_after(&observed_at, &current.observed_at))
+        {
+            return false;
+        }
+        let Some(observed_at_seconds) = epoch_seconds(&observed_at) else {
+            return false;
+        };
+        let previous = self.usage_limits.take();
+        let numbers = usage_limits::carry_usage_numbers(
+            previous.as_ref().map(|current| &current.status),
+            &mut status,
+            observed_at_seconds,
+        );
+        let usage_read_at = if numbers.read {
+            Some(observed_at.clone())
+        } else if numbers.carried {
+            previous.and_then(|current| current.usage_read_at)
+        } else {
+            None
+        };
+        self.usage_limits = Some(ProviderUsageLimitsObservation {
+            observed_at,
+            usage_read_at,
+            status,
+        });
+        true
+    }
+
+    /// Whether this device read the instance's usage numbers less than `max_age` before `now`,
+    /// from a probe or a turn. A report without numbers, such as a Claude turn's window
+    /// statuses, does not count, and neither does a successful probe alone: its limits read is
+    /// best effort, so a probe that came back without limits leaves the limits to read again.
+    #[cfg(desktop)]
+    pub fn has_usage_limits_within(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+        max_age: chrono::TimeDelta,
+    ) -> bool {
+        self.usage_limits
+            .as_ref()
+            .and_then(|limits| limits.usage_read_at.as_ref())
+            .and_then(|read_at| chrono::DateTime::parse_from_rfc3339(read_at.as_str()).ok())
+            .is_some_and(|read_at| now.signed_duration_since(read_at) < max_age)
+    }
+}
+
+/// Usage limits a provider reported, with the time this device observed them.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsageLimitsObservation {
+    pub observed_at: UtcTimestamp,
+    /// When a report last read the usage numbers `status` holds, which a later report without
+    /// numbers keeps; `None` when no report read them.
+    #[serde(default)]
+    pub usage_read_at: Option<UtcTimestamp>,
+    pub status: RateLimitStatusEvent,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -52,28 +135,12 @@ impl Default for ChatDiagnosticPreferences {
     }
 }
 
-/// This device's consent to send one scheduled message with exactly one request.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScheduledMessageConsent {
-    /// Hex consent digest of the scheduled message ID and its stored request.
-    pub digest: String,
-    /// When the consent was given.
-    pub recorded_at: UtcTimestamp,
-}
-
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatDeviceScope {
     pub provider_instances: BTreeMap<ProviderInstanceId, ChatProviderDeviceState>,
     pub full_access_trust:
         BTreeMap<ProviderInstanceId, BTreeMap<ProjectWorkingFolderId, UtcTimestamp>>,
-    /// Local acceptances of synced Chat work, keyed by hex acceptance digest.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub assignment_acceptances: BTreeMap<String, UtcTimestamp>,
-    /// Consents to send pending scheduled messages, keyed by scheduled message ID.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub scheduled_message_consents: BTreeMap<String, ScheduledMessageConsent>,
     pub preferences: ChatMachinePreferences,
     pub diagnostics: ChatDiagnosticPreferences,
     pub execution_environment_paths: BTreeMap<String, String>,
@@ -85,6 +152,14 @@ pub struct ChatDeviceScope {
     /// config directory. Discarding the data replaces the token.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub preview_data_stores: BTreeMap<ProjectWorkingFolderId, String>,
+    /// Quiet windows during which this device holds repeating messages. They never sync:
+    /// quiet hours describe one device's place in a person's day.
+    #[serde(default)]
+    pub quiet_periods: QuietPeriodPreferences,
+    /// Schedule proposals this device dismissed, keyed by proposal item ID, with when. A
+    /// proposal is a transient suggestion, so dismissing it stays on this device.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dismissed_schedule_proposals: BTreeMap<String, UtcTimestamp>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -103,7 +178,6 @@ impl Default for ChatDeviceState {
     }
 }
 
-#[cfg(desktop)]
 impl ChatDeviceState {
     pub fn scope(&self, vault_id: &str, device_id: &str) -> Option<&ChatDeviceScope> {
         self.vaults
@@ -156,104 +230,96 @@ pub fn set_full_access_trust(
     }
 }
 
-/// Most local acceptances one device scope keeps; a dropped acceptance at worst asks again.
-#[cfg(desktop)]
-pub const MAX_ASSIGNMENT_ACCEPTANCES: usize = 4096;
+/// Most dismissed schedule proposals one device scope keeps; the oldest beyond it is dropped.
+pub const MAX_DISMISSED_SCHEDULE_PROPOSALS: usize = 1024;
 
-/// Whether this device accepted the synced Chat work with the acceptance digest `digest`.
-#[cfg(desktop)]
-pub fn assignment_is_accepted(scope: &ChatDeviceScope, digest: &str) -> bool {
-    scope.assignment_acceptances.contains_key(digest)
-}
-
-/// Records the local acceptance of `digest` at `now`, dropping the oldest acceptance past
-/// [`MAX_ASSIGNMENT_ACCEPTANCES`].
-#[cfg(desktop)]
-pub fn record_assignment_acceptance(
+/// Records that this device dismissed the schedule proposal `proposal_item_id`, dropping the
+/// oldest dismissal past [`MAX_DISMISSED_SCHEDULE_PROPOSALS`].
+pub fn record_dismissed_schedule_proposal(
     scope: &mut ChatDeviceScope,
-    digest: String,
+    proposal_item_id: String,
     now: UtcTimestamp,
 ) {
-    scope.assignment_acceptances.insert(digest.clone(), now);
-    if scope.assignment_acceptances.len() <= MAX_ASSIGNMENT_ACCEPTANCES {
-        return;
-    }
-    let oldest = scope
-        .assignment_acceptances
-        .iter()
-        .filter(|(kept, _)| **kept != digest)
-        .min_by_key(|(_, accepted_at)| accepted_at.as_str())
-        .map(|(digest, _)| digest.clone());
-    if let Some(oldest) = oldest {
-        scope.assignment_acceptances.remove(&oldest);
+    scope
+        .dismissed_schedule_proposals
+        .insert(proposal_item_id.clone(), now);
+    while scope.dismissed_schedule_proposals.len() > MAX_DISMISSED_SCHEDULE_PROPOSALS {
+        let oldest = scope
+            .dismissed_schedule_proposals
+            .iter()
+            .filter(|(kept, _)| **kept != proposal_item_id)
+            .min_by_key(|(_, dismissed_at)| dismissed_at.as_str())
+            .map(|(id, _)| id.clone());
+        let Some(oldest) = oldest else {
+            break;
+        };
+        scope.dismissed_schedule_proposals.remove(&oldest);
     }
 }
 
-/// Most scheduled message consents one device scope keeps, apart from assignment acceptances; a
-/// dropped consent at worst makes the message's work ask for local acceptance.
+/// Orders two stored timestamps by instant; text order differs across fraction precisions.
 #[cfg(desktop)]
-pub const MAX_SCHEDULED_MESSAGE_CONSENTS: usize = 4096;
+fn is_after(candidate: &UtcTimestamp, reference: &UtcTimestamp) -> bool {
+    let instant = |value: &UtcTimestamp| chrono::DateTime::parse_from_rfc3339(value.as_str()).ok();
+    match (instant(candidate), instant(reference)) {
+        (Some(candidate), Some(reference)) => candidate > reference,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
 
-/// Records this device's consent to send the scheduled message `scheduled_message_id` with the
-/// request whose consent digest is `digest`, replacing an earlier consent to that message and
-/// dropping the oldest consent past [`MAX_SCHEDULED_MESSAGE_CONSENTS`].
+/// The instant `value` names in whole epoch seconds.
 #[cfg(desktop)]
-pub fn record_scheduled_message_consent(
+fn epoch_seconds(value: &UtcTimestamp) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value.as_str())
+        .ok()
+        .map(|instant| instant.timestamp())
+}
+
+/// Stores a usage limit report for an instance this device keeps; see
+/// [`ChatProviderDeviceState::observe_usage_limits`].
+#[cfg(desktop)]
+pub fn record_provider_usage_limits(
     scope: &mut ChatDeviceScope,
-    scheduled_message_id: String,
-    digest: String,
-    now: UtcTimestamp,
-) {
-    scope.scheduled_message_consents.insert(
-        scheduled_message_id.clone(),
-        ScheduledMessageConsent {
-            digest,
-            recorded_at: now,
-        },
-    );
-    if scope.scheduled_message_consents.len() <= MAX_SCHEDULED_MESSAGE_CONSENTS {
-        return;
-    }
-    let oldest = scope
-        .scheduled_message_consents
-        .iter()
-        .filter(|(kept, _)| **kept != scheduled_message_id)
-        .min_by_key(|(_, consent)| consent.recorded_at.as_str())
-        .map(|(id, _)| id.clone());
-    if let Some(oldest) = oldest {
-        scope.scheduled_message_consents.remove(&oldest);
-    }
-}
-
-/// Whether this device consented to send `scheduled_message_id` with the request of `digest`.
-#[cfg(desktop)]
-pub fn scheduled_message_is_consented(
-    scope: &ChatDeviceScope,
-    scheduled_message_id: &str,
-    digest: &str,
+    instance_id: &ProviderInstanceId,
+    status: RateLimitStatusEvent,
+    observed_at: UtcTimestamp,
 ) -> bool {
     scope
-        .scheduled_message_consents
-        .get(scheduled_message_id)
-        .is_some_and(|consent| consent.digest == digest)
+        .provider_instances
+        .get_mut(instance_id)
+        .is_some_and(|device| device.observe_usage_limits(status, observed_at))
 }
 
-/// Drops the consent to `scheduled_message_id` when it still covers the request of `digest`, so
-/// a consent recorded again for a changed request stays.
+/// Marks an instance as the most recently used on this device and reports whether the order
+/// across instances changed. An instance that is already the most recent keeps its older
+/// time, so consecutive turns on one provider never rewrite device state.
 #[cfg(desktop)]
-pub fn forget_scheduled_message_consent(
+pub fn record_provider_use(
     scope: &mut ChatDeviceScope,
-    scheduled_message_id: &str,
-    digest: &str,
-) {
-    if scheduled_message_is_consented(scope, scheduled_message_id, digest) {
+    instance_id: &ProviderInstanceId,
+    used_at: UtcTimestamp,
+) -> bool {
+    let Some(current) = scope.provider_instances.get(instance_id) else {
+        return false;
+    };
+    let already_most_recent = current.last_used_at.as_ref().is_some_and(|own| {
         scope
-            .scheduled_message_consents
-            .remove(scheduled_message_id);
+            .provider_instances
+            .iter()
+            .filter(|(id, _)| *id != instance_id)
+            .filter_map(|(_, other)| other.last_used_at.as_ref())
+            .all(|other| !is_after(other, own))
+    });
+    if already_most_recent {
+        return false;
     }
+    if let Some(device) = scope.provider_instances.get_mut(instance_id) {
+        device.last_used_at = Some(used_at);
+    }
+    true
 }
 
-#[cfg(desktop)]
 pub fn read_active_device_scope<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<ChatDeviceScope, String> {
@@ -267,19 +333,22 @@ pub fn read_active_device_scope<R: Runtime>(
         .unwrap_or_default())
 }
 
-#[cfg(desktop)]
 pub fn update_active_device_scope<R: Runtime, T>(
     app: &tauri::AppHandle<R>,
     update: impl FnOnce(&mut ChatDeviceScope) -> Result<T, String>,
 ) -> Result<T, String> {
     let vault_id = active_vault_id(app)?;
     let device_id = ensure_device_id(app)?;
-    update_app_state(app, |state| {
+    let updated = update_app_state(app, |state| {
         if state.chat.schema_version != CHAT_DEVICE_STATE_SCHEMA_VERSION {
             return Err("Chat device state schema is unsupported".to_string());
         }
         update(state.chat.scope_mut(&vault_id, &device_id))
-    })
+    })?;
+    // Probes, catalogs, and plan limits land in the device state, so linked devices hear of them.
+    #[cfg(desktop)]
+    crate::chat::provider_status::wake(app);
+    Ok(updated)
 }
 
 #[cfg(all(test, desktop))]
@@ -297,118 +366,201 @@ mod tests {
     }
 
     #[test]
-    fn acceptances_past_the_cap_drop_the_oldest_and_keep_the_newest() {
+    fn dismissed_proposals_past_their_cap_drop_the_oldest_and_keep_the_newest() {
         let mut scope = ChatDeviceScope::default();
-        for index in 0..=MAX_ASSIGNMENT_ACCEPTANCES {
-            record_assignment_acceptance(&mut scope, format!("digest:{index}"), at(index + 1));
+        for index in 0..MAX_DISMISSED_SCHEDULE_PROPOSALS {
+            record_dismissed_schedule_proposal(
+                &mut scope,
+                format!("proposal:{index}"),
+                at(index + 2),
+            );
         }
+
+        record_dismissed_schedule_proposal(&mut scope, "proposal:new".to_owned(), at(1));
 
         assert_eq!(
-            scope.assignment_acceptances.len(),
-            MAX_ASSIGNMENT_ACCEPTANCES
+            scope.dismissed_schedule_proposals.len(),
+            MAX_DISMISSED_SCHEDULE_PROPOSALS
         );
-        assert!(!assignment_is_accepted(&scope, "digest:0"));
-        assert!(assignment_is_accepted(&scope, "digest:1"));
-        assert!(assignment_is_accepted(
-            &scope,
-            &format!("digest:{MAX_ASSIGNMENT_ACCEPTANCES}")
-        ));
-    }
-
-    #[test]
-    fn a_new_acceptance_survives_the_cap_when_its_clock_runs_behind() {
-        let mut scope = ChatDeviceScope::default();
-        for index in 0..MAX_ASSIGNMENT_ACCEPTANCES {
-            record_assignment_acceptance(&mut scope, format!("digest:{index}"), at(index + 2));
-        }
-
-        record_assignment_acceptance(&mut scope, "digest:new".to_owned(), at(1));
-
-        assert!(assignment_is_accepted(&scope, "digest:new"));
-    }
-
-    #[test]
-    fn scheduled_consents_leave_assignment_acceptances_in_place() {
-        let mut scope = ChatDeviceScope::default();
-        for index in 0..MAX_ASSIGNMENT_ACCEPTANCES {
-            record_assignment_acceptance(&mut scope, format!("digest:{index}"), at(index + 1));
-        }
-
-        for index in 0..8 {
-            record_scheduled_message_consent(
-                &mut scope,
-                format!("scheduled:{index}"),
-                format!("consent:{index}"),
-                at(MAX_ASSIGNMENT_ACCEPTANCES + index + 1),
-            );
-        }
-
-        for index in 0..8 {
-            assert!(
-                assignment_is_accepted(&scope, &format!("digest:{index}")),
-                "scheduled consent {index} evicted an assignment acceptance"
-            );
-            assert!(scheduled_message_is_consented(
-                &scope,
-                &format!("scheduled:{index}"),
-                &format!("consent:{index}")
-            ));
-        }
-    }
-
-    #[test]
-    fn a_forgotten_scheduled_consent_leaves_the_others_in_place() {
-        let mut scope = ChatDeviceScope::default();
-        for (id, digest, second) in [("used", "digest:used", 1), ("kept", "digest:kept", 2)] {
-            record_scheduled_message_consent(
-                &mut scope,
-                id.to_owned(),
-                digest.to_owned(),
-                at(second),
-            );
-        }
-
-        forget_scheduled_message_consent(&mut scope, "used", "digest:used");
-        forget_scheduled_message_consent(&mut scope, "kept", "digest:other");
-        forget_scheduled_message_consent(&mut scope, "unknown", "digest:unknown");
-
-        assert!(!scheduled_message_is_consented(
-            &scope,
-            "used",
-            "digest:used"
-        ));
-        assert!(scheduled_message_is_consented(
-            &scope,
-            "kept",
-            "digest:kept"
-        ));
-    }
-
-    #[test]
-    fn scheduled_consents_past_their_cap_drop_the_oldest_and_keep_the_newest() {
-        let mut scope = ChatDeviceScope::default();
-        for index in 0..=MAX_SCHEDULED_MESSAGE_CONSENTS {
-            record_scheduled_message_consent(
-                &mut scope,
-                format!("scheduled:{index}"),
-                format!("digest:{index}"),
-                at(index + 1),
-            );
-        }
-
-        assert_eq!(
-            scope.scheduled_message_consents.len(),
-            MAX_SCHEDULED_MESSAGE_CONSENTS
+        assert!(
+            scope
+                .dismissed_schedule_proposals
+                .contains_key("proposal:new")
         );
-        assert!(!scheduled_message_is_consented(
-            &scope,
-            "scheduled:0",
-            "digest:0"
+        assert!(
+            !scope
+                .dismissed_schedule_proposals
+                .contains_key("proposal:0")
+        );
+        assert!(
+            scope
+                .dismissed_schedule_proposals
+                .contains_key("proposal:1")
+        );
+    }
+
+    fn instance(name: &str) -> ProviderInstanceId {
+        ProviderInstanceId::new(name.to_string()).unwrap()
+    }
+
+    fn scope_with(instances: &[&str]) -> ChatDeviceScope {
+        let mut scope = ChatDeviceScope::default();
+        for name in instances {
+            scope
+                .provider_instances
+                .insert(instance(name), ChatProviderDeviceState::default());
+        }
+        scope
+    }
+
+    fn limits(limited: bool) -> RateLimitStatusEvent {
+        RateLimitStatusEvent {
+            limited,
+            resets_at: None,
+            detail: None,
+            provider_data: None,
+        }
+    }
+
+    #[test]
+    fn usage_limits_keep_the_newest_observation_across_precisions() {
+        let mut scope = scope_with(&["codex"]);
+        let codex = instance("codex");
+        let later = UtcTimestamp::new("2026-08-04T10:00:00.500Z").unwrap();
+        let earlier_without_fraction = UtcTimestamp::new("2026-08-04T10:00:00Z").unwrap();
+
+        assert!(record_provider_usage_limits(
+            &mut scope,
+            &codex,
+            limits(true),
+            later.clone()
         ));
-        assert!(scheduled_message_is_consented(
-            &scope,
-            &format!("scheduled:{MAX_SCHEDULED_MESSAGE_CONSENTS}"),
-            &format!("digest:{MAX_SCHEDULED_MESSAGE_CONSENTS}")
+        assert!(
+            !record_provider_usage_limits(
+                &mut scope,
+                &codex,
+                limits(false),
+                earlier_without_fraction
+            ),
+            "an older report that arrives late never replaces a newer one"
+        );
+        assert!(!record_provider_usage_limits(
+            &mut scope,
+            &codex,
+            limits(false),
+            later.clone()
         ));
+        let stored = scope.provider_instances[&codex]
+            .usage_limits
+            .clone()
+            .unwrap();
+        assert!(stored.status.limited);
+        assert_eq!(stored.observed_at, later);
+
+        assert!(record_provider_usage_limits(
+            &mut scope,
+            &codex,
+            limits(false),
+            at(36_001)
+        ));
+        assert!(
+            !record_provider_usage_limits(
+                &mut scope,
+                &instance("removed"),
+                limits(true),
+                at(36_002)
+            ),
+            "a report for an instance this device no longer keeps is dropped"
+        );
+    }
+
+    #[test]
+    fn provider_use_is_written_only_when_the_most_recent_instance_changes() {
+        let mut scope = scope_with(&["claude", "codex"]);
+        let claude = instance("claude");
+        let codex = instance("codex");
+
+        assert!(record_provider_use(&mut scope, &claude, at(10)));
+        assert!(
+            !record_provider_use(&mut scope, &claude, at(20)),
+            "repeated turns on the most recent instance do not rewrite device state"
+        );
+        assert_eq!(scope.provider_instances[&claude].last_used_at, Some(at(10)));
+        assert!(record_provider_use(&mut scope, &codex, at(30)));
+        assert!(record_provider_use(&mut scope, &claude, at(40)));
+        assert!(!record_provider_use(
+            &mut scope,
+            &instance("removed"),
+            at(50)
+        ));
+    }
+    /// A Codex-shaped report, which reads its usage numbers itself.
+    fn limits_with_numbers() -> RateLimitStatusEvent {
+        RateLimitStatusEvent {
+            provider_data: Some(ganbaru_chat_contracts::models::VersionedJson {
+                schema_version: 1,
+                value: serde_json::json!({ "rateLimitsByLimitId": {} }),
+            }),
+            ..limits(false)
+        }
+    }
+
+    #[test]
+    fn only_a_recent_read_of_usage_numbers_makes_the_limits_fresh() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-04T12:00:00Z")
+            .unwrap()
+            .to_utc();
+        let hour = chrono::TimeDelta::hours(1);
+        let mut device = ChatProviderDeviceState::default();
+        assert!(
+            !device.has_usage_limits_within(now, hour),
+            "an instance never read is stale"
+        );
+
+        device.last_successful_probe_at = Some(at(11 * 3600 + 59 * 60));
+        assert!(
+            !device.has_usage_limits_within(now, hour),
+            "a recent probe that returned no limits leaves them to read again"
+        );
+
+        device.observe_usage_limits(limits_with_numbers(), at(11 * 3600));
+        assert!(
+            !device.has_usage_limits_within(now, hour),
+            "exactly the maximum age is stale"
+        );
+        device.observe_usage_limits(
+            limits_with_numbers(),
+            UtcTimestamp::new("2026-08-04T11:00:01Z").unwrap(),
+        );
+        assert!(device.has_usage_limits_within(now, hour));
+    }
+
+    #[test]
+    fn a_report_without_numbers_keeps_when_the_numbers_were_read() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-04T12:00:00Z")
+            .unwrap()
+            .to_utc();
+        let hour = chrono::TimeDelta::hours(1);
+        let mut device = ChatProviderDeviceState::default();
+        device.observe_usage_limits(limits(false), at(11 * 3600 + 59 * 60));
+        assert!(
+            !device.has_usage_limits_within(now, hour),
+            "a recent report without numbers leaves the numbers to read"
+        );
+
+        let mut device = ChatProviderDeviceState::default();
+        device.observe_usage_limits(limits_with_numbers(), at(10 * 3600));
+        device.observe_usage_limits(limits(true), at(11 * 3600 + 59 * 60));
+        let stored = device.usage_limits.as_ref().unwrap();
+        assert_eq!(stored.usage_read_at, Some(at(10 * 3600)));
+        assert!(stored.status.limited, "the newer report's status stands");
+        assert!(
+            stored.status.provider_data.is_some(),
+            "the numbers of the earlier report stay"
+        );
+        assert!(
+            !device.has_usage_limits_within(now, hour),
+            "numbers carried from two hours ago are stale"
+        );
     }
 }

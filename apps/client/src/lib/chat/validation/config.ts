@@ -1,9 +1,13 @@
 import {
+  CHAT_INSPECTOR_WIDTH_BOUNDS,
+  CHAT_REPLY_THREAD_WIDTH_BOUNDS,
   CHAT_SEND_KEYS,
+  CHAT_TIMELINE_DENSITIES,
   INTERACTION_MODES,
   SAFETY_MODES,
   type ChatBehaviorPreferences,
   type ChatPanelPreferences,
+  type ChatPanelWidthBounds,
   type ChatPortableProviderConfig,
   type ChatConfiguration,
   type RememberedComposerSelection,
@@ -25,21 +29,29 @@ import {
 const MAX_PROVIDERS = 64;
 const MAX_ARGUMENTS = 64;
 const MAX_ENVIRONMENT_ROWS = 64;
-const MAX_MODELS_PER_SET = 512;
 const MAX_REMEMBERED_SELECTIONS = 256;
 const MAX_LABEL_BYTES = 160;
 const MAX_ARGUMENT_BYTES = 4_096;
 const MAX_ENVIRONMENT_VALUE_BYTES = 16_384;
 
-const DEFAULT_PANELS: ChatPanelPreferences = { inspectorWidthPx: 520 };
+const DEFAULT_PANELS: ChatPanelPreferences = {
+  inspectorWidthPx: CHAT_INSPECTOR_WIDTH_BOUNDS.default,
+  replyThreadWidthPx: CHAT_REPLY_THREAD_WIDTH_BOUNDS.default,
+};
 const DEFAULT_BEHAVIOR: ChatBehaviorPreferences = {
   sendKey: "enter",
   restoreLastSelectedThread: true,
   showReasoningSummaries: true,
   automaticallyFoldSettledWork: true,
+  timelineDensity: "comfortable",
   terminalScrollbackLines: 10_000,
-  idleSessionTimeoutSeconds: 900,
+  idleSessionTimeoutSeconds: 1_800,
   confirmMultilineTerminalPaste: true,
+  notifyWaitingForYou: true,
+  notifyReviewReady: true,
+  notifyFailures: true,
+  announceBackgroundWork: true,
+  notificationIncludeContent: false,
 };
 
 export function defaultChatConfiguration(): ChatConfiguration {
@@ -81,11 +93,6 @@ function parsePortableProvider(value: unknown, label: string): ChatPortableProvi
     if (!/^[A-Za-z0-9_]+$/.test(name)) throw new Error(`${label}.environment.${name} has an invalid name`);
     readBoundedString(environmentValue, MAX_ENVIRONMENT_VALUE_BYTES, `${label}.environment.${name}`, false);
   }
-  const visibleModelIds = readArray(record.visibleModelIds, `${label}.visibleModelIds`, readIdentifier);
-  const favoriteModelIds = readArray(record.favoriteModelIds, `${label}.favoriteModelIds`, readIdentifier);
-  if (visibleModelIds.length > MAX_MODELS_PER_SET || favoriteModelIds.length > MAX_MODELS_PER_SET) {
-    throw new Error(`${label}.visibleModelIds exceeds the item limit`);
-  }
   return {
     ...record,
     schemaVersion: readNonNegativeSafeInteger(record.schemaVersion, `${label}.schemaVersion`),
@@ -96,8 +103,6 @@ function parsePortableProvider(value: unknown, label: string): ChatPortableProvi
     launchArguments,
     environment,
     credentialReferences: readStringRecord(record.credentialReferences, `${label}.credentialReferences`),
-    visibleModelIds,
-    favoriteModelIds,
     providerConfig: readVersionedJson(record.providerConfig, `${label}.providerConfig`),
   };
 }
@@ -122,12 +127,20 @@ function parseRememberedSelection(value: unknown, label: string): RememberedComp
 
 function parsePanels(value: unknown, label: string): ChatPanelPreferences {
   const record = readRecord(value, label);
-  const inspectorWidthPx = readNonNegativeSafeInteger(
-    record.inspectorWidthPx,
-    `${label}.inspectorWidthPx`,
-  );
-  if (inspectorWidthPx < 240 || inspectorWidthPx > 960) throw new Error(`${label}.inspectorWidthPx is out of range`);
-  return { inspectorWidthPx };
+  return {
+    inspectorWidthPx: readPanelWidth(record.inspectorWidthPx, CHAT_INSPECTOR_WIDTH_BOUNDS, `${label}.inspectorWidthPx`),
+    replyThreadWidthPx: readPanelWidth(
+      record.replyThreadWidthPx,
+      CHAT_REPLY_THREAD_WIDTH_BOUNDS,
+      `${label}.replyThreadWidthPx`,
+    ),
+  };
+}
+
+function readPanelWidth(value: unknown, bounds: ChatPanelWidthBounds, label: string): number {
+  const width = readNonNegativeSafeInteger(value, label);
+  if (width < bounds.minimum || width > bounds.maximum) throw new Error(`${label} is out of range`);
+  return width;
 }
 
 function parseBehavior(value: unknown, label: string): ChatBehaviorPreferences {
@@ -160,12 +173,18 @@ function parseBehavior(value: unknown, label: string): ChatBehaviorPreferences {
       record.automaticallyFoldSettledWork,
       `${label}.automaticallyFoldSettledWork`,
     ),
+    timelineDensity: readEnum(record.timelineDensity, CHAT_TIMELINE_DENSITIES, `${label}.timelineDensity`),
     terminalScrollbackLines,
     idleSessionTimeoutSeconds,
     confirmMultilineTerminalPaste: readBoolean(
       record.confirmMultilineTerminalPaste,
       `${label}.confirmMultilineTerminalPaste`,
     ),
+    notifyWaitingForYou: readBoolean(record.notifyWaitingForYou, `${label}.notifyWaitingForYou`),
+    notifyReviewReady: readBoolean(record.notifyReviewReady, `${label}.notifyReviewReady`),
+    notifyFailures: readBoolean(record.notifyFailures, `${label}.notifyFailures`),
+    announceBackgroundWork: readBoolean(record.announceBackgroundWork, `${label}.announceBackgroundWork`),
+    notificationIncludeContent: readBoolean(record.notificationIncludeContent, `${label}.notificationIncludeContent`),
   };
 }
 

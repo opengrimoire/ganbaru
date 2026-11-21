@@ -1,21 +1,27 @@
+<!--
+  @component
+  The composer's status and MCP panels. The caller reads the session it talks to into a
+  `ComposerStatusRead`, so the panel reads no store.
+-->
 <script lang="ts">
   import type { McpStatusRead, ProviderSessionState } from "$lib/chat/contracts";
-  import { composerRateLimitWindows, contextMeter } from "$lib/chat/composer/model";
+  import type { ComposerStatusRead } from "$lib/chat/composer/composer-meter";
   import { formatDateTime, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { useChat } from "$lib/stores/chat.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     panel,
+    status,
     mcpStatus,
     loading,
     error,
     onClose,
   }: {
     panel: "status" | "mcp";
+    status: ComposerStatusRead;
     mcpStatus: McpStatusRead | null;
     loading: boolean;
     error: string | null;
@@ -24,41 +30,15 @@
 
   const localization = getLocalization();
   const { t } = localization;
-  const chat = useChat();
-  const provider = $derived(chat.settings?.providerInstances.find(
-    (entry) => entry.configuration.instanceId === chat.composer.providerInstanceId,
-  ) ?? null);
-  const latestUsage = $derived(
-    chat.interaction?.usage ?? chat.timelinePages.flatMap((page) => page.turns).at(-1)?.usage ?? null,
-  );
-  const meter = $derived(contextMeter(
-    latestUsage?.contextTokens ?? null,
-    latestUsage?.contextLimit ?? null,
-  ));
-  const rateLimitWindows = $derived(composerRateLimitWindows(chat.interaction?.rateLimitStatus ?? null));
+  const meter = $derived(status.usage.meter);
+  const rateLimitWindows = $derived(status.usage.windows);
   const title = $derived(panel === "mcp"
     ? t("chat.composer.mcpPanelTitle")
     : t("chat.composer.statusPanelTitle"));
 
-  function selectedModelLabel(): string {
-    return provider?.modelCatalog?.models.find((entry) => entry.id === selectedModelId())?.displayName
-      ?? t("chat.composer.statusProviderManaged");
-  }
-
-  function selectedModelId(): string | null {
-    const value = chat.composer.modelSelection?.value;
-    return typeof value === "object"
-      && value !== null
-      && !Array.isArray(value)
-      && typeof value.modelId === "string"
-      ? value.modelId
-      : null;
-  }
-
   function accountStatusLabel(): string {
-    const account = chat.interaction?.accountStatus;
-    if (account?.accountLabel && account.planLabel) return `${account.accountLabel} · ${account.planLabel}`;
-    return account?.accountLabel ?? account?.planLabel ?? t("chat.composer.statusAccountUnavailable");
+    if (status.accountLabel && status.planLabel) return `${status.accountLabel} · ${status.planLabel}`;
+    return status.accountLabel ?? status.planLabel ?? t("chat.composer.statusAccountUnavailable");
   }
 
   function contextRemainingLabel(): string {
@@ -78,7 +58,7 @@
     const used = formatNumber(localization.locale, meter.usedTokens);
     return meter.maximumTokens === null
       ? t("chat.composer.contextUnknown", used)
-      : t("chat.composer.contextUsed", used, formatNumber(localization.locale, meter.maximumTokens));
+      : t("chat.composer.contextUsed", used, formatNumber(localization.locale, meter.maximumTokens, { notation: "compact" }));
   }
 
   function contextPercentage(value: number): string {
@@ -125,9 +105,9 @@
   <div class="composer-info-body" use:scrollEdgeFadeAction>
     {#if panel === "status"}
       <dl class="status-panel-grid">
-        <div><dt>{t("chat.composer.statusProvider")}</dt><dd>{provider?.configuration.label ?? t("chat.composer.statusUnknown")}</dd></div>
-        <div><dt>{t("chat.composer.statusSession")}</dt><dd><code title={chat.interaction?.sessionId ?? undefined}>{chat.interaction?.sessionId ?? t("chat.composer.statusNoSession")}</code><span class="status-state">{providerSessionLabel(chat.interaction?.sessionState ?? "stopped")}</span></dd></div>
-        <div><dt>{t("chat.composer.statusModel")}</dt><dd>{selectedModelLabel()}</dd></div>
+        <div><dt>{t("chat.composer.statusProvider")}</dt><dd>{status.providerLabel ?? t("chat.composer.statusUnknown")}</dd></div>
+        <div><dt>{t("chat.composer.statusSession")}</dt><dd><code title={status.sessionId ?? undefined}>{status.sessionId ?? t("chat.composer.statusNoSession")}</code><span class="status-state">{providerSessionLabel(status.sessionState)}</span></dd></div>
+        <div><dt>{t("chat.composer.statusModel")}</dt><dd>{status.modelLabel ?? t("chat.composer.statusProviderManaged")}</dd></div>
         <div><dt>{t("chat.composer.statusAccount")}</dt><dd>{accountStatusLabel()}</dd></div>
         <div class="status-meter-row">
           <dt>{t("chat.composer.statusContext")}</dt>
@@ -140,8 +120,8 @@
           <div class="status-meter-row">
             <dt>{window.label}</dt>
             <dd>
-              <span>{t("chat.composer.rateLimitRemaining", formatNumber(localization.locale, 100 - window.usedPercent, { maximumFractionDigits: 0 }))}{#if resetTimeLabel(window.resetsAtSeconds)} <small>{t("chat.composer.rateLimitResets", resetTimeLabel(window.resetsAtSeconds) ?? "")}</small>{/if}</span>
-              <span class="panel-meter" style={`--panel-progress:${Math.max(0, 1 - window.usedPercent / 100)}`}><span></span></span>
+              <span>{window.usedPercent === null ? t("chat.composer.rateLimitAvailable") : t("chat.composer.rateLimitRemaining", formatNumber(localization.locale, 100 - window.usedPercent, { maximumFractionDigits: 0 }))}{#if resetTimeLabel(window.resetsAtSeconds)} <small>{t("chat.composer.rateLimitResets", resetTimeLabel(window.resetsAtSeconds) ?? "")}</small>{/if}</span>
+              {#if window.usedPercent !== null}<span class="panel-meter" style={`--panel-progress:${Math.max(0, 1 - window.usedPercent / 100)}`}><span></span></span>{/if}
             </dd>
           </div>
         {/each}

@@ -453,6 +453,40 @@ function walkToContrast(bg: string, anchor: string, target: number): string {
   return bestEndpoint(bg);
 }
 
+/** Largest chroma multiplier {@link pickReadableSignal} applies while lifting, so near-gray signals stay near gray. */
+const MAX_SIGNAL_CHROMA_SCALE = 2;
+
+/**
+ * Keep a semantic signal color (a status dot, an addition count, a success
+ * label) recognizable on `bg`: returns `signal` unchanged when it already
+ * meets `target` contrast (default 3 = WCAG AA non-text), otherwise walks
+ * its OKLab lightness away from `bg` until it does. Lifting scales chroma
+ * with lightness so a deep button fill on a dark canvas becomes a vivid
+ * shade of the same hue instead of a washed out one; darkening keeps the
+ * original chroma.
+ */
+export function pickReadableSignal(
+  signal: string,
+  bg: string,
+  target = 3,
+): string {
+  if (contrastRatio(signal, bg) >= target) return signal;
+  const signalLab = hexToOklab(signal);
+  const bgLab = hexToOklab(bg);
+  if (!signalLab || !bgLab) return walkToContrast(bg, signal, target);
+  const direction = signalLab.L >= bgLab.L ? 1 : -1;
+  const step = 0.01;
+  for (let L = signalLab.L + direction * step; L > 0 && L < 1; L += direction * step) {
+    const chromaScale =
+      direction > 0 && signalLab.L > 0
+        ? Math.min(L / signalLab.L, MAX_SIGNAL_CHROMA_SCALE)
+        : 1;
+    const candidate = oklabToHex(L, signalLab.a * chromaScale, signalLab.b * chromaScale);
+    if (contrastRatio(candidate, bg) >= target) return candidate;
+  }
+  return walkToContrast(bg, signal, target);
+}
+
 /**
  * Pick a foreground color that meets `target` contrast (default 4.5 =
  * WCAG AA body text) against `bg`, preferring the theme's `ink` and

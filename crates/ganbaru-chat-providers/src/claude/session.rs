@@ -1,11 +1,20 @@
 //! Claude inbound message routing, permission callbacks, structured questions, and pending request state.
 
 use super::approvals::{approval_subject, session_grants, session_permission_updates};
-use super::normalizer::{ClaudeEventNormalizer, ClaudeRouteState};
-use super::protocol::{control_success, protocol_error};
+use super::driver::SESSION_FORCE_STOP;
+use super::normalizer::{ClaudeEventNormalizer, ClaudePlanSource, ClaudeRouteState};
+use super::organizational::{
+    ClaudeGateAction, ClaudeOrganizationalGate, ClaudeOrganizationalPermissions,
+    ClaudeOrganizationalRoute,
+};
+use super::protocol::{
+    control_error, control_success, organizational_permission_error, protocol_error,
+};
 use super::transport::{ClaudeInboundMessage, ClaudeJsonlClient};
+use crate::confinement::ShellSandbox;
 use crate::events::*;
 use crate::models::*;
+use crate::process::systemd_scope::{memory_limit_warning, reached_memory_limit};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::{
@@ -18,6 +27,8 @@ use tokio::task::JoinHandle;
 const MAX_QUESTIONS: usize = 16;
 const MAX_OPTIONS: usize = 32;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
+/// Error text returned for control request subtypes Ganbaru does not serve.
+const UNSUPPORTED_CONTROL_REQUEST: &str = "Unsupported control request";
 
 #[derive(Clone, Debug)]
 pub enum PendingClaudeRequestKind {
@@ -56,6 +67,15 @@ pub struct ClaudeRouterResources {
     pub sink: Arc<dyn crate::ProviderEventSink>,
     pub expected_shutdown: Arc<AtomicBool>,
     pub terminal_error: Arc<Mutex<Option<ChatError>>>,
+    /// Present for organizational sessions, whose tool surface is verified before routing.
+    pub organizational: Option<ClaudeOrganizationalRoute>,
+    /// Present for organizational sessions, whose permission requests stay inside the scope.
+    pub organizational_permissions: Option<ClaudeOrganizationalPermissions>,
+    /// The sandbox of an organizational session whose shell commands are confined; its Git
+    /// metadata guard is checked before each permission request, tool result, and turn end.
+    pub shell: Option<Arc<ShellSandbox>>,
+    /// Tells whether the resource scope's memory ceiling stopped the provider; `None` when unscoped.
+    pub memory_limit: Option<crate::process::systemd_scope::MemoryLimitWatch>,
 }
 
 pub fn spawn_claude_router(resources: ClaudeRouterResources) -> JoinHandle<()> {
@@ -63,9 +83,38 @@ pub fn spawn_claude_router(resources: ClaudeRouterResources) -> JoinHandle<()> {
 }
 
 async fn run_claude_router(mut resources: ClaudeRouterResources) {
-    while let Some(message) = resources.inbound.recv().await {
+    let mut gate = resources
+        .organizational
+        .take()
+        .map(ClaudeOrganizationalGate::new);
+    loop {
+        let received = match gate.as_mut().filter(|gate| !gate.verified()) {
+            Some(gate) => tokio::select! {
+                message = resources.inbound.recv() => RouterInput::Inbound(message),
+                () = gate.deadline_elapsed() => RouterInput::VerificationExpired,
+            },
+            None => RouterInput::Inbound(resources.inbound.recv().await),
+        };
+        let message = match received {
+            RouterInput::Inbound(Some(message)) => message,
+            RouterInput::Inbound(None) => break,
+            RouterInput::VerificationExpired => {
+                if let Some(gate) = gate.as_mut() {
+                    fail_organizational(&resources, gate).await;
+                }
+                return;
+            }
+        };
+        if matches!(message, ClaudeInboundMessage::Closed) {
+            if let Some(gate) = gate.as_mut() {
+                gate.discard();
+            }
+        }
         let result = match message {
-            ClaudeInboundMessage::Message(value) => route_message(&resources, value).await,
+            ClaudeInboundMessage::Message(value) => match gate.as_mut() {
+                Some(gate) => route_gated(&resources, gate, value).await,
+                None => route_message(&resources, value).await,
+            },
             ClaudeInboundMessage::Malformed {
                 reason,
                 byte_length,
@@ -85,9 +134,148 @@ async fn run_claude_router(mut resources: ClaudeRouterResources) {
     route_closed(&resources).await;
 }
 
+enum RouterInput {
+    Inbound(Option<ClaudeInboundMessage>),
+    VerificationExpired,
+}
+
+/// Routes one frame of an organizational session through its verification gate.
+async fn route_gated(
+    resources: &ClaudeRouterResources,
+    gate: &mut ClaudeOrganizationalGate,
+    value: Value,
+) -> ChatResult<()> {
+    match gate.admit(value)? {
+        ClaudeGateAction::Route(frames) => {
+            for frame in frames {
+                if let Err(error) = verify_confined_work(resources, &frame) {
+                    fail_session(
+                        resources,
+                        gate,
+                        &error,
+                        "organizational/git_metadata_changed",
+                        Some(NotificationEvent {
+                            code: crate::confinement::GIT_METADATA_CHANGED_CODE.to_string(),
+                            title: "An agent changed this folder's Git configuration".to_string(),
+                            detail: Some(error.message.clone()),
+                        }),
+                    )
+                    .await;
+                    return Err(error);
+                }
+                route_message(resources, frame).await?;
+            }
+            Ok(())
+        }
+        ClaudeGateAction::Hold => Ok(()),
+        ClaudeGateAction::Reply(response) => resources
+            .client
+            .send(response)
+            .await
+            .map_err(|error| error.to_chat_error("control response")),
+        ClaudeGateAction::Fail => {
+            fail_organizational(resources, gate).await;
+            Err(organizational_permission_error())
+        }
+    }
+}
+
+/// Checks the folder's Git metadata before a frame that asks to run a tool, carries a tool
+/// result, or ends a turn, when the session's commands run in the sandbox. The CLI also runs
+/// Git in the folder itself, outside the sandbox, so a change is caught before the next
+/// command is allowed.
+fn verify_confined_work(resources: &ClaudeRouterResources, frame: &Value) -> ChatResult<()> {
+    let Some(shell) = resources.shell.as_ref() else {
+        return Ok(());
+    };
+    match frame.get("type").and_then(Value::as_str) {
+        Some("control_request" | "user" | "result") => shell.guard().verify(),
+        _ => Ok(()),
+    }
+}
+
+/// Fails an organizational session whose tool surface could not be proven.
+async fn fail_organizational(
+    resources: &ClaudeRouterResources,
+    gate: &mut ClaudeOrganizationalGate,
+) {
+    fail_session(
+        resources,
+        gate,
+        &organizational_permission_error(),
+        "organizational/unverified",
+        None,
+    )
+    .await;
+}
+
+/// Fails an organizational session with `error`: held frames are dropped, the active turn
+/// fails without retry, and the process is killed. The router returns afterwards, so the
+/// closed stream never replaces the error. A `warning` is raised before the failure.
+async fn fail_session(
+    resources: &ClaudeRouterResources,
+    gate: &mut ClaudeOrganizationalGate,
+    error: &ChatError,
+    source: &str,
+    warning: Option<NotificationEvent>,
+) {
+    gate.discard();
+    if let Ok(mut terminal) = resources.terminal_error.lock() {
+        *terminal = Some(error.clone());
+    }
+    let events = resources
+        .route
+        .lock()
+        .map_err(|_| state_error())
+        .and_then(|mut state| {
+            let warning = warning
+                .map(|warning| {
+                    resources.normalizer.external_event(
+                        &state,
+                        source,
+                        None,
+                        CanonicalEvent::RuntimeWarning(warning),
+                    )
+                })
+                .transpose()?;
+            let failed = resources
+                .normalizer
+                .failed_event(&mut state, source, &error.message)?;
+            let previous_state = if failed.is_some() {
+                ProviderSessionState::Active
+            } else {
+                state.session_state
+            };
+            state.session_state = ProviderSessionState::Failed;
+            let changed = resources.normalizer.external_event(
+                &state,
+                source,
+                None,
+                CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
+                    session_id: resources.normalizer.session_id(),
+                    previous_state,
+                    state: ProviderSessionState::Failed,
+                    reason: Some(error.message.clone()),
+                }),
+            )?;
+            Ok(warning
+                .into_iter()
+                .chain(failed)
+                .chain([changed])
+                .collect::<Vec<_>>())
+        });
+    if let Ok(events) = events {
+        let _ = emit_events(&resources.sink, events).await;
+    }
+    let _ = gate.kill_handle().kill(SESSION_FORCE_STOP).await;
+}
+
 async fn route_message(resources: &ClaudeRouterResources, value: Value) -> ChatResult<()> {
     if value.get("type").and_then(Value::as_str) == Some("control_request") {
         return route_provider_request(resources, &value).await;
+    }
+    if value.get("type").and_then(Value::as_str) == Some("control_cancel_request") {
+        return route_withdrawn_request(resources, &value).await;
     }
     let events = {
         let mut state = resources.route.lock().map_err(|_| state_error())?;
@@ -108,7 +296,13 @@ async fn route_provider_request(
         .get("request")
         .and_then(Value::as_object)
         .ok_or_else(|| protocol_error("control request body"))?;
-    let routed = route_control_request(control_request_id, request)?;
+    let modes = resources.route.lock().map_err(|_| state_error())?.modes;
+    let routed = route_scoped_control_request(
+        control_request_id,
+        request,
+        resources.organizational_permissions.as_ref(),
+        modes,
+    )?;
     if let Some(response) = routed.immediate_response {
         resources
             .client
@@ -132,6 +326,9 @@ async fn route_provider_request(
     }
     let event = {
         let mut state = resources.route.lock().map_err(|_| state_error())?;
+        if !claims_routed_plan(&mut state, &routed.event, control_request_id) {
+            return Ok(());
+        }
         if provider_request_id.is_some() {
             state.session_state = if matches!(&routed.event, CanonicalEvent::UserInputRequested(_))
             {
@@ -145,6 +342,57 @@ async fn route_provider_request(
             "control/can_use_tool",
             provider_request_id,
             routed.event,
+        )?
+    };
+    resources.sink.emit(event).await
+}
+
+/// Closes the request a `control_cancel_request` withdraws, so its card does not stay open
+/// after the CLI stopped waiting for it. A request already answered or never opened is ignored.
+async fn route_withdrawn_request(
+    resources: &ClaudeRouterResources,
+    value: &Value,
+) -> ChatResult<()> {
+    let Some(control_request_id) = value.get("request_id").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let Ok(provider_request_id) = ProviderRequestId::new(control_request_id.to_string()) else {
+        return Ok(());
+    };
+    let withdrawn = resources
+        .pending_requests
+        .lock()
+        .map_err(|_| state_error())?
+        .remove(&provider_request_id);
+    let Some(withdrawn) = withdrawn else {
+        return Ok(());
+    };
+    let event = match withdrawn.kind {
+        PendingClaudeRequestKind::Approval { .. } => {
+            CanonicalEvent::RequestResolved(RequestResolvedEvent {
+                request_id: provider_request_id.clone(),
+                state: RequestResolutionState::Interrupted,
+                decision: None,
+            })
+        }
+        PendingClaudeRequestKind::UserInput { .. } => {
+            CanonicalEvent::UserInputResolved(UserInputResolvedEvent {
+                request_id: provider_request_id.clone(),
+                state: RequestResolutionState::Interrupted,
+                answers: Vec::new(),
+            })
+        }
+    };
+    let event = {
+        let mut state = resources.route.lock().map_err(|_| state_error())?;
+        if state.active_chat_turn_id.is_some() {
+            state.session_state = ProviderSessionState::Active;
+        }
+        resources.normalizer.external_event(
+            &state,
+            "control/cancel_request",
+            Some(provider_request_id),
+            event,
         )?
     };
     resources.sink.emit(event).await
@@ -173,6 +421,23 @@ async fn route_malformed(
 
 async fn route_closed(resources: &ClaudeRouterResources) {
     let expected = resources.expected_shutdown.load(Ordering::Acquire);
+    if !expected && reached_memory_limit(resources.memory_limit.as_ref()).await {
+        let warning = resources
+            .route
+            .lock()
+            .map_err(|_| state_error())
+            .and_then(|state| {
+                resources.normalizer.external_event(
+                    &state,
+                    "transport/memory_limit",
+                    None,
+                    CanonicalEvent::RuntimeWarning(memory_limit_warning()),
+                )
+            });
+        if let Ok(warning) = warning {
+            let _ = emit_events(&resources.sink, vec![warning]).await;
+        }
+    }
     let event = resources
         .route
         .lock()
@@ -231,9 +496,54 @@ async fn emit_events(
     Ok(())
 }
 
+/// Whether a routed control request event should be emitted: a plan already projected from the
+/// assistant message is not projected again. A plan whose id is `control_request_id` came
+/// from a request without a tool use id and is matched by its text instead. The deny response
+/// is sent either way.
+pub(super) fn claims_routed_plan(
+    state: &mut ClaudeRouteState,
+    event: &CanonicalEvent,
+    control_request_id: &str,
+) -> bool {
+    match event {
+        CanonicalEvent::ProposedPlanCompleted(plan) => {
+            let source = if plan.plan_id == control_request_id {
+                ClaudePlanSource::AnonymousRequest
+            } else {
+                ClaudePlanSource::IdentifiedRequest(&plan.plan_id)
+            };
+            state.claim_plan(source, &plan.markdown)
+        }
+        _ => true,
+    }
+}
+
+#[cfg(test)]
 pub fn route_control_request(
     control_request_id: &str,
     request: &Map<String, Value>,
+) -> ChatResult<RoutedClaudeRequest> {
+    route_scoped_control_request(
+        control_request_id,
+        request,
+        None,
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+    )
+}
+
+/// Routes one control request of a turn running with `modes`. Under an organizational policy,
+/// a request outside the scope is denied without reaching the person, a confined command the
+/// turn's modes run unattended, an edit of an ordinary file inside the root, and a web search
+/// are allowed without reaching the person, and no approval offers a session-wide grant, because shell rules, extra directories, and accepting edits would all
+/// widen the boundary.
+pub fn route_scoped_control_request(
+    control_request_id: &str,
+    request: &Map<String, Value>,
+    organizational: Option<&ClaudeOrganizationalPermissions>,
+    modes: TurnModeSnapshot,
 ) -> ChatResult<RoutedClaudeRequest> {
     let subtype = required_text(request, "subtype")?;
     if subtype != "can_use_tool" {
@@ -247,9 +557,9 @@ pub fn route_control_request(
                     value: json!({ "keys": bounded_keys(request) }),
                 }),
             }),
-            immediate_response: Some(control_success(
+            immediate_response: Some(control_error(
                 control_request_id,
-                json!({ "behavior": "deny", "message": "Unsupported client operation" }),
+                UNSUPPORTED_CONTROL_REQUEST,
             )?),
         });
     }
@@ -259,6 +569,57 @@ pub fn route_control_request(
         .filter(|value| value.is_object())
         .cloned()
         .ok_or_else(|| protocol_error("permission tool input"))?;
+    if let Some(message) = organizational.and_then(|policy| policy.denial(tool_name, &tool_input)) {
+        return Ok(RoutedClaudeRequest {
+            pending: None,
+            event: CanonicalEvent::Unknown(UnknownEvent {
+                source_type: "claude/organizational/denied".to_string(),
+                summary: "Ganbaru denied an agent tool request outside its scope".to_string(),
+                safe_payload: Some(VersionedJson {
+                    schema_version: 1,
+                    value: json!({ "toolName": bounded_text(tool_name, MAX_TEXT_BYTES) }),
+                }),
+            }),
+            immediate_response: Some(control_success(
+                control_request_id,
+                json!({ "behavior": "deny", "message": message }),
+            )?),
+        });
+    }
+    let unattended = organizational.and_then(|policy| {
+        if policy.runs_unattended(tool_name, modes) {
+            Some((
+                "claude/organizational/confined_command",
+                "Ganbaru ran an agent command in the sandbox without asking",
+            ))
+        } else if policy.edits_unattended(tool_name, &tool_input, modes) {
+            Some((
+                "claude/organizational/folder_edit",
+                "Ganbaru allowed an agent edit inside the folder without asking",
+            ))
+        } else if tool_name == "WebSearch" {
+            Some((
+                "claude/organizational/web_search",
+                "Ganbaru allowed an agent web search without asking",
+            ))
+        } else {
+            None
+        }
+    });
+    if let Some((source_type, summary)) = unattended {
+        return Ok(RoutedClaudeRequest {
+            pending: None,
+            event: CanonicalEvent::Unknown(UnknownEvent {
+                source_type: source_type.to_string(),
+                summary: summary.to_string(),
+                safe_payload: None,
+            }),
+            immediate_response: Some(control_success(
+                control_request_id,
+                json!({ "behavior": "allow", "updatedInput": tool_input }),
+            )?),
+        });
+    }
     let provider_request_id = ProviderRequestId::new(control_request_id.to_string())
         .map_err(|_| protocol_error("permission request ID"))?;
     if tool_name == "AskUserQuestion" {
@@ -266,10 +627,16 @@ pub fn route_control_request(
     }
     if tool_name == "ExitPlanMode" {
         let markdown = extract_plan_markdown(&tool_input).unwrap_or_default();
+        // The assistant message carries the same plan under its tool use id.
+        let plan_id = request
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .unwrap_or(control_request_id);
         return Ok(RoutedClaudeRequest {
             pending: None,
             event: CanonicalEvent::ProposedPlanCompleted(ProposedPlanCompletedEvent {
-                plan_id: control_request_id.to_string(),
+                plan_id: plan_id.to_string(),
                 markdown,
             }),
             immediate_response: Some(control_success(
@@ -292,7 +659,11 @@ pub fn route_control_request(
         .and_then(Value::as_str)
         .or_else(|| request.get("decision_reason").and_then(Value::as_str))
         .map(|value| bounded_text(value, MAX_TEXT_BYTES));
-    let session_grants = session_grants(request.get("permission_suggestions"));
+    let session_grants = if organizational.is_some() {
+        Vec::new()
+    } else {
+        session_grants(request.get("permission_suggestions"))
+    };
     let mut allowed_decisions = vec![approval_option(
         "allow_once",
         "Allow once",

@@ -1,9 +1,14 @@
 //! Runtime-only pseudoterminal sessions with bounded replay.
+//!
+//! Terminal output lives only in memory for the session's lifetime and is never persisted. A shell inherits
+//! the user's launch environment without multiplexer, port, and packaging variables, and every replay starts by
+//! resetting the terminal modes a client may hold from earlier output.
 
 use base64::{Engine as _, engine::general_purpose};
 use ganbaru_chat_contracts::models::{
-    ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId,
+    ChatChannelId, ChatError, ChatErrorCode, ChatReplyThreadId, ChatResult, ProjectWorkingFolderId,
 };
+use ganbaru_chat_providers::process::inventory as process_inventory;
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -18,9 +23,14 @@ use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 pub const CHAT_TERMINAL_STATE_EVENT: &str = "chat://terminal-state";
-const MAX_TERMINALS_PER_THREAD: usize = 8;
+const MAX_TERMINALS_PER_CHANNEL: usize = 8;
 const MAX_TERMINALS_PER_APP: usize = 32;
 const MAX_REPLAY_BYTES: usize = 2 * 1024 * 1024;
+/// Written before replayed output so a reattached view drops modes left from earlier output: leaves the alternate
+/// screen, pops the kitty keyboard stack and clears its flags, resets cursor key, mouse, focus, and bracketed paste
+/// modes, shows the cursor, resets modifyOtherKeys, and resets attributes. A program that is still running
+/// reapplies its own modes from the replayed bytes.
+pub(crate) const TERMINAL_REPLAY_RESET_PREFIX: &str = "\x1b[?1049l\x1b[<100u\x1b[=0;1u\x1b[?1;9;66;67;1000;1002;1003;1004;1005;1006;1015;2004l\x1b[?25h\x1b[>4m\x1b[0m";
 const MAX_OUTPUT_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 /// Output bytes a view may leave unacknowledged before live delivery to it pauses.
@@ -136,7 +146,7 @@ fn validate_subscription_id(subscription_id: &str) -> ChatResult<()> {
 #[serde(rename_all = "camelCase")]
 pub struct ChatTerminalRead {
     pub id: String,
-    pub thread_id: ChatThreadId,
+    pub channel_id: ChatChannelId,
     pub working_folder_id: ProjectWorkingFolderId,
     pub name: String,
     pub shell: String,
@@ -223,10 +233,10 @@ fn is_canonical_uuid(value: &str) -> bool {
 
 pub(crate) struct ChatTerminalCreateInput {
     pub terminal_id: String,
-    pub thread_id: ChatThreadId,
+    pub channel_id: ChatChannelId,
+    /// Separates terminals opened from a reply thread tab from the channel's own panels.
+    pub reply_thread_id: Option<ChatReplyThreadId>,
     pub working_folder_id: ProjectWorkingFolderId,
-    /// Worktree execution environment the shell starts in, if any.
-    pub environment_id: Option<String>,
     pub workspace_path: PathBuf,
     pub columns: u16,
     pub rows: u16,
@@ -234,9 +244,9 @@ pub(crate) struct ChatTerminalCreateInput {
 
 struct TerminalSpawnSpec {
     terminal_id: String,
-    thread_id: ChatThreadId,
+    channel_id: ChatChannelId,
+    reply_thread_id: Option<ChatReplyThreadId>,
     working_folder_id: ProjectWorkingFolderId,
-    environment_id: Option<String>,
     workspace_path: PathBuf,
     name: String,
     columns: u16,
@@ -267,9 +277,10 @@ struct TerminalState {
 
 struct TerminalSession {
     id: String,
-    thread_id: ChatThreadId,
+    channel_id: ChatChannelId,
+    /// Panel grouping only; authority always comes from the channel.
+    reply_thread_id: Option<ChatReplyThreadId>,
     working_folder_id: ProjectWorkingFolderId,
-    environment_id: Option<String>,
     state: Mutex<TerminalState>,
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
@@ -284,7 +295,7 @@ impl TerminalSession {
         let state = self.state.lock().map_err(|_| terminal_state_error())?;
         Ok(ChatTerminalRead {
             id: self.id.clone(),
-            thread_id: self.thread_id.clone(),
+            channel_id: self.channel_id.clone(),
             working_folder_id: self.working_folder_id.clone(),
             name: state.name.clone(),
             shell: state.shell.clone(),
@@ -301,7 +312,7 @@ impl TerminalSession {
         let state = self.state.lock().map_err(|_| terminal_state_error())?;
         let terminal = ChatTerminalRead {
             id: self.id.clone(),
-            thread_id: self.thread_id.clone(),
+            channel_id: self.channel_id.clone(),
             working_folder_id: self.working_folder_id.clone(),
             name: state.name.clone(),
             shell: state.shell.clone(),
@@ -315,12 +326,24 @@ impl TerminalSession {
         let scrollback = state
             .replay
             .iter()
-            .map(|chunk| ChatTerminalOutputChunk {
-                terminal_id: self.id.clone(),
-                generation: chunk.generation,
-                sequence: chunk.sequence,
-                data_base64: general_purpose::STANDARD.encode(&chunk.bytes),
-                replay: true,
+            .enumerate()
+            .map(|(index, chunk)| {
+                let data_base64 = if index == 0 {
+                    let mut bytes =
+                        Vec::with_capacity(TERMINAL_REPLAY_RESET_PREFIX.len() + chunk.bytes.len());
+                    bytes.extend_from_slice(TERMINAL_REPLAY_RESET_PREFIX.as_bytes());
+                    bytes.extend_from_slice(&chunk.bytes);
+                    general_purpose::STANDARD.encode(bytes)
+                } else {
+                    general_purpose::STANDARD.encode(&chunk.bytes)
+                };
+                ChatTerminalOutputChunk {
+                    terminal_id: self.id.clone(),
+                    generation: chunk.generation,
+                    sequence: chunk.sequence,
+                    data_base64,
+                    replay: true,
+                }
             })
             .collect();
         Ok(ChatTerminalSnapshotRead {
@@ -507,16 +530,41 @@ impl Default for ChatTerminalRegistry {
 }
 
 impl ChatTerminalRegistry {
+    /// Lists every terminal of a channel working folder, whichever panel opened it.
     pub fn list(
         &self,
-        thread_id: &ChatThreadId,
+        channel_id: &ChatChannelId,
         working_folder_id: &ProjectWorkingFolderId,
+    ) -> ChatResult<Vec<ChatTerminalRead>> {
+        self.list_matching(channel_id, working_folder_id, |_| true)
+    }
+
+    /// Lists the terminals one panel owns: the channel panels when `reply_thread_id` is `None`, or the
+    /// panels of that reply thread tab otherwise.
+    pub fn list_for_panel(
+        &self,
+        channel_id: &ChatChannelId,
+        working_folder_id: &ProjectWorkingFolderId,
+        reply_thread_id: Option<&ChatReplyThreadId>,
+    ) -> ChatResult<Vec<ChatTerminalRead>> {
+        self.list_matching(channel_id, working_folder_id, |session| {
+            session.reply_thread_id.as_ref() == reply_thread_id
+        })
+    }
+
+    fn list_matching(
+        &self,
+        channel_id: &ChatChannelId,
+        working_folder_id: &ProjectWorkingFolderId,
+        panel: impl Fn(&TerminalSession) -> bool,
     ) -> ChatResult<Vec<ChatTerminalRead>> {
         let sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
         let mut result = sessions
             .values()
             .filter(|session| {
-                &session.thread_id == thread_id && &session.working_folder_id == working_folder_id
+                &session.channel_id == channel_id
+                    && &session.working_folder_id == working_folder_id
+                    && panel(session)
             })
             .map(|session| session.read())
             .collect::<ChatResult<Vec<_>>>()?;
@@ -546,9 +594,9 @@ impl ChatTerminalRegistry {
         if sessions.len() >= MAX_TERMINALS_PER_APP
             || sessions
                 .values()
-                .filter(|session| session.thread_id == input.thread_id)
+                .filter(|session| session.channel_id == input.channel_id)
                 .count()
-                >= MAX_TERMINALS_PER_THREAD
+                >= MAX_TERMINALS_PER_CHANNEL
         {
             return Err(ChatError::new(
                 ChatErrorCode::Busy,
@@ -562,9 +610,9 @@ impl ChatTerminalRegistry {
             app,
             TerminalSpawnSpec {
                 terminal_id: input.terminal_id,
-                thread_id: input.thread_id,
+                channel_id: input.channel_id,
+                reply_thread_id: input.reply_thread_id,
                 working_folder_id: input.working_folder_id,
-                environment_id: input.environment_id,
                 workspace_path: input.workspace_path,
                 name: terminal_name,
                 columns: input.columns,
@@ -625,14 +673,14 @@ impl ChatTerminalRegistry {
     pub fn require_scope(
         &self,
         terminal_id: &str,
-        thread_id: &ChatThreadId,
+        channel_id: &ChatChannelId,
         working_folder_id: &ProjectWorkingFolderId,
     ) -> ChatResult<()> {
         let session = self.session(terminal_id)?;
-        if &session.thread_id != thread_id || &session.working_folder_id != working_folder_id {
+        if &session.channel_id != channel_id || &session.working_folder_id != working_folder_id {
             return Err(ChatError::new(
                 ChatErrorCode::Permission,
-                "Chat terminal belongs to another thread or workspace",
+                "Chat terminal belongs to another channel or working folder",
                 false,
             ));
         }
@@ -771,11 +819,6 @@ impl ChatTerminalRegistry {
         self.shutdown_matching(|session| &session.working_folder_id == working_folder_id)
     }
 
-    /// Stops the terminals whose shell started in one worktree execution environment.
-    pub fn shutdown_environment(&self, environment_id: &str) -> ChatResult<()> {
-        self.shutdown_matching(|session| session.environment_id.as_deref() == Some(environment_id))
-    }
-
     fn shutdown_matching(&self, matches: impl Fn(&TerminalSession) -> bool) -> ChatResult<()> {
         let mut sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
         let terminal_ids = sessions
@@ -789,19 +832,6 @@ impl ChatTerminalRegistry {
             }
         }
         Ok(())
-    }
-
-    /// Returns the threads that currently own at least one terminal.
-    pub fn thread_ids(&self) -> ChatResult<std::collections::BTreeSet<ChatThreadId>> {
-        let sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
-        Ok(sessions
-            .values()
-            .map(|session| session.thread_id.clone())
-            .collect())
-    }
-
-    pub fn shutdown_thread(&self, thread_id: &ChatThreadId) -> ChatResult<()> {
-        self.shutdown_matching(|session| &session.thread_id == thread_id)
     }
 
     fn session(&self, terminal_id: &str) -> ChatResult<Arc<TerminalSession>> {
@@ -833,17 +863,27 @@ fn spawn_session(
         .slave
         .spawn_command(command)
         .map_err(terminal_io_error)?;
+    let shell = default_shell_label();
+    let registration = child.process_id().map(|pid| {
+        process_inventory::register_process(
+            pid,
+            Path::new(&shell),
+            None,
+            process_inventory::ChatProcessPurpose::Terminal,
+            None,
+        )
+    });
     let killer = child.clone_killer();
     let reader = pair.master.try_clone_reader().map_err(terminal_io_error)?;
     let writer = pair.master.take_writer().map_err(terminal_io_error)?;
     let session = Arc::new(TerminalSession {
         id: spec.terminal_id,
-        thread_id: spec.thread_id,
+        channel_id: spec.channel_id,
+        reply_thread_id: spec.reply_thread_id,
         working_folder_id: spec.working_folder_id,
-        environment_id: spec.environment_id,
         state: Mutex::new(TerminalState {
             name: spec.name,
-            shell: default_shell_label(),
+            shell,
             columns: spec.columns,
             rows: spec.rows,
             running: true,
@@ -868,6 +908,7 @@ fn spawn_session(
                 .wait()
                 .map(|status| status.exit_code() as i32)
                 .unwrap_or(1);
+            drop(registration);
             if wait_session
                 .mark_exited(spec.generation, exit_code)
                 .unwrap_or(false)
@@ -979,12 +1020,103 @@ pub(crate) fn capture_launch_environment() {
     let _ = LAUNCH_ENVIRONMENT.set(std::env::vars_os().collect());
 }
 
-/// Returns the environment a terminal shell should inherit: the launch environment without the variables the
-/// AppImage runtime and its bundled library hooks inject.
+/// Variables that describe a terminal multiplexer session or a port the launcher chose. A Chat terminal is not
+/// inside the user's multiplexer, and an inherited `PORT` misleads development servers started in it.
+const TERMINAL_ENVIRONMENT_BLOCKLIST: &[&str] = &["TMUX", "TMUX_PANE", "STY", "WINDOW", "PORT"];
+
+/// Name prefixes of multiplexer variables dropped from the terminal environment.
+const TERMINAL_ENVIRONMENT_BLOCKLIST_PREFIXES: &[&str] = &["ZELLIJ"];
+
+/// The fish variable that toggles optional features at startup. Other shells ignore it.
+const FISH_FEATURES_VARIABLE: &str = "fish_features";
+
+/// Feature fish 4.1 and later read to start without waiting for a terminal query reply.
+const FISH_NO_QUERY_TERM_FEATURE: &str = "no-query-term";
+
+/// Feature name the user sets, with or without the `no-` prefix, to choose the query behavior themselves.
+const FISH_QUERY_TERM_FEATURE: &str = "query-term";
+
+/// Returns the environment a terminal shell should inherit: the launch environment without multiplexer and port
+/// variables or the variables the AppImage runtime and its bundled library hooks inject, with fish told not to
+/// wait for a terminal query reply unless the user chose that behavior.
 fn terminal_environment(launch: Vec<(OsString, OsString)>) -> Vec<(OsString, OsString)> {
+    let launch = without_blocklisted_variables(launch);
     #[cfg(target_os = "linux")]
     let launch = without_appimage_variables(launch);
-    launch
+    with_fish_query_term_disabled(launch)
+}
+
+/// Compares an environment key with a variable name, ignoring case on Windows where keys are case-insensitive.
+fn environment_key_is(key: &OsStr, name: &str) -> bool {
+    #[cfg(windows)]
+    return key.eq_ignore_ascii_case(name);
+    #[cfg(not(windows))]
+    return key == name;
+}
+
+/// Reports whether an environment key starts with `prefix`, ignoring case on Windows.
+fn environment_key_starts_with(key: &OsStr, prefix: &str) -> bool {
+    let key = key.as_encoded_bytes();
+    let prefix = prefix.as_bytes();
+    if key.len() < prefix.len() {
+        return false;
+    }
+    #[cfg(windows)]
+    return key[..prefix.len()].eq_ignore_ascii_case(prefix);
+    #[cfg(not(windows))]
+    return &key[..prefix.len()] == prefix;
+}
+
+/// Drops the multiplexer and port variables named by the terminal blocklists.
+fn without_blocklisted_variables(
+    environment: Vec<(OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    environment
+        .into_iter()
+        .filter(|(key, _)| {
+            !TERMINAL_ENVIRONMENT_BLOCKLIST
+                .iter()
+                .any(|name| environment_key_is(key, name))
+                && !TERMINAL_ENVIRONMENT_BLOCKLIST_PREFIXES
+                    .iter()
+                    .any(|prefix| environment_key_starts_with(key, prefix))
+        })
+        .collect()
+}
+
+/// Adds the fish `no-query-term` feature, appending it to inherited comma or space separated features, unless
+/// they already name `query-term` in either form.
+fn with_fish_query_term_disabled(
+    mut environment: Vec<(OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    let existing = environment
+        .iter_mut()
+        .find(|(key, _)| environment_key_is(key, FISH_FEATURES_VARIABLE));
+    match existing {
+        Some((_, value)) => {
+            let names_query_term = value
+                .to_string_lossy()
+                .split(|separator: char| separator == ',' || separator.is_whitespace())
+                .map(str::trim)
+                .any(|feature| {
+                    feature.strip_prefix("no-").unwrap_or(feature) == FISH_QUERY_TERM_FEATURE
+                });
+            if names_query_term {
+                return environment;
+            }
+            if value.to_string_lossy().trim().is_empty() {
+                *value = OsString::from(FISH_NO_QUERY_TERM_FEATURE);
+            } else {
+                value.push(",");
+                value.push(FISH_NO_QUERY_TERM_FEATURE);
+            }
+        }
+        None => environment.push((
+            OsString::from(FISH_FEATURES_VARIABLE),
+            OsString::from(FISH_NO_QUERY_TERM_FEATURE),
+        )),
+    }
+    environment
 }
 
 /// Removes the AppImage runtime variables and every path entry inside the mounted image. Environments that were
@@ -1244,531 +1376,4 @@ fn terminal_io_error<T>(_error: T) -> ChatError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn session(running: bool) -> Arc<TerminalSession> {
-        session_in("terminal:test", None, running)
-    }
-
-    fn session_in(id: &str, environment_id: Option<&str>, running: bool) -> Arc<TerminalSession> {
-        session_at(id, "workspace:test", environment_id, running)
-    }
-
-    fn session_at(
-        id: &str,
-        working_folder_id: &str,
-        environment_id: Option<&str>,
-        running: bool,
-    ) -> Arc<TerminalSession> {
-        Arc::new(TerminalSession {
-            id: id.to_string(),
-            thread_id: ChatThreadId::new("thread:test").expect("thread ID should be valid"),
-            working_folder_id: ProjectWorkingFolderId::new(working_folder_id)
-                .expect("workspace ID should be valid"),
-            environment_id: environment_id.map(str::to_string),
-            state: Mutex::new(TerminalState {
-                name: "Terminal 1".to_string(),
-                shell: "test-shell".to_string(),
-                columns: 80,
-                rows: 24,
-                running,
-                exit_code: None,
-                generation: 1,
-                sequence: 0,
-                replay_bytes: 0,
-                replay: VecDeque::new(),
-            }),
-            master: Mutex::new(None),
-            writer: Mutex::new(None),
-            killer: Mutex::new(None),
-            subscribers: Mutex::new(OutputSubscribers::default()),
-            output_credit: Condvar::new(),
-        })
-    }
-
-    #[test]
-    fn replay_is_sequenced_generation_scoped_and_byte_bounded() {
-        let session = session(true);
-        assert!(
-            session
-                .record_output(0, b"stale".to_vec())
-                .expect("stale output should be handled")
-                .is_none()
-        );
-        for byte in [1_u8, 2, 3] {
-            session
-                .record_output(1, vec![byte; MAX_REPLAY_BYTES / 2])
-                .expect("output should record")
-                .expect("current generation should emit");
-        }
-        let snapshot = session.snapshot().expect("snapshot should read");
-        assert_eq!(snapshot.terminal.last_sequence, 3);
-        assert_eq!(snapshot.scrollback.len(), 2);
-        assert_eq!(snapshot.scrollback[0].sequence, 2);
-        assert!(
-            session
-                .state
-                .lock()
-                .expect("terminal state should lock")
-                .replay_bytes
-                <= MAX_REPLAY_BYTES
-        );
-    }
-
-    #[test]
-    fn running_terminal_close_requires_confirmation_and_removes_exact_session() {
-        let registry = ChatTerminalRegistry::default();
-        registry
-            .sessions
-            .lock()
-            .expect("registry should lock")
-            .insert("terminal:test".to_string(), session(true));
-        let first = registry
-            .close("terminal:test", false)
-            .expect("close should respond");
-        assert!(first.confirmation_required);
-        assert!(!first.closed);
-        let confirmed = registry
-            .close("terminal:test", true)
-            .expect("confirmed close should work");
-        assert!(confirmed.closed);
-        assert!(registry.snapshot("terminal:test").is_err());
-    }
-
-    #[test]
-    fn removing_a_worktree_stops_only_the_terminals_started_in_it() {
-        let registry = ChatTerminalRegistry::default();
-        let started = [
-            ("terminal:removed", Some("environment:removed")),
-            ("terminal:other", Some("environment:other")),
-            ("terminal:folder", None),
-        ];
-        let sessions = started
-            .iter()
-            .map(|(id, environment_id)| session_in(id, *environment_id, true))
-            .collect::<Vec<_>>();
-        {
-            let mut registered = registry.sessions.lock().expect("registry should lock");
-            for session in &sessions {
-                registered.insert(session.id.clone(), Arc::clone(session));
-            }
-        }
-
-        registry
-            .shutdown_environment("environment:removed")
-            .expect("shutdown should work");
-
-        assert!(registry.snapshot("terminal:removed").is_err());
-        assert!(!sessions[0].read().expect("session should read").running);
-        for id in ["terminal:other", "terminal:folder"] {
-            assert!(
-                registry
-                    .snapshot(id)
-                    .expect("terminal should remain")
-                    .terminal
-                    .running
-            );
-        }
-    }
-
-    #[test]
-    fn shutting_down_a_folder_stops_only_the_terminals_started_in_it() {
-        let registry = ChatTerminalRegistry::default();
-        let sessions = [
-            session_at("terminal:root", "workspace:archived", None, true),
-            session_at(
-                "terminal:worktree",
-                "workspace:archived",
-                Some("environment:archived"),
-                true,
-            ),
-            session_at("terminal:other", "workspace:other", None, true),
-        ];
-        {
-            let mut registered = registry.sessions.lock().expect("registry should lock");
-            for session in &sessions {
-                registered.insert(session.id.clone(), Arc::clone(session));
-            }
-        }
-
-        registry
-            .shutdown_workspace(
-                &ProjectWorkingFolderId::new("workspace:archived")
-                    .expect("workspace ID should be valid"),
-            )
-            .expect("shutdown should work");
-
-        for (index, id) in ["terminal:root", "terminal:worktree"].iter().enumerate() {
-            assert!(registry.snapshot(id).is_err());
-            assert!(!sessions[index].read().expect("session should read").running);
-        }
-        assert!(
-            registry
-                .snapshot("terminal:other")
-                .expect("terminal should remain")
-                .terminal
-                .running
-        );
-    }
-
-    struct RecordingSink {
-        delivered: Arc<Mutex<Vec<u64>>>,
-        open: bool,
-    }
-
-    impl TerminalOutputSink for RecordingSink {
-        fn deliver(&self, chunk: &ChatTerminalOutputChunk) -> bool {
-            if self.open {
-                self.delivered
-                    .lock()
-                    .expect("sink should lock")
-                    .push(chunk.sequence);
-            }
-            self.open
-        }
-    }
-
-    fn recording_sink(open: bool) -> (Box<dyn TerminalOutputSink>, Arc<Mutex<Vec<u64>>>) {
-        let delivered = Arc::new(Mutex::new(Vec::new()));
-        let sink = RecordingSink {
-            delivered: Arc::clone(&delivered),
-            open,
-        };
-        (Box::new(sink), delivered)
-    }
-
-    fn output_chunk(sequence: u64) -> ChatTerminalOutputChunk {
-        ChatTerminalOutputChunk {
-            terminal_id: "terminal:test".to_string(),
-            generation: 1,
-            sequence,
-            data_base64: String::new(),
-            replay: false,
-        }
-    }
-
-    #[test]
-    fn output_reaches_only_attached_views_and_pauses_at_the_watermark() {
-        let session = session(true);
-        session
-            .record_output(1, b"before".to_vec())
-            .expect("output should record");
-        let (sink, delivered) = recording_sink(true);
-        let snapshot = session
-            .attach_output("view:a".to_string(), sink)
-            .expect("view should attach");
-        assert_eq!(snapshot.scrollback.len(), 1);
-
-        let half = TERMINAL_OUTPUT_HIGH_WATERMARK_BYTES / 2;
-        for sequence in 2..=4 {
-            session
-                .publish_output(&output_chunk(sequence), half)
-                .expect("output should publish");
-        }
-        assert_eq!(
-            *delivered.lock().expect("sink should lock"),
-            vec![2, 3],
-            "a full view skips live chunks instead of queueing them"
-        );
-        assert!(
-            session
-                .subscribers
-                .lock()
-                .expect("subscribers should lock")
-                .should_wait()
-        );
-
-        session
-            .acknowledge_output("view:a", half)
-            .expect("acknowledgement should apply");
-        session
-            .publish_output(&output_chunk(5), half)
-            .expect("output should publish");
-        assert_eq!(*delivered.lock().expect("sink should lock"), vec![2, 3, 5]);
-        assert_eq!(
-            session
-                .acknowledge_output("view:unknown", half)
-                .expect_err("unknown subscriptions are rejected")
-                .code,
-            ChatErrorCode::NotFound
-        );
-
-        session.detach_output("view:a").expect("view should detach");
-        session
-            .publish_output(&output_chunk(6), 1)
-            .expect("output should publish");
-        assert_eq!(delivered.lock().expect("sink should lock").len(), 3);
-    }
-
-    #[test]
-    fn stalled_views_stop_holding_the_shell_and_closed_views_are_dropped() {
-        let mut subscribers = OutputSubscribers::default();
-        let (stalled, _) = recording_sink(true);
-        subscribers.attach("view:stalled".to_string(), stalled);
-        subscribers.deliver(&output_chunk(1), TERMINAL_OUTPUT_HIGH_WATERMARK_BYTES);
-        assert!(subscribers.should_wait());
-        subscribers.mark_full_as_lagging();
-        assert!(
-            !subscribers.should_wait(),
-            "a lagging view never holds the reader again"
-        );
-
-        let (responsive, responsive_chunks) = recording_sink(true);
-        subscribers.attach("view:responsive".to_string(), responsive);
-        assert!(!subscribers.should_wait());
-        subscribers.deliver(&output_chunk(2), 1);
-        assert_eq!(
-            *responsive_chunks.lock().expect("sink should lock"),
-            vec![2]
-        );
-        assert!(subscribers.acknowledge("view:stalled", TERMINAL_OUTPUT_HIGH_WATERMARK_BYTES));
-        assert!(subscribers.entries.iter().all(|entry| !entry.lagging));
-
-        let (closed, _) = recording_sink(false);
-        subscribers.attach("view:closed".to_string(), closed);
-        subscribers.deliver(&output_chunk(3), 1);
-        assert!(
-            subscribers
-                .entries
-                .iter()
-                .all(|entry| entry.id != "view:closed")
-        );
-
-        for index in 0..MAX_TERMINAL_OUTPUT_SUBSCRIBERS {
-            let (sink, _) = recording_sink(true);
-            subscribers.attach(format!("view:{index}"), sink);
-        }
-        assert_eq!(subscribers.entries.len(), MAX_TERMINAL_OUTPUT_SUBSCRIBERS);
-        assert!(
-            subscribers
-                .entries
-                .iter()
-                .all(|entry| entry.id != "view:stalled")
-        );
-        assert!(validate_subscription_id("view:1").is_ok());
-        assert!(validate_subscription_id("").is_err());
-        assert!(validate_subscription_id("view one").is_err());
-        assert!(
-            validate_subscription_id(&"a".repeat(MAX_TERMINAL_SUBSCRIPTION_ID_BYTES + 1)).is_err()
-        );
-    }
-
-    #[test]
-    fn vault_suspension_blocks_creation_and_counts_only_running_terminals() {
-        let registry = ChatTerminalRegistry::default();
-        {
-            let mut sessions = registry.sessions.lock().expect("registry should lock");
-            sessions.insert("terminal:running".to_string(), session(true));
-            sessions.insert("terminal:exited".to_string(), session(false));
-        }
-        assert_eq!(registry.live_count().expect("count should read"), 1);
-        assert!(registry.admit_creation().is_ok());
-
-        registry
-            .suspend_creation()
-            .expect("suspension should apply");
-        let paused = registry
-            .admit_creation()
-            .expect_err("a suspended registry must reject new terminals");
-        assert_eq!(paused.code, ChatErrorCode::Busy);
-        assert_eq!(registry.live_count().expect("count should read"), 1);
-
-        registry.resume_creation();
-        assert!(registry.admit_creation().is_ok());
-        registry.shutdown_all().expect("shutdown should apply");
-        registry.resume_creation();
-        assert!(registry.admit_creation().is_err());
-    }
-
-    #[test]
-    fn terminal_validation_rejects_unsafe_dimensions_and_input() {
-        assert!(validate_dimensions(19, 24).is_err());
-        assert!(validate_dimensions(80, 1).is_err());
-        assert!(validate_dimensions(80, 24).is_ok());
-        let registry = ChatTerminalRegistry::default();
-        registry
-            .sessions
-            .lock()
-            .expect("registry should lock")
-            .insert("terminal:test".to_string(), session(true));
-        assert!(registry.input("terminal:test", "bad\0input").is_err());
-        assert!(
-            registry
-                .input("terminal:test", "pasted\x1b[201~rm -rf ~\r")
-                .is_err()
-        );
-        assert!(
-            registry
-                .input("terminal:test", "\x1b[200~a\x1b[201~b\x1b[201~")
-                .is_err()
-        );
-        assert!(
-            registry
-                .input("terminal:test", "\x1b[200~a\x1b[200~b\x1b[201~")
-                .is_err()
-        );
-        for keys in ["\x1b[20~", "\x1b[21~", "\x1b[2~", "\x1b[2;5~", "\x1b[20;2~"] {
-            assert!(
-                validate_paste_framing(keys).is_ok(),
-                "{keys:?} is a key sequence"
-            );
-        }
-        assert!(validate_paste_framing("\x1b[200~echo one\recho two\x1b[201~").is_ok());
-    }
-
-    #[test]
-    fn shell_command_starts_in_the_workspace_and_advertises_a_color_terminal() {
-        let workspace = PathBuf::from("workspace");
-        let command = shell_command(&workspace);
-        assert_eq!(command.get_cwd().map(PathBuf::from), Some(workspace));
-        assert_eq!(command.get_env("COLORTERM"), Some("truecolor".as_ref()));
-        #[cfg(not(windows))]
-        assert_eq!(command.get_env("TERM"), Some("xterm-256color".as_ref()));
-        #[cfg(windows)]
-        assert!(Path::new(&command.get_argv()[0]).is_absolute());
-    }
-
-    #[test]
-    fn windows_shells_resolve_by_absolute_path_and_never_by_a_bare_name() {
-        let root = std::env::temp_dir();
-        let custom = root.join("shells").join("custom.exe");
-        let system_shell = root.join("System32").join("cmd.exe");
-        assert_eq!(
-            absolute_windows_shell(Some(custom.as_os_str()), Some(root.as_os_str())),
-            Some(custom)
-        );
-        assert_eq!(
-            absolute_windows_shell(Some(OsStr::new("cmd.exe")), Some(root.as_os_str())),
-            Some(system_shell.clone())
-        );
-        assert_eq!(
-            absolute_windows_shell(None, Some(root.as_os_str())),
-            Some(system_shell)
-        );
-        assert_eq!(
-            absolute_windows_shell(Some(OsStr::new("cmd.exe")), Some(OsStr::new("Windows"))),
-            None
-        );
-        assert_eq!(absolute_windows_shell(None, None), None);
-    }
-
-    fn environment(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
-        pairs
-            .iter()
-            .map(|(key, value)| (OsString::from(key), OsString::from(value)))
-            .collect()
-    }
-
-    #[test]
-    fn terminals_inherit_the_launch_environment_instead_of_later_process_changes() {
-        let launch = environment(&[
-            ("SSH_AUTH_SOCK", "/run/user/1000/agent"),
-            ("PATH", "/usr/bin"),
-        ]);
-        let current = environment(&[
-            ("SSH_AUTH_SOCK", "/run/user/1000/agent"),
-            ("PATH", "/opt/bundle/bin:/usr/bin"),
-            ("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt"),
-        ]);
-        assert_eq!(
-            environment_edits(&launch, &current),
-            vec![
-                EnvironmentEdit::Set("PATH".into(), "/usr/bin".into()),
-                EnvironmentEdit::Remove("SSL_CERT_FILE".into()),
-            ]
-        );
-        assert!(environment_edits(&launch, &launch).is_empty());
-        assert_eq!(
-            environment_edits(&launch, &environment(&[("PATH", "/usr/bin")])),
-            vec![EnvironmentEdit::Set(
-                "SSH_AUTH_SOCK".into(),
-                "/run/user/1000/agent".into()
-            )]
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn terminals_drop_only_what_the_appimage_runtime_injects() {
-        let user = environment(&[
-            ("PATH", "/tmp/.mount_gan/usr/bin:/usr/bin"),
-            ("GTK_PATH", "/tmp/.mount_gan/usr/lib/gtk-3.0"),
-            ("EDITOR", "nvim"),
-        ]);
-        assert_eq!(terminal_environment(user.clone()), user);
-
-        let packaged = environment(&[
-            ("APPIMAGE", "/home/user/Ganbaru.AppImage"),
-            ("APPDIR", "/tmp/.mount_gan"),
-            ("ARGV0", "./Ganbaru.AppImage"),
-            ("OWD", "/home/user"),
-            ("PATH", "/tmp/.mount_gan/usr/bin:/usr/local/bin:/usr/bin"),
-            ("LD_LIBRARY_PATH", "/tmp/.mount_gan/usr/lib:"),
-            ("XDG_DATA_DIRS", "/tmp/.mount_gan/usr/share:/usr/share:"),
-            ("GTK_PATH", "/tmp/.mount_gan/usr/lib/gtk-3.0"),
-            (
-                "GDK_PIXBUF_MODULE_FILE",
-                "/tmp/.mount_gan/usr/lib/loaders.cache",
-            ),
-            ("PROJECTS", "/tmp/.mount_ganbaru/work"),
-            ("SSH_AUTH_SOCK", "/run/user/1000/agent"),
-            ("EDITOR", "nvim"),
-        ]);
-        assert_eq!(
-            terminal_environment(packaged),
-            environment(&[
-                ("PATH", "/usr/local/bin:/usr/bin"),
-                ("XDG_DATA_DIRS", "/usr/share:"),
-                ("PROJECTS", "/tmp/.mount_ganbaru/work"),
-                ("SSH_AUTH_SOCK", "/run/user/1000/agent"),
-                ("EDITOR", "nvim"),
-            ])
-        );
-
-        let unsafe_appdir = environment(&[
-            ("APPIMAGE", "/home/user/Ganbaru.AppImage"),
-            ("APPDIR", "/"),
-            ("PATH", "/usr/bin"),
-        ]);
-        assert_eq!(terminal_environment(unsafe_appdir.clone()), unsafe_appdir);
-    }
-
-    #[test]
-    fn terminal_name_uses_the_local_identity_and_home_relative_workspace_path() {
-        let home = PathBuf::from("home").join("alice");
-        let workspace = home.join("Documents").join("ganbaru");
-        let separator = std::path::MAIN_SEPARATOR;
-        assert_eq!(
-            format_terminal_name("alice", "workstation", &workspace, Some(&home)),
-            format!("alice@workstation: ~{separator}Documents{separator}ganbaru")
-        );
-    }
-
-    #[test]
-    fn terminal_identity_rejects_empty_and_control_character_values() {
-        assert_eq!(normalized_identity("vic\ntor"), None);
-        assert_eq!(normalized_identity("   "), None);
-        assert_eq!(normalized_identity(" alice \n"), Some("alice".to_string()));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn hostname_decoding_accepts_terminated_and_full_buffers() {
-        assert_eq!(
-            hostname_from_buffer(b"workstation\0ignored"),
-            Some("workstation".to_string())
-        );
-        assert_eq!(
-            hostname_from_buffer(b"full-buffer-name"),
-            Some("full-buffer-name".to_string())
-        );
-        assert_eq!(hostname_from_buffer(b"\0"), None);
-        assert_eq!(
-            hostname_from_buffer(&[b'w', b'o', b'r', b'k', 0xff, 0]),
-            Some("work�".to_string())
-        );
-        assert_eq!(hostname_from_buffer(b"invalid\nname\0"), None);
-        assert_eq!(hostname_from_call(-1, b"ignored\0"), None);
-    }
-}
+mod tests;

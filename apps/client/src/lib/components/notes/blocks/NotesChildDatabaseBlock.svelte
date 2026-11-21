@@ -11,6 +11,8 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { tick, untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -102,12 +104,12 @@
   let titleSaving = $state(false);
   let viewSaving = $state(false);
   let contentReady = $state(false);
-  let titleError = $state<string | null>(null);
+  let titleError = $state<NotesFailure | null>(null);
   let reference = $state<NotesDatabaseReference | null>(null);
   let loading = $state(false);
   let linking = $state(false);
-  let error = $state<string | null>(null);
-  let linkedViewError = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
+  let linkedViewError = $state<NotesFailure | null>(null);
   let schema = $state<NotesDataSourceSchema | null>(null);
   let schemaViewId = $state<string | null>(null);
   let editorSourceId = $state<string | null>(null);
@@ -184,18 +186,14 @@
     editingLocked = locked;
   });
 
-  function messageOf(caught: unknown): string {
-    return caught instanceof Error ? caught.message : String(caught);
-  }
-
   async function openDatabase(id: string): Promise<void> {
     try { await onOpenDatabase?.(id); }
-    catch (caught: unknown) { titleError = messageOf(caught); }
+    catch (caught: unknown) { titleError = notesFailure(caught, t("notes.databaseOpenFailed")); }
   }
 
   async function deleteDatabase(): Promise<void> {
     try { await onDeleteDatabase?.(block.id); }
-    catch (caught: unknown) { titleError = messageOf(caught); }
+    catch (caught: unknown) { titleError = notesFailure(caught, t("notes.databaseChangeFailed")); }
   }
 
   /**
@@ -210,7 +208,7 @@
       await navigator.clipboard.writeText(viewId
         ? buildNotesDatabaseViewLink(window.location.href, { ...target, viewId })
         : buildNotesBlockLink(window.location.href, target));
-    } catch (caught: unknown) { titleError = messageOf(caught); }
+    } catch (caught: unknown) { titleError = notesFailure(caught, t("notes.databaseViewLinkCopyFailed")); }
   }
 
   $effect(() => {
@@ -227,7 +225,7 @@
    * A locked layout rejects the save without queueing it.
    */
   function enqueue<T>(task: () => Promise<T>): Promise<T> {
-    if (editingLocked) return Promise.reject(new Error(t("notes.databaseEditingLockDescription")));
+    if (editingLocked) return Promise.reject(new LocalizedError(t("notes.databaseEditingLockDescription")));
     pendingSaves += 1;
     const result = saveQueue.then(task);
     saveQueue = result.then(() => undefined, () => undefined);
@@ -271,7 +269,7 @@
       const sources = await listNotesDataSources();
       if (request === schemaRequestId) availableDataSources = sources;
     } catch (caught: unknown) {
-      if (request === schemaRequestId) error = t("notes.databaseSchemaLoadFailed", messageOf(caught));
+      if (request === schemaRequestId) error = notesFailure(caught, t("notes.databaseSchemaLoadFailed"));
     } finally {
       if (request === schemaRequestId) loading = false;
     }
@@ -298,7 +296,7 @@
       properties = notesDataSourceSchemaDraftFromDto(loaded.data_source, loaded.view);
       reloadViews();
     } catch (caught) {
-      if (request === schemaRequestId) error = t("notes.databaseSchemaLoadFailed", messageOf(caught));
+      if (request === schemaRequestId) error = notesFailure(caught, t("notes.databaseSchemaLoadFailed"));
     } finally {
       if (request === schemaRequestId) loading = false;
     }
@@ -322,13 +320,13 @@
 
   function withEditorScope(task: (scope: NotesDatabaseSourceEditingScope) => Promise<void>): Promise<void> {
     const scope = editorScope();
-    return scope ? task(scope) : Promise.reject(new Error(t("notes.databaseSchemaLoadFailed", "")));
+    return scope ? task(scope) : Promise.reject(new LocalizedError(t("notes.databaseSchemaLoadFailed")));
   }
 
   /** Run a settings panel action, showing a failure in the panel. */
   function runPanelAction(task: (scope: NotesDatabaseSourceEditingScope) => Promise<void>): void {
     error = null;
-    void withEditorScope(task).catch((caught: unknown) => { error = messageOf(caught); });
+    void withEditorScope(task).catch((caught: unknown) => { error = notesFailure(caught, t("notes.databaseSchemaSaveFailed")); });
   }
 
   async function saveTitle(): Promise<void> {
@@ -345,7 +343,7 @@
       acknowledgeTitle(renamedDatabaseId, savedTitle);
     } catch (caught) {
       titleDraft = savedTitle;
-      titleError = messageOf(caught);
+      titleError = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       titleSaving = false;
     }
@@ -358,7 +356,7 @@
     try {
       await onCreateLinkedDatabaseView(block.id);
     } catch (caught) {
-      linkedViewError = t("notes.databaseLinkedViewCreateFailed", messageOf(caught));
+      linkedViewError = notesFailure(caught, t("notes.databaseLinkedViewCreateFailed"));
     } finally {
       linking = false;
     }
@@ -398,7 +396,7 @@
   function editProperty(propertyId: string, update: NotesDataSourcePropertyUpdate): void {
     error = null;
     void withEditorScope((scope) => updateSchemaProperty(propertyId, update, scope))
-      .catch((caught: unknown) => { error = t("collections.property.saveFailed", messageOf(caught)); });
+      .catch((caught: unknown) => { error = notesFailure(caught, t("notes.databaseSchemaSaveFailed")); });
   }
 
   /** Save an option edit and report its outcome, so the options editor can explain a rejected name. */
@@ -413,7 +411,7 @@
       }, scope));
       return status;
     } catch (caught: unknown) {
-      error = t("collections.property.saveFailed", messageOf(caught));
+      error = notesFailure(caught, t("notes.databaseSchemaSaveFailed"));
       return "unchanged";
     }
   }
@@ -445,7 +443,7 @@
   async function deleteProperty(propertyId: string, scope: NotesDatabaseSourceEditingScope): Promise<void> {
     const { drafts } = await loadNotesDataSourceSchemaDrafts(scope);
     const property = drafts.find((candidate) => candidate.id === propertyId);
-    if (!property) throw new Error(t("notes.databaseSchemaSaveFailed", propertyId));
+    if (!property) throw new LocalizedError(t("notes.databaseSchemaSaveFailed"));
     if (!await confirmDelete(property.name)) return;
     await enqueue(async () => adoptResult(await deleteNotesDataSourceSchemaProperty(actionContext(scope), propertyId)));
   }
@@ -479,7 +477,7 @@
   async function addPropertyFromView(type: NotesDataSourcePropertyType, rawName: string, icon: string | null, requestedScope?: NotesDatabaseSourceEditingScope): Promise<void> {
     if (schemaLoadPromise) await schemaLoadPromise;
     const sourceId = requestedScope?.dataSourceId ?? schemaDataSourceId;
-    if (!sourceId) throw new Error(t("notes.databaseSchemaLoadFailed", ""));
+    if (!sourceId) throw new LocalizedError(t("notes.databaseSchemaLoadFailed"));
     const scope = requestedScope ?? { dataSourceId: sourceId, databaseId, viewId: schemaViewId };
     return enqueue(async () => adoptResult(await appendNotesDataSourceSchemaProperty(actionContext(scope), type, rawName, icon)));
   }
@@ -544,10 +542,10 @@
     {/if}
   </div>
   {#if titleError}
-    <Notice class="px-1 text-[0.8rem]" message={titleError} />
+    <Notice class="px-1 text-[0.8rem]" message={titleError.message} copy={titleError.detail} />
   {/if}
   {#if linkedViewError}
-    <Notice class="mt-2 text-[0.8rem]" message={linkedViewError} />
+    <Notice class="mt-2 text-[0.8rem]" message={linkedViewError.message} copy={linkedViewError.detail} />
   {/if}
 
   {#if isLocalDatabase && dataSourceId}
@@ -589,7 +587,7 @@
 
 {#snippet panelMessages()}
   {#if editingLocked}<p class="px-2 py-1 text-panel-detail text-muted-foreground">{t("notes.databaseEditingLockDescription")}</p>{/if}
-  {#if error}<Notice class="px-2 py-1 text-panel-detail" message={error} />{/if}
+  {#if error}<Notice class="px-2 py-1 text-panel-detail" message={error.message} copy={error.detail} />{/if}
 {/snippet}
 
 {#snippet propertyEditor(propertyId: string)}

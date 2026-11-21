@@ -266,7 +266,7 @@ describe("MusicSourcesController", () => {
     await controller.planRelink("root-1", "/music/moved");
     await controller.cancelRelink();
 
-    await expect(controller.applyRelink([])).rejects.toThrow("No relink plan is ready.");
+    await expect(controller.applyRelink([])).rejects.toThrow("Choose the replacement folder again before applying the relink.");
     expect(bindRoot).not.toHaveBeenCalled();
   });
 
@@ -323,8 +323,8 @@ describe("MusicSourcesController", () => {
       folderPath: "content://music",
       tracks: [],
       truncated: false,
-    }, "Music", true)).rejects.toThrow("The Android music refresh could not be saved.");
-    expect(controller.error).toBe("The Android music refresh could not be saved.");
+    }, "Music", true)).rejects.toThrow("Music could not be refreshed, so check that its folder or link is still available.");
+    expect(controller.error).toBe("Music could not be refreshed, so check that its folder or link is still available.");
   });
 
   it("recovers only uninitialized local sources with an available folder grant", async () => {
@@ -496,7 +496,7 @@ describe("MusicSourcesController", () => {
 
     expect(await controller.prepareFirstUseFolder({ folderPath: "content://music", tracks: [], truncated: false }, "Music")).toBeNull();
     expect(controller.preparingDefaultFolder).toBe(false);
-    expect(controller.defaultFolderPreparationError).toBe("The folder grant was revoked.");
+    expect(controller.defaultFolderPreparationError).toBe("Your music folder could not be prepared, so try again or choose another folder.");
   });
 
   it("distinguishes videos from playlists and saves a resolved video", async () => {

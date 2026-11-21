@@ -34,6 +34,7 @@ function message(itemId: string, kind: ChatParticipantKind): ChatMessageRead {
     references: [],
     replyThread: null,
     orderKey: "c001",
+    awaitingDelivery: false,
     editedAt: null,
     createdAt: "2026-08-04T12:00:00.000Z",
   };
@@ -43,7 +44,7 @@ describe("organizational unread messages", () => {
   it("places the divider before unread incoming messages rather than later local messages", () => {
     const messages = [
       message("read", "human"),
-      message("unread-agent", "ai_teammate"),
+      message("unread-agent", "ai_agent"),
       message("local-reply", "local_user"),
     ];
 
@@ -62,6 +63,7 @@ describe("organizational unread messages", () => {
       lastActivityAt: "2026-08-04T12:00:00.000Z",
       participants: [],
       unread: true,
+      unseenFailure: false,
       workState: null,
     };
     root.replyThread = summary;
@@ -76,7 +78,7 @@ describe("organizational unread messages", () => {
 
 describe("shortened projected messages", () => {
   it("reads the truncation marker only from an object payload set to true", () => {
-    const base = message("projected", "ai_teammate");
+    const base = message("projected", "ai_agent");
     const withValue = (value: ChatMessageRead["richContent"]["value"]) => ({
       ...base,
       richContent: { schemaVersion: 1, value },
@@ -92,7 +94,7 @@ describe("shortened projected messages", () => {
 
 describe("local message reactions", () => {
   const localParticipant = { participantId: "participant:local-owner", displayName: "Alice" };
-  const teammate = { participantId: "participant:teammate", displayName: "Atlas" };
+  const agent = { participantId: "participant:agent", displayName: "Atlas" };
 
   it("accepts only Unicode and custom emoji picker values", () => {
     expect(isChatMessageReactionValue("emoji:✅")).toBe(true);
@@ -102,16 +104,16 @@ describe("local message reactions", () => {
   });
 
   it("adds multiple reactions and removes only the local participant when toggled", () => {
-    const existing = [{ value: "emoji:✅", participants: [teammate] }];
+    const existing = [{ value: "emoji:✅", participants: [agent] }];
     const selected = toggleChatMessageReactionParticipant(existing, "emoji:✅", localParticipant);
     const withAnother = toggleChatMessageReactionParticipant(selected, "emoji:🙌", localParticipant);
 
     expect(withAnother).toEqual([
-      { value: "emoji:✅", participants: [teammate, localParticipant] },
+      { value: "emoji:✅", participants: [agent, localParticipant] },
       { value: "emoji:🙌", participants: [localParticipant] },
     ]);
     expect(toggleChatMessageReactionParticipant(withAnother, "emoji:✅", localParticipant)).toEqual([
-      { value: "emoji:✅", participants: [teammate] },
+      { value: "emoji:✅", participants: [agent] },
       { value: "emoji:🙌", participants: [localParticipant] },
     ]);
   });

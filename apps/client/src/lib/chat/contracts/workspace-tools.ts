@@ -1,7 +1,9 @@
 import type {
+  ChatChannelId,
   ChatCheckpointId,
   ChatThreadId,
   ChatTurnId,
+  ChatWorkAssignmentId,
   ProjectWorkingFolderId,
   UtcTimestamp,
 } from "./common";
@@ -20,7 +22,13 @@ export type ReviewDiffSource =
     provider: "github" | "gitlab" | "azure_devops" | "bitbucket";
     repositorySlug: string;
     number: number;
-  };
+  }
+  /** Every run of one work assignment, from its first pre checkpoint to its last settled post checkpoint. */
+  | { kind: "assignment"; assignmentId: ChatWorkAssignmentId };
+
+/** Whether the filter that marks files brought in by Git operations ran for a review snapshot. */
+export const CHAT_REVIEW_AUTHORED_PATHS_STATUSES = ["not_needed", "computed", "unavailable"] as const;
+export type ChatReviewAuthoredPathsStatus = (typeof CHAT_REVIEW_AUTHORED_PATHS_STATUSES)[number];
 
 export interface OpenChatReviewRequest {
   threadId: ChatThreadId | null;
@@ -51,6 +59,11 @@ export interface ChatReviewFileFlags {
   providerReported: boolean;
   gitObserved: boolean;
   readOnly: boolean;
+  /**
+   * The reviewed work changed this file, rather than a pull, merge, or other Git operation during it. True whenever
+   * the filter was not needed or could not run.
+   */
+  authored: boolean;
 }
 
 export type ChatReviewFileAction = "stage" | "unstage" | "discard" | "comment" | "openEditor";
@@ -103,6 +116,7 @@ export interface ChatReviewSnapshotRead {
   totals: ChatReviewTotalsRead;
   preferredPatch: ChatReviewPatchRead | null;
   freshness: "current" | "outdated";
+  authoredPaths: ChatReviewAuthoredPathsStatus;
 }
 
 export interface ReadChatReviewPatchesRequest {
@@ -154,6 +168,19 @@ export interface GitStatusRead {
   ahead: number;
   behind: number;
   files: GitChangedPathRead[];
+}
+
+/** Bounded changes an agent drafts commit or change request text from; every cut is reported. */
+export interface ChatCommitDraftContextRead {
+  /** Changed repository-relative paths, staged for a commit or in the branch range for a change request. */
+  stagedPaths: string[];
+  patch: string;
+  /** Whether the patch was cut at its byte limit or left out because Git output passed its bound. */
+  patchTruncated: boolean;
+  /** Changed paths left out of `stagedPaths`. */
+  omittedFiles: number;
+  /** Commit subjects, newest first. */
+  recentSubjects: string[];
 }
 
 export interface GitRemoteRead {
@@ -370,6 +397,9 @@ export interface ChatChangedFileRead {
   gitObserved: boolean;
 }
 
+/** Consequence of a checkpoint restore that the confirmation dialog explains. */
+export type ChatRestoreWarningCode = "staging_restored" | "provider_fork_required";
+
 export interface ChatRestorePreviewRead {
   previewId: string;
   checkpointId: ChatCheckpointId;
@@ -377,7 +407,7 @@ export interface ChatRestorePreviewRead {
   files: ChatChangedFileRead[];
   stagedChanges: boolean;
   providerRollback: "supported" | "unsupported";
-  warnings: string[];
+  warnings: ChatRestoreWarningCode[];
 }
 
 export interface ChatRestoreResultRead {
@@ -390,7 +420,7 @@ export interface ChatRestoreResultRead {
 
 export interface ChatTerminalRead {
   id: string;
-  threadId: ChatThreadId;
+  channelId: ChatChannelId;
   workingFolderId: ProjectWorkingFolderId;
   name: string;
   shell: string;
@@ -411,7 +441,8 @@ export interface ChatTerminalPanelLayout {
 }
 
 export interface ChatTerminalLayoutRead {
-  threadId: ChatThreadId;
+  channelId: ChatChannelId;
+  workingFolderId: ProjectWorkingFolderId;
   schemaVersion: number;
   groups: ChatTerminalPanelLayout[];
   updatedAt: UtcTimestamp | null;

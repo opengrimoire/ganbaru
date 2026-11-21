@@ -67,3 +67,37 @@ fn native_displayed_controls_reject_changed_run_segment_phase_mode_and_idle_epis
     changed.idle_detected_at_ms = Some(2000);
     assert!(!context.matches_phase(3, &changed));
 }
+
+#[test]
+fn quiet_focus_activity_counts_only_a_focus_phase_in_progress() {
+    let mut running = snapshot();
+    running.phase_deadline_ms = Some(100_000);
+    assert_eq!(
+        focus_phase_activity_of(Some(&running)),
+        Some(FocusPhaseActivity {
+            deadline_ms: Some(100_000)
+        })
+    );
+
+    let mut paused = running.clone();
+    paused.mode = FocusMode::ManualPause;
+    assert_eq!(
+        focus_phase_activity_of(Some(&paused)),
+        Some(FocusPhaseActivity { deadline_ms: None })
+    );
+
+    let mut on_break = running.clone();
+    if let Some(segment) = on_break.segment.as_mut() {
+        segment.phase = FocusPhase::ShortBreak;
+    }
+    assert_eq!(focus_phase_activity_of(Some(&on_break)), None);
+
+    let mut stopped = running.clone();
+    stopped.mode = FocusMode::Stopped;
+    assert_eq!(focus_phase_activity_of(Some(&stopped)), None);
+
+    let mut without_segment = running;
+    without_segment.segment = None;
+    assert_eq!(focus_phase_activity_of(Some(&without_segment)), None);
+    assert_eq!(focus_phase_activity_of(None), None);
+}

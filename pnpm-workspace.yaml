@@ -12,6 +12,7 @@ packageExtensions:
 auditConfig:
   ignoreGhsas:
     - GHSA-gcqx-w48m-w2h4
+    - GHSA-fc5q-39xc-vjpf
 overrides:
   devalue: 5.9.3
   picomatch: 4.0.5

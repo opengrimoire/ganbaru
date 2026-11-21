@@ -5,6 +5,7 @@
   import type { EventColor } from "$lib/calendar/types";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { activateModalFocus } from "$lib/modal-focus";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
   import { QUICK_NOTE_TAG_NAME_MAX_CHARS, type QuickNoteTag } from "$lib/quick-notes/types";
@@ -151,7 +152,7 @@
       renamingId = null;
       void tick().then(() => rowButton(tag.id)?.focus());
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = userErrorMessage(cause, t("quickNotes.tag.updateFailed"));
     } finally {
       busy = false;
     }

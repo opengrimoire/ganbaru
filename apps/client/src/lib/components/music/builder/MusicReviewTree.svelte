@@ -201,7 +201,7 @@
 
 <section class="review-tree flex min-h-0 flex-1 flex-col" aria-label={t("music.builder.reviewFolders")}>
   <div class="shrink-0 p-2">
-    <div class="field flex h-8 items-center gap-2 px-2.5">
+    <div class="field flex items-center gap-2 px-2.5">
       <Search size={13} class="shrink-0 text-muted-foreground" />
       <input bind:value={search} onkeydown={handleSearchKeydown} type="text" inputmode="search" enterkeyhint="search" autocomplete="off" aria-label={t("music.builder.searchReviewTree")} placeholder={t("music.builder.searchReviewTree")} class="field-bare text-[0.7rem]" />
       {#if searching}

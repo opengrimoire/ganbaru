@@ -1,10 +1,10 @@
 <script lang="ts">
   import { tick, untrack, type Snippet } from "svelte";
+  import Plus from "@lucide/svelte/icons/plus";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Eye from "@lucide/svelte/icons/eye";
   import EyeOff from "@lucide/svelte/icons/eye-off";
-  import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
   import Trash2 from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
@@ -12,6 +12,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { isNewItemShortcut } from "$lib/keyboard-shortcuts";
   import ProjectLifecycleIcon from "$lib/components/projects/ProjectLifecycleIcon.svelte";
   import { verticalBorderWidth } from "$lib/utils/anchored-panel";
   import {
@@ -49,6 +50,8 @@
   } from "$lib/projects/types";
   import {
     buildProjectLists,
+    normalizeProjectSearch,
+    projectMatchesSearch,
     projectListGroupId,
     projectListKey,
     UNGROUPED_PROJECT_LIST_KEY,
@@ -220,7 +223,7 @@
     if (selectedProject) return projectListKey(selectedProject.groupId);
     return selectedGroupId ? projectListKey(selectedGroupId) : null;
   });
-  const normalizedSearch = $derived(projectSearch.trim().toLowerCase());
+  const normalizedSearch = $derived(normalizeProjectSearch(projectSearch));
   const searchActive = $derived(normalizedSearch.length > 0);
   const groups = $derived.by(() => projects.visibleGroups());
   const visibleGroups = $derived.by(() => groups.filter(groupVisible));
@@ -233,6 +236,11 @@
     ? searchResultCount
     : searchResultLists.reduce((count, list) => count + list.projects.length, 0));
   const activeGroup = $derived.by(() => groups.find((group) => group.id === activeGroupId));
+  /** The groups footer's create buttons, styled like the Notes picker's New folder and New note. */
+  const footerCreateButtonClass = $derived(cn(
+    "flex min-w-0 flex-1 items-center justify-center gap-1.5 px-1 text-popover-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
+    mobileLayout ? "min-h-12 rounded-xl text-sm active:bg-accent" : "min-h-8 rounded-floating-item",
+  ));
   const directProjectList = $derived.by((): PickerProjectList | undefined => {
     if (selectedListKey === null) return undefined;
     const groupId = projectListGroupId(selectedListKey);
@@ -323,9 +331,7 @@
       ? projects.projectsForGroupIncludingInactive(groupId)
       : projects.projectsForGroup(groupId);
     if (!normalizedSearch) return groupProjects;
-    return groupProjects.filter((project) =>
-      project.name.toLowerCase().includes(normalizedSearch)
-    );
+    return groupProjects.filter((project) => projectMatchesSearch(project, normalizedSearch));
   }
 
   function projectsOfList(list: PickerProjectList): Project[] {
@@ -737,6 +743,19 @@
     createProjectListKey = listKey;
   }
 
+  /**
+   * Runs the new item shortcut on the groups level: it clears a search, which hides the footer, and opens the creator
+   * for a project outside every group. The key stays inside the picker so no view's own new item shortcut also runs.
+   */
+  function handlePanelKeydown(event: KeyboardEvent): void {
+    if (mode !== "groups" || (mobileLayout && activeGroup) || !isNewItemShortcut(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (createProjectListKey === UNGROUPED_PROJECT_LIST_KEY) return;
+    projectSearch = "";
+    openProjectCreator(UNGROUPED_PROJECT_LIST_KEY);
+  }
+
   function openGroupCreator(): void {
     if (createProjectListKey === UNGROUPED_PROJECT_LIST_KEY) createProjectListKey = null;
     createGroupOpen = true;
@@ -938,9 +957,12 @@
   }}
 />
 
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   bind:this={panelRootElement}
   data-floating-root
+  data-app-shortcuts="ignore"
+  onkeydown={handlePanelKeydown}
   class={cn(
     "project-picker-panel surface-floating flex min-h-0 w-full flex-col overflow-hidden",
     mobileLayout && "h-full rounded-2xl",
@@ -1074,7 +1096,7 @@
         {#if projects.loading && !projects.loaded}
           <Loading layout="rows" rows={3} label={t("projects.loading")} />
         {:else if projects.loadError}
-          <Notice class="px-3 py-2" message={t("projects.loadFailed", projects.loadError)} onRetry={() => projects.load()} />
+          <Notice class="px-3 py-2" message={t("projects.loadFailed")} copy={projects.loadError ?? false} onRetry={() => projects.load()} />
         {:else if searchActive && searchResults}
           {@render searchResults()}
         {:else if searchActive && searchResultLists.length === 0}
@@ -1275,30 +1297,26 @@
         {:else if createProjectListKey === UNGROUPED_PROJECT_LIST_KEY}
           {@render projectCreator(UNGROUPED_PROJECT_LIST_KEY, closeGroupsFooterCreator)}
         {:else}
-          <div class={mobileLayout ? "grid gap-1" : "grid grid-cols-2 gap-1"}>
+          <div class={cn("flex items-center", mobileLayout ? "min-h-12" : "min-h-8")}>
             <button
               type="button"
               data-mobile-create-project-group={mobileLayout ? "true" : undefined}
-              class={cn(
-                "menu-item min-w-0 justify-center",
-                mobileLayout && "min-h-12 rounded-xl text-sm",
-              )}
+              class={footerCreateButtonClass}
               onclick={openGroupCreator}
             >
-              <Plus size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0" />
-              <span class="truncate">{t("calendar.eventPanel.createGroup")}</span>
+              <Plus size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+              <span class="truncate">{t("calendar.eventPanel.newGroup")}</span>
             </button>
+            <div class="mx-1 h-5 border-l border-border/70" aria-hidden="true"></div>
             <button
               type="button"
               data-mobile-create-project={mobileLayout ? "true" : undefined}
-              class={cn(
-                "menu-item min-w-0 justify-center",
-                mobileLayout && "min-h-12 rounded-xl text-sm",
-              )}
+              class={footerCreateButtonClass}
+              aria-keyshortcuts="Control+N Meta+N"
               onclick={() => openProjectCreator(UNGROUPED_PROJECT_LIST_KEY)}
             >
-              <Plus size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0" />
-              <span class="truncate">{t("calendar.eventPanel.createProject")}</span>
+              <Plus size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+              <span class="truncate">{t("calendar.eventPanel.newProject")}</span>
             </button>
           </div>
         {/if}
@@ -1315,8 +1333,8 @@
             )}
             onclick={() => openProjectCreator(mainProjectList.key)}
           >
-            <Plus size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} />
-            <span>{t("calendar.eventPanel.createProject")}</span>
+            <Plus size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+            <span class="truncate">{t("calendar.eventPanel.newProject")}</span>
           </button>
         {/if}
       {/if}
@@ -1420,8 +1438,8 @@
             void tick().then(updateProjectSubpanelGeometry);
           }}
         >
-          <Plus size={13} strokeWidth={iconStrokeWidth} />
-          <span>{t("calendar.eventPanel.createProject")}</span>
+          <Plus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+          <span class="truncate">{t("calendar.eventPanel.newProject")}</span>
         </button>
       {/if}
     </div>

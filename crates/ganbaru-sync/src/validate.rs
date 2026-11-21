@@ -163,6 +163,11 @@ pub(crate) fn change(engine: &Engine, change: &Change) -> Result<(), Invalid> {
                     return Err("tombstone cause");
                 }
             }
+            if let Some(adapter) = engine.adapter(table) {
+                adapter
+                    .validate_tombstone(table.id, change.row.as_str(), change.cause.as_ref())
+                    .map_err(|error| error.0)?;
+            }
         }
     }
     for value in &change.groups {

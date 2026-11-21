@@ -2,7 +2,7 @@
 
 This file records reviewed Rust and npm advisory exceptions and allowed warnings. Lockfiles and current command output are authoritative; an old date or prior clean result is not evidence for the current lockfile.
 
-As of 2026-11-10, `pnpm -w run audit:deps` reports no known npm vulnerabilities beyond the one reviewed ignore below, and `pnpm -w run audit:rust` exits successfully with the one reviewed ignore and the five allowed warnings listed below.
+As of 2026-11-18, `pnpm -w run audit:deps` reports no known npm vulnerabilities beyond the two reviewed ignores below, and `pnpm -w run audit:rust` exits successfully with the one reviewed ignore and the six allowed warnings listed below.
 
 A successful Rust audit exit does not mean warning-free. The cargo-audit output policy allows warnings, so maintainers must review new unsound, unmaintained, and yanked findings separately.
 
@@ -31,7 +31,15 @@ These advisories are ignored through `auditConfig.ignoreGhsas` in `pnpm-workspac
 
 deepmerge 4.3.1 lets a merged source object poison the prototype of the returned object, and no fixed release exists. It is reached only as a development dependency through `@sveltejs/vite-plugin-svelte`, which uses it once to merge plugin options from the repository's own Svelte and Vite configuration at build time; no user, vault, or network data reaches it, and it is not shipped in the app. Remove the ignore when a fixed deepmerge ships or the plugin drops it.
 
+### GHSA-fc5q-39xc-vjpf, picomatch extglob ReDoS
+
+picomatch 4.0.7 and earlier backtrack exponentially on single-branch repeated extglobs such as `+(*)`, so a crafted glob pattern can block the event loop, and no fixed release exists. It is reached only as a development dependency through Vite, Vitest, Tailwind, and their file globbing and watching (`pnpm why picomatch --prod` finds no path). Those tools match only the repository's own configuration globs at build and test time; no user, vault, or network data supplies a pattern, and it is not shipped in the app. Remove the ignore when a fixed picomatch ships.
+
 ## Allowed upstream warnings
+
+### chrono
+
+RUSTSEC-2026-0543 reports chrono as unmaintained, with jiff and time as suggested successors; it is not a vulnerability. Ganbaru uses chrono for timestamp parsing and formatting across most crates, and rmcp and schemars also depend on it, so replacing it in first-party code alone would not remove it. Revisit when those dependencies offer a chrono-free build or a chrono vulnerability is reported, and migrate first-party code to jiff then.
 
 ### GTK3 and GLib
 

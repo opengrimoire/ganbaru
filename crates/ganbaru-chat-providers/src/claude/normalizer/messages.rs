@@ -2,12 +2,15 @@
 
 use super::{
     ClaudeEventNormalizer, ClaudeItemEvent, ClaudeRouteState, MAX_TEXT_BYTES, bounded_shape,
-    bounded_text, normalize_usage, text,
+    bounded_text, text,
 };
 use crate::claude::protocol::{protocol_error, resume_cursor};
 use crate::events::*;
 use crate::models::*;
 use serde_json::{Map, Value, json};
+
+/// Byte limit of a result subtype quoted in a generic abort reason.
+const MAX_SUBTYPE_BYTES: usize = 64;
 
 impl ClaudeEventNormalizer {
     pub(super) fn system_message(
@@ -23,6 +26,9 @@ impl ClaudeEventNormalizer {
                 state.resume_cursor.session_uuid = session_id.to_string();
             }
         }
+        if state.background_tasks.observe(subtype, object) {
+            return Ok(Vec::new());
+        }
         match subtype {
             "init" => {
                 let provider_thread = state
@@ -31,6 +37,7 @@ impl ClaudeEventNormalizer {
                     .unwrap_or_else(|| state.resume_cursor.session_uuid.clone());
                 let provider_id = ProviderThreadId::new(provider_thread.clone())
                     .map_err(|_| protocol_error("session UUID"))?;
+                state.usage.session_model(text(object, "model"));
                 state.session_state = ProviderSessionState::Ready;
                 let mut events = vec![
                     self.event(
@@ -145,23 +152,10 @@ impl ClaudeEventNormalizer {
                 event.turn_id = None;
                 Ok(vec![event])
             }
-            "status" => Ok(vec![
-                self.event(
-                    state,
-                    "system/status",
-                    None,
-                    None,
-                    None,
-                    CanonicalEvent::RuntimeWarning(NotificationEvent {
-                        code: "claude_status".to_string(),
-                        title: text(object, "status")
-                            .unwrap_or("Claude status changed")
-                            .to_string(),
-                        detail: text(object, "message")
-                            .map(|value| bounded_text(value, MAX_TEXT_BYTES)),
-                    }),
-                )?,
-            ]),
+            // Status frames are transient progress cues such as `requesting` or `compacting`.
+            // The turn lifecycle and `compact_boundary` already record what they announce, so
+            // surfacing them as notices would show internal states as timeline activity.
+            "status" => Ok(Vec::new()),
             "permission_denied" => {
                 Ok(vec![
                     self.event(
@@ -207,6 +201,7 @@ impl ClaudeEventNormalizer {
                     )?,
                 ])
             }
+            "api_retry" => self.api_retry(state, object),
             _ => Ok(vec![self.event(
                 state,
                 subtype,
@@ -228,7 +223,8 @@ impl ClaudeEventNormalizer {
         object: &Map<String, Value>,
         _raw: &Value,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
-        let usage = normalize_usage(object);
+        let route_model = state.model_id.as_ref().map(ModelId::as_str);
+        let usage = state.usage.finish_turn(object, route_model);
         let subtype = text(object, "subtype").unwrap_or("unknown");
         let error_text = object
             .get("errors")
@@ -244,6 +240,9 @@ impl ClaudeEventNormalizer {
                 .is_some_and(|message| message.to_ascii_lowercase().contains("interrupt"));
         let is_success =
             subtype == "success" && object.get("is_error").and_then(Value::as_bool) != Some(true);
+        let mut events = self.close_open_blocks(state)?;
+        state.turn_text.clear();
+        state.plans.end_turn();
         state.resume_cursor.turn_count = state.resume_cursor.turn_count.saturating_add(1);
         state.session_state = ProviderSessionState::Ready;
         let turn_id = state.active_chat_turn_id.take();
@@ -261,27 +260,23 @@ impl ClaudeEventNormalizer {
                 } else {
                     ChatTurnState::Failed
                 },
-                reason: error_text.unwrap_or_else(|| {
-                    if interrupted {
-                        "Claude turn was interrupted".to_string()
-                    } else {
-                        "Claude turn failed".to_string()
-                    }
-                }),
+                reason: failure_reason(object, error_text, interrupted, subtype),
                 recoverable: true,
             })
         };
-        let mut events = vec![self.event(state, "result", turn_id, None, None, event)?];
+        // The usage report precedes the event that ends the turn, so a failed or interrupted
+        // turn still counts what it spent before its run settles.
         if let Some(usage) = usage {
             events.push(self.event(
                 state,
                 "result/usage",
-                None,
+                turn_id.clone(),
                 None,
                 None,
                 CanonicalEvent::ThreadUsageUpdated(usage),
             )?);
         }
+        events.push(self.event(state, "result", turn_id, None, None, event)?);
         events.push(
             self.event(
                 state,
@@ -301,5 +296,55 @@ impl ClaudeEventNormalizer {
             )?,
         );
         Ok(events)
+    }
+
+    /// Completes the text and reasoning items a turn left open, so none outlives its turn.
+    fn close_open_blocks(
+        &self,
+        state: &mut ClaudeRouteState,
+    ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
+        let open = state.stream.finish_turn();
+        let mut events = Vec::new();
+        for block in open.into_iter().filter(|block| block.complete_on_stop) {
+            events.push(self.item_event(
+                state,
+                ClaudeItemEvent {
+                    source: "result/open_block",
+                    item_id: block.item_id,
+                    kind: block.item_kind,
+                    status: ActivityStatus::Completed,
+                    title: None,
+                    safe_metadata: None,
+                },
+            )?);
+        }
+        Ok(events)
+    }
+}
+
+/// Abort reason of a failed result: the first reported error, else the result text, else a
+/// generic reason naming the subtype.
+///
+/// The interrupt state comes from the subtype, stop reason, and errors only, never from the result
+/// text, which can quote anything the model wrote.
+fn failure_reason(
+    object: &Map<String, Value>,
+    error_text: Option<String>,
+    interrupted: bool,
+    subtype: &str,
+) -> String {
+    if let Some(error_text) = error_text.filter(|value| !value.trim().is_empty()) {
+        return error_text;
+    }
+    if let Some(result) = text(object, "result").filter(|value| !value.trim().is_empty()) {
+        return bounded_text(result, MAX_TEXT_BYTES);
+    }
+    if interrupted {
+        "Claude turn was interrupted".to_string()
+    } else {
+        format!(
+            "Claude turn failed: {}",
+            bounded_text(subtype, MAX_SUBTYPE_BYTES)
+        )
     }
 }

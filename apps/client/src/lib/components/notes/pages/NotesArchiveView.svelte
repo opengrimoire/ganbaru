@@ -83,7 +83,7 @@
       <Loading layout="rows" rows={3} label={t("notes.loadingArchive")} class="py-2 text-[0.866667rem]" />
     {:else if notes.archiveError}
       <div class="h-full min-h-32 text-[0.866667rem]">
-        <Notice layout="fill" message={t("notes.loadArchiveFailed", notes.archiveError)} copy={notes.archiveError} onRetry={() => notes.reloadArchivedPages(search)} />
+        <Notice layout="fill" message={t("notes.loadArchiveFailed")} copy={notes.archiveError} onRetry={() => notes.reloadArchivedPages(search)} />
       </div>
     {:else if filteredPages.length === 0}
       <div class="py-2 text-[0.866667rem] text-muted-foreground">

@@ -15,7 +15,7 @@ impl CodexProviderDriver {
         self.spawn_connection(
             working_directory,
             project_configuration,
-            false,
+            None,
             &[],
             inject_internal_mcp,
         )
@@ -25,7 +25,7 @@ impl CodexProviderDriver {
         &self,
         working_directory: &Path,
         project_configuration: ProjectConfigurationAccess,
-        organizational: bool,
+        organizational: Option<CodexOrganizationalAccess>,
         disabled_mcp_servers: &[String],
         inject_internal_mcp: bool,
     ) -> ChatResult<(CodexRpcConnection, CodexHomeLayout)> {
@@ -48,8 +48,8 @@ impl CodexProviderDriver {
             working_directory,
             project_configuration,
         )?;
-        if organizational {
-            append_organizational_base_arguments(&mut arguments);
+        if let Some(access) = organizational {
+            append_organizational_base_arguments(&mut arguments, access);
         }
         if inject_internal_mcp {
             let server = self.configuration.internal_mcp.as_ref().ok_or_else(|| {
@@ -58,13 +58,13 @@ impl CodexProviderDriver {
                     "Organizational Codex runs require the internal MCP endpoint",
                 )
             })?;
-            if organizational != server.organizational_authority {
+            if organizational.is_some() != server.organizational_authority {
                 return Err(ChatError::validation(
                     "internalMcp",
                     "Codex organizational authority mode is inconsistent",
                 ));
             }
-            if organizational {
+            if organizational.is_some() {
                 append_disabled_mcp_arguments(&mut arguments, disabled_mcp_servers, &server.name)?;
                 append_internal_mcp_arguments(&mut arguments, &server.name, &server.url)?;
             } else {
@@ -97,6 +97,8 @@ impl CodexProviderDriver {
             working_directory: working_directory.to_path_buf(),
             environment,
             stderr_limit_bytes: CODEX_STDERR_LIMIT_BYTES,
+            purpose: crate::process::ProviderProcessPurpose::Session,
+            provider_instance_label: Some(self.configuration.label.clone()),
         })?;
         Ok((CodexRpcConnection::from_process(process)?, layout))
     }
@@ -105,6 +107,7 @@ impl CodexProviderDriver {
         &self,
         working_directory: &Path,
         project_configuration: ProjectConfigurationAccess,
+        access: CodexOrganizationalAccess,
         context: &DriverOperationContext,
     ) -> ChatResult<(CodexRpcConnection, CodexHomeLayout)> {
         let server = self.configuration.internal_mcp.as_ref().ok_or_else(|| {
@@ -120,12 +123,17 @@ impl CodexProviderDriver {
             ));
         }
         let disabled_mcp_servers = self
-            .organizational_mcp_server_names(working_directory, project_configuration, context)
+            .organizational_mcp_server_names(
+                working_directory,
+                project_configuration,
+                access,
+                context,
+            )
             .await?;
         self.spawn_connection(
             working_directory,
             project_configuration,
-            true,
+            Some(access),
             &disabled_mcp_servers,
             true,
         )
@@ -135,10 +143,16 @@ impl CodexProviderDriver {
         &self,
         working_directory: &Path,
         project_configuration: ProjectConfigurationAccess,
+        access: CodexOrganizationalAccess,
         context: &DriverOperationContext,
     ) -> ChatResult<Vec<String>> {
-        let (mut inspection, layout) =
-            self.spawn_connection(working_directory, project_configuration, true, &[], false)?;
+        let (mut inspection, layout) = self.spawn_connection(
+            working_directory,
+            project_configuration,
+            Some(access),
+            &[],
+            false,
+        )?;
         let inspection_client = inspection.client();
         let inspection_result = async {
             let initialize = inspection_client
@@ -149,6 +163,7 @@ impl CodexProviderDriver {
                 decode_response(initialize, "organizational initialize response")
                     .map_err(|error| error.to_chat_error("organizational initialize"))?;
             verify_reported_home(&layout, &initialize.codex_home)?;
+            ensure_supported_user_agent(&initialize.user_agent)?;
             inspection_client
                 .notify("initialized", json!({}))
                 .await
@@ -203,18 +218,21 @@ impl CodexProviderDriver {
         }
         let workspace = canonical_verified_workspace(input.workspace())?;
         let project_configuration = input.workspace().project_configuration;
-        let organizational = self
-            .configuration
-            .internal_mcp
-            .as_ref()
-            .is_some_and(|server| server.organizational_authority);
-        let (mut connection, layout) = if organizational {
-            self.open_organizational_connection(&workspace, project_configuration, context)
+        let organizational =
+            CodexOrganizationalAccess::for_launch(self.configuration.internal_mcp.as_ref())?;
+        if organizational_scope_needs_sandbox(self.configuration.internal_mcp.as_ref())
+            && !self.command_sandbox_starts().await
+        {
+            return Err(sandbox_unavailable_error());
+        }
+        let (mut connection, layout) = if let Some(access) = organizational {
+            self.open_organizational_connection(&workspace, project_configuration, access, context)
                 .await?
         } else {
             self.open_connection(&workspace, project_configuration)?
         };
-        let continuation_group_id = layout.continuation_group_with_authority(organizational)?;
+        let continuation_group_id =
+            layout.continuation_group_with_authority(organizational.is_some())?;
         input.verify_continuation(&continuation_group_id)?;
         let client = connection.client();
         let initialize = client
@@ -224,11 +242,12 @@ impl CodexProviderDriver {
         let initialize: InitializeResponse = decode_response(initialize, "initialize response")
             .map_err(|error| error.to_chat_error("initialize"))?;
         verify_reported_home(&layout, &initialize.codex_home)?;
+        ensure_supported_user_agent(&initialize.user_agent)?;
         client
             .notify("initialized", json!({}))
             .await
             .map_err(|error| error.to_chat_error("initialized notification"))?;
-        if organizational {
+        if let Some(access) = organizational {
             let config = client
                 .request(
                     "config/read",
@@ -247,7 +266,7 @@ impl CodexProviderDriver {
                 .internal_mcp
                 .as_ref()
                 .map(|server| (server.name.as_str(), server.url.as_str()));
-            verify_organizational_effective_config(config, internal_mcp)?;
+            verify_organizational_effective_config(config, internal_mcp, access)?;
             let profiles = client
                 .request(
                     "permissionProfile/list",
@@ -263,7 +282,7 @@ impl CodexProviderDriver {
             let profiles: PermissionProfileListResponse =
                 decode_response(profiles, "permission profile list response")
                     .map_err(|error| error.to_chat_error("organizational permission profiles"))?;
-            verify_permission_profile_list(&profiles)?;
+            verify_permission_profile_list(&profiles, access)?;
         }
 
         let session_id = new_session_id(&self.configuration.instance_id)?;
@@ -292,10 +311,12 @@ impl CodexProviderDriver {
             provider_thread_sender,
             expected_shutdown: Arc::clone(&expected_shutdown),
             terminal_error: Arc::clone(&terminal_error),
-            organizational,
+            organizational: organizational.is_some(),
+            memory_limit: connection.memory_limit_watch(),
         });
 
         let developer_instructions = input.developer_instructions();
+        let open_instructions = developer_instructions.map(str::to_owned);
         let start_params = thread_open_params(
             None,
             &workspace,
@@ -356,8 +377,13 @@ impl CodexProviderDriver {
         };
         let response: ThreadOpenResponse = decode_response(response, "thread open response")
             .map_err(|error| error.to_chat_error("thread open"))?;
-        if organizational {
-            verify_organizational_thread_open(input.modes().safety_mode, &workspace, &response)?;
+        if let Some(access) = organizational {
+            verify_organizational_thread_open(
+                input.modes().safety_mode,
+                &workspace,
+                &response,
+                access,
+            )?;
         } else {
             verify_effective_safety(input.modes().safety_mode, &response)?;
         }
@@ -378,7 +404,7 @@ impl CodexProviderDriver {
             )
             .await?;
         }
-        if organizational {
+        if organizational.is_some() {
             let internal_name = self
                 .configuration
                 .internal_mcp
@@ -457,13 +483,16 @@ impl CodexProviderDriver {
             session_id: session_id.clone(),
             workspace,
             effective_model: effective_model.as_str().to_string(),
-            refresh_mcp_before_turn: self.settings.refresh_mcp_before_turn
-                || self.configuration.internal_mcp.is_some()
-                || self
-                    .configuration
-                    .launch_arguments
-                    .iter()
-                    .any(|argument| argument.contains("mcp_servers.")),
+            mcp_reload: CodexMcpReloadState::at_open(
+                self.configuration.internal_mcp.as_ref(),
+                self.settings.refresh_mcp_before_turn
+                    || self
+                        .configuration
+                        .launch_arguments
+                        .iter()
+                        .any(|argument| argument.contains("mcp_servers.")),
+            ),
+            open_instructions,
             organizational,
             internal_mcp_name: self
                 .configuration
@@ -526,7 +555,10 @@ impl SessionOpenInput {
     }
 
     fn developer_instructions(&self) -> Option<&str> {
-        None
+        match self {
+            Self::Fresh(request) => request.developer_instructions.as_deref(),
+            Self::Resume(request) => request.developer_instructions.as_deref(),
+        }
     }
 
     fn resume_provider_thread_id(&self) -> Option<&str> {

@@ -2,10 +2,13 @@
 
 use super::checkpoints::ensure_pre_turn_checkpoint;
 use super::persistence::{
-    PersistUserTurnContext, TurnPersistenceTarget, mark_turn_dispatch_failed, persist_user_turn,
+    AttachmentFolderScope, PersistUserTurnContext, TurnPersistenceTarget,
+    mark_turn_dispatch_failed, persist_fresh_session_handoff, persist_user_turn,
     read_attachment_references, read_thread_runtime_data, replay_send_receipt,
 };
-use super::session::{EnsureSessionContext, ensure_session_with_executable_recovery};
+use super::session::{
+    EnsureSessionContext, InternalMcpLaunch, ensure_session_with_executable_recovery,
+};
 use super::support::{
     PROVIDER_START_TIMEOUT, TURN_OPERATION_TIMEOUT, chat_pool, device_state_error, now_timestamp,
     operation_context, versioned_value,
@@ -15,10 +18,13 @@ use super::validation::{
     validate_provider_selection, validate_send_mentions,
 };
 use crate::chat::device_state::{full_access_is_trusted, read_active_device_scope};
+use crate::chat::internal_mcp::EndpointIssue;
 use crate::chat::send_commands::{SendChatTurnCommand, SendChatTurnResult};
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use crate::vault;
-use ganbaru_chat::agent_runs::{AgentRunBinding, TurnOrigin};
+use ganbaru_chat::agent_runs::{
+    AgentRunBinding, AttemptReason, RunLaunch, TurnOrigin, opened_fresh_native_session,
+};
 use ganbaru_chat::repository::receipts::{
     CommandReceiptState, complete_command_receipt, read_command_receipt,
 };
@@ -29,6 +35,64 @@ use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeMap;
 use tauri::Manager;
+
+/// Projections a persisted or failed user turn changes without an event.
+const SENT_TURN_KEYS: &[ChatProjectionKey] = &[
+    ChatProjectionKey::Thread,
+    ChatProjectionKey::Turns,
+    ChatProjectionKey::Messages,
+];
+
+/// Projections a continuation that handed off to a fresh native session changes.
+const HANDED_OFF_TURN_KEYS: &[ChatProjectionKey] = &[
+    ChatProjectionKey::Thread,
+    ChatProjectionKey::Messages,
+    ChatProjectionKey::PendingRequests,
+];
+
+/// Detects that the provider opened a fresh native session for a continuation instead of the
+/// stored one, which some providers do without reporting the loss, and records the run as a
+/// handoff that sends its full package. Returns the prompt and launch the turn then uses.
+///
+/// A continuation without a full package fails as a lost session, so its dispatch hands off.
+pub(super) async fn hand_off_on_fresh_session(
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+    request: &SendChatTurnCommand,
+    origin: &TurnOrigin,
+    existing: Option<&super::persistence::ThreadRuntimeData>,
+    session: &ProviderSessionSnapshot,
+) -> ChatResult<Option<(String, RunLaunch)>> {
+    let Some((binding, launch)) = origin.assignment_run() else {
+        return Ok(None);
+    };
+    if launch.attempt.reason != AttemptReason::Continuation
+        || !opened_fresh_native_session(
+            existing.and_then(|value| value.provider_thread_id.as_ref()),
+            session.provider_thread_id.as_ref(),
+        )
+    {
+        return Ok(None);
+    }
+    let (prompt, handed_off) = launch.handed_off_to_fresh_session().ok_or_else(|| {
+        ChatError::new(
+            ChatErrorCode::ResumeNotFound,
+            "The provider opened a new session in place of the one this run continues",
+            true,
+        )
+    })?;
+    persist_fresh_session_handoff(
+        pool,
+        thread_id,
+        request,
+        binding,
+        &handed_off,
+        &prompt,
+        &now_timestamp()?,
+    )
+    .await?;
+    Ok(Some((prompt, handed_off)))
+}
 
 pub(crate) async fn send_turn(
     app: tauri::AppHandle,
@@ -79,15 +143,18 @@ pub(crate) async fn send_turn(
     .await?;
     require_project_accepts_ai_work(&pool, &target.project_id).await?;
     let authority_support = inspection_driver.authority_support();
-    if let Some(binding) = origin.run() {
-        validate_organizational_authority(
-            &pool,
-            binding,
-            authority_support,
-            request.modes.safety_mode,
-        )
-        .await?;
-    }
+    let organizational_scope = match origin.run() {
+        Some(binding) => Some(
+            validate_organizational_authority(
+                &pool,
+                binding,
+                authority_support,
+                request.modes.safety_mode,
+            )
+            .await?,
+        ),
+        None => None,
+    };
     if let Some(existing) = &existing {
         if existing.working_folder_id != request.working_folder_id
             || existing.scratch_generation_id != request.scratch_generation_id
@@ -106,6 +173,7 @@ pub(crate) async fn send_turn(
             ));
         }
     }
+    crate::chat::configuration::refresh_runtime_behavior(&app).await;
     let owner = app
         .state::<ChatRuntimeRegistry>()
         .owner(thread_id.clone())?;
@@ -128,11 +196,20 @@ pub(crate) async fn send_turn(
                 )
                 .await;
             snapshot = owner.snapshot()?;
+            // Each organizational run launches a new process with its own target scope, so a
+            // process that survives the stop must never be reused for this run.
+            if snapshot.session_state == ProviderSessionState::Ready {
+                return Err(ChatError::new(
+                    ChatErrorCode::Busy,
+                    "The previous organizational session could not be stopped",
+                    true,
+                ));
+            }
         }
     }
     let fresh_native_session = !matches!(snapshot.session_state, ProviderSessionState::Ready)
         || snapshot.session_id.is_none();
-    if authority_support.internal_host_tools {
+    let internal_mcp = if authority_support.internal_host_tools {
         if fresh_native_session {
             mcp_registry.stop_thread_endpoint(&thread_id).await;
         }
@@ -151,15 +228,23 @@ pub(crate) async fn send_turn(
                 origin.run().is_some(),
             )
             .await?;
-        configuration.internal_mcp = Some(ProviderInternalMcpConfig {
-            name: "ganbaru-chat".to_string(),
-            url: resource_endpoint.url,
-            bearer_token: resource_endpoint.bearer_token,
-            organizational_authority: origin.run().is_some(),
-        });
+        let launch = InternalMcpLaunch {
+            organizational_scope,
+        };
+        configuration.internal_mcp = match resource_endpoint {
+            EndpointIssue::Created(endpoint) => Some(launch.config(endpoint)),
+            // Another send created the endpoint first. A fresh session starts a process, so it
+            // takes a rotated token now; a reused one keeps the token its process holds.
+            EndpointIssue::Running if fresh_native_session => {
+                Some(launch.rotated_config(&app, &thread_id).await?)
+            }
+            EndpointIssue::Running => None,
+        };
+        Some(launch)
     } else {
         configuration.internal_mcp = None;
-    }
+        None
+    };
     let mut new_driver = None;
     let continuation_group_id = if let Some(existing) = &existing {
         existing.continuation_group_id.clone()
@@ -184,13 +269,13 @@ pub(crate) async fn send_turn(
         new_driver = Some(driver);
         continuation
     };
-    let attachment_references = read_attachment_references(
-        &app,
-        &pool,
-        request.working_folder_id.as_ref(),
-        &request.attachment_ids,
-    )
-    .await?;
+    let attachment_scope = if origin.run().is_some() {
+        AttachmentFolderScope::Project(request.working_folder_id.as_ref())
+    } else {
+        AttachmentFolderScope::Folder(request.working_folder_id.as_ref())
+    };
+    let attachment_references =
+        read_attachment_references(&app, &pool, attachment_scope, &request.attachment_ids).await?;
     let persistence_now = now_timestamp()?;
     let mutation_registry =
         app.state::<crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry>();
@@ -213,38 +298,68 @@ pub(crate) async fn send_turn(
     })
     .await;
     persistence?;
-    if authority_support.internal_host_tools {
-        if let Some(binding) = origin.run() {
-            let scope = load_internal_mcp_scope(&pool, &thread_id, binding).await?;
-            mcp_registry.activate_run_scope(&thread_id, scope).await?;
-        }
-    }
-    if request.working_folder_id.is_some() {
-        ensure_pre_turn_checkpoint(
-            &pool,
-            &authorized,
-            &thread_id,
-            &request.turn_id,
-            &persistence_now,
-        )
-        .await;
-    }
+    crate::chat::ingestion::notify_rows_changed(&app, &pool, &thread_id, SENT_TURN_KEYS).await;
 
+    // Every step after persistence runs here, so any failure reaches the turn failure mark and
+    // the launch settlement below and a persisted run never stays starting.
+    let mut handed_off = None;
     let operation = async {
+        if authority_support.internal_host_tools {
+            if let Some(binding) = origin.run() {
+                let scope = load_internal_mcp_scope(&pool, &thread_id, binding).await?;
+                mcp_registry.activate_run_scope(&thread_id, scope).await?;
+            }
+        }
+        if request.working_folder_id.is_some() {
+            ensure_pre_turn_checkpoint(
+                &pool,
+                &authorized,
+                &thread_id,
+                &request.turn_id,
+                &persistence_now,
+            )
+            .await;
+        }
         let session = ensure_session_with_executable_recovery(EnsureSessionContext {
             app: &app,
             pool: &pool,
             owner: &owner,
             new_driver,
             configuration,
+            internal_mcp,
             workspace: &authorized,
             thread_id: &thread_id,
             existing: existing.as_ref(),
             continuation_group_id: &continuation_group_id,
             request: &request,
             authorization: origin.run(),
+            developer_instructions: origin.developer_instructions(),
+            developer_instructions_delivered: origin.instructions_delivered_to_native_session(),
         })
         .await?;
+        let prompt = match hand_off_on_fresh_session(
+            &pool,
+            &thread_id,
+            &request,
+            &origin,
+            existing.as_ref(),
+            &session,
+        )
+        .await?
+        {
+            Some((prompt, launch)) => {
+                crate::chat::ingestion::notify_rows_changed(
+                    &app,
+                    &pool,
+                    &thread_id,
+                    HANDED_OFF_TURN_KEYS,
+                )
+                .await;
+                handed_off = Some(launch);
+                prompt
+            }
+            None => request.prompt.clone(),
+        };
         if origin.run().is_some() && authority_support.internal_host_tools {
             mcp_registry.wait_until_ready(&thread_id).await?;
         }
@@ -263,7 +378,7 @@ pub(crate) async fn send_turn(
                     command: request.command.clone(),
                     session_id: session.session_id,
                     turn_id: request.turn_id.clone(),
-                    prompt: request.prompt.clone(),
+                    prompt,
                     attachments: attachment_references,
                     mentions: request.mentions.clone(),
                     model_id: request.model_id.clone(),
@@ -291,29 +406,44 @@ pub(crate) async fn send_turn(
                 .await;
         }
     }
-    let (dispatch, launch_error) = match operation {
-        Ok(dispatch) => (Some(dispatch), None),
+    let (dispatch, launch_error, turn_failure_marked) = match operation {
+        Ok(dispatch) => (Some(dispatch), None, Ok(())),
         Err(error) => {
-            mark_turn_dispatch_failed(
-                &pool,
-                &thread_id,
-                &request.turn_id,
-                &error,
-                &now_timestamp()?,
-            )
-            .await?;
-            (None, Some(error))
+            let marked = match now_timestamp() {
+                Ok(now) => {
+                    mark_turn_dispatch_failed(&pool, &thread_id, &request.turn_id, &error, &now)
+                        .await
+                }
+                Err(timestamp_error) => Err(timestamp_error),
+            };
+            (None, Some(error), marked)
         }
     };
-    if let Some(binding) = origin.run() {
+    if turn_failure_marked.is_ok() && launch_error.is_some() {
+        crate::chat::ingestion::notify_rows_changed(&app, &pool, &thread_id, SENT_TURN_KEYS).await;
+    }
+    let mut launch_settlement = None;
+    if let Some((binding, launch)) = origin.assignment_run() {
         let settlement = ganbaru_chat::agent_runs::settle_launch(
             &pool,
             binding,
+            handed_off.as_ref().unwrap_or(launch),
             launch_error.as_ref(),
             &now_timestamp()?,
         )
         .await?;
-        if settlement == ganbaru_chat::agent_runs::LaunchSettlement::Superseded {
+        launch_settlement = Some(settlement);
+        crate::chat::authority_epoch::bump_authority_epoch(&app);
+        if settlement == ganbaru_chat::agent_runs::LaunchSettlement::HandoffRequired {
+            crate::chat::ingestion::notify_rows_changed(
+                &app,
+                &pool,
+                &thread_id,
+                &[ChatProjectionKey::PendingRequests],
+            )
+            .await;
+        }
+        if settlement.stops_session() {
             mcp_registry.revoke_run_scope(&thread_id).await;
             if let Err(error) = owner
                 .stop_session(
@@ -329,10 +459,12 @@ pub(crate) async fn send_turn(
             }
         }
     }
+    turn_failure_marked?;
     let result = SendChatTurnResult {
         thread: reads::read_thread_shell(&pool, &thread_id).await?,
         dispatch,
         launch_error,
+        launch_settlement,
     };
     let receipt_result = versioned_value(&result)?;
     complete_command_receipt(
@@ -556,23 +688,30 @@ async fn resolve_turn_target(
     }
 }
 
+/// Checks that an agent run still matches its stored authorization and that the provider
+/// enforces the authorized target, returning the scope the driver must enforce.
+///
+/// # Errors
+///
+/// Returns a permission error when the authorization, target, safety mode, or provider
+/// enforcement no longer admits the run.
 pub(super) async fn validate_organizational_authority(
     pool: &SqlitePool,
     binding: &AgentRunBinding,
     support: ProviderAuthoritySupport,
     requested_safety_mode: SafetyMode,
-) -> ChatResult<()> {
-    let authorization = sqlx::query(
+) -> ChatResult<ProviderOrganizationalScope> {
+    let authorization = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT authorization.resolved_runtime_approval_policy, authorization.working_folder_id,
-                authorization.execution_environment_id,
-                policy.safety_mode AS teammate_safety_mode
+                authorization.execution_environment_id, {} AS access_level
          FROM chat_assignment_authorization_revisions authorization
-         JOIN chat_teammate_policy_revisions policy
-           ON policy.id = authorization.teammate_policy_revision_id
          WHERE authorization.id = ? AND authorization.assignment_id = ?
            AND authorization.scope_digest = ?
            AND authorization.decision_state = 'allowed' AND authorization.revoked_at IS NULL",
-    )
+        ganbaru_chat::coordination::access::effective_access_level_sql(
+            "authorization.destination_conversation_id"
+        ),
+    )))
     .bind(binding.authorization_revision_id.as_str())
     .bind(binding.assignment_id.as_str())
     .bind(&binding.authorization_scope_digest)
@@ -610,27 +749,16 @@ pub(super) async fn validate_organizational_authority(
             "Assignment execution target does not match its authorization",
         ));
     }
-    let teammate_approval = crate::chat::organization::parse_approval_policy(
-        &authorization
-            .try_get::<String, _>("teammate_safety_mode")
-            .map_err(|_| provider_authority_error("Assignment authority is invalid"))?,
-    )
-    .map_err(|_| provider_authority_error("Assignment authority is invalid"))?;
     let runtime_approval = parse_runtime_approval(&runtime_approval_policy)
         .map_err(|_| provider_authority_error("Assignment authority is invalid"))?;
-    if has_native_target
-        && runtime_approval == ChatRuntimeApprovalPolicy::ProviderCustom
-        && teammate_approval != ChatApprovalPolicy::Custom
-    {
-        return Err(provider_authority_error(
-            "Provider-custom approval cannot prove this assignment's exact authority",
-        ));
-    }
+    let access_level = authorization
+        .try_get::<String, _>("access_level")
+        .ok()
+        .as_deref()
+        .and_then(ChatAgentAccess::parse)
+        .ok_or_else(|| provider_authority_error("Assignment authority is invalid"))?;
     let permitted_safety_mode = if has_native_target {
-        crate::chat::organization::native_assignment_safety_mode(
-            teammate_approval,
-            runtime_approval,
-        )
+        crate::chat::organization::native_assignment_safety_mode(runtime_approval)
     } else {
         SafetyMode::AskForApproval
     };
@@ -671,35 +799,95 @@ pub(super) async fn validate_organizational_authority(
     .fetch_optional(pool)
     .await
     .map_err(|_| provider_authority_error("Assignment authority could not be verified"))?;
-    if binding.scratch_generation_id.is_some()
-        && (!support.writable_root || !support.confined_commands || !support.network_boundary)
-    {
+    let commands_person_approved = runtime_approval == ChatRuntimeApprovalPolicy::Ask
+        && permitted_safety_mode == SafetyMode::AskForApproval;
+    let scope = organizational_scope(
+        binding.working_folder_id.is_some(),
+        binding.scratch_generation_id.is_some(),
+        target_capability.as_deref(),
+    )?;
+    let frozen_capability = target_capability
+        .as_deref()
+        .map(parse_folder_capability)
+        .transpose()
+        .map_err(|_| provider_authority_error("Assignment authority is invalid"))?
+        .unwrap_or(ChatFolderCapability::None);
+    if ganbaru_chat::coordination::access::exceeds_access(
+        access_level,
+        frozen_capability,
+        runtime_approval,
+        binding.scratch_generation_id.is_some(),
+    ) {
         return Err(provider_authority_error(
-            "This provider cannot confine writable private scratch work",
+            "The channel's agent access no longer covers this assignment",
         ));
     }
-    if let Some(capability) = target_capability.as_deref() {
-        let supported = match capability {
-            "read" => support.read_only_root && support.deny_shell && support.network_boundary,
-            "edit" => support.writable_root && support.deny_shell && support.network_boundary,
-            "execute" => {
-                support.writable_root && support.confined_commands && support.network_boundary
+    if !provider_enforces_scope(support, scope, commands_person_approved) {
+        return Err(provider_authority_error(match scope {
+            ProviderOrganizationalScope::Scratch => {
+                "This provider cannot confine writable private scratch work"
             }
-            "publish" => {
-                support.writable_root
-                    && support.confined_commands
-                    && support.network_boundary
-                    && support.classified_publish
+            ProviderOrganizationalScope::Folder { .. } => {
+                "This provider cannot enforce the selected folder capability"
             }
-            _ => false,
-        };
-        if !supported {
-            return Err(provider_authority_error(
-                "This provider cannot enforce the selected folder capability",
-            ));
-        }
+            ProviderOrganizationalScope::Conversation => {
+                "This provider cannot run an isolated organizational conversation"
+            }
+        }));
     }
-    Ok(())
+    Ok(scope)
+}
+
+/// The scope of an organizational run from its validated target shape. A folder target must
+/// carry an execution target grant above `none`.
+fn organizational_scope(
+    has_folder: bool,
+    has_scratch: bool,
+    target_capability: Option<&str>,
+) -> ChatResult<ProviderOrganizationalScope> {
+    match (has_folder, has_scratch) {
+        (false, false) => Ok(ProviderOrganizationalScope::Conversation),
+        (false, true) => Ok(ProviderOrganizationalScope::Scratch),
+        (true, false) => target_capability
+            .and_then(ProviderFolderCapability::from_storage)
+            .map(|capability| ProviderOrganizationalScope::Folder { capability })
+            .ok_or_else(|| {
+                provider_authority_error("Assignment folder target has no capability grant")
+            }),
+        (true, true) => Err(provider_authority_error(
+            "Assignment execution target does not match its authorization",
+        )),
+    }
+}
+
+/// Whether a provider's declared boundaries enforce a scope.
+///
+/// Commands are confined when the provider confines them itself, or when every command reaches
+/// the person for approval and the run's effective approval policy is Ask, so each approval is
+/// the boundary for that command. Publish also needs the provider to classify publication: a
+/// agent reaches a remote only through the push request host tool, which a person confirms.
+pub(super) fn provider_enforces_scope(
+    support: ProviderAuthoritySupport,
+    scope: ProviderOrganizationalScope,
+    commands_person_approved: bool,
+) -> bool {
+    let commands_confined =
+        support.confined_commands || (support.person_approved_commands && commands_person_approved);
+    let runs_commands = support.writable_root && commands_confined && support.network_boundary;
+    match scope {
+        ProviderOrganizationalScope::Conversation => support.isolated_conversation,
+        ProviderOrganizationalScope::Scratch => runs_commands,
+        ProviderOrganizationalScope::Folder { capability } => match capability {
+            ProviderFolderCapability::Read => {
+                support.read_only_root && support.deny_shell && support.network_boundary
+            }
+            ProviderFolderCapability::Edit => {
+                support.writable_root && support.deny_shell && support.network_boundary
+            }
+            ProviderFolderCapability::Execute => runs_commands,
+            ProviderFolderCapability::Publish => runs_commands && support.classified_publish,
+        },
+    }
 }
 
 pub(super) async fn load_internal_mcp_scope(
@@ -710,12 +898,25 @@ pub(super) async fn load_internal_mcp_scope(
     let row = sqlx::query(
         "SELECT authorization.destination_conversation_id,
                 authorization.resolved_runtime_approval_policy,
-                authorization.execution_environment_id, run.provider_turn_id
+                authorization.execution_environment_id, run.provider_turn_id,
+                assignment.delegation_depth,
+                EXISTS (
+                  SELECT 1 FROM chat_agent_channel_memberships other
+                  JOIN chat_participants participant ON participant.id = other.agent_id
+                  JOIN chat_conversation_memberships membership
+                    ON membership.conversation_id = other.conversation_id
+                   AND membership.participant_id = other.agent_id
+                   AND membership.removed_at IS NULL
+                  WHERE other.conversation_id = authorization.destination_conversation_id
+                    AND other.agent_id <> assignment.agent_id
+                    AND other.removed_at IS NULL AND participant.archived_at IS NULL
+                ) AS delegation_target_available
          FROM chat_assignment_authorization_revisions authorization
          JOIN chat_agent_runs run
            ON run.authorization_revision_id = authorization.id
           AND run.assignment_id = authorization.assignment_id
           AND run.authorization_scope_digest = authorization.scope_digest
+         JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
          WHERE authorization.id = ? AND authorization.assignment_id = ?
            AND authorization.scope_digest = ? AND run.id = ?
            AND run.provider_thread_id = ?
@@ -742,31 +943,39 @@ pub(super) async fn load_internal_mcp_scope(
     .fetch_all(pool)
     .await
     .map_err(|_| provider_authority_unavailable("Channel authority could not be loaded"))?;
-    let folder_rows = sqlx::query(
+    let folder_rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT frozen.root_handle, frozen.working_folder_id, frozen.capability,
                 frozen.is_execution_target,
-                frozen.resolved_runtime_approval_policy
+                frozen.resolved_runtime_approval_policy, {} AS access_level
          FROM chat_assignment_authorized_folder_sources frozen
          JOIN chat_assignment_authorization_revisions authorization
            ON authorization.id = frozen.authorization_revision_id
          JOIN chat_work_assignments assignment
            ON assignment.id = authorization.assignment_id
-         JOIN chat_teammate_working_folder_grants live
-           ON live.conversation_id = authorization.destination_conversation_id
-          AND live.teammate_id = assignment.teammate_id
-          AND live.working_folder_id = frozen.working_folder_id
-          AND live.revoked_at IS NULL
-         JOIN chat_teammate_channel_memberships channel_access
-           ON channel_access.conversation_id = live.conversation_id
-          AND channel_access.teammate_id = live.teammate_id
+         JOIN chat_conversations conversation
+           ON conversation.id = authorization.destination_conversation_id
+         JOIN project_working_folders folder
+           ON folder.id = frozen.working_folder_id
+          AND folder.project_id = conversation.project_id
+          AND folder.archived_at IS NULL
+         JOIN chat_agent_channel_memberships channel_access
+           ON channel_access.conversation_id = authorization.destination_conversation_id
+          AND channel_access.agent_id = assignment.agent_id
           AND channel_access.removed_at IS NULL
          WHERE frozen.authorization_revision_id = ?
          ORDER BY frozen.working_folder_id",
-    )
+        ganbaru_chat::coordination::access::effective_access_level_sql(
+            "authorization.destination_conversation_id"
+        ),
+    )))
     .bind(binding.authorization_revision_id.as_str())
     .fetch_all(pool)
     .await
     .map_err(|_| provider_authority_unavailable("Folder authority could not be loaded"))?;
+    let folder_rows = folder_rows
+        .into_iter()
+        .filter(folder_row_is_covered)
+        .collect::<Vec<_>>();
     let expected_folder_count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM chat_assignment_authorized_folder_sources
          WHERE authorization_revision_id = ?",
@@ -849,15 +1058,46 @@ pub(super) async fn load_internal_mcp_scope(
                 })
             })
             .collect::<ChatResult<Vec<_>>>()?,
+        delegation_depth: row
+            .try_get::<i64, _>("delegation_depth")
+            .ok()
+            .and_then(|depth| u8::try_from(depth).ok())
+            .ok_or_else(|| provider_authority_error("Delegation authority is invalid"))?,
+        delegation_target_available: row
+            .try_get::<i64, _>("delegation_target_available")
+            .map_err(|_| provider_authority_error("Delegation authority is invalid"))?
+            != 0,
     })
+}
+
+/// Whether the channel's current access level still allows the frozen capability and approval
+/// of a folder source row. A row that cannot be read is not covered.
+fn folder_row_is_covered(row: &sqlx::sqlite::SqliteRow) -> bool {
+    let level = row
+        .try_get::<String, _>("access_level")
+        .ok()
+        .as_deref()
+        .and_then(ChatAgentAccess::parse);
+    let capability = row
+        .try_get::<String, _>("capability")
+        .ok()
+        .and_then(|value| parse_folder_capability(&value).ok());
+    let approval = row
+        .try_get::<String, _>("resolved_runtime_approval_policy")
+        .ok()
+        .and_then(|value| parse_runtime_approval(&value).ok());
+    match (level, capability, approval) {
+        (Some(level), Some(capability), Some(approval)) => {
+            !ganbaru_chat::coordination::access::exceeds_access(level, capability, approval, false)
+        }
+        _ => false,
+    }
 }
 
 fn parse_runtime_approval(value: &str) -> ChatResult<ChatRuntimeApprovalPolicy> {
     match value {
         "ask" => Ok(ChatRuntimeApprovalPolicy::Ask),
         "auto_approve" => Ok(ChatRuntimeApprovalPolicy::AutoApprove),
-        "unattended" => Ok(ChatRuntimeApprovalPolicy::Unattended),
-        "provider_custom" => Ok(ChatRuntimeApprovalPolicy::ProviderCustom),
         _ => Err(scope_row_error(())),
     }
 }

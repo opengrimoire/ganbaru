@@ -9,6 +9,7 @@ import {
   CONTENT_STREAM_KINDS,
   PROVIDER_SESSION_STATES,
   REQUEST_RESOLUTION_STATES,
+  USAGE_COUNT_SCOPES,
   type AccountStatusEvent,
   type ApprovalDecision,
   type ApprovalDecisionOption,
@@ -90,6 +91,7 @@ function parseUserInputAnswer(value: unknown, label: string): UserInputAnswer {
     questionId: readString(record.questionId, `${label}.questionId`),
     selectedOptionIds: readStringArray(record.selectedOptionIds, `${label}.selectedOptionIds`),
     freeFormText: readNullable(record.freeFormText, `${label}.freeFormText`, readString),
+    ...(record.attachmentIds === undefined ? {} : { attachmentIds: readStringArray(record.attachmentIds, `${label}.attachmentIds`) }),
   };
 }
 
@@ -194,9 +196,11 @@ export function parseThreadUsage(value: unknown, label: string): ThreadUsageUpda
     inputTokens: readNullable(record.inputTokens, `${label}.inputTokens`, readNonNegativeSafeInteger),
     outputTokens: readNullable(record.outputTokens, `${label}.outputTokens`, readNonNegativeSafeInteger),
     cachedInputTokens: readNullable(record.cachedInputTokens, `${label}.cachedInputTokens`, readNonNegativeSafeInteger),
+    cacheWriteInputTokens: readNullable(record.cacheWriteInputTokens ?? null, `${label}.cacheWriteInputTokens`, readNonNegativeSafeInteger),
     contextTokens: readNullable(record.contextTokens, `${label}.contextTokens`, readNonNegativeSafeInteger),
     contextLimit: readNullable(record.contextLimit, `${label}.contextLimit`, readNonNegativeSafeInteger),
     cost: readNullable(record.cost, `${label}.cost`, parseProviderCost),
+    countScope: readNullable(record.countScope ?? null, `${label}.countScope`, (entry, entryLabel) => readEnum(entry, USAGE_COUNT_SCOPES, entryLabel)),
   };
 }
 

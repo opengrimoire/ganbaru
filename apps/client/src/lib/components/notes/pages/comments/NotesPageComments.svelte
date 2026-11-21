@@ -73,7 +73,7 @@
 <section bind:this={root} {id} class="notes-page-comments min-w-0 text-collection" aria-labelledby={headingId}>
   <h2 id={headingId} class="mb-1.5 text-panel-detail font-medium text-muted-foreground">{t("notes.commentsHeading")}</h2>
   {#if notes.commentsError}
-    <Notice class="mb-2 text-panel-detail" message={t("notes.loadCommentsFailed", notes.commentsError)} copy={notes.commentsError} onRetry={retryComments} />
+    <Notice class="mb-2 text-panel-detail" message={t("notes.loadCommentsFailed")} copy={notes.commentsError} onRetry={retryComments} />
   {/if}
   {#if threads.length > 0}
     <div class="flex min-w-0 flex-col gap-2">

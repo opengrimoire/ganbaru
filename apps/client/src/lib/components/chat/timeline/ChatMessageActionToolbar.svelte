@@ -7,8 +7,13 @@
   import { loadChatMessageProvenance, type ChatMessageProvenance } from "$lib/api/chat/provenance";
   import type { SyncDeviceRef } from "$lib/api/sync";
   import type IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
-  import type { ChatMessageActionTarget } from "$lib/chat/timeline/message-action-target";
+  import {
+    DEFAULT_MESSAGE_TOOLBAR_ACTIONS,
+    type ChatMessageActionTarget,
+    type ChatMessageToolbarAction,
+  } from "$lib/chat/timeline/message-action-target";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { syncDeviceName } from "$lib/sync/status";
@@ -20,11 +25,14 @@
     target,
     visible = false,
     placement = "participant-header",
+    actions = DEFAULT_MESSAGE_TOOLBAR_ACTIONS,
     onError,
   }: {
     target: ChatMessageActionTarget;
     visible?: boolean;
     placement?: "participant-header" | "grouped-message";
+    /** The buttons in toolbar order; posted and provider messages keep the default reaction, copy, and more actions. */
+    actions?: readonly ChatMessageToolbarAction[];
     onError?: (error: unknown) => void;
   } = $props();
 
@@ -99,7 +107,7 @@
       if (request === provenanceRequest && known) provenance = loaded;
     } catch (error: unknown) {
       if (request === provenanceRequest) {
-        reportError(new Error(t("chat.organization.sentFromFailed"), { cause: error }));
+        reportError(new LocalizedError(t("chat.organization.sentFromFailed"), { cause: error }));
       }
     }
   }
@@ -123,59 +131,77 @@
   data-message-action-kind={target.kind}
   data-message-action-source-id={target.sourceId}
 >
-  {#if ReactionPicker}
-    <ReactionPicker
-      value={reactionPickerValue}
-      onChange={toggleReaction}
-      ariaLabel={t("chat.organization.addReaction")}
-      showIcons={false}
-      showUpload={false}
-      showRemove={false}
-      initiallyOpen
-    >
-      {#snippet trigger({ open, toggle, panelId })}
+  {#each actions as action (typeof action === "string" ? action : action.id)}
+    {#if action === "reaction"}
+      {#if ReactionPicker}
+        <ReactionPicker
+          value={reactionPickerValue}
+          onChange={toggleReaction}
+          ariaLabel={t("chat.organization.addReaction")}
+          showIcons={false}
+          showUpload={false}
+          showRemove={false}
+          initiallyOpen
+        >
+          {#snippet trigger({ open, toggle, panelId })}
+            <button
+              type="button"
+              class="message-action-button"
+              class:active={open}
+              aria-label={t("chat.organization.addReaction")}
+              aria-haspopup="dialog"
+              aria-expanded={open}
+              aria-controls={panelId}
+              data-app-tooltip={t("chat.organization.addReaction")}
+              onclick={toggle}
+            ><SmilePlus size={14} /></button>
+          {/snippet}
+        </ReactionPicker>
+      {:else}
         <button
           type="button"
           class="message-action-button"
-          class:active={open}
           aria-label={t("chat.organization.addReaction")}
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          aria-controls={panelId}
           data-app-tooltip={t("chat.organization.addReaction")}
-          onclick={toggle}
+          onclick={() => void openReactionPicker()}
         ><SmilePlus size={14} /></button>
-      {/snippet}
-    </ReactionPicker>
-  {:else}
-    <button
-      type="button"
-      class="message-action-button"
-      aria-label={t("chat.organization.addReaction")}
-      data-app-tooltip={t("chat.organization.addReaction")}
-      onclick={() => void openReactionPicker()}
-    ><SmilePlus size={14} /></button>
-  {/if}
-  <button
-    type="button"
-    class="message-action-button"
-    class:copied
-    aria-label={copied ? t("chat.timeline.copied") : t("chat.timeline.copy")}
-    title={copied ? t("chat.timeline.copied") : t("chat.timeline.copy")}
-    data-app-tooltip-keep-on-click="true"
-    onclick={() => void copyMessage()}
-  >{#if copied}<Check size={13} />{:else}<Copy size={13} />{/if}</button>
-  <button
-    bind:this={moreButton}
-    type="button"
-    class="message-action-button"
-    class:active={provenance !== null}
-    aria-label={t("chat.moreActions")}
-    aria-haspopup={hasProvenance ? "dialog" : undefined}
-    aria-expanded={hasProvenance ? provenance !== null : undefined}
-    data-app-tooltip={t("chat.moreActions")}
-    onclick={hasProvenance ? () => void toggleSentFrom() : undefined}
-  ><EllipsisVertical size={14} /></button>
+      {/if}
+    {:else if action === "copy"}
+      <button
+        type="button"
+        class="message-action-button"
+        class:copied
+        aria-label={copied ? t("chat.timeline.copied") : t("chat.timeline.copy")}
+        title={copied ? t("chat.timeline.copied") : t("chat.timeline.copy")}
+        data-message-action="copy"
+        data-app-tooltip-keep-on-click="true"
+        onclick={() => void copyMessage()}
+      >{#if copied}<Check size={13} />{:else}<Copy size={13} />{/if}</button>
+    {:else if action === "more"}
+      <button
+        bind:this={moreButton}
+        type="button"
+        class="message-action-button"
+        class:active={provenance !== null}
+        aria-label={t("chat.moreActions")}
+        aria-haspopup={hasProvenance ? "dialog" : undefined}
+        aria-expanded={hasProvenance ? provenance !== null : undefined}
+        data-app-tooltip={t("chat.moreActions")}
+        onclick={hasProvenance ? () => void toggleSentFrom() : undefined}
+      ><EllipsisVertical size={14} /></button>
+    {:else}
+      {@const Icon = action.icon}
+      <button
+        type="button"
+        class="message-action-button"
+        aria-label={action.label}
+        data-app-tooltip={action.label}
+        data-message-action={action.id}
+        disabled={action.disabled}
+        onclick={action.onSelect}
+      ><Icon size={14} /></button>
+    {/if}
+  {/each}
 </div>
 
 {#snippet deviceSection(label: string, devices: readonly SyncDeviceRef[])}
@@ -211,6 +237,7 @@
   .message-action-controls.visible,.message-action-controls:focus-within { pointer-events:auto; opacity:1; }
   .message-action-button { display:inline-grid; width:1.75rem; height:1.75rem; flex:0 0 auto; place-items:center; border-radius:0; color:var(--muted-foreground); }
   .message-action-button:focus-visible,.message-action-button.active,.message-action-button.copied { background:var(--accent); color:var(--foreground); }
-  @media (hover:hover) { .message-action-button:hover { background:var(--accent); color:var(--foreground); } }
+  @media (hover:hover) { .message-action-button:hover:not(:disabled) { background:var(--accent); color:var(--foreground); } }
+  .message-action-button:disabled { opacity:0.5; }
   .sent-from-device { padding:0.25rem 0.5rem; overflow-wrap:anywhere; }
 </style>

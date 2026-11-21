@@ -3,6 +3,7 @@
   import { untrack } from "svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { musicErrorMessage } from "$lib/music/user-errors";
   import type { MusicAddSourceKind, MusicLocalSourceSelection } from "$lib/music/sources/drafts";
   import type { MusicSourcesController } from "$lib/music/sources/controller.svelte";
   import type { MusicYouTubeSourcePreview } from "$lib/music/sources/youtube-source-resolver";
@@ -66,7 +67,7 @@
       await controller.addLocalFolder(localSelection, name);
       onSaved();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = musicErrorMessage(cause, t("music.errors.folderAddFailed"));
     } finally {
       saving = false;
     }
@@ -80,7 +81,7 @@
       await controller.addYouTube(preview, name);
       onSaved();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = musicErrorMessage(cause, t("music.errors.sourceAddFailed"));
     } finally {
       saving = false;
     }
@@ -102,7 +103,7 @@
           <p class="mt-1 text-xs text-muted-foreground">{t("music.builder.previewFound", localSelection.tracks.length)}</p>
           {#if localSelection.truncated}<p class="mt-2 text-xs leading-relaxed text-muted-foreground">{t("music.builder.previewTruncated")}</p>{/if}
         </div>
-        <label class="mt-4 block"><span class="mb-1.5 block text-xs font-medium">{t("music.builder.sourceName")}</span><input data-dialog-autofocus bind:value={name} class="source-input field h-11" maxlength="200" /></label>
+        <label class="mt-4 block"><span class="mb-1.5 block text-xs font-medium">{t("music.builder.sourceName")}</span><input data-dialog-autofocus bind:value={name} class="source-input field" maxlength="200" /></label>
         {#if localRelationship === "duplicate"}<p class="mt-3 text-xs text-destructive">{t("music.builder.duplicateFolder")}</p>{:else if localRelationship !== "separate"}<p class="mt-3 text-xs text-destructive">{t("music.builder.nestedFolder")}</p>{/if}
         <button type="button" class="mt-3 text-xs font-medium text-primary hover:underline" onclick={() => { void chooseLocal(); }}>{t("music.builder.chooseDifferentFolder")}</button>
       {/if}
@@ -110,13 +111,13 @@
       <label class="block">
         <span class="sr-only">{t("music.builder.youtubeLink")}</span>
         <span class="grid grid-cols-[minmax(0,1fr)_auto] gap-2 max-[480px]:grid-cols-1">
-          <input data-dialog-autofocus bind:value={link} oninput={() => { if (preview) name = ""; preview = null; error = null; }} class="source-input field h-11 min-w-0" placeholder="https://www.youtube.com/…" />
-          <button type="button" onclick={() => { void resolveLink(); }} disabled={controller.resolving || !link.trim()} class="source-action h-11">{#if controller.resolving}<LoaderCircle class="animate-spin motion-reduce:animate-none" size={15} />{:else}{t("music.builder.resolveLink")}{/if}</button>
+          <input data-dialog-autofocus bind:value={link} oninput={() => { if (preview) name = ""; preview = null; error = null; }} class="source-input field min-w-0" placeholder="https://www.youtube.com/…" />
+          <button type="button" onclick={() => { void resolveLink(); }} disabled={controller.resolving || !link.trim()} class="source-action h-(--control-height)">{#if controller.resolving}<LoaderCircle class="animate-spin motion-reduce:animate-none" size={15} />{:else}{t("music.builder.resolveLink")}{/if}</button>
         </span>
       </label>
       {#if preview}
         <div class="mt-4"><MusicYouTubeSourcePreviewPanel {preview} /></div>
-        {#if preview.kind === "youtube-playlist"}<label class="mt-4 block"><span class="mb-1.5 block text-xs font-medium">{t("music.builder.sourceName")}</span><input bind:value={name} class="source-input field h-11" maxlength="200" /></label>{/if}
+        {#if preview.kind === "youtube-playlist"}<label class="mt-4 block"><span class="mb-1.5 block text-xs font-medium">{t("music.builder.sourceName")}</span><input bind:value={name} class="source-input field" maxlength="200" /></label>{/if}
         {#if preview.kind === "youtube-playlist" && preview.duplicateCount > 0}<p class="mt-2 text-xs text-muted-foreground">{t("music.builder.knownDuplicates", preview.duplicateCount)}</p>{/if}
       {/if}
     {/if}

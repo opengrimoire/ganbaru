@@ -8,6 +8,8 @@ export interface AnchoredPanelInput {
   /** Intrinsic border-box height, measured independently of the scroll viewport. */
   contentHeight?: number;
   horizontalAlign?: "start" | "end";
+  /** Side the panel opens on while that side has room; it flips only when the other side has more. Defaults to below. */
+  preferredSide?: "above" | "below";
   margin?: number;
   gap?: number;
 }
@@ -56,7 +58,10 @@ export function anchoredPanelStyle(
   const belowTop = input.triggerRect.bottom + gap;
   const aboveAvailable = Math.max(0, input.triggerRect.top - margin - gap);
   const belowAvailable = Math.max(0, input.viewportHeight - belowTop - margin);
-  const openAbove = belowAvailable < Math.min(180, contentHeight) && aboveAvailable > belowAvailable;
+  const neededHeight = Math.min(180, contentHeight);
+  const openAbove = input.preferredSide === "above"
+    ? aboveAvailable >= neededHeight || aboveAvailable >= belowAvailable
+    : belowAvailable < neededHeight && aboveAvailable > belowAvailable;
   const maxHeight = Math.max(0, Math.min(preferredMaxHeight, openAbove ? aboveAvailable : belowAvailable));
   const height = Math.min(contentHeight, maxHeight);
   const top = openAbove

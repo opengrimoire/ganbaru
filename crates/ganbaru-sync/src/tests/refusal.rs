@@ -3,22 +3,13 @@
 //! stands for another build by not enforcing the receiver's constraint, so its operations are
 //! validly sealed and its merge state is the one the receiver must reach.
 
-use std::collections::{BTreeSet, VecDeque};
+use ganbaru_sync_contracts::{Change, ChangeAction, Content, Hlc};
 
-use ganbaru_sync_contracts::{
-    Change, ChangeAction, Content, Field, GroupId, Hlc, RowKey, TableId, Value,
-};
-
-use crate::adapter::{AdapterError, DomainAdapter, Presentation};
-use crate::domains::chat::ChatAdapter;
 use crate::manifest::group_id;
-use crate::manifest::vault::chat::{
-    PROFILE_REVISIONS_TABLE, PROFILES_TABLE, profile_revision_group,
-};
+use crate::manifest::vault::chat::{POLICY_REVISIONS_TABLE, policy_revision_group};
 use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE, settings_group};
 use crate::refused::MAX_REFUSED_RETRIES_PER_FINISH;
-use crate::visibility::{DeriveScope, Visibility};
-use crate::{ApplyReport, HoldReason, StoreOutcome, SyncResult};
+use crate::{ApplyReport, StoreOutcome, SyncResult};
 
 use super::authorization::{seal_at, view};
 use super::block_on;
@@ -26,39 +17,27 @@ use super::calendar::{calendar_sql, event_sql};
 use super::distractions::block_sql;
 use super::engine::{take_forged, text_field, with_group};
 use super::exclusion::note;
-use super::fixture::{
-    ASK, FORBIDDEN, ITEMS_TABLE, REFUSED, RESERVED, UNATTENDED, test_engine_adapting,
-};
+use super::fixture::{ASK, FORBIDDEN, ITEMS_TABLE, REFUSED, RESERVED, UNATTENDED};
 use super::focus::{close_run_sql, open_run_sql, segment_id};
 use super::holds::sealed_create;
 use super::replica::{Replica, converge, forge_change, pair, quoted, rank};
-use super::sim::Rng;
 
 const CREATED: &str = "'2027-01-01T00:00:00.000Z'";
 
-/// The access profile of the immutable revision scenarios.
-const PROFILE: &str = "profile-custom";
-/// The revision a hostile writer creates again.
+/// The agent of the immutable revision scenarios.
+const AGENT: &str = "participant:forged-agent";
+/// The policy revision a hostile writer creates again.
 const REVISION: &str = "revision-custom";
-/// The capability of the revision its first writer saves.
-const FIRST_CAPABILITY: &str = "read";
-/// The capability of the hostile Create of that revision.
-const FORGED_CAPABILITY: &str = "publish";
+/// The model selection of the revision its first writer saves.
+const FIRST_MODEL: &str = r#"{"modelId":"first"}"#;
+/// The model selection of the hostile Create of that revision.
+const FORGED_MODEL: &str = r#"{"modelId":"forged"}"#;
 /// The replica of the immutable revision scenarios that writes the hostile Create.
 const FORGER: usize = 2;
 /// Replicas of the immutable revision scenarios.
 const FORGED_REPLICAS: usize = 4;
 /// How far past the first writer the clock of a Create that loses the Immutable minimum runs.
 const CLOCK_AHEAD_MS: u64 = 1_000;
-
-/// Seeds of the built-in key claim simulation.
-const CLAIM_SEEDS: u64 = 8;
-/// Replicas of the claim simulation, the last of them hostile.
-const CLAIM_REPLICAS: usize = 3;
-/// First vault salt of the claim simulation.
-const CLAIM_SALT: u64 = 7300;
-/// The seeded profile whose values the hostile create copies.
-const CLAIMED_SEED: &str = "access-profile:read-only";
 
 /// A replica that does not enforce `CHECK` constraints, so it seals values others refuse.
 async fn unchecked(index: usize, salt: u64) -> Replica {
@@ -402,276 +381,6 @@ async fn seeded_replicas(count: usize, salt: u64) -> Vec<Replica> {
     replicas
 }
 
-/// SQL creating access profile `id` with `builtin_key`.
-fn claiming_profile_sql(id: &str, builtin_key: &str) -> String {
-    format!(
-        "INSERT INTO chat_access_profiles (id, builtin_key, display_name, created_at, updated_at)
-         VALUES ({}, {}, 'Claim', {CREATED}, {CREATED});",
-        quoted(id),
-        quoted(builtin_key),
-    )
-}
-
-/// The Chat adapter without its row checks, so a duplicate built-in key passes admission and the
-/// repair behind it can be reached.
-#[derive(Debug)]
-struct ChatWithoutRowChecks;
-
-impl DomainAdapter for ChatWithoutRowChecks {
-    fn name(&self) -> &'static str {
-        ChatAdapter.name()
-    }
-
-    fn derived(
-        &self,
-        table: TableId,
-        group: GroupId,
-        value: &Value,
-    ) -> Result<Vec<(&'static str, Field)>, AdapterError> {
-        ChatAdapter.derived(table, group, value)
-    }
-
-    fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8 {
-        ChatAdapter.priority(table, group, value)
-    }
-
-    fn validate(&self, table: TableId, group: GroupId, value: &Value) -> Result<(), AdapterError> {
-        ChatAdapter.validate(table, group, value)
-    }
-
-    fn presentation(&self, table: TableId, values: &[(GroupId, Value)]) -> Presentation {
-        ChatAdapter.presentation(table, values)
-    }
-}
-
-/// A writer without the unique index claims built-in keys under keys on both sides of the seeded
-/// ones, past an admission check that would hold them: repair seals nothing in the tables no
-/// operation deletes from, and the seeded rows and their revisions stay in the domain tables.
-#[test]
-fn repair_seals_no_tombstone_in_a_never_deleted_table() {
-    block_on(async {
-        let mut replicas = seeded_replicas(2, 70).await;
-        for replica in &mut replicas {
-            replica.engine = test_engine_adapting(Box::new(ChatWithoutRowChecks));
-        }
-        replicas[1]
-            .exec("DROP INDEX idx_chat_access_profiles_builtin")
-            .await;
-        let claims = format!(
-            "{}{}",
-            claiming_profile_sql("access-profile:aaa", "edit_files"),
-            claiming_profile_sql("access-profile:zzz", "read_only"),
-        );
-        exec_and_seal(&mut replicas[1], &claims).await;
-
-        take(&mut replicas, 0, 1).await.unwrap();
-        take(&mut replicas, 1, 0).await.unwrap();
-
-        let tombstones = format!(
-            "SELECT count(*) FROM sync_tombstones WHERE table_id IN ({}, {})",
-            PROFILES_TABLE.0, PROFILE_REVISIONS_TABLE.0
-        );
-        for replica in &mut replicas {
-            assert_eq!(replica.count(&tombstones).await, 0);
-        }
-        let profiles = keys(&mut replicas[0], "chat_access_profiles").await;
-        for seeded in ["access-profile:read-only", "access-profile:edit-files"] {
-            assert!(profiles.iter().any(|key| key == seeded), "{profiles:?}");
-        }
-        assert!(!profiles.iter().any(|key| key == "access-profile:zzz"));
-        assert_eq!(
-            replicas[0]
-                .count(
-                    "SELECT count(*) FROM chat_access_profile_revisions
-                     WHERE id = 'access-profile-revision:edit-files:1'"
-                )
-                .await,
-            1
-        );
-    });
-}
-
-/// Two replicas after a writer without the unique index claims built-in keys under keys on both
-/// sides of the seeded ones, past an admission check that would hold them.
-async fn claimed_builtin_keys(salt: u64) -> Vec<Replica> {
-    let mut replicas = seeded_replicas(2, salt).await;
-    for replica in &mut replicas {
-        replica.engine = test_engine_adapting(Box::new(ChatWithoutRowChecks));
-    }
-    replicas[1]
-        .exec("DROP INDEX idx_chat_access_profiles_builtin")
-        .await;
-    let claims = format!(
-        "{}{}",
-        claiming_profile_sql("access-profile:aaa", "edit_files"),
-        claiming_profile_sql("access-profile:zzz", "read_only"),
-    );
-    exec_and_seal(&mut replicas[1], &claims).await;
-    take(&mut replicas, 0, 1).await.unwrap();
-    take(&mut replicas, 1, 0).await.unwrap();
-    replicas
-}
-
-/// Visibility loaded again with nothing dirty, and the rows the load marks dirty.
-async fn reload(replica: &mut Replica) -> (Visibility, BTreeSet<(TableId, String)>) {
-    let mut dirty = BTreeSet::new();
-    let visibility = Visibility::load(
-        &replica.engine,
-        &mut replica.conn,
-        &mut dirty,
-        DeriveScope::All,
-    )
-    .await
-    .unwrap();
-    (visibility, dirty)
-}
-
-/// The retry attempt of the refused row `key`.
-async fn refusal_attempt(replica: &mut Replica, key: &str) -> i64 {
-    replica
-        .count(&format!(
-            "SELECT attempt FROM sync_refused_rows WHERE row_key = {}",
-            quoted(key)
-        ))
-        .await
-}
-
-/// A keeper the local unique index refuses stays listed and absent, which counts as settled:
-/// loading visibility again does not plan it, and the least recent retry still reaches it.
-#[test]
-fn a_refused_keeper_is_settled_and_still_retried() {
-    const CLAIM: &str = "access-profile:aaa";
-    block_on(async {
-        let mut replicas = claimed_builtin_keys(74).await;
-        let receiver = &mut replicas[0];
-        assert_eq!(refused(receiver, "hidden").await, [CLAIM]);
-        assert!(
-            !keys(receiver, "chat_access_profiles")
-                .await
-                .contains(&CLAIM.to_owned())
-        );
-        let (_, dirty) = reload(receiver).await;
-        assert!(
-            !dirty.contains(&(PROFILES_TABLE, CLAIM.to_owned())),
-            "a refused keeper is planned again: {dirty:?}"
-        );
-
-        let before = refusal_attempt(&mut replicas[0], CLAIM).await;
-        exec_and_seal(&mut replicas[1], &note("note-later", "Later", 0)).await;
-        take(&mut replicas, 0, 1).await.unwrap();
-        let receiver = &mut replicas[0];
-        assert!(
-            refusal_attempt(receiver, CLAIM).await > before,
-            "a finish with other work retries the refused keeper"
-        );
-        assert_eq!(refused(receiver, "hidden").await, [CLAIM]);
-        assert!(
-            !keys(receiver, "chat_access_profiles")
-                .await
-                .contains(&CLAIM.to_owned())
-        );
-    });
-}
-
-/// A hidden duplicate of a never-deleted table stays in its domain table, and that counts as
-/// settled: loading visibility again marks no row dirty, so no later finish plans it again.
-#[test]
-fn a_kept_hidden_duplicate_of_a_never_deleted_table_is_settled() {
-    block_on(async {
-        let mut replicas = claimed_builtin_keys(73).await;
-        for replica in &mut replicas {
-            let (visibility, dirty) = reload(replica).await;
-            let hidden: BTreeSet<(TableId, String)> = visibility
-                .duplicates
-                .iter()
-                .flat_map(|(table, rows)| rows.keys().map(|key| (*table, key.clone())))
-                .collect();
-            assert!(
-                !hidden.is_empty(),
-                "replica {} holds a hidden duplicate",
-                replica.index
-            );
-            let replanned: Vec<_> = hidden.intersection(&dirty).collect();
-            assert!(
-                replanned.is_empty(),
-                "replica {} plans kept rows again: {replanned:?}",
-                replica.index
-            );
-        }
-    });
-}
-
-/// A hostile writer claims a built-in key under a lower row key while the seeds of every device
-/// are still in flight. Whatever order the operations arrive in, the claim is held, apply never
-/// fails, and the honest replicas converge on the seeded profiles alone.
-#[test]
-fn simulation_builtin_key_claim_never_stops_apply() {
-    block_on(async {
-        for seed in 0..CLAIM_SEEDS {
-            let mut rng = Rng(seed);
-            let mut replicas = Vec::with_capacity(CLAIM_REPLICAS);
-            for index in 0..CLAIM_REPLICAS {
-                let mut replica = Replica::new(index, CLAIM_SALT + seed).await;
-                let now = replica.now_ms;
-                replica
-                    .engine
-                    .seed_captures(&mut replica.conn, now)
-                    .await
-                    .unwrap();
-                replica.seal().await.unwrap();
-                replicas.push(replica);
-            }
-
-            let attacker = CLAIM_REPLICAS - 1;
-            let mut claim =
-                sealed_create(&mut replicas[attacker], PROFILES_TABLE, CLAIMED_SEED).await;
-            claim.row = RowKey::new("access-profile:aaa").unwrap();
-            let forged = forge_change(&mut replicas[attacker], claim).await;
-
-            let mut sent = Vec::with_capacity(CLAIM_REPLICAS);
-            for replica in &mut replicas {
-                sent.push(replica.own_ops().await);
-            }
-            sent[attacker].push(forged.clone());
-
-            for (receiver, replica) in replicas.iter_mut().enumerate().take(attacker) {
-                let mut streams: Vec<VecDeque<Vec<u8>>> = (0..CLAIM_REPLICAS)
-                    .filter(|writer| *writer != receiver)
-                    .map(|writer| sent[writer].iter().cloned().collect())
-                    .collect();
-                while !streams.is_empty() {
-                    let stream = rng.below(streams.len());
-                    let op = streams[stream].pop_front().unwrap();
-                    let outcomes = replica.receive(std::slice::from_ref(&op)).await;
-                    if op == forged {
-                        assert_eq!(
-                            outcomes,
-                            vec![StoreOutcome::Stored {
-                                held: Some(HoldReason::Invalid)
-                            }],
-                            "seed {seed}"
-                        );
-                    }
-                    let applied = replica.apply_all().await;
-                    assert!(applied.is_ok(), "seed {seed}: {applied:?}");
-                    if streams[stream].is_empty() {
-                        streams.swap_remove(stream);
-                    }
-                }
-            }
-
-            converge(&mut replicas[..attacker]).await;
-            let other = merge_state(&mut replicas[1]).await;
-            assert_eq!(merge_state(&mut replicas[0]).await, other, "seed {seed}");
-            for replica in &mut replicas[..attacker] {
-                let profiles = keys(replica, "chat_access_profiles").await;
-                assert_eq!(profiles.len(), 5, "seed {seed}: {profiles:?}");
-                assert!(!profiles.iter().any(|key| key == "access-profile:aaa"));
-            }
-        }
-    });
-}
-
 /// A write of the singleton from a writer whose create never arrives hides the row until one
 /// does, and the seeded row stays: nothing refuses that delete, so it would go unnoticed.
 #[test]
@@ -763,12 +472,7 @@ fn ordinary_deletes_and_archives_keep_replicating() {
         let mut replicas = seeded_replicas(2, 73).await;
         exec_and_seal(
             &mut replicas[1],
-            &format!(
-                "{}
-                 INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
-                 VALUES ('access-profile:custom', 'Custom', {CREATED}, {CREATED});",
-                note("note-1", "One", 0),
-            ),
+            &format!("{}{}", note("note-1", "One", 0), agent_sql(AGENT)),
         )
         .await;
         converge(&mut replicas).await;
@@ -776,8 +480,8 @@ fn ordinary_deletes_and_archives_keep_replicating() {
             &mut replicas[1],
             &format!(
                 "DELETE FROM quick_notes WHERE id = 'note-1';
-                 UPDATE chat_access_profiles SET archived_at = {CREATED}
-                 WHERE id = 'access-profile:custom';"
+                 UPDATE chat_participants SET archived_at = {CREATED} WHERE id = {};",
+                quoted(AGENT)
             ),
         )
         .await;
@@ -787,10 +491,11 @@ fn ordinary_deletes_and_archives_keep_replicating() {
             assert_eq!(replica.count("SELECT count(*) FROM quick_notes").await, 0);
             assert_eq!(
                 replica
-                    .count(
-                        "SELECT count(*) FROM chat_access_profiles
-                         WHERE id = 'access-profile:custom' AND archived_at IS NOT NULL"
-                    )
+                    .count(&format!(
+                        "SELECT count(*) FROM chat_participants
+                         WHERE id = {} AND archived_at IS NOT NULL",
+                        quoted(AGENT)
+                    ))
                     .await,
                 1
             );
@@ -798,52 +503,54 @@ fn ordinary_deletes_and_archives_keep_replicating() {
     });
 }
 
-/// SQL creating the custom access profile `id`.
-fn custom_profile_sql(id: &str) -> String {
+/// SQL creating the AI agent participant `id`.
+fn agent_sql(id: &str) -> String {
     format!(
-        "INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
-         VALUES ({}, 'Custom', {CREATED}, {CREATED});",
-        quoted(id),
+        "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
+         VALUES ({id}, 'ai_agent', 'Agent', {CREATED}, {CREATED});
+         INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+         VALUES ({id}, 'codex', {CREATED}, {CREATED});",
+        id = quoted(id),
     )
 }
 
-/// Replicas sharing [`PROFILE`], with [`REVISION`] sealed by the first and held by no other.
+/// Replicas sharing [`AGENT`], with [`REVISION`] sealed by the first and held by no other.
 /// [`FORGER`] has sealed, so its next operation is valid, and has not seen the revision.
 async fn replicas_with_revision(salt: u64) -> Vec<Replica> {
     let mut replicas = seeded_replicas(FORGED_REPLICAS, salt).await;
-    exec_and_seal(&mut replicas[FORGER], &custom_profile_sql(PROFILE)).await;
+    exec_and_seal(&mut replicas[FORGER], &agent_sql(AGENT)).await;
     converge(&mut replicas).await;
     exec_and_seal(
         &mut replicas[0],
         &format!(
-            "INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, default_read_history, default_participate,
-                 default_history_boundary, maximum_folder_capability, created_at)
-             VALUES ({}, {}, 1, 1, 'entire', {}, {CREATED});",
+            "INSERT INTO chat_agent_policy_revisions
+                (id, agent_id, model_selection_data, created_at)
+             VALUES ({}, {}, {}, {CREATED});",
             quoted(REVISION),
-            quoted(PROFILE),
-            quoted(FIRST_CAPABILITY),
+            quoted(AGENT),
+            quoted(FIRST_MODEL),
         ),
     )
     .await;
     replicas
 }
 
-/// The Create of [`REVISION`] again, with [`FORGED_CAPABILITY`].
+/// The Create of [`REVISION`] again, with [`FORGED_MODEL`].
 async fn forged_revision_create(creator: &mut Replica) -> Change {
-    let create = sealed_create(creator, PROFILE_REVISIONS_TABLE, REVISION).await;
-    with_group(
-        create,
-        profile_revision_group::CREATED,
-        vec![
-            text_field(PROFILE),
-            Field::Integer(1),
-            Field::Integer(1),
-            text_field("entire"),
-            text_field(FORGED_CAPABILITY),
-            text_field(CREATED.trim_matches('\'')),
-        ],
-    )
+    let create = sealed_create(creator, POLICY_REVISIONS_TABLE, REVISION).await;
+    let mut fields = create
+        .groups
+        .iter()
+        .find(|value| value.group == policy_revision_group::CREATED)
+        .expect("a revision Create carries its fields")
+        .value
+        .fields()
+        .to_vec();
+    // The fields follow the group's columns: agent, selection version, then selection data.
+    *fields
+        .get_mut(2)
+        .expect("the model selection is the third field") = text_field(FORGED_MODEL);
+    with_group(create, policy_revision_group::CREATED, fields)
 }
 
 /// The operation `replica` seals with `change` at `clock`, outside the engine.
@@ -859,11 +566,11 @@ async fn forge_at(replica: &mut Replica, change: Change, clock: Hlc) -> Vec<u8> 
     )
 }
 
-/// The capability `replica` shows for [`REVISION`].
-async fn revision_capability(replica: &mut Replica) -> Option<String> {
+/// The model selection `replica` shows for [`REVISION`].
+async fn revision_model(replica: &mut Replica) -> Option<String> {
     replica
         .scalar_text(&format!(
-            "SELECT maximum_folder_capability FROM chat_access_profile_revisions WHERE id = {}",
+            "SELECT model_selection_data FROM chat_agent_policy_revisions WHERE id = {}",
             quoted(REVISION)
         ))
         .await
@@ -875,12 +582,11 @@ async fn revision_capability(replica: &mut Replica) -> Option<String> {
 fn forged_immutable_create_converges() {
     const HOLDER: usize = 1;
     const LATE: usize = 3;
-    const OTHER_PROFILE: &str = "profile-other";
     block_on(async {
         let mut replicas = replicas_with_revision(71).await;
         take(&mut replicas, HOLDER, 0).await.unwrap();
         take(&mut replicas, FORGER, 0).await.unwrap();
-        exec_and_seal(&mut replicas[FORGER], &custom_profile_sql(OTHER_PROFILE)).await;
+        exec_and_seal(&mut replicas[FORGER], &note("note-other", "Other", 0)).await;
 
         let create = forged_revision_create(&mut replicas[0]).await;
         let forged = forge_change(&mut replicas[FORGER], create).await;
@@ -893,8 +599,8 @@ fn forged_immutable_create_converges() {
         for index in [0, HOLDER, LATE] {
             let replica = &mut replicas[index];
             assert_eq!(
-                revision_capability(replica).await.as_deref(),
-                Some(FIRST_CAPABILITY),
+                revision_model(replica).await.as_deref(),
+                Some(FIRST_MODEL),
                 "replica {index} keeps the first value"
             );
             assert_eq!(
@@ -926,9 +632,7 @@ async fn assert_loser_stays_kept(
             "merge state agrees {pass}"
         );
         assert_eq!(
-            revision_capability(&mut replicas[loser_holder])
-                .await
-                .as_deref(),
+            revision_model(&mut replicas[loser_holder]).await.as_deref(),
             Some(loser),
             "the row of replica {loser_holder} stays {pass}"
         );
@@ -938,7 +642,7 @@ async fn assert_loser_stays_kept(
             "replica {loser_holder} lists the row {pass}"
         );
         assert_eq!(
-            revision_capability(&mut replicas[winner_holder])
+            revision_model(&mut replicas[winner_holder])
                 .await
                 .as_deref(),
             Some(winner),
@@ -955,9 +659,9 @@ async fn assert_loser_stays_kept(
         exec_and_seal(
             &mut replicas[0],
             &format!(
-                "UPDATE chat_access_profiles SET display_name = {} WHERE id = {}",
+                "UPDATE chat_participants SET display_name = {} WHERE id = {}",
                 quoted(pass),
-                quoted(PROFILE)
+                quoted(AGENT)
             ),
         )
         .await;
@@ -987,8 +691,8 @@ fn a_create_winning_an_immutable_minimum_it_did_not_see_leaves_the_kept_row_diff
         let (honest_first, forged_first) = deliver_in_both_orders(&mut replicas, &forged).await;
         assert_loser_stays_kept(
             &mut replicas,
-            (honest_first, FIRST_CAPABILITY),
-            (forged_first, FORGED_CAPABILITY),
+            (honest_first, FIRST_MODEL),
+            (forged_first, FORGED_MODEL),
         )
         .await;
     });
@@ -1004,8 +708,8 @@ fn a_create_losing_an_immutable_minimum_it_did_not_see_leaves_the_kept_row_diffe
         let (honest_first, forged_first) = deliver_in_both_orders(&mut replicas, &forged).await;
         assert_loser_stays_kept(
             &mut replicas,
-            (forged_first, FORGED_CAPABILITY),
-            (honest_first, FIRST_CAPABILITY),
+            (forged_first, FORGED_MODEL),
+            (honest_first, FIRST_MODEL),
         )
         .await;
     });

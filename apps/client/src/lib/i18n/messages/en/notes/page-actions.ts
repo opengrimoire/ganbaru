@@ -24,8 +24,8 @@ export const pageActions = {
   deleteFolderConfirmMessage:
     "Notes and subfolders inside will move to this folder's current parent. No notes will be deleted.",
   deleteFolderConfirm: "Delete folder",
-  folderActionFailed: (message: string) => `Could not update folder: ${message}`,
-  pageCreationFailed: (message: string) => `Could not save this new note: ${message}`,
+  folderActionFailed: "The folder could not be updated.",
+  pageCreationFailed: "This new note could not be saved.",
   archivePage: "Archive",
   archiveConfirmTitle: (title: string) => `Archive ${title}?`,
   archiveConfirmMessage:
@@ -38,7 +38,7 @@ export const pageActions = {
   trashConfirmMessage:
     "This removes the note without deleting it. It will be permanently deleted after 7 days, but you can restore it from Trash before then.",
   trashConfirm: "Move to trash",
-  trashFailed: (message: string) => `Could not move note to Trash: ${message}`,
+  trashFailed: "The note could not be moved to Trash.",
   restorePage: (title: string) => `Restore ${title}`,
   restoreMovesToWorkspace: "Restores to Workspace because its parent is in Trash.",
   deleteForever: "Delete forever",

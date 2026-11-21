@@ -92,6 +92,45 @@ pub async fn next_order_key(
     order_key_after(last.as_deref())
 }
 
+/// Moves `item_id` after every other item of its scope and records `entered_at` as the time it
+/// entered the timeline. A reply that waited for running work takes this place when the work
+/// receives it, so the timeline shows it after what came before that moment. An item that is
+/// already last keeps its key. Returns whether the item exists.
+pub async fn place_item_at_scope_end(
+    connection: &mut SqliteConnection,
+    item_id: &str,
+    entered_at: &str,
+) -> ChatResult<bool> {
+    let Some((key, others_last)): Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT item.order_key,
+                (SELECT other.order_key FROM chat_conversation_items other
+                 WHERE other.conversation_id = item.conversation_id
+                   AND other.reply_thread_id IS item.reply_thread_id
+                   AND other.id <> item.id
+                 ORDER BY other.order_key DESC, other.id DESC LIMIT 1)
+         FROM chat_conversation_items item WHERE item.id = ?",
+    )
+    .bind(item_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(persistence_error)?
+    else {
+        return Ok(false);
+    };
+    let key = match others_last {
+        Some(last) if last >= key => order_key_after(Some(&last))?,
+        _ => key,
+    };
+    sqlx::query("UPDATE chat_conversation_items SET order_key = ?, created_at = ? WHERE id = ?")
+        .bind(key)
+        .bind(entered_at)
+        .bind(item_id)
+        .execute(connection)
+        .await
+        .map_err(persistence_error)?;
+    Ok(true)
+}
+
 /// The longest prefix of `text` within `max_bytes` that ends on a character boundary, and
 /// whether anything was cut.
 pub fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> (&str, bool) {

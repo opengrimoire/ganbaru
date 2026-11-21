@@ -132,7 +132,7 @@ describe("Settings list of hidden and archived projects", () => {
     render();
 
     target.querySelector<HTMLButtonElement>("li button")?.click();
-    await vi.waitFor(() => expect(target.textContent).toContain("Could not update Draft: locked"));
+    await vi.waitFor(() => expect(target.textContent).toContain("Could not update Draft."));
   });
 
   it("says when nothing is hidden or archived", () => {

@@ -18,5 +18,9 @@ export const workingMarkdown = {
     reloadRemote: "Reload file",
     copyLocal: "Copy local text",
     discardConfirm: "Discard unsaved changes to this Markdown file?",
+    discardConfirmAction: "Discard",
+    treeLoadFailed: "Markdown files could not be listed.",
+    loadFailed: "This Markdown file could not be opened.",
+    saveFailed: "This Markdown file could not be saved.",
   },
 } as const;

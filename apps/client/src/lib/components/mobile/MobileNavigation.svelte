@@ -8,7 +8,7 @@
   import { cn } from "$lib/utils";
   import { createSortableDrag } from "$lib/utils/sortable-drag.svelte";
   import type { WorkspaceTab, WorkspaceTabPlacement } from "$lib/workspace-tabs/model";
-  import { workspaceTabFullLabel, workspaceTabKindIcon, workspaceTabLabel } from "$lib/workspace-tabs/presentation";
+  import { workspaceTabFullLabel, workspaceTabIcon, workspaceTabLabel } from "$lib/workspace-tabs/presentation";
 
   /**
    * The phone shell's workspace tab bar: the first open tabs that fit, the active one always among them, and a
@@ -77,7 +77,7 @@
   style={presentation === "bottom" ? `background-color: var(--cal-bg); grid-template-columns: repeat(${slots.length + 1}, minmax(0, 1fr));` : undefined}
 >
   {#each slots as tab (tab.id)}
-    {@const Icon = workspaceTabKindIcon(tab.location.kind)}
+    {@const Icon = workspaceTabIcon(tab)}
     {@const selected = tab.id === activeTabId}
     {@const label = workspaceTabLabel(tab, t)}
     {@const fullLabel = workspaceTabFullLabel(tab, t)}

@@ -11,6 +11,7 @@ import {
   timelineScrollOverflowState,
   timelineScrollbarThumbGeometry,
   timelineScrollIntent,
+  virtualRowTop,
 } from "./virtualization";
 
 function row(index: number): TimelineMessageRow {
@@ -18,11 +19,11 @@ function row(index: number): TimelineMessageRow {
 }
 
 function item(sequence: number): ChatTimelineItemRead {
-  return { activityId: `item-${sequence}`, turnId: null, sequenceAnchor: sequence, kind: "message", data: { schemaVersion: 1, value: {} } };
+  return { activityId: `item-${sequence}`, turnId: null, sequenceAnchor: sequence, changeSequence: sequence, kind: "message", data: { schemaVersion: 1, value: {} } };
 }
 
 function page(start: number, end: number): ChatTimelinePageRead {
-  return { threadId: "thread", items: Array.from({ length: end - start + 1 }, (_, offset) => item(start + offset)), turns: [], previousCursor: null, nextCursor: null, threadRevision: 1 };
+  return { threadId: "thread", items: Array.from({ length: end - start + 1 }, (_, offset) => item(start + offset)), turns: [], previousCursor: null, nextCursor: null, threadRevision: 1, changeCursor: 0 };
 }
 
 describe("timeline virtualization", () => {
@@ -39,6 +40,25 @@ describe("timeline virtualization", () => {
     expect(markers).toHaveLength(120);
     expect(markers[0]?.id).toBe("row-0");
     expect(markers.at(-1)?.id).toBe("row-9999");
+  });
+
+  it("windows rows that carry only an ID exactly like timeline rows", () => {
+    const rows = Array.from({ length: 2_000 }, (_, index) => row(index));
+    const plainRows = rows.map((entry) => ({ id: entry.id }));
+    const measurements = new Map([["row-10", 300], ["row-1200", 40]]);
+    const timelineWindow = computeTimelineVirtualWindow(rows, measurements, 100_000, 700, 72, 300);
+    const plainWindow = computeTimelineVirtualWindow(plainRows, measurements, 100_000, 700, 72, 300);
+    expect(plainWindow.items.map((entry) => entry.row.id)).toEqual(timelineWindow.items.map((entry) => entry.row.id));
+    expect({ ...plainWindow, items: [] }).toEqual({ ...timelineWindow, items: [] });
+    expect(plainWindow.items.map((entry) => entry.top)).toEqual(timelineWindow.items.map((entry) => entry.top));
+  });
+
+  it("locates a row top in the virtual layout from measured and estimated heights", () => {
+    const rows = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    expect(virtualRowTop(rows, "a", new Map(), 72)).toBe(0);
+    expect(virtualRowTop(rows, "c", new Map([["a", 30]]), 72)).toBe(102);
+    expect(virtualRowTop(rows, "missing", new Map(), 72)).toBeNull();
+    expect(virtualRowTop(rows, "b", new Map([["a", 0]]), 72)).toBe(72);
   });
 
   it("preserves an anchor when rows are prepended or expanded", () => {

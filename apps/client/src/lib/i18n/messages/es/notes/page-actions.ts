@@ -27,8 +27,8 @@ export const pageActions = {
   deleteFolderConfirmMessage:
     "Las notas y subcarpetas que contiene se moverán al nivel actual de esta carpeta. No se eliminará ninguna nota.",
   deleteFolderConfirm: "Eliminar carpeta",
-  folderActionFailed: (message: string) => `No se pudo actualizar la carpeta: ${message}`,
-  pageCreationFailed: (message: string) => `No se pudo guardar esta nota nueva: ${message}`,
+  folderActionFailed: "No se pudo actualizar la carpeta.",
+  pageCreationFailed: "No se pudo guardar esta nota nueva.",
   archivePage: "Archivar",
   archiveConfirmTitle: (title: string) => `¿Archivar ${title}?`,
   archiveConfirmMessage:
@@ -41,7 +41,7 @@ export const pageActions = {
   trashConfirmMessage:
     "Esto quita la nota sin eliminarla. Se eliminará permanentemente después de 7 días, pero puedes restaurarla desde la papelera antes de eso.",
   trashConfirm: "Mover a la papelera",
-  trashFailed: (message: string) => `No se pudo mover la nota a la papelera: ${message}`,
+  trashFailed: "No se pudo mover la nota a la papelera.",
   restorePage: (title: string) => `Restaurar ${title}`,
   restoreMovesToWorkspace:
     "Se restaurará en el espacio porque su nota principal está en la papelera.",

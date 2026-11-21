@@ -50,7 +50,7 @@
 <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
   {#if destination.kind === "playlists" || destination.kind === "playlist"}
     <div class="shrink-0 p-2">
-      <div class="field flex h-8 items-center gap-2 px-2.5">
+      <div class="field flex items-center gap-2 px-2.5">
         <Search size={13} class="shrink-0 text-muted-foreground" />
         <input data-builder-context-search value={state.search} oninput={(event) => onSearch(event.currentTarget.value)} type="search" aria-label={destination.kind === "playlist" ? t("music.builder.search") : t("music.builder.searchPlaylists")} placeholder={destination.kind === "playlist" ? t("music.builder.search") : t("music.builder.searchPlaylists")} class="field-bare text-[0.7rem]" />
         {#if state.search}<button type="button" onclick={() => onSearch("")} class="grid h-6 w-6 place-items-center rounded-full text-muted-foreground hover:bg-background/60 hover:text-foreground" aria-label={t("music.builder.clearSearch")}><X size={12} /></button>{/if}

@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import {
   archiveNotesPage,
   createNotesChildPageFromBlock,
@@ -117,6 +118,22 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
       : "full";
   }
 
+  function creationRequest(
+    title: string,
+    parent: NotesParent,
+    options: NotesCreatePageOptions,
+  ): Parameters<typeof createNotesPage>[0] {
+    return {
+      id: crypto.randomUUID(),
+      title,
+      parent,
+      folder_id: parent.type === "workspace" ? options.folderId?.trim() || null : null,
+      first_block_id: crypto.randomUUID(),
+      after_block_id: null,
+      project_id: projectIdForParent(parent, options),
+    };
+  }
+
   async function createPageWithParent(
     title: string,
     parent: NotesParent,
@@ -128,19 +145,8 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
       // The editor retains its draft and displays the save error.
       return;
     }
-    const pageId = crypto.randomUUID();
-    const firstBlockId = crypto.randomUUID();
-    const projectId = projectIdForParent(parent, options);
-    const folderId = parent.type === "workspace" ? options.folderId?.trim() || null : null;
-    const request = {
-      id: pageId,
-      title,
-      parent,
-      folder_id: folderId,
-      first_block_id: firstBlockId,
-      after_block_id: null,
-      project_id: projectId,
-    };
+    const request = creationRequest(title, parent, options);
+    const projectId = request.project_id ?? null;
     const provisional = createProvisionalNotesPage(request);
     if (provisional.page.folder_id) context.setFolderCollapsed(provisional.page.folder_id, false);
     await context.activateProvisionalPage(
@@ -162,6 +168,28 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
     options: NotesCreatePageOptions = {},
   ): Promise<void> {
     await createPageWithParent(title, { type: "page_id", page_id: parentPageId }, options);
+  }
+
+  /**
+   * Create a note without opening it in this editor, for callers that open it somewhere else, such as a new tab.
+   * The note goes under `parentPageId`, or at the top of the options' project and folder when it is `null`.
+   * Resolves with the note's id once it is saved, and rejects when saving it fails.
+   */
+  async function createPageInBackground(
+    title: string,
+    parentPageId: string | null,
+    options: NotesCreatePageOptions = {},
+  ): Promise<string> {
+    const parent: NotesParent = parentPageId
+      ? { type: "page_id", page_id: parentPageId }
+      : { type: "workspace", workspace: true };
+    const request = creationRequest(title, parent, options);
+    context.beginPageCreation(request, createProvisionalNotesPage(request));
+    if (await context.awaitPageCreationAttempt(request.id) === "failed") {
+      context.discardFailedPageCreation(request.id);
+      throw new Error("notes page creation failed");
+    }
+    return request.id;
   }
 
   /** Reserve the note row immediately and serialize its lifecycle after earlier editor writes. */
@@ -350,7 +378,7 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
     } catch (error) {
       // A held edit refuses the trash; the page's conflict strip already asks the user to choose first.
       if (!removalConfirmed && !(error instanceof NotesHeldEditError)) {
-        context.setTrashActionError(error instanceof Error ? error.message : String(error));
+        context.setTrashActionError(notesErrorDetail(error));
       }
       throw error;
     } finally {
@@ -396,6 +424,7 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
   return {
     createPage,
     createSubpage,
+    createPageInBackground,
     createChildPageFromBlock,
     createChildPageAfterBlock,
     renamePage,

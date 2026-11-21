@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { en } from "$lib/i18n/messages/en";
 import {
   applyTerminalOutput,
+  replayStartState,
   boundTerminalContext,
   sanitizeTerminalPaste,
   TerminalOutputAcknowledger,
@@ -9,6 +11,7 @@ import {
   terminalLinkTarget,
   terminalOutputByteLength,
   terminalPasteNeedsConfirmation,
+  terminalScopeKey,
 } from "./terminal-model";
 
 function chunk(generation: number, sequence: number, text: string) {
@@ -31,6 +34,21 @@ describe("Chat terminal model", () => {
     expect(applyTerminalOutput(accepted.state, chunk(1, 1, "hello")).kind).toBe("duplicate");
     expect(applyTerminalOutput(accepted.state, chunk(1, 3, "later")).kind).toBe("gap");
     expect(applyTerminalOutput(accepted.state, chunk(2, 1, "restart")).kind).toBe("accept");
+  });
+
+  it("starts a replay at the first retained chunk so trimmed scrollback is written", () => {
+    expect(replayStartState(1, [])).toEqual({ generation: 1, lastSequence: 0 });
+    expect(replayStartState(1, [chunk(1, 1, "a"), chunk(1, 2, "b")])).toEqual({ generation: 1, lastSequence: 0 });
+    const trimmed = [chunk(1, 41, "a"), chunk(1, 42, "b")];
+    let state = replayStartState(1, trimmed);
+    expect(state).toEqual({ generation: 1, lastSequence: 40 });
+    for (const retained of trimmed) {
+      const decision = applyTerminalOutput(state, retained);
+      expect(decision.kind).toBe("accept");
+      state = decision.state;
+    }
+    expect(applyTerminalOutput(state, chunk(1, 43, "live")).kind).toBe("accept");
+    expect(replayStartState(2, [chunk(1, 9, "old"), chunk(2, 5, "new")])).toEqual({ generation: 2, lastSequence: 4 });
   });
 
   it("requires confirmation only for multiline paste when enabled", () => {
@@ -60,20 +78,18 @@ describe("Chat terminal model", () => {
     expect(boundTerminalContext("abécd", 3).text).toBe("ab");
   });
 
-  it("reads structured terminal errors without exposing object coercion", () => {
+  it("localizes structured terminal errors without showing backend text", () => {
     expect(terminalErrorMessage({
       code: "invalid_state_transition",
       message: "Chat terminal is not running",
       field: null,
       recoverable: true,
       details: null,
-    }, "Terminal operation failed")).toBe("Chat terminal is not running");
+    }, "Terminal operation failed")).toBe(en.chatErrors.codes.invalid_state_transition);
     expect(terminalErrorMessage({
       message: "Terminal dimensions are outside the supported range",
       field: "dimensions",
-    }, "Terminal operation failed")).toBe(
-      "dimensions: Terminal dimensions are outside the supported range",
-    );
+    }, "Terminal operation failed")).toBe("Terminal operation failed");
     expect(terminalErrorMessage({ code: "internal" }, "Terminal operation failed")).toBe(
       "Terminal operation failed",
     );
@@ -91,13 +107,34 @@ describe("Chat terminal model", () => {
     expect(registry.claimAvailable([first, second], "inspector")).toEqual([first]);
     expect(registry.claimAvailable([first, second], "bottom")).toEqual([second]);
 
-    registry.select("thread", "inspector", first.id);
-    registry.select("thread", "bottom", second.id);
-    expect(registry.selected("thread", "inspector")).toBe(first.id);
-    expect(registry.selected("thread", "bottom")).toBe(second.id);
+    const scope = terminalScopeKey("channel", "folder");
+    expect(scope).not.toBeNull();
+    registry.select(scope ?? "", "inspector", first.id);
+    registry.select(scope ?? "", "bottom", second.id);
+    expect(registry.selected(scope ?? "", "inspector")).toBe(first.id);
+    expect(registry.selected(scope ?? "", "bottom")).toBe(second.id);
 
     registry.release(first.id);
     expect(registry.claimAvailable([first, second], "bottom")).toEqual([first, second]);
+  });
+
+  it("keeps terminal selections separate for channels that share a folder and for folders of one channel", () => {
+    const registry = new TerminalPanelRegistry();
+    const channelXDocs = terminalScopeKey("channel-x", "folder-docs") ?? "";
+    const channelYDocs = terminalScopeKey("channel-y", "folder-docs") ?? "";
+    const channelXApp = terminalScopeKey("channel-x", "folder-app") ?? "";
+    expect(new Set([channelXDocs, channelYDocs, channelXApp]).size).toBe(3);
+    expect(terminalScopeKey(null, "folder-docs")).toBeNull();
+    expect(terminalScopeKey("channel-x", null)).toBeNull();
+
+    registry.select(channelXDocs, "bottom", "terminal-1");
+    registry.select(channelYDocs, "bottom", "terminal-2");
+    expect(registry.selected(channelXDocs, "bottom")).toBe("terminal-1");
+    expect(registry.selected(channelYDocs, "bottom")).toBe("terminal-2");
+    expect(registry.selected(channelXApp, "bottom")).toBeNull();
+    registry.select(channelXDocs, "bottom", null);
+    expect(registry.selected(channelXDocs, "bottom")).toBeNull();
+    expect(registry.selected(channelYDocs, "bottom")).toBe("terminal-2");
   });
 });
 

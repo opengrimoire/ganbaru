@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import { loadNotesWorkspaceShell } from "$lib/api/notes";
 import type { NotesWorkspaceShell } from "$lib/notes/types";
 
@@ -23,10 +24,6 @@ interface NotesWorkspaceControllerContext {
   loadSelectedPage: (pageId: string) => Promise<void>;
   clearSelectedPageState: () => void;
   readSelectedPageId: () => string | null;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Own Notes workspace shell loading, pagination, and request identity. */
@@ -70,14 +67,14 @@ export function createNotesWorkspaceController(context: NotesWorkspaceController
       loaded = true;
       if (nextSelected) {
         await context.loadSelectedPage(nextSelected).catch((caught) => {
-          if (context.readSelectedPageId() === nextSelected) error = errorMessage(caught);
+          if (context.readSelectedPageId() === nextSelected) error = notesErrorDetail(caught);
         });
       } else {
         context.clearSelectedPageState();
       }
     } catch (caught) {
       if (currentRequestId !== requestId) return;
-      error = errorMessage(caught);
+      error = notesErrorDetail(caught);
       throw caught;
     } finally {
       if (currentRequestId === requestId) loading = false;

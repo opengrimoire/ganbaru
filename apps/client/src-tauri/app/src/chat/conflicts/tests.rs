@@ -134,6 +134,48 @@ async fn a_chosen_channel_version_bumps_the_revision_and_updated_at() {
 }
 
 #[tokio::test]
+async fn a_chosen_channel_note_version_rewords_the_note_and_names_its_channel() {
+    let pool = migrated_pool().await;
+    seed_channel_message(&pool).await;
+    sqlx::raw_sql(AssertSqlSafe(format!(
+        "INSERT INTO chat_participants
+             (id, participant_kind, display_name, created_at, updated_at)
+         VALUES ('participant:ana', 'human', 'Ana', '{NOW}', '{NOW}');
+         INSERT INTO chat_channel_notes
+             (id, channel_id, body, edited_by_participant_id, created_at, updated_at)
+         VALUES ('note:n', 'channel:c', 'Reply in English', 'participant:ana', '{NOW}',
+                 '{NOW}');"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+    write(
+        &pool,
+        ChatConflictTarget::ChannelNote,
+        "note:n",
+        vec![text("Reply in Spanish"), text("participant:ana")],
+    )
+    .await;
+    let (body, revision, updated_at): (String, i64, String) =
+        sqlx::query_as("SELECT body, revision, updated_at FROM chat_channel_notes WHERE id = ?")
+            .bind("note:n")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((body.as_str(), revision), ("Reply in Spanish", 2));
+    assert_ne!(updated_at, NOW);
+    let mut tx = pool.begin().await.unwrap();
+    assert_eq!(
+        note_channel_name(&mut tx, "note:n")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("design")
+    );
+    assert_eq!(note_channel_name(&mut tx, "note:gone").await.unwrap(), None);
+}
+
+#[tokio::test]
 async fn a_chosen_message_version_shows_its_revision() {
     let pool = migrated_pool().await;
     seed_channel_message(&pool).await;

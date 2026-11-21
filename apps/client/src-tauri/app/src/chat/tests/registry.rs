@@ -56,8 +56,6 @@ fn configuration(family_id: &str) -> ProviderInstanceConfig {
         "launchArguments": [],
         "environment": {},
         "credentialReferences": {},
-        "visibleModelIds": [],
-        "favoriteModelIds": [],
         "providerConfig": { "schemaVersion": 7, "value": { "future": true } },
         "futureCommonField": { "nested": [1, 2, 3] }
     }))
@@ -65,7 +63,7 @@ fn configuration(family_id: &str) -> ProviderInstanceConfig {
 }
 
 #[test]
-fn registry_lists_five_known_families_in_stable_order() {
+fn registry_lists_six_known_families_in_stable_order() {
     let metadata = ProviderDriverRegistry.list_metadata();
     let family_ids = metadata
         .iter()
@@ -74,14 +72,21 @@ fn registry_lists_five_known_families_in_stable_order() {
 
     assert_eq!(
         family_ids,
-        ["codex", "claude", "cursor", "grok", "opencode"]
+        ["codex", "claude", "cursor", "grok", "opencode", "acp"]
     );
     assert_eq!(
         metadata
             .iter()
             .map(|entry| entry.display_name.as_str())
             .collect::<Vec<_>>(),
-        ["OpenAI", "Anthropic", "Cursor", "xAI", "OpenCode"]
+        [
+            "OpenAI",
+            "Anthropic",
+            "Cursor",
+            "xAI",
+            "OpenCode",
+            "ACP agent"
+        ]
     );
     assert_eq!(
         metadata[0].implementation_status,
@@ -108,6 +113,35 @@ fn registry_lists_five_known_families_in_stable_order() {
         ProviderImplementationStatus::Available
     );
     assert!(metadata[4].unavailable_reason.is_none());
+    assert_eq!(
+        metadata[5].implementation_status,
+        ProviderImplementationStatus::Available
+    );
+    assert!(metadata[5].unavailable_reason.is_none());
+}
+
+#[test]
+fn generic_acp_driver_is_available_without_a_version_range() {
+    let mut configuration = configuration("acp");
+    configuration.provider_config = ganbaru_chat_contracts::models::VersionedJson {
+        schema_version: 1,
+        value: json!({}),
+    };
+    let driver = ProviderDriverRegistry.create_driver(configuration).unwrap();
+
+    assert_eq!(driver.metadata().display_name, "ACP agent");
+    assert!(driver.metadata().default_executable_candidates.is_empty());
+    assert!(driver.metadata().minimum_tested_cli_version.is_none());
+    assert!(
+        driver
+            .capabilities()
+            .supports(ganbaru_chat_contracts::models::ProviderCapability::Approvals)
+    );
+    assert!(
+        !driver
+            .capabilities()
+            .supports(ganbaru_chat_contracts::models::ProviderCapability::StructuredQuestions)
+    );
 }
 
 #[test]

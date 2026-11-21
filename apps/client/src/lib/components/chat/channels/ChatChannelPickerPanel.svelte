@@ -16,6 +16,7 @@
   import { useChat } from "$lib/stores/chat.svelte";
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
@@ -95,7 +96,7 @@
     if (!showArchived || !projectId) return;
     let cancelled = false;
     chat.loadArchivedChannelsForPicker(projectId).catch((error: unknown) => {
-      if (!cancelled) archivedError = error instanceof Error ? error.message : String(error);
+      if (!cancelled) archivedError = chatErrorMessage(error, t("chatErrors.actions.loadArchivedChannels"));
     });
     return () => { cancelled = true; };
   });
@@ -264,7 +265,7 @@
   <div class="relative flex min-h-0 flex-auto flex-col">
     <div bind:this={scrollElement} use:scrollEdgeFadeAction class={cn("hide-scrollbar min-h-0 flex-auto overflow-y-auto", mobileLayout ? "overscroll-contain px-2 py-2" : "surface-floating-body")}>
       {#if archivedError}
-        <Notice class="px-3 py-2" message={t("chat.channels.archivedLoadFailed", archivedError)} copy={archivedError} />
+        <Notice class="px-3 py-2" message={archivedError} />
       {/if}
       {#if rowCount === 0}
         <p class="px-3 py-2 text-panel-detail text-popover-foreground/60">

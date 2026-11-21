@@ -473,7 +473,7 @@
     anchor={attendeePickerButton}
     title={t("calendar.meeting.pickAttendees")}
     includeContacts
-    includeTeammates={false}
+    includeAgents={false}
     space={attendeePickerSpace}
     onClose={() => { attendeePickerOpen = false; }}
   />

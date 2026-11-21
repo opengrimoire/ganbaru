@@ -65,7 +65,7 @@
     {t("projects.iconPicker.emojiName")}
     <input
       bind:value={customEmojiName}
-      class="field h-9 text-left text-panel text-foreground"
+      class="field text-left text-panel text-foreground"
       placeholder={t("projects.iconPicker.emojiNamePlaceholder")}
     />
   </label>

@@ -15,10 +15,25 @@
   import { getProjects, getProjectsStore, type ProjectsStore } from "$lib/stores/projects.svelte";
   import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
   import { getChat, getChatStore, resetChatForVault } from "$lib/stores/chat.svelte";
+  import { showChatNotification } from "$lib/api/chat/notifications";
+  import { parseChatChangeNotification } from "$lib/chat/validation";
+  import type { ChatBehaviorPreferences } from "$lib/chat/contracts";
+  import {
+    createChatNotificationCoordinator,
+    type ChatNotificationCoordinator,
+  } from "$lib/chat/notifications/desktop-coordinator";
+  import {
+    chatNotificationText,
+    parseChatNotificationTarget,
+    type ChatNotificationTarget,
+  } from "$lib/chat/notifications/delivery";
+  import type { ChatNotificationDelivery } from "$lib/chat/notifications/gate";
+  import { formatList } from "$lib/i18n/formatters";
   import { getZoom } from "$lib/stores/zoom.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { getUpdateManager } from "$lib/stores/updates.svelte";
+  import { getProviderUpdates } from "$lib/stores/chat/provider-updates.svelte";
   import { UPDATE_AUTO_CHECK_INTERVAL_MS } from "$lib/stores/update-policy";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { parseNotesLinkHash } from "$lib/notes/links/block-link";
@@ -62,6 +77,7 @@
   import { workspaceShownPanes } from "$lib/workspace-tabs/shown-panes";
   import type { WorkspaceSplitArea } from "$lib/workspace-tabs/split-layout";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import ConfirmationHost from "$lib/components/ui/ConfirmationHost.svelte";
   import TooltipHost from "$lib/components/ui/TooltipHost.svelte";
   import UpdateNotificationToast from "$lib/components/updates/UpdateNotificationToast.svelte";
   import { formatEventNotificationBody } from "$lib/calendar/event-notifications";
@@ -81,7 +97,7 @@
     createNotesNotificationScheduler,
     createProjectTaskReminderScheduler,
   } from "$lib/scheduling/notification-schedulers";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { getNotesProjectHistoryScheduler } from "$lib/notes/history/project-history-scheduler";
   import { activeVaultIdentity, onActiveVaultIdentityChange } from "$lib/vault/active-vault";
   import { listenForNotesDatabaseChanges } from "$lib/notes/database/window-sync";
@@ -114,6 +130,7 @@
   const preferences = getPreferences();
   const settingsLauncher = getSettingsLauncher();
   const updates = getUpdateManager();
+  const providerUpdates = getProviderUpdates();
   const viewport = getViewport();
   const localization = getLocalization();
   const { t } = localization;
@@ -171,8 +188,12 @@
   let unlistenProjectTaskNotificationOpen: UnlistenFn | null = null;
   let unlistenDistractionsDesktopSettingsOpen: UnlistenFn | null = null;
   let unlistenDistractionsLimitsSettingsOpen: UnlistenFn | null = null;
+  let unlistenChatNotificationOpen: UnlistenFn | null = null;
+  let unlistenChatChangeForNotifications: UnlistenFn | null = null;
   const NOTES_NOTIFICATION_BODY_MAX_CHARS = 180;
   const AUTOMATIC_UPDATE_CHECK_DELAY_MS = 3_000;
+  /** Provider CLI checks wait until startup work settles, since Grok checks by running its program. */
+  const PROVIDER_UPDATE_CHECK_DELAY_MS = 30_000;
   const FOCUS_NOTIFICATION_COPY_RETRY_MS = 1_000;
 
   interface NotesNotificationOpenPayload {
@@ -325,9 +346,15 @@
         void updates.checkAutomatically({ kind: "startup" });
       }, AUTOMATIC_UPDATE_CHECK_DELAY_MS)
       : null;
+    const providerUpdateCheckTimerId = isMainWindow
+      ? setTimeout(() => {
+        void providerUpdates.checkAutomatically(updates.autoNotifications, "startup");
+      }, PROVIDER_UPDATE_CHECK_DELAY_MS)
+      : null;
     const automaticUpdateCheckIntervalId = isMainWindow
       ? setInterval(() => {
         void updates.checkAutomatically({ kind: "periodic" });
+        void providerUpdates.checkAutomatically(updates.autoNotifications, "periodic");
       }, UPDATE_AUTO_CHECK_INTERVAL_MS + AUTOMATIC_UPDATE_CHECK_DELAY_MS + 1_000)
       : null;
     const handleMusicAssignmentInspection = (event: Event) => {
@@ -412,14 +439,63 @@
           unlistenDistractionsLimitsSettingsOpen = unlisten;
         })
         .catch((e) => console.error("Failed to listen for distraction limit settings opens:", e));
+      chatNotifications = createChatNotificationCoordinator({
+        isThreadVisible: chatReplyThreadVisible,
+        behavior: chatBehavior,
+        loadReviewQueue: () => chat.reloadReviewQueue(),
+        loadSettings: () => chat.refreshSettings(),
+        deliver: (delivery) => {
+          void deliverChatNotification(delivery)
+            .catch((e) => console.error("[chat notifications] failed:", e));
+        },
+      });
+      if (activeVaultIdentity() !== null) chatNotifications.loadInputs();
+      listen<unknown>("chat-notification-open", (event) => {
+        if (disposed) return;
+        let target: ChatNotificationTarget;
+        try {
+          target = parseChatNotificationTarget(event.payload);
+        } catch (e) {
+          console.error("Ignored an invalid Chat notification target:", e);
+          return;
+        }
+        void openChatNotification(target)
+          .catch((e) => console.error("Failed to open a Chat notification:", e));
+      })
+        .then((unlisten) => {
+          if (disposed) {
+            unlisten();
+            return;
+          }
+          unlistenChatNotificationOpen = unlisten;
+        })
+        .catch((e) => console.error("Failed to listen for Chat notification opens:", e));
+      listen<unknown>("chat://change", (event) => {
+        if (disposed) return;
+        try {
+          handleChatChangeForNotifications(event.payload);
+        } catch (e) {
+          console.error("Ignored an invalid Chat change notification:", e);
+        }
+      })
+        .then((unlisten) => {
+          if (disposed) {
+            unlisten();
+            return;
+          }
+          unlistenChatChangeForNotifications = unlisten;
+        })
+        .catch((e) => console.error("Failed to listen for Chat changes:", e));
     }
     const unsubscribeHistoryVault = isMainWindow
       ? onActiveVaultIdentityChange((previousVaultId, nextVaultId) => {
           notesProjectHistoryScheduler.switchVault();
           resetChatForVault();
+          chatNotifications?.reset();
           syncQuickNotesTrashPurge();
           projectTaskReminderScheduler.invalidate();
           if (!nextVaultId) return;
+          chatNotifications?.loadInputs();
           const projectsRequest = previousVaultId ? projects.load() : projects.ensureLoaded();
           void projectsRequest.then(() => Promise.all([
             previousVaultId ? notes.load() : notes.ensureLoaded(),
@@ -528,6 +604,12 @@
       unlistenDistractionsDesktopSettingsOpen = null;
       unlistenDistractionsLimitsSettingsOpen?.();
       unlistenDistractionsLimitsSettingsOpen = null;
+      unlistenChatNotificationOpen?.();
+      unlistenChatNotificationOpen = null;
+      unlistenChatChangeForNotifications?.();
+      unlistenChatChangeForNotifications = null;
+      chatNotifications?.dispose();
+      chatNotifications = null;
       document.removeEventListener("wheel", blockNativeWheelScale, { capture: true });
       document.removeEventListener("contextmenu", blockNativeContextMenu, { capture: true });
       document.removeEventListener("pointerdown", markPointerFocus, { capture: true });
@@ -537,6 +619,7 @@
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("ganbaru:inspect-music-assignment", handleMusicAssignmentInspection);
       if (automaticUpdateCheckTimerId) clearTimeout(automaticUpdateCheckTimerId);
+      if (providerUpdateCheckTimerId) clearTimeout(providerUpdateCheckTimerId);
       if (automaticUpdateCheckIntervalId) clearInterval(automaticUpdateCheckIntervalId);
       clearTimeout(startupMemoryTimerId);
       unsubscribeHistoryVault?.();
@@ -847,12 +930,79 @@
     },
   });
 
+  // Repeating messages wait for a Focus phase to end, so a phase change re-arms the dispatch.
+  const scheduledFocusPhaseKey = $derived(`${pomodoro.isActive}:${pomodoro.isRunning}:${pomodoro.phase}`);
+
   $effect(() => {
     const _version = chat.scheduledMessagesVersion;
+    const _focusPhase = scheduledFocusPhaseKey;
     const enabled = isMainWindow && chat.loaded;
     const wasEnabled = chatScheduledMessageScheduler.isEnabled();
     chatScheduledMessageScheduler.setEnabled(enabled);
     if (enabled && wasEnabled) chatScheduledMessageScheduler.invalidate();
+  });
+
+  // Chat notifications
+  let chatNotifications = $state.raw<ChatNotificationCoordinator | null>(null);
+
+  /** The Chat behavior preferences, or `null` while the settings of the current vault are not read. */
+  function chatBehavior(): ChatBehaviorPreferences | null {
+    return chat.settings?.configuration.behavior ?? null;
+  }
+
+  /** Whether the person is looking at the reply thread now, in either pane of the focused main window. */
+  function chatReplyThreadVisible(replyThreadId: string): boolean {
+    if (!document.hasFocus() || !shownKinds.includes("chat")) return false;
+    return chat.openReplyThreadId === replyThreadId || secondaryChat.openReplyThreadId === replyThreadId;
+  }
+
+  async function deliverChatNotification(delivery: ChatNotificationDelivery): Promise<void> {
+    // The gate holds delivery while the settings are unknown; content stays out if they were cleared since.
+    const text = chatNotificationText(delivery, chatBehavior()?.notificationIncludeContent ?? false, {
+      title: (kind, agent) => t(`chat.notifications.titles.${kind}`, agent),
+      body: (channel) => t("chat.notifications.body", channel),
+      bodyWithReason: (channel, reason) => t("chat.notifications.bodyWithReason", channel, reason),
+      summaryTitle: (count) => t("chat.notifications.summaryTitle", count),
+      summaryCount: (kind, count) => t(`chat.notifications.summaryCounts.${kind}`, count),
+      list: (values) => formatList(locale, values),
+      openThread: t("chat.notifications.openThread"),
+      openList: t("chat.notifications.openList"),
+    });
+    await showChatNotification({ ...text, playSound: true });
+  }
+
+  /** Opens the reply thread or the review queue a Chat notification names, in the pane Chat shows in. */
+  async function openChatNotification(target: ChatNotificationTarget): Promise<void> {
+    const projectId = target.kind === "assignment" ? target.projectId : projects.selectedProjectId;
+    const scope = workspaceTabs.navigationScope({ kind: "chat", projectId, item: null });
+    const store = scope === "secondary" ? secondaryChat : chat;
+    await store.ensureLoaded();
+    if (target.kind === "assignment") await store.openReviewItem(target);
+    workspaceTabs.navigateIn("chat", scope);
+  }
+
+  /** Rereads the review queue when a native Chat change may have moved work into or out of it. */
+  function handleChatChangeForNotifications(payload: unknown): void {
+    const change = parseChatChangeNotification(payload);
+    chatNotifications?.handleChange(change.changedProjectionKeys);
+  }
+
+  $effect(() => {
+    const queue = chat.reviewQueue;
+    if (!queue || !chatNotifications) return;
+    untrack(() => chatNotifications?.observe(queue));
+  });
+
+  // Settings read by a Chat pane, or changed in Settings, release what waited for them.
+  $effect(() => {
+    const settings = chat.settings;
+    if (!settings || !chatNotifications) return;
+    untrack(() => chatNotifications?.reevaluate());
+  });
+
+  $effect(() => {
+    const _focusPhase = scheduledFocusPhaseKey;
+    untrack(() => chatNotifications?.refreshQuiet());
   });
 
   // Event notifications
@@ -1050,6 +1200,7 @@
       <NotesHeldEditToast />
     {/await}
   {/if}
+  <ConfirmationHost />
   <TooltipHost />
   <WindowResizeHandles disabled={isMaximized || !!idleInfo} />
 </div>

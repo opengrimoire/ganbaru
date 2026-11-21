@@ -19,9 +19,41 @@ pub struct FakeDriverControl {
     send_delay_millis: AtomicUsize,
     sends_in_flight: AtomicUsize,
     maximum_sends_in_flight: AtomicUsize,
+    opened_instructions: Mutex<Vec<Option<String>>>,
+    native_rollback: AtomicBool,
+    rollback_requests: Mutex<Vec<RollbackRequest>>,
+    background_work: AtomicBool,
 }
 
 impl FakeDriverControl {
+    /// Makes the live session report background work as running or finished.
+    pub fn set_background_work(&self, running: bool) {
+        self.background_work.store(running, Ordering::Release);
+    }
+
+    /// Makes later sessions advertise native rollback and accept rollback requests.
+    pub fn enable_native_rollback(&self) {
+        self.native_rollback.store(true, Ordering::Release);
+    }
+
+    /// Every rollback request the driver accepted, in order.
+    pub fn rollback_requests(&self) -> Vec<RollbackRequest> {
+        self.rollback_requests.lock().unwrap().clone()
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        if !self.native_rollback.load(Ordering::Acquire) {
+            return ProviderCapabilities::default();
+        }
+        ProviderCapabilities {
+            entries: vec![ProviderCapabilitySupport {
+                capability: ProviderCapability::NativeRollback,
+                supported: true,
+                explanation: None,
+            }],
+        }
+    }
+
     pub fn crash_next_send(&self) {
         self.crash_next_send.store(true, Ordering::Release);
     }
@@ -43,6 +75,11 @@ impl FakeDriverControl {
         self.events.lock().unwrap().clone()
     }
 
+    /// The instructions of every start or resume request, in order.
+    pub fn opened_instructions(&self) -> Vec<Option<String>> {
+        self.opened_instructions.lock().unwrap().clone()
+    }
+
     pub async fn emit_late(&self) -> ChatResult<()> {
         let sink = self.sink.lock().unwrap().clone().unwrap();
         sink.emit(event(
@@ -61,6 +98,22 @@ impl FakeDriverControl {
         let sink = self.sink.lock().unwrap().clone().unwrap();
         sink.emit(content_event("late-content", turn_id, "Late content"))
             .await
+    }
+
+    /// Emits the provider's own interrupted abort of `turn_id`, as a provider that confirms Stop
+    /// late would.
+    pub async fn emit_late_abort(&self, turn_id: &str) -> ChatResult<()> {
+        let sink = self.sink.lock().unwrap().clone().unwrap();
+        sink.emit(event(
+            "late-abort",
+            Some(turn_id),
+            CanonicalEvent::TurnAborted(ganbaru_chat_contracts::events::TurnAbortedEvent {
+                state: ganbaru_chat_contracts::models::ChatTurnState::Interrupted,
+                reason: "Interrupted".to_string(),
+                recoverable: true,
+            }),
+        ))
+        .await
     }
 
     pub async fn emit_cross_thread(&self) -> ChatResult<()> {
@@ -111,8 +164,6 @@ pub fn fake_driver(control: Arc<FakeDriverControl>) -> Box<dyn ProviderDriver> {
             "launchArguments": [],
             "environment": {},
             "credentialReferences": {},
-            "visibleModelIds": [],
-            "favoriteModelIds": [],
             "providerConfig": { "schemaVersion": 1, "value": {} }
         }))
         .unwrap(),
@@ -128,6 +179,14 @@ struct FakeProviderDriver {
 }
 
 impl FakeProviderDriver {
+    fn record_opened(&self, instructions: Option<String>) {
+        self.control
+            .opened_instructions
+            .lock()
+            .unwrap()
+            .push(instructions);
+    }
+
     fn unavailable<'a, T>(&self) -> DriverFuture<'a, T> {
         Box::pin(async { Err(ChatError::unsupported("Fake operation is not implemented")) })
     }
@@ -175,7 +234,11 @@ impl ProviderDriver for FakeProviderDriver {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::default()
+        self.control.capabilities()
+    }
+
+    fn background_work_running(&self) -> bool {
+        self.control.background_work.load(Ordering::Acquire)
     }
 
     fn probe<'a>(
@@ -202,10 +265,11 @@ impl ProviderDriver for FakeProviderDriver {
 
     fn start_session<'a>(
         &'a mut self,
-        _request: StartSessionRequest,
+        request: StartSessionRequest,
         event_sink: Arc<dyn ProviderEventSink>,
         _context: &'a DriverOperationContext,
     ) -> DriverFuture<'a, ProviderSessionSnapshot> {
+        self.record_opened(request.developer_instructions);
         Box::pin(async move {
             *self.control.sink.lock().unwrap() = Some(event_sink);
             self.emit(event(
@@ -225,17 +289,26 @@ impl ProviderDriver for FakeProviderDriver {
                 .unwrap(),
             ))
             .await?;
-            Ok(session_snapshot())
+            let mut snapshot = session_snapshot();
+            snapshot.capabilities = self.control.capabilities();
+            Ok(snapshot)
         })
     }
 
     fn resume_session<'a>(
         &'a mut self,
-        _request: ResumeSessionRequest,
+        request: ResumeSessionRequest,
         event_sink: Arc<dyn ProviderEventSink>,
         context: &'a DriverOperationContext,
     ) -> DriverFuture<'a, ProviderSessionSnapshot> {
-        self.start_session(start_request(), event_sink, context)
+        self.start_session(
+            StartSessionRequest {
+                developer_instructions: request.developer_instructions,
+                ..start_request()
+            },
+            event_sink,
+            context,
+        )
     }
 
     fn send_turn<'a>(
@@ -373,10 +446,14 @@ impl ProviderDriver for FakeProviderDriver {
 
     fn rollback<'a>(
         &'a mut self,
-        _request: RollbackRequest,
-        _context: &'a DriverOperationContext,
+        request: RollbackRequest,
+        context: &'a DriverOperationContext,
     ) -> DriverFuture<'a, DriverOperationReceipt> {
-        self.unavailable()
+        if !self.control.native_rollback.load(Ordering::Acquire) {
+            return self.unavailable();
+        }
+        self.control.rollback_requests.lock().unwrap().push(request);
+        Box::pin(async move { Ok(operation_receipt(&context.operation_id)) })
     }
 
     fn read_history<'a>(

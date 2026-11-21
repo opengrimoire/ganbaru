@@ -5,6 +5,7 @@
   import { getNotesEditor } from "$lib/components/notes/editor-context";
   import NotesRichTextInline from "$lib/components/notes/rich-text/NotesRichTextInline.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { notesCommentAttachmentFromAsset } from "$lib/notes/collaboration/comment-attachments";
@@ -99,7 +100,7 @@
   let mentionActiveIndex = $state(0);
   let submitting = $state(false);
   let attaching = $state(false);
-  let errorMessage = $state<string | null>(null);
+  let errorMessage = $state<NotesFailure | null>(null);
   let lastSelection: NotesTextSelection | null = null;
   /** The at sign whose menu was dismissed; typing after it does not reopen the menu. */
   let dismissedMentionStart: number | null = null;
@@ -334,7 +335,7 @@
       const asset = await pickNotesFileAsset("file");
       if (asset) attachments = [...attachments, notesCommentAttachmentFromAsset(asset)];
     } catch (error) {
-      errorMessage = t("notes.commentAttachFailed", error instanceof Error ? error.message : String(error));
+      errorMessage = notesFailure(error, t("notes.commentAttachFailed"));
     } finally {
       attaching = false;
       const end = plainText.length;
@@ -361,10 +362,10 @@
         void placeCaret({ start: 0, end: 0 }, false);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      errorMessage = isNotesCommentTooLargeMessage(message)
-        ? t("notes.commentTooLarge")
-        : t("notes.commentSendFailed", message);
+      const failure = notesFailure(error, t("notes.commentSendFailed"));
+      errorMessage = isNotesCommentTooLargeMessage(failure.detail ?? "")
+        ? { message: t("notes.commentTooLarge"), detail: failure.detail }
+        : failure;
     } finally {
       submitting = false;
     }
@@ -463,7 +464,7 @@
       </div>
     {/if}
     {#if errorMessage}
-      <Notice class="mt-1 text-panel-detail" message={errorMessage} />
+      <Notice class="mt-1 text-panel-detail" message={errorMessage.message} copy={errorMessage.detail} />
     {/if}
     {#if mentionOpen}
       <NotesCommentMentionMenu

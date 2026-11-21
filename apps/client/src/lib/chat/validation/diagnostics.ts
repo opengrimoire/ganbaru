@@ -2,10 +2,23 @@ import type {
   ChatDiagnosticCounts,
   ChatDiagnosticPreferences,
   ChatDiagnosticsRead,
+  ChatProcessDescendantRead,
+  ChatProcessListRead,
+  ChatProcessRecord,
   ChatRebuildResult,
   ChatStopAllResult,
 } from "../contracts";
-import { readArray, readBoolean, readNonNegativeSafeInteger, readRecord, readString } from "./readers";
+import { CHAT_PROCESS_PURPOSES, CHAT_PROCESS_RESOURCE_SCOPES } from "../contracts";
+import {
+  readArray,
+  readBoolean,
+  readEnum,
+  readNonNegativeSafeInteger,
+  readNullable,
+  readRecord,
+  readString,
+  readUtcTimestamp,
+} from "./readers";
 
 export function parseChatDiagnosticPreferences(value: unknown, label = "diagnostic preferences"): ChatDiagnosticPreferences {
   const record = readRecord(value, label);
@@ -56,4 +69,45 @@ export function parseChatStopAllResult(value: unknown): ChatStopAllResult {
 export function parseChatRebuildResult(value: unknown): ChatRebuildResult {
   const record = readRecord(value, "Chat rebuild result");
   return { rebuiltThreads: readNonNegativeSafeInteger(record.rebuiltThreads, "Chat rebuild result.rebuiltThreads") };
+}
+
+/** Longest process list the native list command returns, roots and descendants together. */
+const MAX_PROCESS_ROWS = 1_024;
+
+/**
+ * Validates the native Chat process list.
+ *
+ * @param value Untrusted command response.
+ * @returns The typed process list.
+ */
+export function parseChatProcessList(value: unknown): ChatProcessListRead {
+  const record = readRecord(value, "Chat process list");
+  const roots = readArray(record.roots, "Chat process list.roots", parseChatProcessRecord);
+  const descendants = readArray(record.descendants, "Chat process list.descendants", parseChatProcessDescendant);
+  if (roots.length + descendants.length > MAX_PROCESS_ROWS) throw new Error("Chat process list is too long");
+  return { roots, descendants, omitted: readNonNegativeSafeInteger(record.omitted, "Chat process list.omitted") };
+}
+
+function parseChatProcessRecord(value: unknown, label: string): ChatProcessRecord {
+  const record = readRecord(value, label);
+  return {
+    pid: readNonNegativeSafeInteger(record.pid, `${label}.pid`),
+    startTime: readNullable(record.startTime, `${label}.startTime`, readNonNegativeSafeInteger),
+    executableName: readString(record.executableName, `${label}.executableName`),
+    providerInstanceLabel: readNullable(record.providerInstanceLabel, `${label}.providerInstanceLabel`, readString),
+    purpose: readEnum(record.purpose, CHAT_PROCESS_PURPOSES, `${label}.purpose`),
+    startedAt: readUtcTimestamp(record.startedAt, `${label}.startedAt`),
+    stoppable: readBoolean(record.stoppable, `${label}.stoppable`),
+    resourceScope: readNullable(record.resourceScope, `${label}.resourceScope`, (value, path) => readEnum(value, CHAT_PROCESS_RESOURCE_SCOPES, path)),
+  };
+}
+
+function parseChatProcessDescendant(value: unknown, label: string): ChatProcessDescendantRead {
+  const record = readRecord(value, label);
+  return {
+    pid: readNonNegativeSafeInteger(record.pid, `${label}.pid`),
+    parentPid: readNonNegativeSafeInteger(record.parentPid, `${label}.parentPid`),
+    rootPid: readNonNegativeSafeInteger(record.rootPid, `${label}.rootPid`),
+    executableName: readString(record.executableName, `${label}.executableName`),
+  };
 }

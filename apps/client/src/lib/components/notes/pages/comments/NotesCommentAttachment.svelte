@@ -2,6 +2,7 @@
   import { notesFileAssetUrl, releaseNotesFileAssetUrl } from "$lib/api/notes/file-assets";
   import { openNotesExternalUrl } from "$lib/api/notes/knowledge";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesCommentAttachmentFile } from "$lib/notes/collaboration/comment-attachments";
   import ExternalLink from "@lucide/svelte/icons/external-link";
@@ -27,7 +28,7 @@
 
   let previewUrl = $state<string | null>(null);
   let previewFailed = $state(false);
-  let openError = $state<string | null>(null);
+  let openError = $state<NotesFailure | null>(null);
 
   $effect(() => {
     const path = imagePath;
@@ -53,7 +54,7 @@
     try {
       await openNotesExternalUrl(url);
     } catch (error) {
-      openError = error instanceof Error ? error.message : String(error);
+      openError = notesFailure(error, t("notes.commentAttachmentOpenFailed"));
     }
   }
 </script>
@@ -102,7 +103,7 @@
     </button>
   {/if}
   {#if openError}
-    <Notice class="mt-1 text-panel-detail" message={openError} />
+    <Notice class="mt-1 text-panel-detail" message={openError.message} copy={openError.detail} />
   {/if}
 </div>
 

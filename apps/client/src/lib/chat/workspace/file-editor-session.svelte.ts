@@ -5,9 +5,11 @@ import type {
   ProjectWorkingFolderFilePreview,
 } from "$lib/chat/contracts";
 import { chatErrorMessage } from "$lib/chat/error-presentation";
+import { translate } from "$lib/i18n/translator.svelte";
 import { boundTerminalContext } from "./terminal-model";
 import { workspacePreviewImpact } from "./change-model";
 import { useChat } from "$lib/stores/chat.svelte";
+import { requestConfirmation, type ConfirmationRequest } from "$lib/components/ui/confirmation.svelte";
 
 interface FileMutationContext {
   requestId: number;
@@ -18,13 +20,20 @@ interface FileMutationContext {
 }
 
 export interface ChatFileEditorSessionOptions {
+  /** Folder the owning Files panel targets. */
+  workingFolderId: () => string | null;
+  /** Execution environment inside that folder, or null for the folder itself. */
+  executionEnvironmentId: () => string | null;
   selectedPath: () => string | null;
   setSelectedPath: (path: string) => void;
   refreshParentDirectory: (path: string) => Promise<void>;
   onReviewCreated: () => void;
-  discardUnsavedMessage: () => string;
-  confirmOverwriteMessage: () => string;
-  confirmRecreateMessage: () => string;
+  /** Asks before unsaved edits are replaced by another file or a reload. */
+  discardUnsavedConfirmation: () => ConfirmationRequest;
+  /** Asks before the draft overwrites a newer file on disk. */
+  overwriteConfirmation: () => ConfirmationRequest;
+  /** Asks before a deleted file is recreated from the draft. */
+  recreateConfirmation: () => ConfirmationRequest;
   previewUnavailableMessage: () => string;
 }
 
@@ -106,15 +115,15 @@ export class ChatFileEditorSession {
 
   async select(
     path: string,
-    executionEnvironmentId = this.chat.selectedExecutionEnvironmentId,
+    executionEnvironmentId = this.options.executionEnvironmentId(),
     discardDirty = false,
   ): Promise<boolean> {
-    const workingFolderId = this.chat.selectedWorkingFolderId;
+    const workingFolderId = this.options.workingFolderId();
     if (!workingFolderId) return false;
     if (!discardDirty
       && path !== this.preview?.relativePath
       && this.dirty
-      && !window.confirm(this.options.discardUnsavedMessage())) return false;
+      && !await this.confirmForCurrentFile(workingFolderId, this.options.discardUnsavedConfirmation())) return false;
     this.mutationRequestId += 1;
     this.saving = false;
     const scopeRevision = this.scopeRevision;
@@ -138,7 +147,7 @@ export class ChatFileEditorSession {
     } catch (reason: unknown) {
       if (requestId === this.previewRequestId
         && this.scopeIsCurrent(workingFolderId, executionEnvironmentId, scopeRevision)) {
-        this.error = chatErrorMessage(reason);
+        this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
         if (previousPath) this.options.setSelectedPath(previousPath);
       }
     } finally {
@@ -161,10 +170,10 @@ export class ChatFileEditorSession {
   }
 
   async refreshFromDisk(path: string, moved: boolean, previousPath = path): Promise<void> {
-    const workingFolderId = this.chat.selectedWorkingFolderId;
+    const workingFolderId = this.options.workingFolderId();
     const current = this.preview;
     if (!workingFolderId) return;
-    const environmentId = this.chat.selectedExecutionEnvironmentId;
+    const environmentId = this.options.executionEnvironmentId();
     const scopeRevision = this.scopeRevision;
     const requestId = ++this.previewRequestId;
     try {
@@ -196,7 +205,7 @@ export class ChatFileEditorSession {
         if (this.dirty && !this.saveCopyPath) this.saveCopyPath = fileConflictCopyPath(path);
         return;
       }
-      this.error = chatErrorMessage(reason);
+      this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
     }
   }
 
@@ -206,7 +215,7 @@ export class ChatFileEditorSession {
       return;
     }
     if (this.saveConflict) return;
-    const workingFolderId = this.chat.selectedWorkingFolderId;
+    const workingFolderId = this.options.workingFolderId();
     const current = this.preview;
     if (!workingFolderId || !current?.contentRevision || !this.dirty || this.saving) return;
     const mutation = this.beginMutation(workingFolderId, current.relativePath);
@@ -225,7 +234,7 @@ export class ChatFileEditorSession {
       await this.options.refreshParentDirectory(saved.relativePath);
     } catch (reason: unknown) {
       if (!this.mutationIsCurrent(mutation)) return;
-      this.error = chatErrorMessage(reason);
+      this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
       this.saveConflict = errorCode(reason) === "conflict";
       if (this.saveConflict && !this.saveCopyPath) {
         this.saveCopyPath = fileConflictCopyPath(current.relativePath);
@@ -236,10 +245,10 @@ export class ChatFileEditorSession {
   }
 
   async compareConflict(): Promise<void> {
-    const workingFolderId = this.chat.selectedWorkingFolderId;
+    const workingFolderId = this.options.workingFolderId();
     const current = this.preview;
     if (!workingFolderId || !current) return;
-    const environmentId = this.chat.selectedExecutionEnvironmentId;
+    const environmentId = this.options.executionEnvironmentId();
     const scopeRevision = this.scopeRevision;
     try {
       const disk = await chatApi.previewProjectWorkingFolderFile(
@@ -253,13 +262,13 @@ export class ChatFileEditorSession {
     } catch (reason: unknown) {
       if (this.scopeIsCurrent(workingFolderId, environmentId, scopeRevision)
         && this.preview?.relativePath === current.relativePath) {
-        this.error = chatErrorMessage(reason);
+        this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
       }
     }
   }
 
   async saveConflictCopy(): Promise<void> {
-    const workingFolderId = this.chat.selectedWorkingFolderId;
+    const workingFolderId = this.options.workingFolderId();
     const current = this.preview;
     const target = this.saveCopyPath.trim();
     if (!workingFolderId || !current || !target || this.saving) return;
@@ -287,24 +296,29 @@ export class ChatFileEditorSession {
       this.options.setSelectedPath(saved.relativePath);
       await this.options.refreshParentDirectory(saved.relativePath);
     } catch (reason: unknown) {
-      if (this.mutationIsCurrent(mutation)) this.error = chatErrorMessage(reason);
+      if (this.mutationIsCurrent(mutation)) this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
     } finally {
       if (this.mutationScopeIsCurrent(mutation)) this.saving = false;
     }
   }
 
-  reloadSelectedFile(): void {
+  async reloadSelectedFile(): Promise<void> {
     const selectedPath = this.options.selectedPath();
-    if (!selectedPath) return;
-    if (this.dirty && !window.confirm(this.options.discardUnsavedMessage())) return;
-    void this.select(selectedPath, this.chat.selectedExecutionEnvironmentId, true);
+    const workingFolderId = this.options.workingFolderId();
+    if (!selectedPath || !workingFolderId) return;
+    if (this.dirty) {
+      if (!await this.confirmForCurrentFile(workingFolderId, this.options.discardUnsavedConfirmation())
+        || this.options.selectedPath() !== selectedPath) return;
+    }
+    await this.select(selectedPath, this.options.executionEnvironmentId(), true);
   }
 
   async overwriteExternalFile(): Promise<void> {
-    const workingFolderId = this.chat.selectedWorkingFolderId;
+    const workingFolderId = this.options.workingFolderId();
     const current = this.preview;
     if (!workingFolderId || !current || this.fileDeleted || this.saving
-      || !window.confirm(this.options.confirmOverwriteMessage())) return;
+      || !await this.confirmForCurrentFile(workingFolderId, this.options.overwriteConfirmation())
+      || this.fileDeleted || this.saving) return;
     const mutation = this.beginMutation(workingFolderId, current.relativePath);
     this.saving = true;
     this.error = null;
@@ -328,7 +342,7 @@ export class ChatFileEditorSession {
       await this.options.refreshParentDirectory(saved.relativePath);
     } catch (reason: unknown) {
       if (!this.mutationIsCurrent(mutation)) return;
-      this.error = chatErrorMessage(reason);
+      this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
       this.saveConflict = errorCode(reason) === "conflict";
     } finally {
       if (this.mutationScopeIsCurrent(mutation)) this.saving = false;
@@ -336,10 +350,11 @@ export class ChatFileEditorSession {
   }
 
   async recreateDeletedFile(): Promise<void> {
-    const workingFolderId = this.chat.selectedWorkingFolderId;
+    const workingFolderId = this.options.workingFolderId();
     const current = this.preview;
     if (!workingFolderId || !current || !this.fileDeleted || this.saving
-      || !window.confirm(this.options.confirmRecreateMessage())) return;
+      || !await this.confirmForCurrentFile(workingFolderId, this.options.recreateConfirmation())
+      || !this.fileDeleted || this.saving) return;
     const mutation = this.beginMutation(workingFolderId, current.relativePath);
     this.saving = true;
     this.error = null;
@@ -356,7 +371,7 @@ export class ChatFileEditorSession {
       await this.options.refreshParentDirectory(saved.relativePath);
     } catch (reason: unknown) {
       if (!this.mutationIsCurrent(mutation)) return;
-      this.error = chatErrorMessage(reason);
+      this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
       if (errorCode(reason) === "conflict") this.saveConflict = true;
     } finally {
       if (this.mutationScopeIsCurrent(mutation)) this.saving = false;
@@ -364,10 +379,10 @@ export class ChatFileEditorSession {
   }
 
   async attachSelection(): Promise<void> {
-    const workingFolderId = this.chat.selectedWorkingFolderId;
+    const workingFolderId = this.options.workingFolderId();
     const path = this.options.selectedPath();
     if (!workingFolderId || !path) return;
-    const environmentId = this.chat.selectedExecutionEnvironmentId;
+    const environmentId = this.options.executionEnvironmentId();
     const scopeRevision = this.scopeRevision;
     const bounded = boundTerminalContext(this.editorSelection?.text ?? "", 128 * 1024);
     if (!bounded.text) return;
@@ -383,7 +398,7 @@ export class ChatFileEditorSession {
       this.chat.setComposerAttachments([...this.chat.composer.attachmentIds, attachment.id]);
     } catch (reason: unknown) {
       if (this.scopeIsCurrent(workingFolderId, environmentId, scopeRevision)) {
-        this.error = chatErrorMessage(reason);
+        this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
       }
     }
   }
@@ -394,9 +409,9 @@ export class ChatFileEditorSession {
     const selection = this.editorSelection;
     if (!threadId || !current?.contentRevision || !selection?.text
       || !this.reviewDraft.trim() || this.creatingReview) return;
-    const workingFolderId = this.chat.selectedWorkingFolderId;
+    const workingFolderId = this.options.workingFolderId();
     if (!workingFolderId) return;
-    const environmentId = this.chat.selectedExecutionEnvironmentId;
+    const environmentId = this.options.executionEnvironmentId();
     const scopeRevision = this.scopeRevision;
     this.creatingReview = true;
     this.error = null;
@@ -422,12 +437,26 @@ export class ChatFileEditorSession {
       if (this.scopeIsCurrent(workingFolderId, environmentId, scopeRevision)
         && this.chat.selectedThreadId === threadId
         && this.preview?.relativePath === current.relativePath) {
-        this.error = chatErrorMessage(reason);
+        this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
       }
     } finally {
       if (this.scopeIsCurrent(workingFolderId, environmentId, scopeRevision)
         && this.chat.selectedThreadId === threadId) this.creatingReview = false;
     }
+  }
+
+  /**
+   * Asks for a confirmation and accepts it only while the same file in the same scope is still open, so an answer
+   * never acts on a file or working folder that changed while the dialog was shown.
+   */
+  private async confirmForCurrentFile(workingFolderId: string, request: ConfirmationRequest): Promise<boolean> {
+    const scopeRevision = this.scopeRevision;
+    const executionEnvironmentId = this.options.executionEnvironmentId();
+    const relativePath = this.preview?.relativePath ?? null;
+    const confirmed = await requestConfirmation(request);
+    return confirmed
+      && this.scopeIsCurrent(workingFolderId, executionEnvironmentId, scopeRevision)
+      && (this.preview?.relativePath ?? null) === relativePath;
   }
 
   private beginLoading(): void {
@@ -474,7 +503,7 @@ export class ChatFileEditorSession {
       requestId: ++this.mutationRequestId,
       scopeRevision: this.scopeRevision,
       workingFolderId,
-      executionEnvironmentId: this.chat.selectedExecutionEnvironmentId,
+      executionEnvironmentId: this.options.executionEnvironmentId(),
       relativePath,
     };
   }
@@ -499,8 +528,8 @@ export class ChatFileEditorSession {
     scopeRevision: number,
   ): boolean {
     return scopeRevision === this.scopeRevision
-      && workingFolderId === this.chat.selectedWorkingFolderId
-      && executionEnvironmentId === this.chat.selectedExecutionEnvironmentId;
+      && workingFolderId === this.options.workingFolderId()
+      && executionEnvironmentId === this.options.executionEnvironmentId();
   }
 }
 

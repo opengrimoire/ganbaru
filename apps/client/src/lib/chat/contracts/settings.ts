@@ -1,5 +1,6 @@
 import type { ChatConfiguration } from "./config";
-import type { ChatThreadId } from "./common";
+import type { ChatThreadId, ProviderInstanceId, UtcTimestamp } from "./common";
+import type { RateLimitStatusEvent } from "./events";
 import type {
   ProviderFamilyMetadataRead,
   ProviderInstanceConfig,
@@ -23,12 +24,32 @@ export interface ProviderInstanceRead {
   lastProbe: ProviderProbeResult | null;
   lastSuccessfulProbeAt: string | null;
   modelCatalog: ProviderModelCatalog | null;
+  /** The newest usage limits this device saw the provider report, from a probe or a turn. */
+  usageLimits: ProviderUsageLimitsObservation | null;
+  /** When this device last started a turn with the provider. */
+  lastUsedAt: UtcTimestamp | null;
+  /** The earlier configuration this one launches the same program and account as on this device. */
+  duplicateOf: ProviderInstanceId | null;
+}
+
+/** Usage limits a provider reported, with when this device observed them. */
+export interface ProviderUsageLimitsObservation {
+  observedAt: UtcTimestamp;
+  /** When a report last read the usage numbers the status holds, or `null` when none did or a linked desktop shared them. */
+  usageReadAt: UtcTimestamp | null;
+  status: RateLimitStatusEvent;
 }
 
 export interface ChatSettingsRead {
   configuration: ChatConfiguration;
   providerFamilies: ProviderFamilyMetadataRead[];
   providerInstances: ProviderInstanceRead[];
+  /**
+   * The CLI programs found on this device for each family it could set up, by family id; a
+   * family maps to an empty list when its search found nothing and is absent when this device
+   * does not search for it.
+   */
+  installedExecutables: Readonly<Record<string, readonly string[]>>;
   credentialStoreAvailability: CredentialStoreAvailability;
   lastSelectedThreadId: ChatThreadId | null;
 }
@@ -56,6 +77,37 @@ export type ProviderFileKind = (typeof PROVIDER_FILE_KINDS)[number];
 export const PROVIDER_FILE_FORMATS = ["toml", "json", "jsonc", "markdown"] as const;
 export type ProviderFileFormat = (typeof PROVIDER_FILE_FORMATS)[number];
 
+export const PROVIDER_PREFERENCE_TYPES = ["switch", "boolean", "count", "percentage", "choice", "text"] as const;
+export type ProviderPreferenceType = (typeof PROVIDER_PREFERENCE_TYPES)[number];
+
+/** One catalog preference and the value the configuration file gives it. */
+export interface ProviderPreferenceRead {
+  /** Dotted settings key path or environment variable name. */
+  id: string;
+  valueType: ProviderPreferenceType;
+  /** Whether the preference is an environment variable rather than a settings key. */
+  variable: boolean;
+  /** A boolean for switches and booleans, a string otherwise, or null when unset. */
+  value: boolean | string | null;
+  /** Whether the file sets a value that fails its check, so the provider may not keep it. */
+  ignored: boolean;
+  /** Longest accepted text, for text preferences. */
+  maxBytes: number | null;
+  /** Whether a text preference may span lines. */
+  multiline: boolean;
+  /** Whether an empty text is a meaningful value rather than a missing one. */
+  emptyAllowed: boolean;
+  /** Accepted values, for choice preferences. */
+  options: string[];
+}
+
+/** The preferences of one provider configuration file. */
+export interface ProviderPreferencesRead {
+  /** Whether the file is missing, empty, or a valid document, so entries can be edited. */
+  editable: boolean;
+  entries: ProviderPreferenceRead[];
+}
+
 export interface ProviderFileRead {
   fileId: string;
   name: string;
@@ -65,4 +117,49 @@ export interface ProviderFileRead {
   exists: boolean;
   contents: string;
   revision: string;
+  /** Preferences of a configuration file whose provider has a catalog. */
+  preferences: ProviderPreferencesRead | null;
+}
+
+/** A new value for one catalog preference, where null removes the entry. */
+export interface ProviderPreferenceEdit {
+  preferenceId: string;
+  value: boolean | string | null;
+}
+
+/** The pending edits of one provider file, which a single save writes together. */
+export interface ProviderFileSave {
+  fileId: string;
+  /** The edited text, or null to keep the saved text. */
+  contents: string | null;
+  /** Preference edits applied, in order, on top of the text. */
+  preferences: ProviderPreferenceEdit[];
+  /** Revision the edits were made against. */
+  expectedRevision: string;
+}
+
+export const PROVIDER_FILE_NOTE_KINDS = [
+  "cursor_user_rules",
+  "grok_private_home",
+  "grok_rules",
+  "grok_other_home_instructions",
+  "codex_override",
+  "opencode_claude_fallback",
+  "opencode_instructions",
+  "claude_rules",
+] as const;
+/** Instruction sources a provider loads that the shown files do not cover. */
+export type ProviderFileNoteKind = (typeof PROVIDER_FILE_NOTE_KINDS)[number];
+
+/** A note about where an instruction source the page cannot show lives. */
+export interface ProviderFileNote {
+  kind: ProviderFileNoteKind;
+  /** Display paths the note names, home-relative when inside the home folder. */
+  paths: string[];
+}
+
+/** The files of one provider instance and notes about the sources they do not cover. */
+export interface ProviderFilesRead {
+  files: ProviderFileRead[];
+  notes: ProviderFileNote[];
 }

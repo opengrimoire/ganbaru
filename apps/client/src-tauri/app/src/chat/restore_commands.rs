@@ -59,6 +59,16 @@ pub struct ExecuteChatRestoreRequest {
     pub confirmed: bool,
 }
 
+/// A consequence of a checkpoint restore that the confirmation dialog explains in the user's language.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatRestoreWarningCode {
+    /// The real Git staging area is restored to the checkpoint's index.
+    StagingRestored,
+    /// The provider cannot roll back its own history, so the conversation continues as a fork.
+    ProviderForkRequired,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatRestorePreviewRead {
@@ -68,7 +78,7 @@ pub struct ChatRestorePreviewRead {
     pub files: Vec<ChatChangedFileRead>,
     pub staged_changes: bool,
     pub provider_rollback: String,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<ChatRestoreWarningCode>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -150,16 +160,7 @@ pub async fn chat_preview_checkpoint_restore(
         .snapshot(&request.thread_id)?
         .capabilities;
     let staged_changes = current.index_tree_oid != target.index_tree_oid;
-    let mut warnings = Vec::new();
-    if staged_changes {
-        warnings.push("The real staging state will be restored to the checkpoint.".to_string());
-    }
-    if !capabilities.supports(ProviderCapability::NativeRollback) {
-        warnings.push(
-            "The provider cannot align native history, so the restored conversation will require a fork."
-                .to_string(),
-        );
-    }
+    let native_rollback = capabilities.supports(ProviderCapability::NativeRollback);
     if working_folder_id != authorized.working_folder_id {
         return Err(restore_worker_error());
     }
@@ -169,14 +170,26 @@ pub async fn chat_preview_checkpoint_restore(
         expires_at,
         files,
         staged_changes,
-        provider_rollback: if capabilities.supports(ProviderCapability::NativeRollback) {
+        provider_rollback: if native_rollback {
             "supported"
         } else {
             "unsupported"
         }
         .to_string(),
-        warnings,
+        warnings: restore_warnings(staged_changes, native_rollback),
     })
+}
+
+/// Returns the warnings a restore preview shows for its staging and provider history state.
+fn restore_warnings(staged_changes: bool, native_rollback: bool) -> Vec<ChatRestoreWarningCode> {
+    let mut warnings = Vec::new();
+    if staged_changes {
+        warnings.push(ChatRestoreWarningCode::StagingRestored);
+    }
+    if !native_rollback {
+        warnings.push(ChatRestoreWarningCode::ProviderForkRequired);
+    }
+    warnings
 }
 
 #[tauri::command]
@@ -342,4 +355,37 @@ fn corrupt_data_error() -> ChatError {
         "Stored checkpoint restore data is invalid",
         false,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_preview_warns_about_staging_and_a_provider_fork() {
+        assert_eq!(restore_warnings(false, true), Vec::new());
+        assert_eq!(
+            restore_warnings(true, true),
+            vec![ChatRestoreWarningCode::StagingRestored]
+        );
+        assert_eq!(
+            restore_warnings(false, false),
+            vec![ChatRestoreWarningCode::ProviderForkRequired]
+        );
+        assert_eq!(
+            restore_warnings(true, false),
+            vec![
+                ChatRestoreWarningCode::StagingRestored,
+                ChatRestoreWarningCode::ProviderForkRequired
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_warning_codes_serialize_as_snake_case() {
+        assert_eq!(
+            serde_json::to_value(restore_warnings(true, false)).expect("warnings should serialize"),
+            json!(["staging_restored", "provider_fork_required"])
+        );
+    }
 }

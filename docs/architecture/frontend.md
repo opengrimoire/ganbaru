@@ -61,7 +61,7 @@ Themes are data-driven and validated before application. Feature code consumes s
 
 User-facing text goes through the typed catalogs under `lib/i18n/messages/`. English is the resident fallback; other locales load when selected. Catalog shape tests keep locale modules aligned.
 
-Dates, times, numbers, lists, plural forms, and relative values use locale-aware helpers. Explicit language names appear as autonyms. Stored identifiers and protocol values remain locale-neutral. See [Localization](../features/localization.md).
+Dates, times, numbers, lists, plural forms, and relative values use locale-aware helpers. Explicit language names appear as autonyms. Stored identifiers and protocol values remain locale-neutral. Visible errors resolve through `lib/i18n/user-errors.ts` (and the Chat resolver in `lib/chat/error-presentation.ts`) rather than showing backend text. See [Localization](../features/localization.md).
 
 ## Responsive and platform behavior
 

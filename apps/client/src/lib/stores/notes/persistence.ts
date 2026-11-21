@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import { appendNotesBlockChildren, trashNotesBlock, updateNotesBlock } from "$lib/api/notes";
 import { isNotesEditConflict } from "$lib/api/notes/mutation";
 import { applyBlockUpdate, blockUpdateFromBlock } from "$lib/notes/blocks/factory";
@@ -317,7 +318,7 @@ export function createNotesBlockPersistence(
       pendingBlockSaves.delete(blockId);
       void saveBlockNow(blockId, update, revision).catch((error: unknown) => {
         if (saveGeneration !== queueGeneration) return;
-        context.setLoadError(error instanceof Error ? error.message : String(error));
+        context.setLoadError(notesErrorDetail(error));
       });
     }, context.debounceMs);
     pendingBlockSaves.set(blockId, { timer, update, revision });
@@ -362,7 +363,7 @@ export function createNotesBlockPersistence(
     void operation.catch((error: unknown) => {
       if (operationGeneration !== queueGeneration) return;
       failed = true;
-      context.setLoadError(error instanceof Error ? error.message : String(error));
+      context.setLoadError(notesErrorDetail(error));
     });
     return operation;
   }

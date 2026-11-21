@@ -1,13 +1,14 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
+  import Plus from "@lucide/svelte/icons/plus";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Eye from "@lucide/svelte/icons/eye";
   import EyeOff from "@lucide/svelte/icons/eye-off";
   import FileText from "@lucide/svelte/icons/file-text";
-  import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { isNewItemShortcut } from "$lib/keyboard-shortcuts";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ProjectLifecycleIcon from "$lib/components/projects/ProjectLifecycleIcon.svelte";
@@ -68,6 +69,9 @@
   import ProjectNameDraftForm from "$lib/components/projects/pickers/ProjectNameDraftForm.svelte";
   import NotesHierarchyPickerPanel from "./NotesHierarchyPickerPanel.svelte";
 
+  /** The groups footer's create buttons, styled like the Notes picker's New folder and New note. */
+  const FOOTER_CREATE_BUTTON_CLASS =
+    "flex min-h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-floating-item px-1 text-popover-foreground transition-colors hover:bg-accent hover:text-accent-foreground";
 
   let {
     selectedProjectId = null,
@@ -741,6 +745,19 @@
     isCreateGroupOpen = true;
   }
 
+  /**
+   * Runs the new item shortcut on the groups level: it clears a search, which hides the footer, and opens the creator
+   * for a project outside every group. The key stays inside the picker so the Notes view does not also make a note.
+   */
+  function handlePanelKeydown(event: KeyboardEvent): void {
+    if (panelMode !== "groups" || !isNewItemShortcut(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (createProjectListKey === UNGROUPED_PROJECT_LIST_KEY) return;
+    projectSearch = "";
+    openProjectCreator(UNGROUPED_PROJECT_LIST_KEY);
+  }
+
   /** Closes the group creator or the ungrouped project creator in the groups footer. */
   function closeGroupsFooterCreator(): void {
     isCreateGroupOpen = false;
@@ -929,9 +946,12 @@
   </button>
 {/snippet}
 
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   bind:this={panelRootElement}
   data-floating-root
+  data-app-shortcuts="ignore"
+  onkeydown={handlePanelKeydown}
   class="project-picker-panel surface-floating flex min-h-0 w-full flex-col overflow-hidden"
   style={panelStyle}
 >
@@ -991,9 +1011,9 @@
         {#if projects.loading && !projects.loaded}
           <Loading layout="rows" rows={3} label={t("projects.loading")} />
         {:else if projects.loadError}
-          <Notice class="px-3 py-2" message={t("projects.loadFailed", projects.loadError)} copy={projects.loadError} onRetry={() => projects.load()} />
+          <Notice class="px-3 py-2" message={t("projects.loadFailed")} copy={projects.loadError} onRetry={() => projects.load()} />
         {:else if isSearchActive && pageSearch.error}
-          <Notice class="px-3 py-2" message={t("notes.searchFailed", pageSearch.error)} copy={pageSearch.error} />
+          <Notice class="px-3 py-2" message={t("notes.searchFailed")} copy={pageSearch.error} />
         {:else if isSearchActive && pageSearchGroups.length > 0}
           <div class="grid px-1">
             {#each pageSearchGroups as resultGroup (resultGroup.project?.id ?? "")}
@@ -1116,22 +1136,20 @@
         {:else if createProjectListKey === UNGROUPED_PROJECT_LIST_KEY}
           {@render projectCreator(UNGROUPED_PROJECT_LIST_KEY, closeGroupsFooterCreator)}
         {:else}
-          <div class="grid grid-cols-2 gap-1">
-            <button
-              type="button"
-              class="menu-item min-w-0 justify-center text-popover-foreground"
-              onclick={openGroupCreator}
-            >
-              <Plus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" />
-              <span class="truncate">{t("calendar.eventPanel.createGroup")}</span>
+          <div class="flex min-h-8 items-center">
+            <button type="button" class={FOOTER_CREATE_BUTTON_CLASS} onclick={openGroupCreator}>
+              <Plus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+              <span class="truncate">{t("calendar.eventPanel.newGroup")}</span>
             </button>
+            <div class="mx-1 h-5 border-l border-border/70" aria-hidden="true"></div>
             <button
               type="button"
-              class="menu-item min-w-0 justify-center text-popover-foreground"
+              class={FOOTER_CREATE_BUTTON_CLASS}
+              aria-keyshortcuts="Control+N Meta+N"
               onclick={() => openProjectCreator(UNGROUPED_PROJECT_LIST_KEY)}
             >
-              <Plus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" />
-              <span class="truncate">{t("calendar.eventPanel.createProject")}</span>
+              <Plus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+              <span class="truncate">{t("calendar.eventPanel.newProject")}</span>
             </button>
           </div>
         {/if}
@@ -1144,8 +1162,8 @@
             class="menu-item justify-center text-popover-foreground"
             onclick={() => openProjectCreator(directProjectList.key)}
           >
-            <Plus size={13} strokeWidth={iconStrokeWidth} />
-            <span>{t("calendar.eventPanel.createProject")}</span>
+            <Plus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+            <span class="truncate">{t("calendar.eventPanel.newProject")}</span>
           </button>
         {/if}
       {/if}
@@ -1223,8 +1241,8 @@
             void tick().then(updateProjectSubpanelGeometry);
           }}
         >
-          <Plus size={13} strokeWidth={iconStrokeWidth} />
-          <span>{t("calendar.eventPanel.createProject")}</span>
+          <Plus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+          <span class="truncate">{t("calendar.eventPanel.newProject")}</span>
         </button>
       {/if}
     </div>

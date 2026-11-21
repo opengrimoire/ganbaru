@@ -133,7 +133,7 @@
     anchor={addButton}
     title={t("contacts.picker.addPeople")}
     includeContacts
-    includeTeammates={false}
+    includeAgents={false}
     space={{ kind: "page", name: pageTitle }}
     onClose={() => { pickerOpen = false; }}
   />

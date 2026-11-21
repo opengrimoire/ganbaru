@@ -33,6 +33,8 @@ import {
   MAX_SOUNDSCAPE_PRESET_LEVEL,
 } from "$lib/music/soundscape/contracts";
 import { DEFAULT_PRESET_SOUND_LEVEL } from "$lib/music/soundscape/presets";
+import { soundscapeErrorMessage } from "$lib/music/user-errors";
+import { translate } from "$lib/i18n/translator.svelte";
 
 /** Delay before a dragged preset level is saved, so a slider gesture writes once. */
 const PRESET_LEVEL_SAVE_DELAY_MS = 180;
@@ -133,7 +135,7 @@ class SoundscapeStore {
         await this.persistState(persisted.activePresetId, false);
       }
     } catch (error) {
-      if (generation === this.generation) this.error = message(error);
+      if (generation === this.generation) this.error = soundscapeErrorMessage(error);
     } finally {
       if (generation === this.generation) this.loading = false;
     }
@@ -158,7 +160,7 @@ class SoundscapeStore {
       this.presets = presets;
       this.catalogLoaded = true;
     } catch (error) {
-      if (generation === this.generation) this.error = message(error);
+      if (generation === this.generation) this.error = soundscapeErrorMessage(error);
     } finally {
       if (generation === this.generation) this.loading = false;
     }
@@ -179,7 +181,7 @@ class SoundscapeStore {
       // A soundscape started elsewhere, such as by phase automation, replaces a layer playing on its own.
       if (persisted.desiredPlaying || this.source?.kind !== "layer") this.source = presetSource(persisted.activePresetId);
     } catch (error) {
-      if (generation === this.generation) this.error = message(error);
+      if (generation === this.generation) this.error = soundscapeErrorMessage(error);
     }
   }
 
@@ -192,7 +194,7 @@ class SoundscapeStore {
   async playPreset(preset: MusicSoundscapePreset): Promise<void> {
     if (this.playbackPending) return;
     if (!this.presetIsPlayable(preset)) {
-      this.error = "This preset needs to be repaired before it can play.";
+      this.error = translate("music.errors.soundscapePresetNeedsRepair");
       return;
     }
     await this.startMix(preset, { kind: "preset", presetId: preset.id });
@@ -224,7 +226,7 @@ class SoundscapeStore {
       if (source?.kind === "preset") await this.persistState(source.presetId, true);
       else if (source?.kind === "layer" && this.persisted?.desiredPlaying) await this.persistState(this.persisted.activePresetId, false);
     } catch (error) {
-      this.error = message(error);
+      this.error = soundscapeErrorMessage(error);
       try { this.snapshot = started ? await stopSoundscape() : await getSoundscapeSnapshot(); }
       catch { this.snapshot = { ...this.snapshot, status: "error", sourceId: request.sourceId }; }
     } finally {
@@ -270,7 +272,7 @@ class SoundscapeStore {
     this.levelQueue = this.levelQueue.catch(() => undefined).then(async () => {
       if (generation !== this.levelGeneration) return;
       try { await setSoundscapePresetLevel(next); }
-      catch (error) { if (generation === this.levelGeneration) this.error = message(error); }
+      catch (error) { if (generation === this.levelGeneration) this.error = soundscapeErrorMessage(error); }
     });
     await this.levelQueue;
   }
@@ -288,7 +290,7 @@ class SoundscapeStore {
           const newer = this.levelSaveTimers.has(presetId);
           this.presets = this.presets.map((entry) => entry.id !== saved.id ? entry : newer ? { ...entry, version: saved.version, updatedAtMs: saved.updatedAtMs } : saved);
         })
-        .catch((error: unknown) => { if (generation === this.generation) this.error = message(error); });
+        .catch((error: unknown) => { if (generation === this.generation) this.error = soundscapeErrorMessage(error); });
     }, PRESET_LEVEL_SAVE_DELAY_MS));
   }
 
@@ -379,7 +381,7 @@ class SoundscapeStore {
   }
 
   private enqueuePreview(step: () => Promise<void>): Promise<void> {
-    this.previewQueue = this.previewQueue.then(step).catch((error: unknown) => { this.error = message(error); });
+    this.previewQueue = this.previewQueue.then(step).catch((error: unknown) => { this.error = soundscapeErrorMessage(error); });
     return this.previewQueue;
   }
 
@@ -391,7 +393,7 @@ class SoundscapeStore {
     }
     this.playbackPending = true;
     try { this.snapshot = await pauseSoundscape(); await this.persistState(this.persisted?.activePresetId ?? null, false); }
-    catch (error) { this.error = message(error); }
+    catch (error) { this.error = soundscapeErrorMessage(error); }
     finally { this.playbackPending = false; }
   }
 
@@ -399,7 +401,7 @@ class SoundscapeStore {
     if (this.playbackPending) return;
     this.playbackPending = true;
     try { this.snapshot = await resumeSoundscape(); await this.persistState(this.persisted?.activePresetId ?? null, true); }
-    catch (error) { this.error = message(error); }
+    catch (error) { this.error = soundscapeErrorMessage(error); }
     finally { this.playbackPending = false; }
   }
 
@@ -412,13 +414,13 @@ class SoundscapeStore {
       this.source = presetSource(this.persisted?.activePresetId ?? null);
       await this.persistState(this.persisted?.activePresetId ?? null, false);
     }
-    catch (error) { this.error = message(error); }
+    catch (error) { this.error = soundscapeErrorMessage(error); }
     finally { this.playbackPending = false; }
   }
 
   async recover(): Promise<void> {
     try { this.snapshot = await recoverSoundscape(); this.error = null; }
-    catch (error) { this.error = message(error); }
+    catch (error) { this.error = soundscapeErrorMessage(error); }
   }
 
   async switchVault(nextVaultId: string | null): Promise<void> {
@@ -446,7 +448,7 @@ class SoundscapeStore {
       const saved = await upsertMusicSoundscape(write);
       this.definitions = [...this.definitions.filter((entry) => entry.id !== saved.id), saved]
         .sort((left, right) => left.createdAtMs - right.createdAtMs || left.name.localeCompare(right.name));
-    } catch (error) { this.error = message(error); throw error; }
+    } catch (error) { this.error = soundscapeErrorMessage(error); throw error; }
     finally { this.saving = false; }
   }
 
@@ -472,7 +474,7 @@ class SoundscapeStore {
         : preset);
       await this.refreshState();
     } catch (error) {
-      this.error = message(error);
+      this.error = soundscapeErrorMessage(error);
       throw error;
     }
   }
@@ -487,7 +489,7 @@ class SoundscapeStore {
       const saved = await upsertMusicSoundscapePreset(write);
       this.presets = sortPresets([...this.presets.filter((entry) => entry.id !== saved.id), saved]);
       return saved;
-    } catch (error) { this.error = message(error); throw error; }
+    } catch (error) { this.error = soundscapeErrorMessage(error); throw error; }
     finally { this.saving = false; }
   }
 
@@ -502,7 +504,7 @@ class SoundscapeStore {
       return;
     }
     if (definition.availability !== "available") {
-      this.error = "This layer needs to be repaired before it can play.";
+      this.error = translate("music.errors.soundscapeLayerNeedsRepair");
       return;
     }
     const mix = { sounds: [{ soundscapeId: definition.id, level: DEFAULT_PRESET_SOUND_LEVEL }], level: DEFAULT_SOUNDSCAPE_PRESET_LEVEL };
@@ -527,7 +529,7 @@ class SoundscapeStore {
       await removeMusicSoundscapePreset(preset.id, this.presets.find((entry) => entry.id === preset.id)?.version ?? preset.version);
       this.presets = this.presets.filter((entry) => entry.id !== preset.id);
       await this.refreshState();
-    } catch (error) { this.error = message(error); throw error; }
+    } catch (error) { this.error = soundscapeErrorMessage(error); throw error; }
     finally { this.saving = false; }
   }
 
@@ -570,11 +572,6 @@ function sortPresets(presets: MusicSoundscapePreset[]): MusicSoundscapePreset[] 
 
 function sameOrder<T>(left: readonly T[], right: readonly T[]): boolean {
   return left.length === right.length && left.every((entry, index) => entry === right[index]);
-}
-
-function message(error: unknown): string {
-  if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") return error.message;
-  return error instanceof Error ? error.message : String(error);
 }
 
 let instance: SoundscapeStore | null = null;

@@ -2,7 +2,7 @@
 
 use super::support::{corrupt_data_error, i64_value, json_error, persistence_error};
 use super::validation::{prompt_preview, prompt_title, wire_interaction, wire_safety};
-use crate::chat::interaction::MAX_IMAGE_COUNT;
+use crate::chat::attachment_commands::MAX_IMAGE_COUNT;
 use crate::chat::send_commands::{SendChatTurnCommand, SendChatTurnResult, SteerChatTurnCommand};
 use crate::vault;
 use ganbaru_chat::agent_runs::{StartingAgentRun, TurnOrigin};
@@ -90,10 +90,50 @@ pub(super) async fn read_thread_runtime_data(
     })
 }
 
+/// Which working folders a turn's attachments may belong to.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum AttachmentFolderScope<'a> {
+    /// A turn sent in a folder's thread: the attachments belong to the turn's folder, when it has
+    /// one.
+    Folder(Option<&'a ProjectWorkingFolderId>),
+    /// An organizational run: the attachments come from a message in a channel of the run folder's
+    /// project, imported into any folder of that project, such as the primary folder a phone
+    /// attaches to while the run works in another.
+    Project(Option<&'a ProjectWorkingFolderId>),
+}
+
+/// Returns whether `attachment_folder_id` is within `scope`.
+pub(super) async fn attachment_folder_in_scope(
+    pool: &SqlitePool,
+    scope: AttachmentFolderScope<'_>,
+    attachment_folder_id: &ProjectWorkingFolderId,
+) -> ChatResult<bool> {
+    match scope {
+        AttachmentFolderScope::Folder(None) | AttachmentFolderScope::Project(None) => Ok(true),
+        AttachmentFolderScope::Folder(Some(folder)) => Ok(attachment_folder_id == folder),
+        AttachmentFolderScope::Project(Some(folder)) => {
+            if attachment_folder_id == folder {
+                return Ok(true);
+            }
+            let same_project: Option<bool> = sqlx::query_scalar(
+                "SELECT attachment_folder.project_id = run_folder.project_id
+                 FROM project_working_folders attachment_folder, project_working_folders run_folder
+                 WHERE attachment_folder.id = ? AND run_folder.id = ?",
+            )
+            .bind(attachment_folder_id.as_str())
+            .bind(folder.as_str())
+            .fetch_optional(pool)
+            .await
+            .map_err(persistence_error)?;
+            Ok(same_project == Some(true))
+        }
+    }
+}
+
 pub(super) async fn read_attachment_references(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
-    working_folder_id: Option<&ProjectWorkingFolderId>,
+    scope: AttachmentFolderScope<'_>,
     attachment_ids: &[ChatAttachmentId],
 ) -> ChatResult<Vec<PromptAttachmentReference>> {
     if attachment_ids.len() > MAX_IMAGE_COUNT {
@@ -121,9 +161,7 @@ pub(super) async fn read_attachment_references(
                     true,
                 )
             })?;
-        if working_folder_id
-            .is_some_and(|working_folder_id| &attachment.working_folder_id != working_folder_id)
-        {
+        if !attachment_folder_in_scope(pool, scope, &attachment.working_folder_id).await? {
             return Err(ChatError::new(
                 ChatErrorCode::Permission,
                 "Chat attachment belongs to another workspace",
@@ -402,11 +440,12 @@ pub(super) async fn persist_user_turn(context: PersistUserTurnContext<'_>) -> Ch
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    if let Some(binding) = origin.run() {
+    if let Some((binding, launch)) = origin.assignment_run() {
         ganbaru_chat::agent_runs::insert_starting_run(
             &mut transaction,
             StartingAgentRun {
                 binding,
+                launch,
                 provider_turn_id: &request.turn_id,
                 provider_thread_id: thread_id,
                 now,
@@ -414,6 +453,51 @@ pub(super) async fn persist_user_turn(context: PersistUserTurnContext<'_>) -> Ch
         )
         .await?;
     }
+    transaction.commit().await.map_err(persistence_error)
+}
+
+/// Rewrites a starting continuation as the handoff `launch` once the provider opened a fresh
+/// native session: the run records its new attempt, the user message of `request` holds the
+/// full package `prompt` the turn now sends, and requests open from the lost session are
+/// interrupted. Fails without writing when the run already left `starting`.
+pub(super) async fn persist_fresh_session_handoff(
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+    request: &SendChatTurnCommand,
+    binding: &ganbaru_chat::agent_runs::AgentRunBinding,
+    launch: &ganbaru_chat::agent_runs::RunLaunch,
+    prompt: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    ganbaru_chat::agent_runs::record_fresh_session_handoff(
+        &mut transaction,
+        binding,
+        &launch.attempt,
+        now,
+    )
+    .await?;
+    sqlx::query(
+        "UPDATE chat_messages SET normalized_markdown = ?, updated_at = ?
+         WHERE id = ? AND thread_id = ?",
+    )
+    .bind(prompt)
+    .bind(now.as_str())
+    .bind(request.message_id.as_str())
+    .bind(thread_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    sqlx::query(
+        "UPDATE chat_threads SET latest_preview = ?, revision = revision + 1, updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(prompt_preview(prompt))
+    .bind(now.as_str())
+    .bind(thread_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
     transaction.commit().await.map_err(persistence_error)
 }
 

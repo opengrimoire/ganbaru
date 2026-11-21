@@ -21,7 +21,7 @@ use super::replica::{
 };
 use crate::acknowledge::ACKNOWLEDGEMENT_INTERVAL_MS;
 use crate::domains::themes::PALETTE_SIZE;
-use crate::manifest::vault::chat::{PARTICIPANTS_TABLE, PROFILES_TABLE};
+use crate::manifest::vault::chat::PARTICIPANTS_TABLE;
 use crate::manifest::vault::contacts::{CARD_KEY, CARD_TABLE, CONTACTS_TABLE};
 use crate::manifest::vault::distractions::{
     HOST_RULE_KEY_PREFIX, HOST_RULES_TABLE, SETTINGS_KEY, SETTINGS_TABLE, host_group,
@@ -601,9 +601,6 @@ fn title_write(row: &str, field: Field) -> Change {
 async fn refused_changes(removed: &mut Replica) -> Vec<(&'static str, Change)> {
     let mut refused_key = sealed_create(removed, CARD_TABLE, CARD_KEY).await;
     refused_key.row = RowKey::new("x").unwrap();
-    let mut builtin_claim =
-        sealed_create(removed, PROFILES_TABLE, "access-profile:read-only").await;
-    builtin_claim.row = RowKey::new("access-profile:aaa").unwrap();
     vec![
         ("row key", refused_key),
         ("column value", title_write("note-kept", Field::Integer(1))),
@@ -622,7 +619,6 @@ async fn refused_changes(removed: &mut Replica) -> Vec<(&'static str, Change)> {
             "immutable group write",
             immutable_write(removed, "note-kept").await,
         ),
-        ("built-in profile identity", builtin_claim),
     ]
 }
 
@@ -893,12 +889,12 @@ fn a_late_operation_of_a_newer_manifest_stays_listed_and_restores() {
     });
 }
 
-/// SQL creating a teammate participant with no revisions.
+/// SQL creating an agent participant with no revisions.
 fn participant(id: &str) -> String {
     format!(
         "INSERT INTO chat_participants
             (id, participant_kind, display_name, created_at, updated_at)
-         VALUES ({}, 'ai_teammate', 'Late', '{CREATED_AT}', '{CREATED_AT}');",
+         VALUES ({}, 'ai_agent', 'Late', '{CREATED_AT}', '{CREATED_AT}');",
         quoted(id),
     )
 }

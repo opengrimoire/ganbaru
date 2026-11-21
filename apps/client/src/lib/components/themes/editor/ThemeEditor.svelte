@@ -592,7 +592,7 @@
       <h2 class="shrink-0 text-[0.866667rem] font-semibold uppercase text-foreground">
         {localizedThemeSectionLabel(target, t)}
       </h2>
-      <div class="h-px min-w-4 flex-1 scale-y-50 bg-border" aria-hidden="true"></div>
+      <div class="h-px min-w-4 flex-1 bg-border/50" aria-hidden="true"></div>
       {#if note}
         <span class="shrink-0 text-[0.733333rem] text-muted-foreground">
           {note}

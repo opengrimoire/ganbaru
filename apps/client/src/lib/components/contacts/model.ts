@@ -22,7 +22,7 @@ export const MEMBER_CAPABILITIES = [
   { id: "sharePages", group: "content" },
   { id: "manageChannels", group: "management" },
   { id: "manageMembers", group: "management" },
-  { id: "manageTeammates", group: "management" },
+  { id: "manageAgents", group: "management" },
   { id: "editSpaceSettings", group: "management" },
 ] as const satisfies readonly { id: string; group: MemberCapabilityGroup }[];
 export type MemberCapability = (typeof MEMBER_CAPABILITIES)[number]["id"];

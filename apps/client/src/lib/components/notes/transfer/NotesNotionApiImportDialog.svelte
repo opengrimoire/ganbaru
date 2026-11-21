@@ -6,6 +6,7 @@
   import type { NotesNotionApiImportResult } from "$lib/notes/types";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import NotesImportDestinationRow from "./NotesImportDestinationRow.svelte";
   import NotesRoundTripDiagnostics from "$lib/components/notes/NotesRoundTripDiagnostics.svelte";
   import NotesTransferFieldRow from "./NotesTransferFieldRow.svelte";
@@ -49,7 +50,7 @@
   let importing = $state(false);
   let activeImportId = $state<string | null>(null);
   let stopping = $state(false);
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let result = $state<NotesNotionApiImportResult | null>(null);
   let tokenInputEl = $state<HTMLInputElement | null>(null);
 
@@ -157,7 +158,7 @@
       });
       integrationToken = "";
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.notionApiImportFailed"));
     } finally {
       importing = false;
       activeImportId = null;
@@ -173,7 +174,7 @@
       await onStop(importId);
     } catch (caught) {
       stopping = false;
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.notionApiImportStopFailed"));
     }
   }
 
@@ -340,7 +341,7 @@
         </div>
 
         {#if error}
-          <Notice class="text-[0.8rem]" message={t("notes.notionApiImportFailed", error)} copy={error} />
+          <Notice class="text-[0.8rem]" message={error.message} copy={error.detail} />
         {/if}
 
         {#if result}

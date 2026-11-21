@@ -3,7 +3,7 @@ import { mount, unmount } from "svelte";
 import { ensureConfigLoaded, flushConfig, startConfigWindowSync } from "$lib/vault/config";
 import { listenSyncApplied } from "$lib/api/sync";
 import { startProfileImageFileSync } from "$lib/stores/profile-image-files.svelte";
-import { getActiveVaultInfo } from "$lib/vault/state";
+import { formatVaultError, getActiveVaultInfo, type VaultInfo } from "$lib/vault/state";
 import {
   getLocalization,
   initializeLocalizationFromConfig,
@@ -71,18 +71,23 @@ async function mountMobileVaultSetup(initialError: string | null) {
     target: document.getElementById("app")!,
     props: {
       initialError,
-      onReady: () => window.location.reload(),
+      onReady: (info: VaultInfo) => {
+        void import("$lib/vault/welcome-tour")
+          .then(({ markWelcomeTourPending }) => markWelcomeTourPending(safeStorage(), info.vaultId))
+          .catch((error: unknown) => console.warn("Could not schedule the welcome tour:", error))
+          .finally(() => window.location.reload());
+      },
     },
   });
 }
 
 /**
- * Mounts the onboarding that follows vault setup, the access review and then the linking screen, whichever of them
- * is still pending, and opens the app in place once it finishes.
+ * Mounts the onboarding that follows vault setup, the linking screen, the feature tour, and then the access review,
+ * whichever of them is still pending, and opens the app in place once it finishes.
  */
 async function mountMobileSetupOnboarding(
   vaultId: string,
-  pending: { accessPending: boolean; linkingPending: boolean },
+  pending: { tourPending: boolean; accessPending: boolean; linkingPending: boolean },
 ) {
   const target = document.getElementById("app")!;
   const mobileAppModulePromise = import("./MobileApp.svelte");
@@ -139,14 +144,16 @@ const appPromise = (async () => {
     const { vaultHandoffOnboardingCompleted } = await import(
       "$lib/vault/handoff-onboarding"
     );
+    const { welcomeTourPending } = await import("$lib/vault/welcome-tour");
+    const tourPending = welcomeTourPending(safeStorage(), activeVault.vaultId);
     const accessPending = !mobileFocusOnboardingCompleted(safeStorage());
     const linkingPending = !vaultHandoffOnboardingCompleted(safeStorage(), activeVault.vaultId);
-    if (accessPending || linkingPending) {
-      return mountMobileSetupOnboarding(activeVault.vaultId, { accessPending, linkingPending });
+    if (tourPending || accessPending || linkingPending) {
+      return mountMobileSetupOnboarding(activeVault.vaultId, { tourPending, accessPending, linkingPending });
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return mountMobileVaultError(message);
+    console.error("Could not load the active vault:", error);
+    return mountMobileVaultError(formatVaultError(error, "startup"));
   }
 
   const { default: MobileApp } = await import("./MobileApp.svelte");

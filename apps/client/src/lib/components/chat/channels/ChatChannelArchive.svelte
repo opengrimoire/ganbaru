@@ -7,6 +7,7 @@
   import type { ChatChannelRead } from "$lib/chat/contracts";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { useChat } from "$lib/stores/chat.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -30,7 +31,7 @@
     try {
       await chat.restoreChannel(channel);
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.channelAction"));
     } finally {
       restoringId = null;
     }

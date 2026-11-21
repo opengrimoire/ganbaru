@@ -1,18 +1,18 @@
 // @vitest-environment jsdom
 
 import { mount, tick, unmount } from "svelte";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-  ChatAiTeammateRead,
+  ChatAiAgentRead,
   ChatChannelRead,
   ChatParticipantRead,
-  ChatRuntimeApprovalPolicy,
 } from "$lib/chat/contracts";
-import type { ChatModelParticipant } from "$lib/chat/teammates/participant-identity";
+import type { ChatModelParticipant } from "$lib/chat/agents/participant-identity";
 import { getChat } from "$lib/stores/chat.svelte";
 import { getPreferences } from "$lib/stores/preferences.svelte";
 import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
-import { modelSettings } from "$lib/components/chat/ChatComposer.test-support";
+import * as chatApi from "$lib/api/chat";
+import { interactionState, modelSettings } from "$lib/components/chat/composer/composer-test-store";
 import ChatIdentityButton from "./ChatIdentityButton.svelte";
 
 const localParticipant: ChatParticipantRead = {
@@ -32,39 +32,42 @@ const model: ChatModelParticipant = {
   defaultReasoning: "Medium",
 };
 
-const teammateParticipant: ChatParticipantRead = {
+const agentParticipant: ChatParticipantRead = {
   id: "participant:atlas",
-  kind: "ai_teammate",
+  kind: "ai_agent",
   displayName: "Atlas",
   avatar: { schemaVersion: 1, value: {} },
   revision: 1,
   archivedAt: null,
 };
 
-const teammate: ChatAiTeammateRead = {
-  participant: teammateParticipant,
-  role: "Coding teammate",
-  instructions: "",
+const agent: ChatAiAgentRead = {
+  participant: agentParticipant,
+  providerFamilyId: "codex",
+  agentKind: "model",
+  localProviderInstanceId: "codex-local",
   configurationState: "healthy",
   latestPolicy: {
     id: "policy:atlas:1",
-    teammateId: teammateParticipant.id,
+    agentId: agentParticipant.id,
     revision: 1,
-    providerInstanceId: "codex-local",
-    safetyMode: "ask_for_approval",
     providerManagedModel: false,
     modelId: "gpt-5.6-terra",
-    modelOptions: [{ key: "service_tier", value: { kind: "choice", value: "fast" } }],
-    effort: "low",
-    speed: "fast",
+    modelOptions: [
+      { key: "reasoning_effort", value: { kind: "choice", value: "low" } },
+      { key: "service_tier", value: { kind: "choice", value: "fast" } },
+    ],
+    interactionMode: "build",
     providerOptions: { schemaVersion: 1, value: {} },
     createdAt: "2026-08-16T12:00:00.000Z",
   },
   channelCount: 1,
   activeAssignmentCount: 0,
+  hiddenAt: null,
+  linkedProviderStatus: null,
 };
 
-function channel(runtimeApprovalOverride: ChatRuntimeApprovalPolicy): ChatChannelRead {
+function channel(): ChatChannelRead {
   return {
     id: "channel:general",
     conversationId: "conversation:general",
@@ -74,23 +77,15 @@ function channel(runtimeApprovalOverride: ChatRuntimeApprovalPolicy): ChatChanne
     isDefault: true,
     memberships: [{
       conversationId: "conversation:general",
-      participant: teammateParticipant,
-      aiAccess: {
-        accessProfileId: "access-profile:conversation-only",
-        accessProfileRevision: 1,
-        accessProfileBuiltinKey: "conversationOnly",
-        accessProfileName: "Conversation only",
-        capabilities: { readHistory: false, participate: true },
-        historyBoundary: { kind: "entire" },
-        runtimeApprovalOverride,
-        scratchRuntimeApprovalOverride: null,
-        folderGrants: [],
-      },
+      participant: agentParticipant,
+      agentInChannel: true,
       revision: 1,
       removedAt: null,
     }],
     messageCount: 0,
     unreadCount: 0,
+    unreadReplyCount: 0,
+    unseenFailure: false,
     latestPreview: null,
     lastActivityAt: "2026-08-16T12:00:00.000Z",
     attentionState: null,
@@ -108,11 +103,19 @@ describe("ChatIdentityButton", () => {
   const chat = getChat();
   const settings = getSettingsLauncher();
   const originalDisplayName = preferences.profileDisplayName;
+  const originalFullName = preferences.profileFullName;
   const originalSettings = chat.settings;
-  const originalTeammates = chat.teammates;
-  const originalArchivedTeammates = chat.archivedTeammates;
+  const originalAgents = chat.agents;
+  const originalArchivedAgents = chat.archivedAgents;
   const originalActiveChannels = chat.activeChannels;
   const originalSelectedChannelId = chat.selectedChannelId;
+
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", class {
+      observe(): void {}
+      disconnect(): void {}
+    });
+  });
 
   afterEach(async () => {
     if (component) await unmount(component);
@@ -120,17 +123,21 @@ describe("ChatIdentityButton", () => {
     component = undefined;
     target = undefined;
     preferences.setProfileDisplayName(originalDisplayName);
+    preferences.setProfileFullName(originalFullName);
     chat.settings = originalSettings;
-    chat.teammates = originalTeammates;
-    chat.archivedTeammates = originalArchivedTeammates;
+    chat.agents = originalAgents;
+    chat.archivedAgents = originalArchivedAgents;
     chat.activeChannels = originalActiveChannels;
     chat.selectedChannelId = originalSelectedChannelId;
     settings.close();
+    vi.restoreAllMocks();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
-  it("opens local identity details and links to profile settings", async () => {
-    preferences.setProfileDisplayName("Alice Smith");
+  it("opens local identity details with the full name and links to profile settings", async () => {
+    preferences.setProfileDisplayName("Alice");
+    preferences.setProfileFullName("Alice Smith");
     target = document.createElement("div");
     document.body.append(target);
     component = mount(ChatIdentityButton, {
@@ -141,25 +148,26 @@ describe("ChatIdentityButton", () => {
     target.querySelector<HTMLButtonElement>(".identity-trigger")?.click();
     await tick();
     const card = document.body.querySelector<HTMLElement>(".identity-card");
-    expect(card?.textContent).toContain("Alice Smith");
-    expect(card?.textContent).toContain("Private local identity");
+    expect(card?.querySelector(".identity-name-line strong")?.textContent).toBe("Alice (You)");
+    expect(card?.querySelector(".identity-heading small")?.textContent).toBe("Alice Smith");
+    expect(card?.querySelector(".identity-body")).toBeNull();
 
     card?.querySelector<HTMLButtonElement>("footer button")?.click();
     expect(settings.isOpen).toBe(true);
     expect(settings.targetSection).toBe("profile");
   });
 
-  it.each(["name", "mention"] as const)("uses the same teammate identity card from a %s trigger", async (presentation) => {
+  it.each(["name", "mention"] as const)("uses the same agent identity card from a %s trigger", async (presentation) => {
     chat.settings = modelSettings();
-    chat.teammates = [teammate];
-    chat.activeChannels = [channel("unattended")];
+    chat.agents = [agent];
+    chat.activeChannels = [channel()];
     chat.selectedChannelId = "channel:general";
     target = document.createElement("div");
     document.body.append(target);
     component = mount(ChatIdentityButton, {
       target,
       props: {
-        participant: teammateParticipant,
+        participant: agentParticipant,
         model,
         presentation,
       },
@@ -169,41 +177,128 @@ describe("ChatIdentityButton", () => {
     await tick();
     const card = document.body.querySelector<HTMLElement>(".identity-card");
     expect(card?.querySelector(".identity-heading strong")?.textContent).toBe("Atlas");
-    expect(card?.querySelector(".identity-heading small")?.textContent).toBe("Coding teammate");
+    expect(card?.querySelector(".identity-heading small")).toBeNull();
     expect(card?.querySelector(".identity-status-dot")?.getAttribute("aria-label")).toBe("Available");
     expect(card?.querySelector(".identity-settings-label")?.textContent).toBe("Default settings");
-    expect(card?.querySelector(".identity-model-name")?.textContent).toBe("5.6 Terra");
+    expect(card?.querySelector(".identity-model-name")?.textContent).toBe("Terra 5.6");
     expect(card?.querySelector(".identity-effort-name")?.textContent).toBe("Light");
     expect(card?.querySelector(".identity-model-row .provider-icon")).toBeNull();
     expect(card?.querySelector(".identity-fast-indicator svg")).not.toBeNull();
-    expect(card?.querySelector(".identity-model-divider")?.textContent).toBe("|");
-    expect(card?.querySelector(".identity-approval")?.textContent).toBe("Unattended within access");
-    expect(card?.querySelector(".identity-approval svg")).toBeNull();
     expect(card?.querySelector("dl")).toBeNull();
     expect(card?.textContent).not.toContain("gpt-5.6-sol");
     expect(card?.textContent).not.toContain("Available");
   });
 
+  it("reads the context usage of its provider thread only when the card opens", async () => {
+    const read = vi.spyOn(chatApi, "readChatInteractionState").mockResolvedValue(interactionState());
+    chat.agents = [agent];
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatIdentityButton, {
+      target,
+      props: { participant: agentParticipant, presentation: "name", usageThreadId: "thread:atlas" },
+    });
+    await tick();
+    expect(read).not.toHaveBeenCalled();
+
+    target.querySelector<HTMLButtonElement>(".identity-trigger")?.click();
+    await vi.waitFor(() => expect(document.body.querySelector("[data-identity-context]")?.textContent).toContain("39% used"));
+    expect(read).toHaveBeenCalledWith("thread:atlas");
+    const context = document.body.querySelector<HTMLElement>("[data-identity-context]");
+    expect(context?.textContent).toContain("Context window");
+    expect(context?.textContent).toContain("39% used (100,000 of 258K tokens)");
+    expect(context?.textContent).not.toContain("left");
+  });
+
+  it("shows the context usage it is given without reading a provider thread", async () => {
+    const read = vi.spyOn(chatApi, "readChatInteractionState");
+    chat.agents = [agent];
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatIdentityButton, {
+      target,
+      props: {
+        participant: agentParticipant,
+        presentation: "avatar",
+        usage: { contextTokens: 100_000, contextLimit: 258_000 },
+      },
+    });
+
+    target.querySelector<HTMLButtonElement>(".identity-trigger")?.click();
+    await tick();
+    const context = document.body.querySelector<HTMLElement>("[data-identity-context]");
+    expect(context?.textContent).toContain("39% used (100,000 of 258K tokens)");
+    expect(context?.getAttribute("aria-busy")).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("says context usage is unavailable when the usage read fails", async () => {
+    const read = vi.spyOn(chatApi, "readChatInteractionState").mockRejectedValue(new Error("offline"));
+    chat.agents = [agent];
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatIdentityButton, {
+      target,
+      props: { participant: agentParticipant, presentation: "name", usageThreadId: "thread:atlas" },
+    });
+
+    target.querySelector<HTMLButtonElement>(".identity-trigger")?.click();
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    await tick();
+    expect(document.body.querySelector(".identity-card")).not.toBeNull();
+    await vi.waitFor(() => expect(document.body.querySelector("[data-identity-context]")?.textContent)
+      .toContain("Context usage is not available yet"));
+  });
+
+  it("keeps the context row in place while usage loads, starting the read when a hover preview begins", async () => {
+    let resolve: (read: ReturnType<typeof interactionState>) => void = () => {};
+    const read = vi.spyOn(chatApi, "readChatInteractionState")
+      .mockReturnValue(new Promise((settle) => { resolve = settle; }));
+    chat.agents = [agent];
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatIdentityButton, {
+      target,
+      props: { participant: agentParticipant, presentation: "name", usageThreadId: "thread:atlas" },
+    });
+
+    await tick();
+    target.querySelector(".identity-trigger")?.dispatchEvent(new MouseEvent("pointerenter", { bubbles: true }));
+    await tick();
+    expect(read).toHaveBeenCalledOnce();
+    expect(document.body.querySelector(".identity-card")).toBeNull();
+
+    await new Promise((settle) => setTimeout(settle, 200));
+    await tick();
+    const context = document.body.querySelector<HTMLElement>("[data-identity-context]");
+    expect(context?.textContent).toContain("Loading");
+    expect(context?.getAttribute("aria-busy")).toBe("true");
+
+    resolve(interactionState());
+    await vi.waitFor(() => expect(context?.textContent).toContain("39% used"));
+    expect(read).toHaveBeenCalledOnce();
+  });
+
   it("omits the fast icon for standard speed", async () => {
     chat.settings = modelSettings();
-    chat.teammates = [{
-      ...teammate,
-      latestPolicy: teammate.latestPolicy
-        ? { ...teammate.latestPolicy, speed: "standard" }
+    chat.agents = [{
+      ...agent,
+      latestPolicy: agent.latestPolicy
+        ? { ...agent.latestPolicy, modelOptions: agent.latestPolicy.modelOptions.filter((option) => option.key !== "service_tier") }
         : null,
     }];
     target = document.createElement("div");
     document.body.append(target);
     component = mount(ChatIdentityButton, {
       target,
-      props: { participant: teammateParticipant, presentation: "name", currentResponseSettings: true },
+      props: { participant: agentParticipant, presentation: "name", currentResponseSettings: true },
     });
 
     target.querySelector<HTMLButtonElement>(".identity-trigger")?.click();
     await tick();
 
     expect(document.body.querySelector(".identity-fast-indicator")).toBeNull();
-    expect(document.body.querySelector(".identity-settings-label")?.textContent).toBe("Current response settings");
+    expect(document.body.querySelector(".identity-settings-label")?.textContent).toBe("Model");
   });
 
   it.each(["name", "mention"] as const)("left-aligns the %s card with its trigger", async (presentation) => {
@@ -221,6 +316,26 @@ describe("ChatIdentityButton", () => {
     await tick();
 
     expect(document.body.querySelector<HTMLElement>(".identity-card")?.style.left).toBe("120px");
+  });
+
+  it("ignores a mouse click and shows no tooltip on the trigger", async () => {
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatIdentityButton, {
+      target,
+      props: { participant: localParticipant, presentation: "avatar" },
+    });
+    await tick();
+    const trigger = target.querySelector<HTMLButtonElement>(".identity-trigger");
+    expect(trigger?.dataset.appTooltipDisabled).toBe("true");
+
+    const pointerDown = new MouseEvent("pointerdown", { bubbles: true });
+    Object.defineProperty(pointerDown, "pointerType", { value: "mouse" });
+    trigger?.dispatchEvent(pointerDown);
+    trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+    await tick();
+
+    expect(document.body.querySelector(".identity-card")).toBeNull();
   });
 
   it("previews identity on deliberate hover and closes after leaving", async () => {

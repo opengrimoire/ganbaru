@@ -15,6 +15,7 @@ const vault: VaultInfo = {
   databasePath: "/vaults/Restored/ganbaru.sqlite",
   vaultId: "vault-restored",
   displayName: "Restored",
+  created: false,
 };
 
 const restored: BackupRestoreOutcome = { kind: "restored", vault, placement: "independentCopy" };

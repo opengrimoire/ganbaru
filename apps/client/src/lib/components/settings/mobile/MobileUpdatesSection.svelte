@@ -5,6 +5,7 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { BUILD_REF, GITHUB_REPOSITORY } from "$lib/build-info";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { latestReleasePageUrl } from "$lib/stores/update-policy";
   import { getMobileUpdateManager } from "$lib/stores/mobile-updates.svelte";
@@ -28,7 +29,8 @@
     try {
       await openUrl(url);
     } catch (cause: unknown) {
-      openPageError = cause instanceof Error ? cause.message : String(cause);
+      console.warn("Could not open the release link:", cause);
+      openPageError = userErrorMessage(cause, t("updates.openLinkFailed"));
     }
   }
 
@@ -38,7 +40,8 @@
     try {
       await openUrl(updates.latestApkUrl);
     } catch (cause: unknown) {
-      openPageError = cause instanceof Error ? cause.message : String(cause);
+      console.warn("Could not open the release link:", cause);
+      openPageError = userErrorMessage(cause, t("updates.openLinkFailed"));
     }
   }
 

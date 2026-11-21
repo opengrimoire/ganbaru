@@ -1,15 +1,20 @@
 //! OpenCode implementation of the provider-neutral driver operations.
 
+use super::cli::{OPENCODE_COMPATIBILITY, OpenCodeVersion, agent_minimum_version};
 use super::driver::*;
-use super::permissions::permission_reply;
+use super::permissions::{
+    MAX_OPENCODE_SESSION_RULES, organizational_permission_error, permission_reply,
+};
 use super::protocol::parse_rollback_cursor;
 use super::support::*;
 use crate::events::*;
 use crate::models::*;
+use crate::registry::{admit_version, refused_version};
 use crate::{
     DriverFuture, DriverOperationContext, ProviderAuthoritySupport, ProviderDriver,
     ProviderEventSink,
 };
+use ganbaru_chat_contracts::model_recommendation::{NativeCompany, recommended_model_id};
 use std::sync::{Arc, atomic::Ordering};
 
 impl ProviderDriver for OpenCodeProviderDriver {
@@ -36,10 +41,34 @@ impl ProviderDriver for OpenCodeProviderDriver {
         &self.configuration
     }
 
+    fn cli_command(&self, arguments: &[&str]) -> ChatResult<crate::ProviderCliCommand> {
+        let environment = super::cli::process_environment(&self.configuration)?;
+        let executable =
+            super::cli::resolve_executable(&self.configuration.executable, &environment)?;
+        Ok(crate::ProviderCliCommand::new(
+            executable.executable,
+            &[],
+            arguments,
+            environment,
+        ))
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         capabilities()
     }
 
+    fn session_process_id(&self) -> Option<u32> {
+        self.live.as_ref()?.owned_server.as_ref()?.process_id()
+    }
+
+    /// An owned local server enforces organizational scopes through session permission rules
+    /// that outrank agent and configuration rules, with project configuration, formatters, and
+    /// language servers off. Reads and edits stay in the working directory, web tools, subagents,
+    /// and other MCP servers are denied, and the shell is denied or runs every command through the
+    /// sandbox helper when the device has one, and otherwise asks the person for every command,
+    /// which then runs unconfined. Publication goes through the push request host tool, which a
+    /// person confirms. An external server's configuration is outside Ganbaru's
+    /// control, so it supports nothing.
     fn authority_support(&self) -> ProviderAuthoritySupport {
         if self.settings.is_external() {
             return ProviderAuthoritySupport::default();
@@ -47,12 +76,13 @@ impl ProviderDriver for OpenCodeProviderDriver {
         ProviderAuthoritySupport {
             isolated_conversation: true,
             internal_host_tools: true,
-            deny_shell: false,
-            read_only_root: false,
-            writable_root: false,
-            confined_commands: false,
-            network_boundary: false,
-            classified_publish: false,
+            deny_shell: true,
+            read_only_root: true,
+            writable_root: true,
+            confined_commands: self.commands_confined(),
+            network_boundary: true,
+            classified_publish: true,
+            person_approved_commands: true,
         }
     }
 
@@ -89,9 +119,21 @@ impl ProviderDriver for OpenCodeProviderDriver {
             match self.catalog_snapshot(&workspace).await {
                 Ok(snapshot) => {
                     let negotiated_protocol_version = snapshot.version.clone();
+                    let agent_minimum = snapshot.version.as_deref().and_then(agent_minimum_version);
+                    let version_admission = snapshot
+                        .version
+                        .as_deref()
+                        .map(|version| {
+                            admit_version::<OpenCodeVersion>(&OPENCODE_COMPATIBILITY, version)
+                        })
+                        .transpose()?;
                     self.cached_commands = snapshot.commands.clone();
                     self.cached_models = Some(ProviderModelCatalog {
                         instance_id: self.configuration.instance_id.clone(),
+                        recommended_model_id: recommended_model_id(
+                            NativeCompany::None,
+                            &snapshot.models,
+                        ),
                         models: snapshot.models,
                         source: ModelCatalogSource::Provider,
                         discovered_at: checked_at.clone(),
@@ -102,25 +144,41 @@ impl ProviderDriver for OpenCodeProviderDriver {
                         state: ProbeState::Healthy,
                         version: snapshot.version,
                         negotiated_protocol_version,
+                        auth_source: None,
+                        account_plan: None,
                         account_label: snapshot.account_label,
                         capabilities: capabilities(),
                         authority_support: self.authority_support(),
                         checked_at,
                         detail: Some(snapshot.toolchain_detail),
+                        version_admission,
+                        agent_minimum_version: agent_minimum,
+                        usage_limits: None,
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),
-                Err(error) => Ok(ProviderProbeResult {
-                    instance_id: self.configuration.instance_id.clone(),
-                    state: probe_state(error.code),
-                    version: None,
-                    negotiated_protocol_version: None,
-                    account_label: None,
-                    capabilities: capabilities(),
-                    authority_support: self.authority_support(),
-                    checked_at,
-                    detail: Some(probe_detail(error.code).to_string()),
-                }),
+                Err(error) => {
+                    let refusal = refused_version(&error);
+                    let agent_minimum = refusal
+                        .as_ref()
+                        .and_then(|(_, version)| agent_minimum_version(version));
+                    Ok(ProviderProbeResult {
+                        instance_id: self.configuration.instance_id.clone(),
+                        state: probe_state(error.code),
+                        version: refusal.as_ref().map(|(_, version)| version.clone()),
+                        negotiated_protocol_version: None,
+                        auth_source: None,
+                        account_plan: None,
+                        account_label: None,
+                        capabilities: capabilities(),
+                        authority_support: self.authority_support(),
+                        checked_at,
+                        detail: Some(probe_detail(error.code).to_string()),
+                        version_admission: refusal.map(|(admission, _)| admission),
+                        agent_minimum_version: agent_minimum,
+                        usage_limits: None,
+                    })
+                }
             }
         })
     }
@@ -138,6 +196,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
             self.cached_commands = snapshot.commands.clone();
             let catalog = ProviderModelCatalog {
                 instance_id: self.configuration.instance_id.clone(),
+                recommended_model_id: recommended_model_id(NativeCompany::None, &snapshot.models),
                 models: snapshot.models,
                 source: ModelCatalogSource::Provider,
                 discovered_at: now_utc()?,
@@ -204,8 +263,20 @@ impl ProviderDriver for OpenCodeProviderDriver {
     ) -> DriverFuture<'a, TurnDispatchReceipt> {
         Box::pin(async move {
             let prompt = prompt(&request)?;
-            let provider_command = provider_command(&request, &self.cached_commands);
+            let organizational_rules = self
+                .organizational_scope()?
+                .map(|scope| self.organizational_rules_for(scope, request.modes))
+                .transpose()?;
+            // Command templates can run shell commands while they expand, outside any
+            // permission request, so an organizational run sends every prompt as text.
+            let provider_command = match organizational_rules {
+                Some(_) => None,
+                None => provider_command(&request, &self.cached_commands),
+            };
             let live = self.live_mut(&request.session_id)?;
+            if organizational_rules.is_some() != live.organizational_rules.is_some() {
+                return Err(organizational_permission_error());
+            }
             if live
                 .command_task
                 .as_ref()
@@ -223,6 +294,27 @@ impl ProviderDriver for OpenCodeProviderDriver {
             let provider_turn_id =
                 ProviderTurnId::new(format!("opencode-{}", request.turn_id.as_str()))
                     .map_err(|_| super::protocol::protocol_error("turn ID"))?;
+            if live
+                .route
+                .lock()
+                .map_err(|_| driver_state_error())?
+                .active_turn_id
+                .is_some()
+            {
+                return Err(ChatError::new(
+                    ChatErrorCode::Busy,
+                    "OpenCode already has an active turn; steer or queue the prompt",
+                    true,
+                ));
+            }
+            if let Some(rules) = organizational_rules
+                && live.organizational_rules.as_ref() != Some(&rules)
+            {
+                live.client
+                    .update_permission(&live.provider_thread_id, &rules)
+                    .await?;
+                live.organizational_rules = Some(rules);
+            }
             let started = {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                 if state.active_turn_id.is_some() {
@@ -355,44 +447,54 @@ impl ProviderDriver for OpenCodeProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             let live = self.live_mut(&request.session_id)?;
-            let active_turn_id = live
-                .route
-                .lock()
-                .map_err(|_| driver_state_error())?
-                .active_turn_id
-                .clone();
-            if active_turn_id.is_none() {
-                return Ok(operation_receipt(
-                    request.command.client_command_id.as_str(),
-                    "OpenCode turn was already settled",
-                ));
+            {
+                let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+                match state.active_turn_id.as_ref() {
+                    None => {
+                        return Ok(operation_receipt(
+                            request.command.client_command_id.as_str(),
+                            "OpenCode turn was already settled",
+                        ));
+                    }
+                    Some(active) if active != &request.turn_id => {
+                        return Err(ChatError::new(
+                            ChatErrorCode::Conflict,
+                            "OpenCode interrupt does not match the active turn",
+                            false,
+                        ));
+                    }
+                    Some(_) => {
+                        state.request_interrupt();
+                    }
+                }
             }
-            if active_turn_id.as_ref() != Some(&request.turn_id) {
-                return Err(ChatError::new(
-                    ChatErrorCode::Conflict,
-                    "OpenCode interrupt does not match the active turn",
-                    false,
-                ));
+            if let Err(error) = live.client.abort(&live.provider_thread_id).await {
+                live.route
+                    .lock()
+                    .map_err(|_| driver_state_error())?
+                    .cancel_interrupt();
+                return Err(error);
             }
-            live.client.abort(&live.provider_thread_id).await?;
             if let Some(task) = live.command_task.take() {
                 task.abort();
             }
             let event = {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
-                state.active_turn_id = None;
-                state.session_state = ProviderSessionState::Ready;
-                live.normalizer.external_event(
-                    &state,
-                    "turn/interrupted",
-                    CanonicalEvent::TurnAborted(TurnAbortedEvent {
-                        state: ChatTurnState::Interrupted,
-                        reason: "Interrupted by user".to_string(),
-                        recoverable: true,
-                    }),
-                )?
+                match state.take_interrupted_turn(&request.turn_id) {
+                    Some(turn_id) => {
+                        state.session_state = ProviderSessionState::Ready;
+                        Some(live.normalizer.interrupted_turn(
+                            &state,
+                            "turn/interrupted",
+                            turn_id,
+                        )?)
+                    }
+                    None => None,
+                }
             };
-            live.sink.emit(event).await?;
+            if let Some(event) = event {
+                live.sink.emit(event).await?;
+            }
             Ok(operation_receipt(
                 request.command.client_command_id.as_str(),
                 "OpenCode turn interrupt requested",
@@ -407,24 +509,62 @@ impl ProviderDriver for OpenCodeProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             let live = self.live_mut(&request.session_id)?;
-            if !live
-                .route
-                .lock()
-                .map_err(|_| driver_state_error())?
-                .has_permission(&request.provider_request_id)
-            {
-                return Err(ChatError::new(
-                    ChatErrorCode::Conflict,
-                    "OpenCode approval is no longer pending in this session",
-                    false,
-                ));
-            }
-            live.client
+            let session_rules = {
+                let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+                if !state.has_permission(&request.provider_request_id) {
+                    return Err(ChatError::new(
+                        ChatErrorCode::Conflict,
+                        "OpenCode approval is no longer pending in this session",
+                        false,
+                    ));
+                }
+                let allow_session = request.decision.kind == ApprovalDecisionKind::AllowSession;
+                if allow_session && state.is_organizational() {
+                    return Err(ChatError::validation(
+                        "decision",
+                        "An agent run approves each request once",
+                    ));
+                }
+                state.set_session_approval(&request.provider_request_id, allow_session);
+                allow_session.then(|| state.session_rules_for(&request.provider_request_id))
+            };
+            if let Err(error) = live
+                .client
                 .reply_permission(
                     request.provider_request_id.as_str(),
                     permission_reply(request.decision.kind),
                 )
-                .await?;
+                .await
+            {
+                if let Ok(mut state) = live.route.lock() {
+                    state.set_session_approval(&request.provider_request_id, false);
+                }
+                return Err(error);
+            }
+            if let Some(session_rules) = session_rules {
+                let warning = {
+                    let mut state = live.route.lock().map_err(|_| driver_state_error())?;
+                    let dropped = state.grant_session_rules(session_rules);
+                    (dropped > 0)
+                        .then(|| {
+                            live.normalizer.external_event(
+                                &state,
+                                "permission/session_rules",
+                                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                                    code: "opencode_session_rules_trimmed".to_string(),
+                                    title: "OpenCode forgot older session approvals".to_string(),
+                                    detail: Some(format!(
+                                        "Only the latest {MAX_OPENCODE_SESSION_RULES} session approvals are kept; older ones will ask again"
+                                    )),
+                                }),
+                            )
+                        })
+                        .transpose()?
+                };
+                if let Some(warning) = warning {
+                    live.sink.emit(warning).await?;
+                }
+            }
             Ok(operation_receipt(
                 request.command.client_command_id.as_str(),
                 "OpenCode approval response accepted",
@@ -535,6 +675,10 @@ impl ProviderDriver for OpenCodeProviderDriver {
                     false,
                 ));
             }
+            live.route
+                .lock()
+                .map_err(|_| driver_state_error())?
+                .request_interrupt();
             let abort_result = live.client.abort(&live.provider_thread_id).await;
             live.expected_shutdown.store(true, Ordering::Release);
             live.event_task.abort();

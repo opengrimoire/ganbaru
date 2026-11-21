@@ -2,6 +2,9 @@ import { pickAndReadMusicInterchangeFile, pickMusicRootBindingFolder } from "$li
 import { commitMusicTransfer, exportMusicTransfer, MusicLibraryApiError, previewMusicTransfer, setLocalRootBinding } from "$lib/api/music-library";
 import type { LocalRootBinding, MusicInterchangeImportResult, MusicPlaylistSummary } from "./contracts";
 import type { MusicTransferCommit, MusicTransferFormat, MusicTransferPreview, MusicTransferSource } from "./interchange";
+import { LocalizedError } from "$lib/i18n/user-errors";
+import { translate } from "$lib/i18n/translator.svelte";
+import { musicErrorMessage } from "$lib/music/user-errors";
 
 export type MusicInterchangeFormat = MusicTransferFormat;
 export type MusicInterchangeMode = "import" | "export";
@@ -76,13 +79,13 @@ export class MusicInterchangeController {
   }
 
   private currentSource(): MusicTransferSource {
-    if (this.importedContents === null) throw new Error("Choose a Music import file");
+    if (this.importedContents === null) throw new LocalizedError(translate("music.errors.importFileRequired"));
     return { contents: this.importedContents, playlistName: this.importPlaylistName.trim(), relativeRootId: this.m3u8RootId || null, selectedAtMs: this.selectedAtMs };
   }
 
   private requireVault(): string {
     const vaultId = this.vaultId();
-    if (!vaultId || vaultId !== this.sourceVaultId) throw new Error("The active vault changed. Reopen the Music transfer dialog");
+    if (!vaultId || vaultId !== this.sourceVaultId) throw new LocalizedError(translate("music.errors.transferVaultChanged"));
     return vaultId;
   }
 
@@ -105,7 +108,7 @@ export class MusicInterchangeController {
     this.busy = true;
     this.error = null;
     try { await this.loadPreview(); }
-    catch (error) { this.error = error instanceof Error ? error.message : String(error); }
+    catch (error) { this.error = musicErrorMessage(error, translate("music.errors.importPreviewFailed")); }
     finally { this.busy = false; }
   }
 
@@ -122,7 +125,7 @@ export class MusicInterchangeController {
       await this.loadPreview();
       return true;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.importReadFailed"));
       return false;
     } finally { this.busy = false; }
   }
@@ -133,7 +136,7 @@ export class MusicInterchangeController {
     this.error = null;
     try { return await exportMusicTransfer(this.requireVault(), [...this.selectedPlaylistIds], this.format); }
     catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.exportFailed"));
       return false;
     } finally { this.busy = false; }
   }
@@ -151,7 +154,7 @@ export class MusicInterchangeController {
       await this.loadPreview();
       return true;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.importFolderMatchFailed"));
       return false;
     } finally { this.busy = false; }
   }
@@ -178,11 +181,16 @@ export class MusicInterchangeController {
       this.pendingCommit = null;
       return true;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
       if (error instanceof MusicLibraryApiError && error.code === "stale-write") {
+        this.error = translate("music.errors.importPreviewChanged");
         this.pendingCommit = null;
         try { await this.loadPreview(); }
-        catch (refreshError) { this.error += "; " + (refreshError instanceof Error ? refreshError.message : String(refreshError)); }
+        catch (refreshError) {
+          console.error("Music import preview could not be refreshed", refreshError);
+          this.error = musicErrorMessage(refreshError, translate("music.errors.importPreviewFailed"));
+        }
+      } else {
+        this.error = musicErrorMessage(error, translate("music.errors.importFailed"));
       }
       return false;
     } finally { this.busy = false; }

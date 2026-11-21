@@ -24,6 +24,8 @@ const LINKING_FIREWALL_HELPER_BUNDLE_SOURCE =
   "../../../target/release/ganbaru-linking-firewall";
 const LINKING_FIREWALL_HELPER_INSTALL_PATH =
   "/usr/lib/ganbaru/ganbaru-linking-firewall";
+const SANDBOX_HELPER_BUNDLE_SOURCE = "../../../target/release/ganbaru-sandbox";
+const SANDBOX_HELPER_INSTALL_PATH = "/usr/lib/ganbaru/ganbaru-sandbox";
 const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 
 /**
@@ -64,6 +66,7 @@ const config = {
           [PACKAGE_REPO_PUBLIC_KEY_INSTALL_PATH]: PACKAGE_REPO_PUBLIC_KEY_BUNDLE_SOURCE,
           [POLKIT_POLICY_INSTALL_PATH]: POLKIT_POLICY_BUNDLE_SOURCE,
           [LINKING_FIREWALL_HELPER_INSTALL_PATH]: LINKING_FIREWALL_HELPER_BUNDLE_SOURCE,
+          [SANDBOX_HELPER_INSTALL_PATH]: SANDBOX_HELPER_BUNDLE_SOURCE,
         },
         postInstallScript: "packaging/deb/postinst",
         preRemoveScript: "packaging/deb/prerm",
@@ -74,6 +77,7 @@ const config = {
           [PACKAGE_REPO_PUBLIC_KEY_INSTALL_PATH]: PACKAGE_REPO_PUBLIC_KEY_BUNDLE_SOURCE,
           [POLKIT_POLICY_INSTALL_PATH]: POLKIT_POLICY_BUNDLE_SOURCE,
           [LINKING_FIREWALL_HELPER_INSTALL_PATH]: LINKING_FIREWALL_HELPER_BUNDLE_SOURCE,
+          [SANDBOX_HELPER_INSTALL_PATH]: SANDBOX_HELPER_BUNDLE_SOURCE,
         },
         postInstallScript: "packaging/rpm/postinstall.sh",
         preRemoveScript: "packaging/rpm/preremove.sh",

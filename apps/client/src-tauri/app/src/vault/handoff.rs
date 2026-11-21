@@ -147,6 +147,7 @@ impl CoordinatorLifecycle {
             admission: lan_admission(&app, port)?,
             quarantined: Some(crate::sync::quarantined_devices(&app)),
             log_admission: Some(crate::sync::log_admission_source(&app)),
+            chat_live: Some(crate::chat::live_execution::chat_live_routes(&app)),
         };
         tauri::async_runtime::spawn(contact_requests::run(app.clone(), contact_receiver));
         let advertiser_app = app.clone();
@@ -421,6 +422,8 @@ pub(crate) async fn ensure_member_listener<R: Runtime>(
         bundles: Some(transport::MemberBundles::new(
             snapshot::member_snapshot_preparer(app.clone(), manager.clone()),
         )),
+        #[cfg(desktop)]
+        chat_live: Some(crate::chat::live_execution::chat_live_routes(app)),
     };
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
     #[cfg(desktop)]

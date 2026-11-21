@@ -18,6 +18,7 @@
   import IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { musicIssueMessageKey } from "$lib/music/library/issue-presentation";
   import { formatList } from "$lib/i18n/formatters";
   import type { MusicBuilderInspectorController } from "$lib/music/builder/inspector.svelte";
   import type { MusicBulkEditController } from "$lib/music/builder/bulk-edit-controller.svelte";
@@ -236,7 +237,7 @@
   function attentionLabel(): string {
     if (unboundRootId) return t("music.builder.notOnThisDevice");
     if (detail?.item.availability !== "available") return availabilityLabel();
-    return issue?.message ?? "";
+    return issue ? t(musicIssueMessageKey(issue.issueKind)) : "";
   }
 
   $effect(() => {
@@ -669,12 +670,12 @@
                 </button>
               {/snippet}
             </IconPicker>
-            <input bind:this={newPlaylistNameInput} bind:value={viewState.newPlaylistName} aria-label={t("music.builder.inlinePlaylistName")} class="field h-8 min-w-0 flex-1 px-2.5 text-xs" placeholder={t("music.builder.inlinePlaylistName")} />
+            <input bind:this={newPlaylistNameInput} bind:value={viewState.newPlaylistName} aria-label={t("music.builder.inlinePlaylistName")} class="field min-w-0 flex-1 px-2.5 text-xs" placeholder={t("music.builder.inlinePlaylistName")} />
           </div>
           {#if selectionMode ? bulk.createError : review.createError}<Notice class="mt-1.5 text-[0.65rem]" message={(selectionMode ? bulk.createError : review.createError) ?? ""} />{/if}
           <div class="mt-2 flex justify-end gap-2">
-            <button type="button" onclick={() => { viewState.inlineCreateOpen = false; review.createError = null; bulk.createError = null; }} class="h-8 rounded-md bg-secondary px-2.5 text-xs font-medium">{t("music.builder.cancel")}</button>
-            <button type="submit" disabled={!viewState.newPlaylistName.trim() || (selectionMode ? bulk.creatingPlaylist : review.creatingPlaylist)} class="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground disabled:opacity-40"><ListPlus size={14} />{t("music.builder.createAndAdd")}</button>
+            <button type="button" onclick={() => { viewState.inlineCreateOpen = false; review.createError = null; bulk.createError = null; }} class="h-(--control-height) rounded-md bg-secondary px-2.5 text-xs font-medium">{t("music.builder.cancel")}</button>
+            <button type="submit" disabled={!viewState.newPlaylistName.trim() || (selectionMode ? bulk.creatingPlaylist : review.creatingPlaylist)} class="inline-flex h-(--control-height) items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground disabled:opacity-40"><ListPlus size={14} />{t("music.builder.createAndAdd")}</button>
           </div>
         </form>
       {:else}

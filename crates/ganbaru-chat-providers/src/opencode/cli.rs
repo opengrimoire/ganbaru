@@ -4,9 +4,12 @@ use super::config::OPENCODE_DISABLE_PROJECT_CONFIG_ENVIRONMENT;
 use crate::models::{
     ChatError, ChatErrorCode, ChatResult, ModelAvailability, ModelChoiceOption,
     ModelOptionDefinition, ProjectConfigurationAccess, ProviderCapability, ProviderInstanceConfig,
-    ProviderModel,
+    ProviderModel, ProviderVersionAdmission,
 };
 use crate::process::{BoundedCommand, BoundedCommandFailure, run_bounded_command};
+use crate::registry::{
+    ProviderCompatibilityRange, VersionOrder, admit_version, admits_sessions, version_refusal,
+};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -15,6 +18,13 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 pub const MINIMUM_OPENCODE_VERSION: &str = "1.14.19";
+/// OpenCode versions whose server protocol the OpenCode runtime speaks, up to the version the
+/// focused tests cover, below the first major line Ganbaru has no runtime for.
+pub const OPENCODE_COMPATIBILITY: ProviderCompatibilityRange = ProviderCompatibilityRange {
+    minimum: MINIMUM_OPENCODE_VERSION,
+    maximum_tested: "1.19.5",
+    ceiling_exclusive: Some("2.0.0"),
+};
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_COMMAND_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MODELS: usize = 2_048;
@@ -69,7 +79,7 @@ pub fn process_environment(
 ) -> ChatResult<BTreeMap<String, String>> {
     let mut environment = BTreeMap::new();
     for name in inherited_environment_names() {
-        if let Ok(value) = std::env::var(name) {
+        if let Some(value) = crate::host_path::host_variable(name) {
             if !value.contains('\0') {
                 environment.insert((*name).to_string(), value);
             }
@@ -80,6 +90,7 @@ pub fn process_environment(
             || name.contains(['=', '\0'])
             || value.contains('\0')
             || matches!(name.to_ascii_uppercase().as_str(), "HOME" | "USERPROFILE")
+            || name == ganbaru_sandbox::POLICY_FILE_VARIABLE
         {
             return Err(ChatError::validation(
                 "environment",
@@ -110,18 +121,96 @@ pub fn process_environment(
 /// Environment of a local server. A restricted server asks OpenCode to skip
 /// project configuration as defense in depth; the switch is not verified with
 /// the pinned version, so the trust gate never relies on it.
+///
+/// A server for an organizational run always skips project configuration, which
+/// keeps project plugins, tools, MCP servers, agents, commands, and instructions
+/// out, whatever the folder's trust, and turns off formatters and language
+/// servers, which run project programs after an edit without a permission
+/// request. Both are verified with OpenCode 1.19.5 and override any configured
+/// value. With `shell`, the organizational server runs every command through the
+/// confined shell of the session.
 pub fn server_environment(
     configuration: &ProviderInstanceConfig,
     project_configuration: ProjectConfigurationAccess,
+    shell: Option<&crate::confinement::ShellSandbox>,
 ) -> ChatResult<BTreeMap<String, String>> {
     let mut environment = process_environment(configuration)?;
-    if project_configuration == ProjectConfigurationAccess::Restricted {
+    let organizational = configuration
+        .internal_mcp
+        .as_ref()
+        .is_some_and(|server| server.organizational_authority);
+    if organizational || project_configuration == ProjectConfigurationAccess::Restricted {
         environment.insert(
             OPENCODE_DISABLE_PROJECT_CONFIG_ENVIRONMENT.to_string(),
             "1".to_string(),
         );
     }
+    if organizational {
+        environment.insert(
+            OPENCODE_CONFIG_CONTENT_ENVIRONMENT.to_string(),
+            organizational_config_content(shell.map(crate::confinement::ShellSandbox::shell)),
+        );
+        if let Some(shell) = shell {
+            let (name, value) = shell.policy_variable(OPENCODE_PROVIDER_NAME)?;
+            environment.insert(name, value);
+        }
+    }
     Ok(environment)
+}
+
+/// Environment variable whose JSON OpenCode merges into its configuration last.
+pub const OPENCODE_CONFIG_CONTENT_ENVIRONMENT: &str = "OPENCODE_CONFIG_CONTENT";
+/// Provider name in sandbox refusals.
+pub const OPENCODE_PROVIDER_NAME: &str = "OpenCode";
+
+/// Configuration an organizational server merges last: no formatters and no language servers,
+/// and `shell` as the program that runs every command when the session confines them.
+pub fn organizational_config_content(shell: Option<&str>) -> String {
+    let mut content = Map::new();
+    content.insert("formatter".to_string(), Value::Bool(false));
+    content.insert("lsp".to_string(), Value::Bool(false));
+    if let Some(shell) = shell {
+        content.insert("shell".to_string(), Value::String(shell.to_string()));
+    }
+    Value::Object(content).to_string()
+}
+
+/// The oldest OpenCode whose session rules, project configuration switch, and configuration
+/// merge were verified to hold an organizational run inside its scope.
+pub const MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION: OpenCodeVersion = OpenCodeVersion {
+    major: 1,
+    minor: 19,
+    patch: 5,
+};
+
+/// The oldest OpenCode version agent runs accept, when the version `text` names is older.
+pub fn agent_minimum_version(text: &str) -> Option<String> {
+    parse_version(text)
+        .ok()
+        .filter(|version| *version < MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION)
+        .map(|_| MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION.to_string())
+}
+
+/// Refuses an organizational run on an OpenCode older than
+/// [`MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION`] or one that reports no readable version.
+pub fn ensure_organizational_version(health: &Value) -> ChatResult<()> {
+    let text = health
+        .get("version")
+        .and_then(Value::as_str)
+        .ok_or_else(super::permissions::organizational_permission_error)?;
+    let version =
+        parse_version(text).map_err(|_| super::permissions::organizational_permission_error())?;
+    if version < MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION {
+        return Err(version_refusal(
+            ProviderVersionAdmission::BelowMinimum,
+            &version.to_string(),
+            format!(
+                "OpenCode {version} cannot run agents; version {MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION} or newer is required"
+            ),
+            true,
+        ));
+    }
+    Ok(())
 }
 
 pub fn resolve_executable(
@@ -205,18 +294,32 @@ pub fn parse_version(value: &str) -> ChatResult<OpenCodeVersion> {
     Ok(version)
 }
 
-pub fn ensure_supported_version(version: OpenCodeVersion) -> ChatResult<()> {
-    let minimum = parse_version(MINIMUM_OPENCODE_VERSION)?;
-    if version < minimum {
-        return Err(ChatError::new(
-            ChatErrorCode::UnsupportedVersion,
-            format!(
-                "OpenCode {version} is unsupported; version {MINIMUM_OPENCODE_VERSION} or newer is required"
-            ),
-            false,
-        ));
+impl VersionOrder for OpenCodeVersion {
+    fn parse_version(value: &str) -> ChatResult<Self> {
+        parse_version(value)
     }
-    Ok(())
+}
+
+/// Where `version` falls in `OPENCODE_COMPATIBILITY`, refusing a version below the minimum or
+/// at or above the ceiling.
+pub fn ensure_supported_version(version: OpenCodeVersion) -> ChatResult<ProviderVersionAdmission> {
+    let text = version.to_string();
+    let admission = admit_version::<OpenCodeVersion>(&OPENCODE_COMPATIBILITY, &text)?;
+    if admits_sessions(admission) {
+        return Ok(admission);
+    }
+    let ceiling = OPENCODE_COMPATIBILITY
+        .ceiling_exclusive
+        .and_then(|ceiling| ceiling.strip_suffix(".0"))
+        .unwrap_or_default();
+    Err(version_refusal(
+        admission,
+        &text,
+        format!(
+            "OpenCode {version} is unsupported; Ganbaru supports versions from {MINIMUM_OPENCODE_VERSION} and below {ceiling}"
+        ),
+        false,
+    ))
 }
 
 pub fn parse_models_cli_output(output: &[u8]) -> ChatResult<Vec<OpenCodeCatalogModel>> {
@@ -341,7 +444,6 @@ pub fn provider_models(
                     ProviderCapability::CostReporting,
                 ],
                 options,
-                custom: false,
             })
         })
         .collect()
@@ -572,7 +674,7 @@ fn default_variant(provider_id: &str, variants: &[String]) -> Option<String> {
 
 fn parse_version_token(value: &str) -> Option<OpenCodeVersion> {
     let value = value.strip_prefix('v').unwrap_or(value);
-    let prefix = value.split('-').next()?;
+    let prefix = value.split(['-', '+']).next()?;
     let mut parts = prefix.split('.');
     let version = OpenCodeVersion {
         major: parts.next()?.parse().ok()?,

@@ -1,0 +1,91 @@
+{
+  "calls": [
+    {
+      "call": "start_session",
+      "result": "ok"
+    },
+    {
+      "call": "send_turn",
+      "result": "ok"
+    }
+  ],
+  "events": [
+    {
+      "type": "session_started",
+      "state": "ready"
+    },
+    {
+      "type": "session_configured"
+    },
+    {
+      "type": "turn_started",
+      "turn": "turn-1",
+      "state": "active"
+    },
+    {
+      "type": "thread_started",
+      "turn": "turn-1"
+    },
+    {
+      "type": "thread_metadata_updated",
+      "turn": "turn-1"
+    },
+    {
+      "type": "thread_metadata_updated",
+      "turn": "turn-1"
+    },
+    {
+      "type": "item_started",
+      "turn": "turn-1",
+      "kind": "command_execution",
+      "status": "active"
+    },
+    {
+      "type": "request_opened",
+      "turn": "turn-1",
+      "kind": "command_execution",
+      "requestId": "request-1"
+    },
+    {
+      "type": "request_resolved",
+      "turn": "turn-1",
+      "state": "interrupted",
+      "requestId": "request-1"
+    },
+    {
+      "type": "item_started",
+      "turn": "turn-1",
+      "kind": "assistant_message",
+      "status": "active"
+    },
+    {
+      "type": "content_delta",
+      "turn": "turn-1",
+      "streamKind": "assistant_text",
+      "delta": "Skipped"
+    },
+    {
+      "type": "item_completed",
+      "turn": "turn-1",
+      "kind": "assistant_message",
+      "status": "completed"
+    },
+    {
+      "type": "thread_metadata_updated",
+      "turn": "turn-1"
+    },
+    {
+      "type": "thread_usage_updated",
+      "turn": "turn-1"
+    },
+    {
+      "type": "turn_completed",
+      "turn": "turn-1",
+      "state": "completed",
+      "stopReason": "end_turn"
+    },
+    {
+      "type": "thread_metadata_updated"
+    }
+  ]
+}

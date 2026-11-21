@@ -48,7 +48,8 @@
     try {
       Picker = (await import("$lib/components/icon-picker/IconPicker.svelte")).default;
     } catch (caught: unknown) {
-      loadError = caught instanceof Error ? caught.message : String(caught);
+      console.error("load icon picker failed", caught);
+      loadError = t("projects.iconPicker.loadFailed");
     } finally {
       loading = false;
     }

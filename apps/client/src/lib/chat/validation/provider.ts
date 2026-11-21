@@ -3,8 +3,12 @@ import {
   MODEL_CATALOG_SOURCES,
   PROVIDER_CAPABILITIES,
   PROVIDER_IMPLEMENTATION_STATUSES,
+  PROVIDER_INSTALL_SHELLS,
   PROVIDER_MATURITIES,
   PROBE_STATES,
+  PROVIDER_ACCOUNT_PLANS,
+  PROVIDER_AUTH_SOURCES,
+  PROVIDER_VERSION_ADMISSIONS,
   type ModelChoiceOption,
   type ModelOptionDefinition,
   type ModelOptionSelection,
@@ -13,10 +17,14 @@ import {
   type ProviderAuthoritySupport,
   type ProviderCapabilitySupport,
   type ProviderFamilyMetadataRead,
+  type ProviderInstallGuide,
+  type ProviderInstallRequirement,
   type ProviderInstanceConfig,
   type ProviderModel,
   type ProviderModelCatalog,
   type ProviderProbeResult,
+  type ProviderUpdateRead,
+  type ProviderUpdateRunRead,
 } from "../contracts";
 import {
   readArray,
@@ -63,6 +71,32 @@ export function parseProviderAuthoritySupport(
     confinedCommands: readBoolean(record.confinedCommands, `${label}.confinedCommands`),
     networkBoundary: readBoolean(record.networkBoundary, `${label}.networkBoundary`),
     classifiedPublish: readBoolean(record.classifiedPublish, `${label}.classifiedPublish`),
+    personApprovedCommands: readBoolean(record.personApprovedCommands, `${label}.personApprovedCommands`),
+  };
+}
+
+/** Reads a tool an installer needs. */
+function parseProviderInstallRequirement(value: unknown, label: string): ProviderInstallRequirement {
+  const record = readRecord(value, label);
+  return {
+    name: readString(record.name, `${label}.name`),
+    program: readString(record.program, `${label}.program`),
+    command: readString(record.command, `${label}.command`),
+  };
+}
+
+/** Reads an install guide, refusing a documentation link that is not `https`. */
+function parseProviderInstallGuide(value: unknown, label: string): ProviderInstallGuide {
+  const record = readRecord(value, label);
+  const docsUrl = readString(record.docsUrl, `${label}.docsUrl`);
+  if (!docsUrl.startsWith("https://")) throw new Error(`${label}.docsUrl must use https`);
+  return {
+    shell: readEnum(record.shell, PROVIDER_INSTALL_SHELLS, `${label}.shell`),
+    command: readString(record.command, `${label}.command`),
+    signInCommand: readString(record.signInCommand, `${label}.signInCommand`),
+    signInAfterInstallCommand: readString(record.signInAfterInstallCommand, `${label}.signInAfterInstallCommand`),
+    docsUrl,
+    requirement: readNullable(record.requirement, `${label}.requirement`, parseProviderInstallRequirement),
   };
 }
 
@@ -74,6 +108,9 @@ export function parseProviderFamilyMetadata(value: unknown, label = "provider me
     configurationSchemaVersion: readNonNegativeSafeInteger(record.configurationSchemaVersion, `${label}.configurationSchemaVersion`),
     supportedPlatforms: readStringArray(record.supportedPlatforms, `${label}.supportedPlatforms`),
     minimumTestedCliVersion: readNullable(record.minimumTestedCliVersion, `${label}.minimumTestedCliVersion`, readString),
+    maximumTestedCliVersion: readNullable(record.maximumTestedCliVersion, `${label}.maximumTestedCliVersion`, readString),
+    updateCommand: readNullable(record.updateCommand, `${label}.updateCommand`, readString),
+    installGuide: readNullable(record.installGuide, `${label}.installGuide`, parseProviderInstallGuide),
     defaultExecutableCandidates: readStringArray(record.defaultExecutableCandidates, `${label}.defaultExecutableCandidates`),
     implementationStatus: readEnum(record.implementationStatus, PROVIDER_IMPLEMENTATION_STATUSES, `${label}.implementationStatus`),
     maturity: readEnum(record.maturity, PROVIDER_MATURITIES, `${label}.maturity`),
@@ -101,8 +138,6 @@ export function parseProviderInstanceConfig(value: unknown, label = "provider in
     launchArguments: readStringArray(record.launchArguments, `${label}.launchArguments`),
     environment: readStringRecord(record.environment, `${label}.environment`),
     credentialReferences: readStringRecord(record.credentialReferences, `${label}.credentialReferences`),
-    visibleModelIds: readArray(record.visibleModelIds, `${label}.visibleModelIds`, readIdentifier),
-    favoriteModelIds: readArray(record.favoriteModelIds, `${label}.favoriteModelIds`, readIdentifier),
     providerConfig: readVersionedJson(record.providerConfig, `${label}.providerConfig`),
   };
 }
@@ -115,6 +150,12 @@ export function parseProviderProbeResult(value: unknown, label = "provider probe
     version: readNullable(record.version, `${label}.version`, readString),
     negotiatedProtocolVersion: readNullable(record.negotiatedProtocolVersion, `${label}.negotiatedProtocolVersion`, readString),
     accountLabel: readNullable(record.accountLabel, `${label}.accountLabel`, readString),
+    authSource: readNullable(record.authSource, `${label}.authSource`, (entry, entryLabel) =>
+      readEnum(entry, PROVIDER_AUTH_SOURCES, entryLabel),
+    ),
+    accountPlan: readNullable(record.accountPlan, `${label}.accountPlan`, (entry, entryLabel) =>
+      readEnum(entry, PROVIDER_ACCOUNT_PLANS, entryLabel),
+    ),
     capabilities: parseProviderCapabilities(record.capabilities, `${label}.capabilities`),
     authoritySupport: parseProviderAuthoritySupport(
       record.authoritySupport,
@@ -122,6 +163,33 @@ export function parseProviderProbeResult(value: unknown, label = "provider probe
     ),
     checkedAt: readUtcTimestamp(record.checkedAt, `${label}.checkedAt`),
     detail: readNullable(record.detail, `${label}.detail`, readString),
+    versionAdmission: readNullable(record.versionAdmission, `${label}.versionAdmission`, (entry, entryLabel) =>
+      readEnum(entry, PROVIDER_VERSION_ADMISSIONS, entryLabel),
+    ),
+    agentMinimumVersion: readNullable(record.agentMinimumVersion, `${label}.agentMinimumVersion`, readString),
+  };
+}
+
+export function parseProviderUpdateRead(value: unknown, label = "provider update"): ProviderUpdateRead {
+  const record = readRecord(value, label);
+  return {
+    instanceId: readIdentifier(record.instanceId, `${label}.instanceId`),
+    currentVersion: readString(record.currentVersion, `${label}.currentVersion`),
+    latestVersion: readString(record.latestVersion, `${label}.latestVersion`),
+    updateCommand: readString(record.updateCommand, `${label}.updateCommand`),
+    runsInApp: readBoolean(record.runsInApp, `${label}.runsInApp`),
+  };
+}
+
+export function parseProviderUpdates(value: unknown, label = "provider updates"): ProviderUpdateRead[] {
+  return readArray(value, label, parseProviderUpdateRead);
+}
+
+export function parseProviderUpdateRunRead(value: unknown, label = "provider update run"): ProviderUpdateRunRead {
+  const record = readRecord(value, label);
+  return {
+    successful: readBoolean(record.successful, `${label}.successful`),
+    output: readNullable(record.output, `${label}.output`, readString),
   };
 }
 
@@ -231,7 +299,6 @@ export function parseProviderModel(value: unknown, label = "provider model"): Pr
       (entry, entryLabel) => readEnum(entry, PROVIDER_CAPABILITIES, entryLabel),
     ),
     options: readArray(record.options, `${label}.options`, parseModelOptionDefinition),
-    custom: readBoolean(record.custom, `${label}.custom`),
   };
 }
 
@@ -239,9 +306,11 @@ export function parseProviderModelCatalog(value: unknown, label = "provider mode
   const record = readRecord(value, label);
   const models = readArray(record.models, `${label}.models`, parseProviderModel)
     .filter((model) => model.availability !== "deprecated");
+  const recommendedModelId = readNullable(record.recommendedModelId, `${label}.recommendedModelId`, readIdentifier);
   return {
     instanceId: readIdentifier(record.instanceId, `${label}.instanceId`),
     models,
+    recommendedModelId: models.some((model) => model.id === recommendedModelId) ? recommendedModelId : null,
     source: readEnum(record.source, MODEL_CATALOG_SOURCES, `${label}.source`),
     discoveredAt: readUtcTimestamp(record.discoveredAt, `${label}.discoveredAt`),
     stale: readBoolean(record.stale, `${label}.stale`),

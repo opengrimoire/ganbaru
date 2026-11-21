@@ -63,7 +63,7 @@ pub(super) fn assert_plan_uses(plan: &str, expected: &str) {
 }
 
 /// One project with tasks, an archived external folder, soft-deleted statuses and priorities,
-/// and a Chat graph of teammates, assignments, authorizations, runs, and scratch that references
+/// and a Chat graph of agents, assignments, authorizations, runs, and scratch that references
 /// the project and both working folders.
 const PROJECT_CHAT_GRAPH: &str = include_str!("project_chat_graph.sql");
 

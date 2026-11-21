@@ -13,6 +13,7 @@ import {
   MAX_WORKSPACE_TABS,
   MIN_SPLIT_RATIO,
   moveWorkspaceTab,
+  newTabLocation,
   normalizeWorkspaceSplits,
   parseClosedWorkspaceTabs,
   parseWorkspaceTabLocation,
@@ -506,6 +507,49 @@ describe("workspace tab persistence", () => {
 });
 
 describe("workspace tab locations", () => {
+  it("opens a new tab at a reply thread's channel instead of copying the thread tab", () => {
+    const thread: WorkspaceTabLocation = {
+      kind: "chat",
+      projectId: "a",
+      item: { type: "chat-reply-thread", id: "r", channelId: "c" },
+    };
+    expect(newTabLocation(thread)).toEqual({ kind: "chat", projectId: "a", item: { type: "chat-channel", id: "c" } });
+    const channel: WorkspaceTabLocation = { kind: "chat", projectId: "a", item: { type: "chat-channel", id: "c" } };
+    expect(newTabLocation(channel)).toBe(channel);
+    expect(newTabLocation(kindLocation("chat"))).toEqual(kindLocation("chat"));
+  });
+
+  it("keeps a reply thread with its channel and rejects one without a valid channel", () => {
+    const location = { kind: "chat", projectId: "a", item: { type: "chat-reply-thread", id: "r", channelId: "c" } };
+    expect(parseWorkspaceTabLocation(location)).toEqual(location);
+    expect(parseWorkspaceTabLocation({ ...location, item: { type: "chat-reply-thread", id: "r" } })).toBeNull();
+    expect(parseWorkspaceTabLocation({ ...location, item: { type: "chat-reply-thread", id: "r", channelId: "" } }))
+      .toBeNull();
+    expect(parseWorkspaceTabLocation({ ...location, item: { type: "chat-reply-thread", id: "", channelId: "c" } }))
+      .toBeNull();
+    expect(parseWorkspaceTabLocation({ ...location, kind: "notes" })).toBeNull();
+  });
+
+  it("round-trips a reply thread tab unlocked and confines it to that thread", () => {
+    const thread: WorkspaceTabLocation = {
+      kind: "chat",
+      projectId: "a",
+      item: { type: "chat-reply-thread", id: "r", channelId: "c" },
+    };
+    const threadTab = createWorkspaceTab("t", thread, { level: "project", locked: true, title: "Thread", projectTitle: null });
+    expect(threadTab).toMatchObject({ level: "item", locked: false });
+    expect(workspaceTabLockLevel(threadTab)).toBeNull();
+    expect(updateWorkspaceTab(state([threadTab]), "t", { locked: true }).tabs[0]?.locked).toBe(false);
+    const parsed = parseWorkspaceTabsState(JSON.parse(serializeWorkspaceTabsState(state([threadTab]))), ALL_KINDS);
+    expect(parsed?.tabs).toEqual([threadTab]);
+    expect(isWithinTabScope(threadTab, thread)).toBe(true);
+    expect(isWithinTabScope(threadTab, { ...thread, item: { type: "chat-channel", id: "c" } })).toBe(false);
+    expect(isWithinTabScope(threadTab, { ...thread, item: { type: "chat-reply-thread", id: "r", channelId: "d" } }))
+      .toBe(false);
+    expect(isWithinTabScope(threadTab, { ...thread, item: { type: "chat-reply-thread", id: "s", channelId: "c" } }))
+      .toBe(false);
+  });
+
   it("rejects item types that do not belong to the kind", () => {
     expect(parseWorkspaceTabLocation({ kind: "chat", projectId: "a", item: { type: "notes-page", id: "p" } }))
       .toBeNull();

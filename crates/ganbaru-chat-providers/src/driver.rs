@@ -8,21 +8,47 @@ use std::{
     },
     time::Instant,
 };
+use tokio::sync::Notify;
 
 pub type DriverFuture<'a, T> = Pin<Box<dyn Future<Output = ChatResult<T>> + Send + 'a>>;
 
+/// Shared cancellation flag for one driver operation.
+///
+/// Cloned handles observe the same flag. Synchronous callers check `is_cancelled`, and
+/// asynchronous callers await `cancelled`, which wakes as soon as `cancel` runs.
 #[derive(Clone, Debug, Default)]
 pub struct DriverCancellation {
     cancelled: Arc<AtomicBool>,
+    notify: Arc<Notify>,
 }
 
 impl DriverCancellation {
+    /// Marks the operation cancelled and wakes every task awaiting `cancelled`.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
+        self.notify.notify_waiters();
     }
 
+    /// Reports whether `cancel` has run on any clone of this handle.
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Completes once the operation is cancelled, at once when it already is.
+    ///
+    /// Interest is registered before the flag is checked again, so a `cancel` that runs
+    /// between the first check and the await still wakes this task.
+    pub async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.is_cancelled() {
+            return;
+        }
+        notified.await;
     }
 }
 
@@ -47,12 +73,68 @@ pub trait ProviderEventSink: Send + Sync {
     }
 }
 
+/// One resolved provider CLI invocation outside a session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderCliCommand {
+    pub executable: std::path::PathBuf,
+    /// Launcher prefix arguments followed by the requested ones.
+    pub arguments: Vec<String>,
+    pub environment: std::collections::BTreeMap<String, String>,
+}
+
+impl ProviderCliCommand {
+    /// An invocation of `executable` with `prefix` and then `arguments`.
+    pub(crate) fn new(
+        executable: std::path::PathBuf,
+        prefix: &[String],
+        arguments: &[&str],
+        environment: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            executable,
+            arguments: prefix
+                .iter()
+                .cloned()
+                .chain(arguments.iter().map(|argument| (*argument).to_string()))
+                .collect(),
+            environment,
+        }
+    }
+}
+
 pub trait ProviderDriver: Send {
     fn metadata(&self) -> ProviderFamilyMetadataRead;
 
     fn instance_configuration(&self) -> &ProviderInstanceConfig;
 
+    /// The provider CLI with `arguments` after any launcher prefix, resolved with the same
+    /// executable search and environment as the driver's own processes, for a maintenance
+    /// command outside a session such as an update.
+    ///
+    /// # Errors
+    ///
+    /// Fails as a probe would when the program is missing or the configuration is invalid, and
+    /// with `Unsupported` for a driver that runs no maintenance commands.
+    fn cli_command(&self, arguments: &[&str]) -> ChatResult<ProviderCliCommand> {
+        let _ = arguments;
+        Err(ChatError::unsupported(
+            "This provider runs no maintenance commands",
+        ))
+    }
+
     fn capabilities(&self) -> ProviderCapabilities;
+
+    /// Process ID of the provider process the live session runs in, when the session owns one,
+    /// so the runtime can see whether work the agent started below it is still running.
+    fn session_process_id(&self) -> Option<u32> {
+        None
+    }
+
+    /// Whether the provider reports work it started for the live session, such as a background
+    /// command or agent, that is still running after its turn ended.
+    fn background_work_running(&self) -> bool {
+        false
+    }
 
     fn authority_support(&self) -> ProviderAuthoritySupport {
         ProviderAuthoritySupport::default()
@@ -256,4 +338,41 @@ pub trait ProviderDriverFactory: Send + Sync {
         &self,
         configuration: ProviderInstanceConfig,
     ) -> ChatResult<Box<dyn ProviderDriver>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DriverCancellation;
+    use std::time::Duration;
+
+    #[test]
+    fn cancelled_wakes_after_cancel() {
+        crate::test_block_on(async {
+            let cancellation = DriverCancellation::default();
+            let waiter = cancellation.clone();
+            let task = tokio::spawn(async move { waiter.cancelled().await });
+            tokio::task::yield_now().await;
+            assert!(!task.is_finished(), "an uncancelled wait stays pending");
+            cancellation.cancel();
+            tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .expect("cancel wakes the waiter")
+                .unwrap();
+            assert!(cancellation.is_cancelled());
+        });
+    }
+
+    #[test]
+    fn cancelled_returns_when_already_cancelled() {
+        crate::test_block_on(async {
+            let cancellation = DriverCancellation::default();
+            cancellation.cancel();
+            tokio::time::timeout(Duration::from_secs(5), cancellation.clone().cancelled())
+                .await
+                .expect("an earlier cancel completes the wait at once");
+            tokio::time::timeout(Duration::from_secs(5), cancellation.cancelled())
+                .await
+                .expect("every later wait completes at once");
+        });
+    }
 }

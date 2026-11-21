@@ -6,6 +6,8 @@
 :root {
   /* Outer radius of floating surfaces. */
   --floating-radius: calc(var(--radius) + 4px);
+  /* Top corners of a bottom sheet: rounder than a floating surface, since a sheet spans the screen width. */
+  --sheet-radius: calc(var(--floating-radius) + 6px);
   /* Inset between a floating surface edge and its rows. */
   --floating-padding: 0.375rem;
   /* Rows and fields stay concentric with the surface corner. */
@@ -20,10 +22,10 @@
   --panel-font-size: var(--collection-font-size);
   /* Secondary panel text such as section labels, descriptions, and shortcuts. */
   --panel-detail-font-size: calc(var(--panel-font-size) * 0.875);
-  /* Row and field height inside panels; touch layouts raise it to a 44px target. */
+  /* Row, field, and control height inside panels; touch layouts raise it to a 44px target. */
   --panel-row-height: calc(var(--panel-font-size) * 1.5 + 0.5rem);
-  /* Height of a standalone control (button, select trigger, color swatch) beside fields and text. Touch layouts match the field row height so controls never look shorter than the fields next to them. */
-  --control-height: 1.75rem;
+  /* Height of a standalone control (button, select trigger, color swatch) beside fields and text. It is the field height, so a control and the field next to it always line up, at any font scale and on touch. */
+  --control-height: var(--panel-row-height);
   /* Hairline that separates a tab's content surface from the window frame. It is opaque, the frame darkened slightly, so it reads the same over any content it covers. */
   --content-edge: color-mix(in srgb, var(--sidebar) 93%, rgb(0 0 20));
   /* Its width; content inside a surface starts past it. */
@@ -39,13 +41,11 @@
 
 html[data-shell="mobile"] {
   --panel-row-height: 2.75rem;
-  --control-height: var(--panel-row-height);
 }
 
 @media (any-pointer: coarse) and (any-hover: none) {
   :root {
     --panel-row-height: 2.75rem;
-    --control-height: var(--panel-row-height);
   }
 }
 
@@ -60,6 +60,7 @@ html[data-shell="mobile"] {
   --container-floating-lg: min(320px, 100vw - 1rem);
   --radius-floating: var(--floating-radius);
   --radius-floating-item: var(--floating-item-radius);
+  --radius-sheet: var(--sheet-radius);
   --shadow-floating: var(--floating-shadow);
 }
 
@@ -70,6 +71,9 @@ html[data-shell="mobile"] {
   border-radius: var(--floating-radius);
   background-color: var(--popover);
   color: var(--popover-foreground);
+  /* The app thumb is tuned to the Calendar canvas and can vanish on this surface, so the thumb mixes from the surface itself. */
+  --app-scrollbar-thumb: color-mix(in srgb, var(--popover-foreground) 22%, var(--popover));
+  --app-scrollbar-thumb-hover: color-mix(in srgb, var(--popover-foreground) 55%, var(--popover));
   box-shadow: var(--floating-shadow);
   font-size: var(--panel-font-size);
   line-height: 1.5;
@@ -81,6 +85,8 @@ html[data-shell="mobile"] {
   border-radius: var(--floating-radius);
   background-color: var(--card);
   color: var(--card-foreground);
+  --app-scrollbar-thumb: color-mix(in srgb, var(--card-foreground) 22%, var(--card));
+  --app-scrollbar-thumb-hover: color-mix(in srgb, var(--card-foreground) 55%, var(--card));
   box-shadow: var(--floating-shadow);
 }
 
@@ -198,7 +204,8 @@ html[data-shell="mobile"] {
  */
 @utility field {
   min-height: var(--panel-row-height);
-  padding: 0.25rem 0.5rem;
+  /* The border takes its width out of the block padding, so a one-line field is exactly the row height. */
+  padding: calc(0.25rem - 1px) 0.5rem;
   border: 1px solid var(--border);
   border-radius: var(--floating-item-radius);
   background-color: transparent;

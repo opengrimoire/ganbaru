@@ -4,9 +4,9 @@ use crate::events::{CanonicalEvent, CanonicalRuntimeEvent, NotificationEvent};
 use crate::models::{
     ChatCommandContext, ChatCommandId, ChatError, ChatErrorCode, ChatResult, ChatThreadId,
     ChatTurnId, CompactContextRequest, DriverOperationReceipt, InterruptTurnRequest, McpStatusRead,
-    McpStatusRequest, ProviderSessionId, ProviderSessionSnapshot, ProviderSessionState,
-    ResolveApprovalRequest, ResolveUserInputRequest, ResumeSessionRequest, RollbackRequest,
-    SendTurnRequest, StartSessionRequest, SteerTurnRequest, StopSessionRequest,
+    McpStatusRequest, ProviderFamilyId, ProviderSessionId, ProviderSessionSnapshot,
+    ProviderSessionState, ResolveApprovalRequest, ResolveUserInputRequest, ResumeSessionRequest,
+    RollbackRequest, SendTurnRequest, StartSessionRequest, SteerTurnRequest, StopSessionRequest,
     TurnDispatchReceipt,
 };
 use crate::providers::{
@@ -34,9 +34,26 @@ use helpers::*;
 use worker::run_thread_runtime;
 
 const DEFAULT_COMMAND_CAPACITY: usize = 32;
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const STOP_FLUSH_INTERVAL: Duration = Duration::from_millis(32);
+/// How long an accepted interrupt may wait for the provider to settle the turn before the
+/// runtime settles it as interrupted and stops the provider. Reason: a provider that ignored an
+/// interrupt is not trusted with the next turn.
+pub const INTERRUPT_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a session must stay idle with no provider events before an updated CLI replaces it.
+/// Reason: a short quiet period lets anything still finishing right after a turn settle first.
+pub const UPDATE_RESTART_QUIET: Duration = Duration::from_secs(60);
+/// How long a due stop waits before checking again whether the session is still busy.
+const STOP_RECHECK_INTERVAL: Duration = Duration::from_secs(30);
+/// How long CPU use below the provider is measured before a stop; a first sample waits this
+/// long for the second.
+const CPU_SAMPLE_INTERVAL: Duration = Duration::from_secs(10);
+/// Oldest CPU sample a stop check compares against; an older one is measured again.
+const CPU_SAMPLE_MAX_AGE: Duration = Duration::from_secs(120);
+/// Share of one core, in percent, above which the work below a provider counts as running.
+/// Reason: an idle shell or watcher stays well below it, while a build or test run is far above.
+const BUSY_CPU_PERCENT: u128 = 2;
 
 pub enum ThreadRuntimeCommand {
     SessionState(ProviderSessionState),
@@ -44,6 +61,13 @@ pub enum ThreadRuntimeCommand {
     PendingRequest(bool),
     TerminalLinkedOperation(bool),
     Touch,
+    /// Stops the session once it is idle and quiet when it runs a CLI of this family, so the next
+    /// turn resumes on the updated program. Never interrupts a turn, a pending request, or a
+    /// terminal operation.
+    RestartAfterProviderUpdate {
+        family_id: ProviderFamilyId,
+        quiet: Duration,
+    },
     PromptCatalog {
         response: oneshot::Sender<ChatResult<Vec<crate::models::ChatPromptCatalogEntry>>>,
     },
@@ -458,19 +482,49 @@ impl ThreadRuntimeOwner {
 
 pub struct ChatRuntimeRegistry {
     owners: Mutex<HashMap<ChatThreadId, Arc<ThreadRuntimeOwner>>>,
-    idle_timeout: Duration,
+    idle_timeout: IdleTimeout,
+    interrupt_confirmation_timeout: Duration,
 }
 
 impl Default for ChatRuntimeRegistry {
     fn default() -> Self {
         Self {
             owners: Mutex::new(HashMap::new()),
-            idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            idle_timeout: IdleTimeout::new(DEFAULT_IDLE_TIMEOUT),
+            interrupt_confirmation_timeout: INTERRUPT_CONFIRMATION_TIMEOUT,
         }
     }
 }
 
+/// How long a session stays idle before its provider stops, shared by the registry and every
+/// worker so a changed setting reaches running sessions.
+#[derive(Clone, Debug)]
+pub(crate) struct IdleTimeout(Arc<AtomicU64>);
+
+impl IdleTimeout {
+    fn new(timeout: Duration) -> Self {
+        Self(Arc::new(AtomicU64::new(millis(timeout))))
+    }
+
+    pub(crate) fn get(&self) -> Duration {
+        Duration::from_millis(self.0.load(Ordering::Relaxed))
+    }
+
+    fn set(&self, timeout: Duration) {
+        self.0.store(millis(timeout), Ordering::Relaxed);
+    }
+}
+
+fn millis(timeout: Duration) -> u64 {
+    u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX)
+}
+
 impl ChatRuntimeRegistry {
+    /// Sets how long sessions stay idle before their provider stops, for running sessions too.
+    pub fn set_idle_timeout(&self, timeout: Duration) {
+        self.idle_timeout.set(timeout);
+    }
+
     /// Returns the thread's owner, creating it and its worker when none exists.
     ///
     /// Callers create owners only for threads that exist or that the same command is creating;
@@ -517,13 +571,15 @@ impl ChatRuntimeRegistry {
             return Ok(Arc::clone(owner));
         }
         let now = Instant::now();
-        owners.retain(|_, owner| !owner.can_evict(now, self.idle_timeout));
+        let idle_timeout = self.idle_timeout.get();
+        owners.retain(|_, owner| !owner.can_evict(now, idle_timeout));
         let (sender, receiver) = mpsc::channel(capacity.max(1));
         let snapshot = Arc::new(Mutex::new(ThreadRuntimeSnapshot::stopped()));
         let generation = Arc::new(AtomicU64::new(0));
         let worker_thread_id = thread_id.clone();
         let worker_snapshot = Arc::clone(&snapshot);
-        let idle_timeout = self.idle_timeout;
+        let idle_timeout = self.idle_timeout.clone();
+        let interrupt_confirmation_timeout = self.interrupt_confirmation_timeout;
         let worker = tokio::spawn(async move {
             if let Some(start_gate) = start_gate {
                 let _ = start_gate.await;
@@ -534,6 +590,7 @@ impl ChatRuntimeRegistry {
                 worker_snapshot,
                 generation,
                 idle_timeout,
+                interrupt_confirmation_timeout,
             )
             .await;
         });
@@ -546,6 +603,38 @@ impl ChatRuntimeRegistry {
         });
         owners.insert(thread_id, Arc::clone(&owner));
         Ok(owner)
+    }
+
+    /// Asks every session that runs a CLI of `family_id` to restart once it is idle and quiet, so
+    /// conversations pick up an updated program without interrupting work in progress.
+    ///
+    /// # Errors
+    ///
+    /// Fails only when the owner registry is unavailable; a thread that cannot take the request
+    /// keeps its current session until its normal idle stop.
+    pub fn restart_family_sessions_after_update(
+        &self,
+        family_id: &ProviderFamilyId,
+    ) -> ChatResult<()> {
+        for owner in self.owners()? {
+            if !owner
+                .snapshot()
+                .is_ok_and(|snapshot| snapshot.accepting_commands)
+            {
+                continue;
+            }
+            let command = ThreadRuntimeCommand::RestartAfterProviderUpdate {
+                family_id: family_id.clone(),
+                quiet: UPDATE_RESTART_QUIET,
+            };
+            if let Err(error) = owner.try_command(command) {
+                eprintln!(
+                    "Chat could not schedule a restart after a provider update, code {:?}",
+                    error.code
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn owners(&self) -> ChatResult<Vec<Arc<ThreadRuntimeOwner>>> {
@@ -748,7 +837,17 @@ impl ChatRuntimeRegistry {
     pub fn with_idle_timeout_for_test(idle_timeout: Duration) -> Self {
         Self {
             owners: Mutex::new(HashMap::new()),
-            idle_timeout,
+            idle_timeout: IdleTimeout::new(idle_timeout),
+            interrupt_confirmation_timeout: INTERRUPT_CONFIRMATION_TIMEOUT,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn with_interrupt_confirmation_timeout_for_test(timeout: Duration) -> Self {
+        Self {
+            owners: Mutex::new(HashMap::new()),
+            idle_timeout: IdleTimeout::new(DEFAULT_IDLE_TIMEOUT),
+            interrupt_confirmation_timeout: timeout,
         }
     }
 }

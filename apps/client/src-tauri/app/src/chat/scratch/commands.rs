@@ -3,11 +3,13 @@
 mod cleanup;
 mod inspection;
 mod promotion;
+mod reclaim;
 
 // Re-export the commands and their generated Tauri wrappers through the stable facade.
 pub use cleanup::*;
 pub use inspection::*;
 pub use promotion::*;
+pub use reclaim::*;
 
 use crate::chat::channels::{identifier_error, persistence_error, u64_value};
 use crate::chat::scratch;
@@ -21,7 +23,7 @@ struct ScratchIdentity {
     scope_revision: u64,
     scope_lifecycle: ChatScratchScopeLifecycleState,
     conversation_id: ChatConversationId,
-    teammate_id: ChatParticipantId,
+    agent_id: ChatParticipantId,
     generation_id: ChatScratchGenerationId,
     generation_lifecycle: ChatScratchGenerationLifecycleState,
     execution_environment_id: ChatExecutionEnvironmentId,
@@ -34,7 +36,7 @@ async fn read_scratch_identity(
     let row = sqlx::query(
         "SELECT scope.id AS scope_id, scope.revision AS scope_revision,
                 scope.lifecycle_state AS scope_lifecycle, scope.reply_thread_id,
-                scope.teammate_id, thread.conversation_id,
+                scope.agent_id, thread.conversation_id,
                 generation.id AS generation_id,
                 generation.lifecycle_state AS generation_lifecycle,
                 environment.id AS execution_environment_id
@@ -60,7 +62,7 @@ async fn read_scratch_identity(
                 .map_err(persistence_error)?,
         )?,
         conversation_id: parse_id(row.try_get("conversation_id").map_err(persistence_error)?)?,
-        teammate_id: parse_id(row.try_get("teammate_id").map_err(persistence_error)?)?,
+        agent_id: parse_id(row.try_get("agent_id").map_err(persistence_error)?)?,
         generation_id: parse_id(row.try_get("generation_id").map_err(persistence_error)?)?,
         generation_lifecycle: parse_generation_lifecycle(
             &row.try_get::<String, _>("generation_lifecycle")
@@ -130,23 +132,16 @@ async fn require_current_scratch_authority(
         "SELECT EXISTS(
            SELECT 1
            FROM chat_conversation_memberships membership
-           JOIN chat_teammate_channel_memberships access
+           JOIN chat_agent_channel_memberships access
              ON access.conversation_id = membership.conversation_id
-            AND access.teammate_id = membership.participant_id
+            AND access.agent_id = membership.participant_id
             AND access.removed_at IS NULL
-           JOIN chat_access_profiles profile ON profile.id = access.access_profile_id
-           JOIN chat_access_profile_effective_revisions revision
-             ON revision.access_profile_id = profile.id
            WHERE membership.conversation_id = ? AND membership.participant_id = ?
              AND membership.removed_at IS NULL
-             AND CASE
-                   WHEN access.participate_inherits_profile = 1 THEN revision.default_participate
-                   ELSE access.participate AND revision.default_participate
-                 END = 1
          )",
     )
     .bind(identity.conversation_id.as_str())
-    .bind(identity.teammate_id.as_str())
+    .bind(identity.agent_id.as_str())
     .fetch_one(pool)
     .await
     .map_err(persistence_error)?;
@@ -155,7 +150,7 @@ async fn require_current_scratch_authority(
             pool,
             identity.generation_id.as_str(),
             identity.conversation_id.as_str(),
-            identity.teammate_id.as_str(),
+            identity.agent_id.as_str(),
             LOCAL_PARTICIPANT_ID,
             None,
         )

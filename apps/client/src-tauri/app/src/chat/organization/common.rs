@@ -143,83 +143,55 @@ pub(super) async fn insert_revision_attachments(
     }
 }
 
-/// Active folder grants of one AI channel membership, bound to the conversation and teammate.
-///
-/// Concurrent edits on two devices can each leave a default grant after sync merges them, so
-/// only the default grant with the lowest working folder id reads as the default. Execution
-/// context selection breaks the tie the same way.
-///
-/// A synced grant outside the conversation's project carries no authority, so it is left out as
-/// if revoked. Saving the membership's access revokes it, or rewrites its project to the
-/// conversation's when the user keeps that folder granted.
-pub(super) const ACTIVE_FOLDER_GRANTS_SQL: &str = "SELECT grant_row.working_folder_id,
-        folder.display_name, grant_row.capability, grant_row.capability_inherits_profile,
-        (grant_row.is_default <> 0 AND NOT EXISTS (
-            SELECT 1 FROM chat_teammate_working_folder_grants other
-            JOIN project_working_folders other_folder ON other_folder.id = other.working_folder_id
-            WHERE other.conversation_id = grant_row.conversation_id
-              AND other.teammate_id = grant_row.teammate_id
-              AND other.revoked_at IS NULL AND other.is_default <> 0
-              AND other.working_folder_id < grant_row.working_folder_id
-              AND other.project_id = conversation.project_id
-              AND other_folder.project_id = conversation.project_id
-        )) AS is_default,
-        grant_row.runtime_approval_policy, grant_row.revision, grant_row.revoked_at
- FROM chat_teammate_working_folder_grants grant_row
- JOIN chat_conversations conversation ON conversation.id = grant_row.conversation_id
- JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
- WHERE grant_row.conversation_id = ? AND grant_row.teammate_id = ?
-   AND grant_row.revoked_at IS NULL
-   AND grant_row.project_id = conversation.project_id
-   AND folder.project_id = conversation.project_id
- ORDER BY is_default DESC, folder.sort_order, folder.display_name, folder.id";
+/// Gives the message revision `revision_id` the attachments of `previous_revision_id`, in the
+/// same order, so an edit of the text keeps what the message attached.
+pub(super) async fn insert_revision_copied_attachments(
+    connection: &mut sqlx::SqliteConnection,
+    previous_revision_id: &str,
+    revision_id: &str,
+) -> ChatResult<()> {
+    sqlx::query(
+        "INSERT INTO chat_communication_attachment_references
+             (message_revision_id, ordinal, attachment_id, working_folder_id, kind,
+              original_display_name, mime_type, byte_size, sha256)
+         SELECT ?, ordinal, attachment_id, working_folder_id, kind,
+                original_display_name, mime_type, byte_size, sha256
+         FROM chat_communication_attachment_references
+         WHERE message_revision_id = ?
+         ORDER BY ordinal",
+    )
+    .bind(revision_id)
+    .bind(previous_revision_id)
+    .execute(connection)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
+}
 
+/// Returns whether a top-level post opens its reply thread at once: it mentions a person, an
+/// agent, or a channel, which invites a reply. Folder, file, and environment references only
+/// point at where work happens, so a post that has nothing else opens no thread.
 pub(super) fn has_thread_eligible_mention(request: &PostChatMessageCommand) -> bool {
     request.references.iter().any(|reference| {
         matches!(
             reference,
-            ChatMessageReference::Participant {
-                participant_kind: ChatParticipantKind::AiTeammate,
-                ..
-            }
+            ChatMessageReference::Participant { .. } | ChatMessageReference::Channel { .. }
         )
     })
 }
 
+/// Checks that an agent's default model names either the provider-managed model or one
+/// explicit model, and that its provider options are a JSON object.
 #[cfg(desktop)]
-pub(super) fn validate_policy(
-    app: &tauri::AppHandle,
-    policy: &ChatTeammatePolicyInput,
-) -> ChatResult<()> {
+pub(super) fn validate_policy(policy: &ChatAgentPolicyInput) -> ChatResult<()> {
     if policy.provider_managed_model == policy.model_id.is_some() {
         return Err(ChatError::validation(
             "modelId",
             "Choose either provider-managed model selection or one explicit model",
         ));
     }
-    if let Some(effort) = policy.effort.as_deref() {
-        if !is_valid_teammate_effort(effort) {
-            return Err(ChatError::validation(
-                "effort",
-                "Teammate effort is invalid",
-            ));
-        }
-    }
-    if let Some(speed) = policy.speed.as_deref() {
-        if !matches!(speed, "standard" | "fast") {
-            return Err(ChatError::validation("speed", "Teammate speed is invalid"));
-        }
-    }
-    super::super::settings_commands::read_provider(app, &policy.provider_instance_id)?;
+    json_object(&policy.provider_options, "providerOptions")?;
     Ok(())
-}
-
-#[cfg(desktop)]
-pub(super) fn is_valid_teammate_effort(effort: &str) -> bool {
-    matches!(
-        effort,
-        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
-    )
 }
 
 pub(super) fn validate_message_request(request: &PostChatMessageCommand) -> ChatResult<()> {
@@ -347,70 +319,6 @@ fn reference_semantic_key(reference: &ChatMessageReference) -> String {
     }
 }
 
-#[cfg(desktop)]
-pub(super) fn validate_display_name(value: &str) -> ChatResult<String> {
-    let value = value.trim();
-    if value.is_empty() || value.chars().count() > 160 || value.chars().any(char::is_control) {
-        return Err(ChatError::validation(
-            "displayName",
-            "Teammate name must contain 1 to 160 characters",
-        ));
-    }
-    Ok(value.to_string())
-}
-
-#[cfg(desktop)]
-pub(super) fn validate_teammate_role(value: &str) -> ChatResult<String> {
-    let value = value.trim();
-    if value.is_empty() || value.chars().count() > 1_000 || value.chars().any(char::is_control) {
-        return Err(ChatError::validation(
-            "role",
-            "Teammate role must contain 1 to 1000 characters",
-        ));
-    }
-    Ok(value.to_string())
-}
-
-#[cfg(desktop)]
-pub(super) fn validate_profile_text(value: &str, maximum: usize, field: &str) -> ChatResult<()> {
-    if value.len() > maximum {
-        return Err(ChatError::validation(
-            field,
-            "Teammate profile text is too long",
-        ));
-    }
-    Ok(())
-}
-
-/// Refuses a teammate name that another teammate, archived ones included, already uses, ignoring
-/// case and surrounding spaces.
-///
-/// The check covers the teammates this device holds. Devices that create or rename teammates
-/// concurrently can still end up with equal names, which readers tell apart by id.
-#[cfg(desktop)]
-pub(super) async fn require_unused_teammate_name(
-    connection: &mut sqlx::SqliteConnection,
-    display_name: &str,
-    teammate_id: &str,
-) -> ChatResult<()> {
-    let in_use: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-           SELECT 1 FROM chat_participants
-           WHERE participant_kind = 'ai_teammate' AND id != ?
-             AND lower(trim(display_name)) = lower(trim(?))
-         )",
-    )
-    .bind(teammate_id)
-    .bind(display_name)
-    .fetch_one(connection)
-    .await
-    .map_err(persistence_error)?;
-    if in_use {
-        return Err(ChatError::validation("displayName", "Name already in use"));
-    }
-    Ok(())
-}
-
 pub(super) fn json_object(value: &VersionedJson, field: &str) -> ChatResult<String> {
     if !value.value.is_object() {
         return Err(ChatError::validation(field, "Value must be a JSON object"));
@@ -529,26 +437,27 @@ pub(super) enum ScheduledPostTarget {
     ChannelCopy,
 }
 
-/// Returns the derived ids of a scheduled send's message or channel copy.
+/// Returns the derived ids of a scheduled send's message or channel copy. A repeating message
+/// passes the key of the occurrence it posts, so each occurrence names its own rows; a one-time
+/// message passes `None`.
 pub(super) fn scheduled_post_ids(
     scheduled_message_id: &str,
     target: ScheduledPostTarget,
+    occurrence_key: Option<&str>,
 ) -> ChatResult<ScheduledPostIds> {
     let role = match target {
         ScheduledPostTarget::Message => "scheduled",
         ScheduledPostTarget::ChannelCopy => "scheduled-channel-copy",
     };
+    let parts: &[&str] = match occurrence_key {
+        Some(occurrence_key) => &[role, scheduled_message_id, occurrence_key],
+        None => &[role, scheduled_message_id],
+    };
     Ok(ScheduledPostIds {
-        item_id: ChatConversationItemId::new(derived_id(
-            "conversation-item",
-            &[role, scheduled_message_id],
-        )?)
-        .map_err(identifier_error)?,
-        revision_id: ChatMessageRevisionId::new(derived_id(
-            "message-revision",
-            &[role, scheduled_message_id],
-        )?)
-        .map_err(identifier_error)?,
+        item_id: ChatConversationItemId::new(derived_id("conversation-item", parts)?)
+            .map_err(identifier_error)?,
+        revision_id: ChatMessageRevisionId::new(derived_id("message-revision", parts)?)
+            .map_err(identifier_error)?,
     })
 }
 
@@ -573,15 +482,15 @@ pub(super) fn assignment_input_id(message_item_id: &str) -> ChatResult<String> {
     )
 }
 
-/// Returns the work assignment id derived from its triggering message, its teammate, and the
+/// Returns the work assignment id derived from its triggering message, its agent, and the
 /// assignment it follows, so concurrent Starts of one mention on two devices write one
 /// assignment that sync merges instead of two that both run.
 pub(super) fn work_assignment_id(
     message_item_id: &ChatConversationItemId,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     previous_assignment_id: Option<&ChatWorkAssignmentId>,
 ) -> ChatResult<ChatWorkAssignmentId> {
-    let mut parts = vec![message_item_id.as_str(), teammate_id.as_str()];
+    let mut parts = vec![message_item_id.as_str(), agent_id.as_str()];
     parts.extend(previous_assignment_id.map(ChatWorkAssignmentId::as_str));
     ChatWorkAssignmentId::new(derived_id(
         ganbaru_chat::ids::WORK_ASSIGNMENT_ID_PREFIX,
@@ -593,149 +502,23 @@ pub(super) fn work_assignment_id(
 pub(super) fn parse_participant_kind(value: &str) -> ChatResult<ChatParticipantKind> {
     match value {
         "local_user" => Ok(ChatParticipantKind::LocalUser),
-        "ai_teammate" => Ok(ChatParticipantKind::AiTeammate),
+        "ai_agent" => Ok(ChatParticipantKind::AiAgent),
         "human" => Ok(ChatParticipantKind::Human),
         _ => Err(stored_value_error("participant kind")),
     }
 }
 
-pub(crate) fn parse_approval_policy(value: &str) -> ChatResult<ChatApprovalPolicy> {
-    match value {
-        "ask_for_approval" => Ok(ChatApprovalPolicy::AskForApproval),
-        "approve_for_me" => Ok(ChatApprovalPolicy::ApproveForMe),
-        "full_access" => Ok(ChatApprovalPolicy::FullAccess),
-        "custom" => Ok(ChatApprovalPolicy::Custom),
-        _ => Err(stored_value_error("approval policy")),
-    }
-}
-
-pub(crate) fn parse_runtime_approval_policy(value: &str) -> ChatResult<ChatRuntimeApprovalPolicy> {
-    match value {
-        "ask" => Ok(ChatRuntimeApprovalPolicy::Ask),
-        "auto_approve" => Ok(ChatRuntimeApprovalPolicy::AutoApprove),
-        "unattended" => Ok(ChatRuntimeApprovalPolicy::Unattended),
-        "provider_custom" => Ok(ChatRuntimeApprovalPolicy::ProviderCustom),
-        _ => Err(stored_value_error("runtime approval policy")),
-    }
-}
-
+/// Parses a stored runtime approval policy.
 #[cfg(desktop)]
-pub(crate) fn wire_runtime_approval_policy(value: ChatRuntimeApprovalPolicy) -> &'static str {
-    match value {
-        ChatRuntimeApprovalPolicy::Ask => "ask",
-        ChatRuntimeApprovalPolicy::AutoApprove => "auto_approve",
-        ChatRuntimeApprovalPolicy::Unattended => "unattended",
-        ChatRuntimeApprovalPolicy::ProviderCustom => "provider_custom",
-    }
+pub(crate) fn parse_runtime_approval_policy(value: &str) -> ChatResult<ChatRuntimeApprovalPolicy> {
+    ChatRuntimeApprovalPolicy::parse(value)
+        .ok_or_else(|| stored_value_error("runtime approval policy"))
 }
 
-pub(super) fn parse_folder_capability(value: &str) -> ChatResult<ChatFolderCapability> {
-    match value {
-        "none" => Ok(ChatFolderCapability::None),
-        "read" => Ok(ChatFolderCapability::Read),
-        "edit" => Ok(ChatFolderCapability::Edit),
-        "execute" => Ok(ChatFolderCapability::Execute),
-        "publish" => Ok(ChatFolderCapability::Publish),
-        _ => Err(stored_value_error("folder capability")),
-    }
-}
-
+/// The stored form of the folder capability `value`.
 #[cfg(desktop)]
 pub(super) fn wire_folder_capability(value: ChatFolderCapability) -> &'static str {
-    match value {
-        ChatFolderCapability::None => "none",
-        ChatFolderCapability::Read => "read",
-        ChatFolderCapability::Edit => "edit",
-        ChatFolderCapability::Execute => "execute",
-        ChatFolderCapability::Publish => "publish",
-    }
-}
-
-/// Order key a `from_grant` history boundary stamps when it is granted now: the first root
-/// position after the conversation's last root item, so only later root items are visible.
-pub(super) async fn from_grant_lower_order_key(
-    connection: &mut sqlx::SqliteConnection,
-    conversation_id: &str,
-) -> ChatResult<String> {
-    let last_key =
-        ganbaru_chat::timeline::last_order_key(connection, conversation_id, None).await?;
-    ganbaru_chat::timeline::order_key_after(last_key.as_deref())
-}
-
-pub(super) fn parse_history_boundary(
-    kind: &str,
-    lower_order_key: Option<String>,
-) -> ChatResult<ChatHistoryBoundary> {
-    match kind {
-        "entire" if lower_order_key.is_none() => Ok(ChatHistoryBoundary::Entire),
-        "from_grant" => Ok(ChatHistoryBoundary::FromGrant { lower_order_key }),
-        _ => Err(stored_value_error("history boundary")),
-    }
-}
-
-/// Channel history one teammate membership may read, resolved from the
-/// membership and its access profile revision.
-///
-/// Positions are root timeline order keys. A reply thread sits at its root's
-/// position, because reply order keys count within their thread.
-#[cfg(desktop)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct TeammateHistoryAccess {
-    visible_from: Option<String>,
-}
-
-#[cfg(desktop)]
-impl TeammateHistoryAccess {
-    /// Resolves effective history access. A `from_grant` boundary without a
-    /// lower order key admits nothing; entire history starts at the empty key,
-    /// which sorts before every order key.
-    pub(super) fn resolve(
-        read_history: bool,
-        from_grant: bool,
-        from_order_key: Option<String>,
-    ) -> Self {
-        let visible_from = match (read_history, from_grant) {
-            (false, _) => None,
-            (true, true) => from_order_key,
-            (true, false) => Some(String::new()),
-        };
-        Self { visible_from }
-    }
-
-    /// Returns the lowest readable order key, or `None` when no history is readable.
-    pub(super) fn visible_from(&self) -> Option<&str> {
-        self.visible_from.as_deref()
-    }
-
-    /// Returns whether the message or reply thread at `order_key` is readable.
-    pub(super) fn admits_position(&self, order_key: &str) -> bool {
-        self.visible_from
-            .as_deref()
-            .is_some_and(|lower| lower <= order_key)
-    }
-}
-
-#[cfg(desktop)]
-pub(super) fn wire_history_boundary(value: &ChatHistoryBoundary) -> &'static str {
-    match value {
-        ChatHistoryBoundary::Entire => "entire",
-        ChatHistoryBoundary::FromGrant { .. } => "from_grant",
-    }
-}
-
-pub(super) fn parse_access_profile_builtin_key(
-    value: Option<&str>,
-) -> ChatResult<Option<ChatAccessProfileBuiltinKey>> {
-    value
-        .map(|value| match value {
-            "conversation_only" => Ok(ChatAccessProfileBuiltinKey::ConversationOnly),
-            "read_only" => Ok(ChatAccessProfileBuiltinKey::ReadOnly),
-            "edit_files" => Ok(ChatAccessProfileBuiltinKey::EditFiles),
-            "build_and_test" => Ok(ChatAccessProfileBuiltinKey::BuildAndTest),
-            "publish_changes" => Ok(ChatAccessProfileBuiltinKey::PublishChanges),
-            _ => Err(stored_value_error("access profile built-in key")),
-        })
-        .transpose()
+    value.as_str()
 }
 
 pub(super) fn parse_work_state(value: &str) -> ChatResult<ChatWorkAssignmentState> {
@@ -752,85 +535,41 @@ pub(super) fn parse_work_state(value: &str) -> ChatResult<ChatWorkAssignmentStat
     }
 }
 
+/// The stored review outcome `value`.
+pub(super) fn parse_review_outcome(value: &str) -> ChatResult<ChatAssignmentReviewOutcome> {
+    match value {
+        "accepted" => Ok(ChatAssignmentReviewOutcome::Accepted),
+        "changes_requested" => Ok(ChatAssignmentReviewOutcome::ChangesRequested),
+        _ => Err(stored_value_error("assignment review outcome")),
+    }
+}
+
+/// The stored form of the review outcome `value`.
+pub(super) fn wire_review_outcome(value: ChatAssignmentReviewOutcome) -> &'static str {
+    match value {
+        ChatAssignmentReviewOutcome::Accepted => "accepted",
+        ChatAssignmentReviewOutcome::ChangesRequested => "changes_requested",
+    }
+}
+
 pub(super) fn wire_participant_kind(value: ChatParticipantKind) -> &'static str {
     match value {
         ChatParticipantKind::LocalUser => "local_user",
-        ChatParticipantKind::AiTeammate => "ai_teammate",
+        ChatParticipantKind::AiAgent => "ai_agent",
         ChatParticipantKind::Human => "human",
     }
 }
 
+/// Returns the provider safety mode a native assignment runs with for its frozen runtime
+/// approval: asking before each command, or approving commands inside the confined workspace.
 #[cfg(desktop)]
-pub(super) fn wire_approval_policy(value: ChatApprovalPolicy) -> &'static str {
-    match value {
-        ChatApprovalPolicy::AskForApproval => "ask_for_approval",
-        ChatApprovalPolicy::ApproveForMe => "approve_for_me",
-        ChatApprovalPolicy::FullAccess => "full_access",
-        ChatApprovalPolicy::Custom => "custom",
-    }
-}
-
-/// Returns the runtime approval a teammate's approval behavior stands for when no channel,
-/// scratch, or folder override applies.
-#[cfg(desktop)]
-pub(crate) fn teammate_runtime_approval(value: ChatApprovalPolicy) -> ChatRuntimeApprovalPolicy {
-    match value {
-        ChatApprovalPolicy::AskForApproval => ChatRuntimeApprovalPolicy::Ask,
-        ChatApprovalPolicy::ApproveForMe => ChatRuntimeApprovalPolicy::AutoApprove,
-        ChatApprovalPolicy::FullAccess => ChatRuntimeApprovalPolicy::Unattended,
-        ChatApprovalPolicy::Custom => ChatRuntimeApprovalPolicy::ProviderCustom,
-    }
-}
-
-/// Orders runtime approval policies from narrowest to broadest. Provider-custom approval has no
-/// rank because the provider's own configuration decides it.
-#[cfg(desktop)]
-pub(crate) fn runtime_approval_rank(policy: ChatRuntimeApprovalPolicy) -> Option<u8> {
-    ganbaru_chat::coordination::reductions::approval_rank(wire_runtime_approval_policy(policy))
-}
-
-/// Returns the runtime approval that applies to a teammate's work: the narrower of the runtime
-/// approval its approval behavior stands for and the policy resolved from its grants. A Custom
-/// teammate cannot be ranked against a grant, so the grant policy alone governs host tools while
-/// the provider keeps its own configuration; an unranked grant is returned unchanged so native
-/// execution can refuse it.
-#[cfg(desktop)]
-pub(crate) fn effective_runtime_approval(
-    teammate_default: ChatRuntimeApprovalPolicy,
-    granted: ChatRuntimeApprovalPolicy,
-) -> ChatRuntimeApprovalPolicy {
-    match (
-        runtime_approval_rank(teammate_default),
-        runtime_approval_rank(granted),
-    ) {
-        (Some(teammate_rank), Some(granted_rank)) if teammate_rank < granted_rank => {
-            teammate_default
-        }
-        _ => granted,
-    }
-}
-
-/// Returns the provider safety mode a native assignment runs with for a teammate and its frozen
-/// effective runtime approval. Only a Custom teammate runs with the provider's own
-/// configuration; an unranked grant on a ranked teammate falls back to asking.
-#[cfg(desktop)]
-pub(crate) fn native_assignment_safety_mode(
-    teammate: ChatApprovalPolicy,
-    effective: ChatRuntimeApprovalPolicy,
-) -> SafetyMode {
-    if teammate == ChatApprovalPolicy::Custom {
-        return SafetyMode::Custom;
-    }
-    match effective {
-        ChatRuntimeApprovalPolicy::Ask | ChatRuntimeApprovalPolicy::ProviderCustom => {
-            SafetyMode::AskForApproval
-        }
+pub(crate) fn native_assignment_safety_mode(approval: ChatRuntimeApprovalPolicy) -> SafetyMode {
+    match approval {
+        ChatRuntimeApprovalPolicy::Ask => SafetyMode::AskForApproval,
         ChatRuntimeApprovalPolicy::AutoApprove => SafetyMode::ApproveForMe,
-        ChatRuntimeApprovalPolicy::Unattended => SafetyMode::FullAccess,
     }
 }
 
-#[cfg(desktop)]
 pub(super) fn wire_work_state(value: ChatWorkAssignmentState) -> &'static str {
     match value {
         ChatWorkAssignmentState::Queued => "queued",
@@ -865,7 +604,7 @@ pub(super) fn truncate_utf8(value: &str, maximum: usize) -> &str {
     &value[..boundary]
 }
 
-fn stored_value_error(label: &str) -> ChatError {
+pub(super) fn stored_value_error(label: &str) -> ChatError {
     ChatError::new(
         ChatErrorCode::Persistence,
         format!("Stored Chat {label} is invalid"),
@@ -894,16 +633,17 @@ pub(super) fn this_device_id<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Ch
 
 /// The devices that can write Chat in the active vault of `pool`: this device and the linked
 /// devices with an active sync writer, so work another linked device executes is not taken for
-/// stranded.
-pub(super) async fn chat_writers<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+/// stranded. On desktop it also carries the providers configured on this device.
+pub(super) async fn chat_writers(
+    app: &tauri::AppHandle,
     pool: &sqlx::SqlitePool,
 ) -> ChatResult<super::workflow::ChatWriters> {
     let device_id = this_device_id(app)?;
     let linked = active_writer_devices(pool).await?;
-    Ok(super::workflow::ChatWriters::new(
-        std::iter::once(device_id).chain(linked),
-    ))
+    let writers = super::workflow::ChatWriters::new(std::iter::once(device_id).chain(linked));
+    #[cfg(desktop)]
+    let writers = writers.with_providers(super::provider_agents::read_device_providers(app));
+    Ok(writers)
 }
 
 /// The devices with an active sync writer in the vault of `pool` that the authorization log

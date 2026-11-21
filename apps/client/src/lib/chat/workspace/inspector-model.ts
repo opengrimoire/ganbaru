@@ -1,5 +1,6 @@
 import type {
   ChatChangedFileRead,
+  ChatChannelId,
   ChatInspectorTab,
   ProjectWorkingFolderId,
   ChatThreadId,
@@ -7,7 +8,7 @@ import type {
 } from "$lib/chat/contracts";
 import type { ReviewLayoutPreference } from "$lib/chat/review/model";
 
-export interface ChatInspectorThreadState {
+export interface ChatInspectorPanelState {
   tab: ChatInspectorTab;
   openTabs: ChatInspectorTab[];
   tabOrder: ChatWorkspacePanelTabKey[];
@@ -25,6 +26,8 @@ export interface ChatInspectorThreadState {
   reviewWorkingFolderId: ProjectWorkingFolderId | null;
   reviewExecutionEnvironmentId: string | null;
   reviewLayoutPreference: ReviewLayoutPreference;
+  /** Folder the user chose for Files, Source control, and new terminals; null follows the channel default. */
+  workingFolderId: ProjectWorkingFolderId | null;
 }
 
 export interface ChatChangedFileTreeNode {
@@ -35,7 +38,7 @@ export interface ChatChangedFileTreeNode {
   children: ChatChangedFileTreeNode[];
 }
 
-const DEFAULT_STATE: ChatInspectorThreadState = {
+const DEFAULT_STATE: ChatInspectorPanelState = {
   tab: "files",
   openTabs: ["files"],
   tabOrder: ["files"],
@@ -53,16 +56,22 @@ const DEFAULT_STATE: ChatInspectorThreadState = {
   reviewWorkingFolderId: null,
   reviewExecutionEnvironmentId: null,
   reviewLayoutPreference: "auto",
+  workingFolderId: null,
 };
 
 const MAX_CHAT_INSPECTOR_SESSIONS = 64;
 
+/**
+ * Keeps each channel's workspace panel state in memory, so switching channels and back restores tabs, the chosen folder, and view options.
+ *
+ * The most recently used channels are kept, up to a fixed bound.
+ */
 export class ChatInspectorSessionState {
-  private readonly threads = new Map<ChatThreadId, ChatInspectorThreadState>();
+  private readonly channels = new Map<ChatChannelId, ChatInspectorPanelState>();
 
   constructor(private readonly initialTab: ChatInspectorTab = "files") {}
 
-  private initialState(): ChatInspectorThreadState {
+  private initialState(): ChatInspectorPanelState {
     return {
       ...DEFAULT_STATE,
       tab: this.initialTab,
@@ -73,11 +82,12 @@ export class ChatInspectorSessionState {
     };
   }
 
-  read(threadId: ChatThreadId | null): ChatInspectorThreadState {
-    const stored = threadId ? this.threads.get(threadId) : undefined;
-    if (threadId && stored) {
-      this.threads.delete(threadId);
-      this.threads.set(threadId, stored);
+  /** Returns a copy of the channel's panel state, or the initial state when the channel has none. */
+  read(channelId: ChatChannelId | null): ChatInspectorPanelState {
+    const stored = channelId ? this.channels.get(channelId) : undefined;
+    if (channelId && stored) {
+      this.channels.delete(channelId);
+      this.channels.set(channelId, stored);
     }
     const state = stored ?? this.initialState();
     return {
@@ -88,8 +98,9 @@ export class ChatInspectorSessionState {
     };
   }
 
-  update(threadId: ChatThreadId, update: Partial<ChatInspectorThreadState>): ChatInspectorThreadState {
-    const current = this.read(threadId);
+  /** Merges a change into the channel's panel state and returns a copy of the result. */
+  update(channelId: ChatChannelId, update: Partial<ChatInspectorPanelState>): ChatInspectorPanelState {
+    const current = this.read(channelId);
     const next = {
       ...current,
       ...update,
@@ -97,12 +108,12 @@ export class ChatInspectorSessionState {
       tabOrder: [...(update.tabOrder ?? current.tabOrder)],
       tabNames: { ...(update.tabNames ?? current.tabNames) },
     };
-    this.threads.delete(threadId);
-    this.threads.set(threadId, next);
-    while (this.threads.size > MAX_CHAT_INSPECTOR_SESSIONS) {
-      const oldestThreadId = this.threads.keys().next().value;
-      if (typeof oldestThreadId !== "string") break;
-      this.threads.delete(oldestThreadId);
+    this.channels.delete(channelId);
+    this.channels.set(channelId, next);
+    while (this.channels.size > MAX_CHAT_INSPECTOR_SESSIONS) {
+      const oldestChannelId = this.channels.keys().next().value;
+      if (typeof oldestChannelId !== "string") break;
+      this.channels.delete(oldestChannelId);
     }
     return {
       ...next,
@@ -363,14 +374,6 @@ export function closeInspectorTab(
     tabs: nextTabs,
     selectedTab: nextTabs[Math.min(Math.max(0, closedIndex), nextTabs.length - 1)] ?? null,
   };
-}
-
-export function inspectorSessionKey(
-  threadId: ChatThreadId | null,
-  workingFolderId: string | null,
-): string | null {
-  if (threadId) return threadId;
-  return workingFolderId ? `draft:${workingFolderId}` : null;
 }
 
 export function buildChangedFileTree(files: readonly ChatChangedFileRead[]): ChatChangedFileTreeNode[] {

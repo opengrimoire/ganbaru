@@ -84,6 +84,8 @@ export function isReviewDiffSource(value: unknown): value is ReviewDiffSource {
         && typeof value.number === "number"
         && Number.isSafeInteger(value.number)
         && value.number > 0;
+    case "assignment":
+      return typeof value.assignmentId === "string" && value.assignmentId.length > 0;
     default:
       return false;
   }

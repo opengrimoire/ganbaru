@@ -13,12 +13,14 @@ function fakeStores(options: {
   views?: FakeView[];
   pageId?: string | null;
   channelId?: string | null;
+  replyThreadTabId?: string | null;
 } = {}) {
   const state = {
     projectId: options.projectId ?? null,
     viewIds: {} as Record<string, string>,
     pageId: options.pageId ?? null,
     channelId: options.channelId ?? null,
+    replyThreadTabId: options.replyThreadTabId ?? null,
   };
   const knownProjects = new Set(options.projects ?? []);
   const views = options.views ?? [];
@@ -46,8 +48,19 @@ function fakeStores(options: {
     },
     chat: {
       get selectedChannelId() { return state.channelId; },
-      selectChannel: vi.fn(async (id: string) => { state.channelId = id; }),
+      get replyThreadTabId() { return state.replyThreadTabId; },
+      selectChannel: vi.fn(async (id: string) => {
+        state.channelId = id;
+        state.replyThreadTabId = null;
+      }),
+      showReplyThreadTab: vi.fn(async (channelId: string, replyThreadId: string) => {
+        state.channelId = channelId;
+        state.replyThreadTabId = replyThreadId;
+      }),
       channelName: (projectId: string, id: string) => (projectId === "p1" && id === "channel" ? "general" : null),
+      replyThreadTitle: (projectId: string, channelId: string) => (
+        projectId === "p1" && channelId === "channel" ? "Thread in #general" : null
+      ),
     },
   } satisfies WorkspaceLocationStores<FakeView>;
   return { state, stores };
@@ -152,6 +165,27 @@ describe("workspace location adapter", () => {
     expect(stores.projects.ensureLoaded).not.toHaveBeenCalled();
     expect(stores.notes.selectPage).not.toHaveBeenCalled();
     expect(stores.chat.selectChannel).not.toHaveBeenCalled();
+  });
+
+  it("reads, titles, and restores a reply thread shown on its own", async () => {
+    const thread = { type: "chat-reply-thread" as const, id: "reply", channelId: "channel" };
+    const { state, stores } = fakeStores({ projectId: "p1", projects: ["p1"], channelId: "channel" });
+    const adapter = createWorkspaceLocationAdapter(stores);
+
+    expect(adapter.itemTitle({ kind: "chat", projectId: "p1", item: thread })).toBe("Thread in #general");
+    expect(adapter.itemTitle({ kind: "chat", projectId: "p1", item: { ...thread, channelId: "other" } })).toBeNull();
+
+    await adapter.apply({ kind: "chat", projectId: "p1", item: thread }, () => true);
+    expect(stores.chat.showReplyThreadTab).toHaveBeenCalledWith("channel", "reply");
+    expect(adapter.read("chat")).toEqual({ kind: "chat", projectId: "p1", item: thread });
+
+    await adapter.apply({ kind: "chat", projectId: "p1", item: thread }, () => true);
+    expect(stores.chat.showReplyThreadTab).toHaveBeenCalledTimes(1);
+
+    await adapter.apply({ kind: "chat", projectId: "p1", item: { type: "chat-channel", id: "channel" } }, () => true);
+    expect(stores.chat.selectChannel).toHaveBeenCalledWith("channel");
+    expect(state.replyThreadTabId).toBeNull();
+    expect(adapter.read("chat")).toEqual({ kind: "chat", projectId: "p1", item: { type: "chat-channel", id: "channel" } });
   });
 
   it("restores a page without a project", async () => {

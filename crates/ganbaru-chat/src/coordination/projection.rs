@@ -1,13 +1,24 @@
 //! Projection of provider runtime events into organizational conversations.
 
-use super::super::events::{CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary};
+use super::super::agent_runs::{SETTLED_RUN_STATES, unsettled_run_state_sql};
+use super::super::events::{
+    ApprovalSubject, CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary, TurnCompletedEvent,
+};
 use super::super::models::{
     ChatError, ChatErrorCode, ChatParticipantId, ChatReplyThreadId, ChatResult, ChatTurnId,
     ChatWorkAssignmentId,
 };
+use super::reports::{
+    AgentUpdate, insert_agent_update, run_asked_host_question, run_result_report,
+};
+use crate::models::ChatTurnState;
+use crate::usage_counters::record_run_usage;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite, SqliteConnection, Transaction};
+
+/// State reason of an assignment whose run ended because the provider's usage limit was reached.
+pub const PROVIDER_USAGE_LIMIT_REASON: &str = "provider_usage_limit";
 
 fn persistence_error(_error: sqlx::Error) -> ChatError {
     ChatError::new(
@@ -25,9 +36,6 @@ fn identifier_error(_error: String) -> ChatError {
     )
 }
 
-/// Run states after which provider events no longer project into organizational Chat.
-const SETTLED_RUN_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
-
 /// Projects a provider event into the organizational state of the agent run it belongs to.
 ///
 /// Events are matched by provider turn, or by provider thread while a run is active. A run that
@@ -39,7 +47,7 @@ pub async fn project_provider_event_in_transaction(
 ) -> ChatResult<bool> {
     let run = sqlx::query(
         "SELECT run.id AS run_id, run.state AS run_state, run.assignment_id,
-                assignment.reply_thread_id, assignment.teammate_id
+                assignment.reply_thread_id, assignment.agent_id
          FROM chat_agent_runs run
          JOIN chat_work_assignments assignment ON assignment.id = run.assignment_id
          WHERE (
@@ -73,8 +81,8 @@ pub async fn project_provider_event_in_transaction(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
-    let teammate_id = ChatParticipantId::new(
-        run.try_get::<String, _>("teammate_id")
+    let agent_id = ChatParticipantId::new(
+        run.try_get::<String, _>("agent_id")
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
@@ -82,14 +90,52 @@ pub async fn project_provider_event_in_transaction(
         run_id: &run_id,
         assignment_id: &assignment_id,
         reply_thread_id: &reply_thread_id,
-        teammate_id: &teammate_id,
+        agent_id: &agent_id,
+    };
+    // Usage folds before any exit of the event arms, so a turn that settles only its run, or
+    // that finds its assignment already settled, still counts what it spent.
+    let usage = match &runtime.event {
+        CanonicalEvent::ThreadUsageUpdated(usage) => Some(usage),
+        CanonicalEvent::TurnCompleted(completed) => completed.usage.as_ref(),
+        _ => None,
+    };
+    if let Some(usage) = usage {
+        record_run_usage(
+            transaction,
+            &run_id,
+            runtime.thread_id.as_str(),
+            usage,
+            runtime.created_at.as_str(),
+        )
+        .await?;
+    }
+    project_event_arms(transaction, runtime, &target).await
+}
+
+/// Applies the organizational effect of the event in `runtime` on the run in `target`,
+/// reporting whether it changed organizational rows.
+async fn project_event_arms(
+    transaction: &mut Transaction<'_, Sqlite>,
+    runtime: &CanonicalRuntimeEvent,
+    target: &ProjectionTarget<'_>,
+) -> ChatResult<bool> {
+    let assignment_id = target.assignment_id;
+    let run_id = target.run_id;
+    // A turn that fails or aborts right after its provider reported its own usage limit fails
+    // for that reason, carrying when the limit resets.
+    let provider_limit = match &runtime.event {
+        CanonicalEvent::TurnCompleted(event) if event.state == ChatTurnState::Failed => {
+            provider_limit_resets_at(transaction, runtime).await?
+        }
+        CanonicalEvent::TurnAborted(_) => provider_limit_resets_at(transaction, runtime).await?,
+        _ => None,
     };
     let projected = match &runtime.event {
         CanonicalEvent::PlanUpdated(event) => {
-            insert_projected_teammate_message(
+            insert_projected_agent_message(
                 transaction,
                 runtime,
-                &target,
+                target,
                 "plan",
                 &event.markdown,
                 json!({ "steps": event.steps }),
@@ -97,10 +143,10 @@ pub async fn project_provider_event_in_transaction(
             .await?
         }
         CanonicalEvent::ProposedPlanCompleted(event) => {
-            insert_projected_teammate_message(
+            insert_projected_agent_message(
                 transaction,
                 runtime,
-                &target,
+                target,
                 "plan",
                 &event.markdown,
                 json!({ "planId": event.plan_id }),
@@ -116,8 +162,8 @@ pub async fn project_provider_event_in_transaction(
             };
             if !update_assignment_and_run_state(
                 transaction,
-                &assignment_id,
-                &run_id,
+                assignment_id,
+                run_id,
                 "waiting_for_approval",
                 "waiting",
                 None,
@@ -127,10 +173,10 @@ pub async fn project_provider_event_in_transaction(
             {
                 return Ok(false);
             }
-            insert_projected_teammate_message(
+            insert_projected_agent_message(
                 transaction,
                 runtime,
-                &target,
+                target,
                 "approval",
                 &markdown,
                 json!({
@@ -138,6 +184,7 @@ pub async fn project_provider_event_in_transaction(
                     "kind": event.kind,
                     "allowedDecisions": event.allowed_decisions,
                     "safePayload": event.safe_payload,
+                    "subject": event.subject.as_ref().map(replicated_approval_subject),
                 }),
             )
             .await?
@@ -151,8 +198,8 @@ pub async fn project_provider_event_in_transaction(
                 .join("\n\n");
             if !update_assignment_and_run_state(
                 transaction,
-                &assignment_id,
-                &run_id,
+                assignment_id,
+                run_id,
                 "waiting_for_answer",
                 "waiting",
                 None,
@@ -162,10 +209,10 @@ pub async fn project_provider_event_in_transaction(
             {
                 return Ok(false);
             }
-            insert_projected_teammate_message(
+            insert_projected_agent_message(
                 transaction,
                 runtime,
-                &target,
+                target,
                 "question",
                 &markdown,
                 json!({
@@ -178,98 +225,157 @@ pub async fn project_provider_event_in_transaction(
         CanonicalEvent::RequestResolved(_) | CanonicalEvent::UserInputResolved(_) => {
             update_assignment_and_run_state(
                 transaction,
-                &assignment_id,
-                &run_id,
+                assignment_id,
+                run_id,
                 "working",
                 "working",
                 None,
                 runtime.created_at.as_str(),
+            )
+            .await?
+        }
+        CanonicalEvent::TurnCompleted(event) if provider_limit.is_some() => {
+            if !update_assignment_and_run_state(
+                transaction,
+                assignment_id,
+                run_id,
+                "failed",
+                "failed",
+                Some(PROVIDER_USAGE_LIMIT_REASON),
+                runtime.created_at.as_str(),
+            )
+            .await?
+            {
+                return Ok(true);
+            }
+            let markdown = turn_assistant_markdown(transaction, runtime).await?;
+            let failure = event
+                .stop_reason
+                .as_deref()
+                .or(markdown.as_deref())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("The provider reached its usage limit.");
+            insert_projected_agent_message(
+                transaction,
+                runtime,
+                target,
+                "failure",
+                failure,
+                provider_limit_payload(provider_limit.clone().flatten()),
             )
             .await?
         }
         CanonicalEvent::TurnCompleted(event) => {
-            let markdown: Option<String> = sqlx::query_scalar(
-                "SELECT normalized_markdown
-                 FROM chat_messages
-                 WHERE thread_id = ? AND turn_id = ? AND role = 'assistant'
-                 ORDER BY sequence_anchor DESC, created_at DESC LIMIT 1",
-            )
-            .bind(runtime.thread_id.as_str())
-            .bind(runtime.turn_id.as_ref().map(ChatTurnId::as_str))
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(persistence_error)?;
+            let markdown = turn_assistant_markdown(transaction, runtime).await?;
+            if awaits_host_answer(transaction, assignment_id, run_id).await? {
+                settle_run(transaction, run_id, runtime.created_at.as_str()).await?;
+                return Ok(false);
+            }
             let changed_files = turn_changed_files(transaction, runtime).await?;
-            let state = if changed_files.is_empty() {
-                "completed"
+            let reported_result = run_result_report(transaction, run_id).await?;
+            if let Some(body) = reported_result {
+                if !update_assignment_and_run_state(
+                    transaction,
+                    assignment_id,
+                    run_id,
+                    "ready_for_review",
+                    "completed",
+                    None,
+                    runtime.created_at.as_str(),
+                )
+                .await?
+                {
+                    return Ok(true);
+                }
+                if changed_files.is_empty() {
+                    false
+                } else {
+                    insert_projected_agent_message(
+                        transaction,
+                        runtime,
+                        target,
+                        "review",
+                        &body,
+                        turn_completion_payload(event, runtime, &changed_files),
+                    )
+                    .await?
+                }
             } else {
-                "ready_for_review"
+                let state = if changed_files.is_empty() {
+                    "completed"
+                } else {
+                    "ready_for_review"
+                };
+                if !update_assignment_and_run_state(
+                    transaction,
+                    assignment_id,
+                    run_id,
+                    state,
+                    "completed",
+                    None,
+                    runtime.created_at.as_str(),
+                )
+                .await?
+                {
+                    return Ok(true);
+                }
+                insert_projected_agent_message(
+                    transaction,
+                    runtime,
+                    target,
+                    if changed_files.is_empty() {
+                        "result"
+                    } else {
+                        "review"
+                    },
+                    markdown
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or("Work completed."),
+                    turn_completion_payload(event, runtime, &changed_files),
+                )
+                .await?
+            }
+        }
+        CanonicalEvent::TurnAborted(event) => {
+            let (reason, payload) = match provider_limit.clone() {
+                Some(resets_at) => (
+                    PROVIDER_USAGE_LIMIT_REASON,
+                    provider_limit_payload(resets_at),
+                ),
+                None => (
+                    event.reason.as_str(),
+                    json!({ "recoverable": event.recoverable }),
+                ),
             };
             if !update_assignment_and_run_state(
                 transaction,
-                &assignment_id,
-                &run_id,
-                state,
-                "completed",
-                None,
+                assignment_id,
+                run_id,
+                "failed",
+                "failed",
+                Some(reason),
                 runtime.created_at.as_str(),
             )
             .await?
             {
                 return Ok(true);
             }
-            insert_projected_teammate_message(
+            insert_projected_agent_message(
                 transaction,
                 runtime,
-                &target,
-                if changed_files.is_empty() {
-                    "result"
-                } else {
-                    "review"
-                },
-                markdown
-                    .as_deref()
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or("Work completed."),
-                json!({
-                    "stopReason": event.stop_reason,
-                    "usage": event.usage,
-                    "changedFiles": changed_files,
-                    "providerExecutionThreadId": runtime.thread_id,
-                    "providerExecutionTurnId": runtime.turn_id,
-                }),
-            )
-            .await?
-        }
-        CanonicalEvent::TurnAborted(event) => {
-            if !update_assignment_and_run_state(
-                transaction,
-                &assignment_id,
-                &run_id,
-                "failed",
-                "failed",
-                Some(&event.reason),
-                runtime.created_at.as_str(),
-            )
-            .await?
-            {
-                return Ok(true);
-            }
-            insert_projected_teammate_message(
-                transaction,
-                runtime,
-                &target,
+                target,
                 "failure",
                 &event.reason,
-                json!({ "recoverable": event.recoverable }),
+                payload,
             )
             .await?
         }
         CanonicalEvent::RuntimeError(event) if !event.recoverable => {
             if !update_assignment_and_run_state(
                 transaction,
-                &assignment_id,
-                &run_id,
+                assignment_id,
+                run_id,
                 "failed",
                 "failed",
                 Some(&event.message),
@@ -279,10 +385,10 @@ pub async fn project_provider_event_in_transaction(
             {
                 return Ok(true);
             }
-            insert_projected_teammate_message(
+            insert_projected_agent_message(
                 transaction,
                 runtime,
-                &target,
+                target,
                 "failure",
                 &event.message,
                 json!({ "code": event.code, "safeDetails": event.safe_details }),
@@ -291,17 +397,168 @@ pub async fn project_provider_event_in_transaction(
         }
         _ => false,
     };
+    if settles_assignment(&runtime.event) {
+        // Reached only when the event settled the assignment, after its result or failure
+        // message, so a delegated child reports that body to its parent.
+        super::delegation::post_delegation_outcome(
+            transaction,
+            assignment_id.as_str(),
+            runtime.created_at.as_str(),
+        )
+        .await?;
+    }
     Ok(projected)
+}
+
+/// When the provider of the thread in `runtime` reported its own usage limit for the ending
+/// turn, returns when that limit resets, if the provider said.
+///
+/// The latest rate limit status of the thread counts only when it is limited and no other
+/// turn ended after it, so a stale limit from an earlier turn never relabels a later failure.
+async fn provider_limit_resets_at(
+    transaction: &mut Transaction<'_, Sqlite>,
+    runtime: &CanonicalRuntimeEvent,
+) -> ChatResult<Option<Option<String>>> {
+    let row = sqlx::query(
+        "SELECT json_extract(status.payload_data, '$.payload.limited') AS limited,
+                json_extract(status.payload_data, '$.payload.resetsAt') AS resets_at,
+                NOT EXISTS (
+                    SELECT 1 FROM chat_events ended
+                    WHERE ended.thread_id = status.thread_id
+                      AND ended.sequence > status.sequence
+                      AND ended.event_type IN ('turn_completed', 'turn_aborted')
+                      AND ended.turn_id IS NOT ?
+                ) AS current
+         FROM chat_events status
+         WHERE status.thread_id = ? AND status.event_type = 'rate_limit_status'
+         ORDER BY status.sequence DESC LIMIT 1",
+    )
+    .bind(runtime.turn_id.as_ref().map(ChatTurnId::as_str))
+    .bind(runtime.thread_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let limited: Option<bool> = row.try_get("limited").map_err(persistence_error)?;
+    let current: bool = row.try_get("current").map_err(persistence_error)?;
+    if limited != Some(true) || !current {
+        return Ok(None);
+    }
+    let resets_at: Option<String> = row.try_get("resets_at").map_err(persistence_error)?;
+    Ok(Some(resets_at))
+}
+
+/// The latest assistant message of the turn in `runtime`.
+async fn turn_assistant_markdown(
+    transaction: &mut Transaction<'_, Sqlite>,
+    runtime: &CanonicalRuntimeEvent,
+) -> ChatResult<Option<String>> {
+    sqlx::query_scalar(
+        "SELECT normalized_markdown
+         FROM chat_messages
+         WHERE thread_id = ? AND turn_id = ? AND role = 'assistant'
+         ORDER BY sequence_anchor DESC, created_at DESC LIMIT 1",
+    )
+    .bind(runtime.thread_id.as_str())
+    .bind(runtime.turn_id.as_ref().map(ChatTurnId::as_str))
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)
+}
+
+/// The payload of the failure update of a run whose provider reached its own usage limit.
+fn provider_limit_payload(resets_at: Option<String>) -> Value {
+    json!({ "code": PROVIDER_USAGE_LIMIT_REASON, "resetsAt": resets_at })
+}
+
+/// The subject an approval reply replicates: the target a linked device shows beside Allow, without the folder it
+/// runs in, because absolute folder paths stay on the device that holds them.
+fn replicated_approval_subject(subject: &ApprovalSubject) -> ApprovalSubject {
+    ApprovalSubject {
+        location: None,
+        ..subject.clone()
+    }
+}
+
+/// Whether `event` settles the assignment its run belongs to when it applies.
+fn settles_assignment(event: &CanonicalEvent) -> bool {
+    match event {
+        CanonicalEvent::TurnCompleted(_) | CanonicalEvent::TurnAborted(_) => true,
+        CanonicalEvent::RuntimeError(event) => !event.recoverable,
+        _ => false,
+    }
+}
+
+/// The payload of the result or review a completed turn posts.
+fn turn_completion_payload(
+    event: &TurnCompletedEvent,
+    runtime: &CanonicalRuntimeEvent,
+    changed_files: &[ChangedFileSummary],
+) -> Value {
+    json!({
+        "stopReason": event.stop_reason,
+        "usage": event.usage,
+        "changedFiles": changed_files,
+        "providerExecutionThreadId": runtime.thread_id,
+        "providerExecutionTurnId": runtime.turn_id,
+    })
+}
+
+/// Whether the assignment still waits for the answer to the host question its run `run_id`
+/// asked, so the ending turn settles only the run and the answer starts the next one.
+async fn awaits_host_answer(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment_id: &ChatWorkAssignmentId,
+    run_id: &str,
+) -> ChatResult<bool> {
+    let waiting: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM chat_work_assignments
+           WHERE id = ? AND state = 'waiting_for_answer'
+         )",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    if !waiting {
+        return Ok(false);
+    }
+    run_asked_host_question(transaction, run_id).await
+}
+
+/// Settles the run `run_id` as completed when it has not settled, leaving its assignment as it is.
+async fn settle_run(
+    transaction: &mut Transaction<'_, Sqlite>,
+    run_id: &str,
+    occurred_at: &str,
+) -> ChatResult<()> {
+    let sql = format!(
+        "UPDATE chat_agent_runs
+         SET state = 'completed', settled_at = ?, updated_at = ?
+         WHERE id = ? AND {}",
+        unsettled_run_state_sql("state")
+    );
+    sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(occurred_at)
+        .bind(occurred_at)
+        .bind(run_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(persistence_error)?;
+    Ok(())
 }
 
 struct ProjectionTarget<'a> {
     run_id: &'a str,
     assignment_id: &'a ChatWorkAssignmentId,
     reply_thread_id: &'a ChatReplyThreadId,
-    teammate_id: &'a ChatParticipantId,
+    agent_id: &'a ChatParticipantId,
 }
 
-async fn insert_projected_teammate_message(
+async fn insert_projected_agent_message(
     transaction: &mut Transaction<'_, Sqlite>,
     runtime: &CanonicalRuntimeEvent,
     target: &ProjectionTarget<'_>,
@@ -311,116 +568,23 @@ async fn insert_projected_teammate_message(
 ) -> ChatResult<bool> {
     let event_hash = sha256_hex(runtime.event_id.as_str().as_bytes());
     let item_id = format!("organizational-item:{event_hash}");
-    let exists: i64 =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_conversation_items WHERE id = ?)")
-            .bind(&item_id)
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(persistence_error)?;
-    if exists != 0 {
-        return Ok(false);
-    }
-    let conversation_id: String =
-        sqlx::query_scalar("SELECT conversation_id FROM chat_reply_threads WHERE id = ?")
-            .bind(target.reply_thread_id.as_str())
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(persistence_error)?;
-    let order_key = crate::timeline::next_order_key(
-        transaction,
-        &conversation_id,
-        Some(target.reply_thread_id.as_str()),
-    )
-    .await?;
     let revision_id = format!("organizational-revision:{event_hash}");
-    sqlx::query(
-        "INSERT INTO chat_conversation_items
-            (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
-         VALUES (?, ?, ?, 'message', ?, ?)",
+    insert_agent_update(
+        transaction,
+        &AgentUpdate {
+            item_id: &item_id,
+            revision_id: &revision_id,
+            reply_thread_id: target.reply_thread_id.as_str(),
+            agent_id: target.agent_id.as_str(),
+            assignment_id: target.assignment_id.as_str(),
+            run_id: Some(target.run_id),
+            update_kind,
+            markdown,
+            payload,
+            created_at: runtime.created_at.as_str(),
+        },
     )
-    .bind(&item_id)
-    .bind(&conversation_id)
-    .bind(target.reply_thread_id.as_str())
-    .bind(&order_key)
-    .bind(runtime.created_at.as_str())
-    .execute(&mut **transaction)
     .await
-    .map_err(persistence_error)?;
-    sqlx::query(
-        "INSERT INTO chat_communication_messages
-            (item_id, author_participant_id, author_label_snapshot, created_at)
-         VALUES (?, ?, (SELECT display_name FROM chat_participants WHERE id = ?), ?)",
-    )
-    .bind(&item_id)
-    .bind(target.teammate_id.as_str())
-    .bind(target.teammate_id.as_str())
-    .bind(runtime.created_at.as_str())
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
-    let rich_content = json!({
-        "type": "agent_update",
-        "updateKind": update_kind,
-        "assignmentId": target.assignment_id,
-        "agentRunId": target.run_id,
-        "payload": payload,
-    });
-    let bounded = crate::timeline::bounded_projected_revision(markdown, rich_content.clone())?;
-    sqlx::query(
-        "INSERT INTO chat_communication_message_revisions
-            (id, message_item_id, normalized_markdown,
-             rich_content_schema_version, rich_content_data, created_at)
-         VALUES (?, ?, ?, 1, ?, ?)",
-    )
-    .bind(&revision_id)
-    .bind(&item_id)
-    .bind(&bounded.normalized_markdown)
-    .bind(&bounded.rich_content_data)
-    .bind(runtime.created_at.as_str())
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
-    sqlx::query("UPDATE chat_communication_messages SET current_revision_id = ? WHERE item_id = ?")
-        .bind(&revision_id)
-        .bind(&item_id)
-        .execute(&mut **transaction)
-        .await
-        .map_err(persistence_error)?;
-    sqlx::query(
-        "INSERT INTO chat_work_semantic_updates
-            (item_id, assignment_id, update_kind, payload_data, created_at)
-         VALUES (?, ?, ?, ?, ?)",
-    )
-    .bind(&item_id)
-    .bind(target.assignment_id.as_str())
-    .bind(update_kind)
-    .bind(serde_json::to_string(&rich_content).map_err(serialization_error)?)
-    .bind(runtime.created_at.as_str())
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
-    sqlx::query(
-        "UPDATE chat_reply_threads
-         SET last_activity_at = ?,
-             revision = revision + 1, updated_at = ? WHERE id = ?",
-    )
-    .bind(runtime.created_at.as_str())
-    .bind(runtime.created_at.as_str())
-    .bind(target.reply_thread_id.as_str())
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
-    sqlx::query(
-        "UPDATE chat_conversations
-         SET last_activity_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
-    )
-    .bind(runtime.created_at.as_str())
-    .bind(runtime.created_at.as_str())
-    .bind(&conversation_id)
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
-    Ok(true)
 }
 
 /// Moves the assignment `assignment_id` to `assignment_state` and its run `run_id` to
@@ -428,8 +592,9 @@ async fn insert_projected_teammate_message(
 /// keeps its state; its run then records only a settled state, since the provider turn really
 /// ended, and never waits or works again. Callers project no message for an assignment that
 /// did not change, so a settled assignment shows no late approval, question, or review.
-async fn update_assignment_and_run_state(
-    transaction: &mut Transaction<'_, Sqlite>,
+/// A run that already settled keeps its state and settle time.
+pub(crate) async fn update_assignment_and_run_state(
+    connection: &mut SqliteConnection,
     assignment_id: &ChatWorkAssignmentId,
     run_id: &str,
     assignment_state: &str,
@@ -452,7 +617,7 @@ async fn update_assignment_and_run_state(
     .bind(occurred_at)
     .bind(occurred_at)
     .bind(assignment_id.as_str())
-    .execute(&mut **transaction)
+    .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
     let applied = assignment.rows_affected() == 1;
@@ -460,19 +625,21 @@ async fn update_assignment_and_run_state(
     if !applied && !run_terminal {
         return Ok(false);
     }
-    sqlx::query(
+    let run_update = format!(
         "UPDATE chat_agent_runs
          SET state = ?, settled_at = CASE WHEN ? THEN ? ELSE NULL END, updated_at = ?
-         WHERE id = ?",
-    )
-    .bind(run_state)
-    .bind(run_terminal)
-    .bind(occurred_at)
-    .bind(occurred_at)
-    .bind(run_id)
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
+         WHERE id = ? AND {}",
+        unsettled_run_state_sql("state")
+    );
+    sqlx::query(sqlx::AssertSqlSafe(run_update.as_str()))
+        .bind(run_state)
+        .bind(run_terminal)
+        .bind(occurred_at)
+        .bind(occurred_at)
+        .bind(run_id)
+        .execute(&mut *connection)
+        .await
+        .map_err(persistence_error)?;
     Ok(applied)
 }
 
@@ -508,4 +675,27 @@ fn serialization_error<T>(_error: T) -> ChatError {
         "Chat organizational projection data is invalid",
         false,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::ApprovalSubjectKind;
+
+    #[test]
+    fn a_replicated_approval_subject_keeps_its_target_but_not_its_folder() {
+        let subject = ApprovalSubject {
+            kind: ApprovalSubjectKind::Command,
+            text: "pnpm test".to_string(),
+            location: Some("/home/person/project".to_string()),
+            truncated: true,
+        };
+        assert_eq!(
+            replicated_approval_subject(&subject),
+            ApprovalSubject {
+                location: None,
+                ..subject
+            }
+        );
+    }
 }

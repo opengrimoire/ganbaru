@@ -1,6 +1,8 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { untrack, type Snippet } from "svelte";
   import { databaseResource, notesDatabaseSession } from "$lib/notes/database/session.svelte";
   import NotesDatabasePropertyValue from "./NotesDatabasePropertyValue.svelte";
@@ -106,7 +108,7 @@
     onSavingChange(mutating);
     return () => onSavingChange(false);
   });
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let selectedPanelRowId = $state<string | null>(null);
   let lastLoadSignature = $state("");
   let lastReloadKey = untrack(() => reloadKey);
@@ -160,7 +162,7 @@
       return loaded;
     } catch (caught) {
       if (currentRequest !== requestId) return null;
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseGalleryFailed"));
       return null;
     } finally {
       if (currentRequest === requestId) loading = false;
@@ -170,7 +172,7 @@
   /** Reloads a view that failed to load, rejecting while it is still unavailable. */
   async function retryGallery(): Promise<void> {
     await loadGallery();
-    if (error) throw new Error(error);
+    if (error) throw new LocalizedError(error.message);
   }
 
   async function loadMoreGallery(): Promise<void> {
@@ -187,7 +189,7 @@
       gallery = { ...loaded, rows: mergeNotesDatabaseRows(current.rows, loaded.rows) };
       notesDatabaseSession.write(databaseResource("gallery", dataSourceId, viewScope()), gallery);
     } catch (caught) {
-      if (currentRequest === requestId) error = caught instanceof Error ? caught.message : String(caught);
+      if (currentRequest === requestId) error = notesFailure(caught, t("notes.databaseGalleryFailed"));
     } finally {
       if (currentRequest === requestId) loadingMore = false;
     }
@@ -212,7 +214,7 @@
       );
       notesDatabaseSession.write(resource, gallery, epoch);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -236,7 +238,7 @@
       selectedPanelRowId = loaded.page.id;
       await loadGallery();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -250,7 +252,7 @@
       if (selectedPanelRowId === row.id) selectedPanelRowId = null;
       await loadGallery();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -334,7 +336,7 @@
     {#if loading}
       {t("notes.databaseGalleryLoading")}
     {:else if error}
-      {t("notes.databaseGalleryFailed", error)}
+      {error.message}
     {:else}
       {t("notes.databaseGalleryCardsCount", gallery?.rows.length ?? 0)}
     {/if}
@@ -378,7 +380,7 @@
 <section class="space-y-3 pt-2" aria-label={t("notes.databaseGalleryTitle")}>
 
   <NotesDatabaseQueryBar properties={columns} {filters} {sorts} pending={mutating || editingLocked} onFiltersChange={saveFilters} onSortsChange={saveSorts} />
-  {#if error && gallery}<Notice class="text-[0.8rem]" message={error} />{/if}
+  {#if error && gallery}<Notice class="text-[0.8rem]" message={error.message} copy={error.detail} />{/if}
   {#if settingsOpen}
     <CollectionSettings label={t("notes.databaseViewSettings")} anchor={settingsAnchor} preferredWidth={COLLECTION_VIEW_SETTINGS_PANEL_WIDTH} showHeader={false} onClose={onCloseSettings}>
       {@render settingsHeader?.()}
@@ -390,7 +392,7 @@
   {/if}
 
   {#if !gallery && error}
-    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("notes.databaseGalleryFailed", error)} copy={error} onRetry={retryGallery} /></div>
+    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={error.message} copy={error.detail} onRetry={retryGallery} /></div>
   {:else if !gallery}<NotesLoadingSkeleton kind="gallery" />{/if}
   {#if gallery}
     <div class="grid gap-2 @container">

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import CollectionPropertyIconButton from "./CollectionPropertyIconButton.svelte";
   import type { CollectionPropertyKind } from "./property-icons";
 
@@ -76,7 +77,7 @@
         canonical = next;
       }
     } catch (caught: unknown) {
-      if (current === generation) error = t("collections.property.renameFailed", caught instanceof Error ? caught.message : String(caught));
+      if (current === generation) error = userErrorMessage(caught, t("collections.property.renameFailed"));
     } finally {
       if (current === generation) saving = false;
     }
@@ -89,7 +90,7 @@
     try {
       await onIconChange(next);
     } catch (caught: unknown) {
-      iconError = t("collections.property.iconFailed", caught instanceof Error ? caught.message : String(caught));
+      iconError = userErrorMessage(caught, t("collections.property.iconFailed"));
     }
   }
 </script>

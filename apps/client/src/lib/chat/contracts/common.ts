@@ -8,9 +8,7 @@ export type ChatConversationId = string;
 export type ChatConversationItemId = string;
 export type ChatMessageRevisionId = string;
 export type ChatReplyThreadId = string;
-export type ChatTeammatePolicyRevisionId = string;
-export type ChatAccessProfileId = string;
-export type ChatAccessProfileRevisionId = string;
+export type ChatAgentPolicyRevisionId = string;
 export type ChatAuthorizationRevisionId = string;
 export type ChatMessageReferenceId = string;
 export type ChatExecutionEnvironmentId = string;
@@ -19,6 +17,7 @@ export type ChatScratchGenerationId = string;
 export type ChatScratchPromotionId = string;
 export type ChatScratchCleanupJobId = string;
 export type ChatWorkAssignmentId = string;
+export type ChatAssignmentInputId = string;
 export type ChatAgentRunId = string;
 export type ChatThreadId = string;
 export type ChatTurnId = string;
@@ -30,6 +29,7 @@ export type ChatAttachmentId = string;
 export type ChatEventId = string;
 export type ChatCommandId = string;
 export type ChatScheduledMessageId = string;
+export type ChatChannelNoteId = string;
 export type ChatCheckpointId = string;
 export type CredentialReferenceId = string;
 export type ProviderFamilyId = string;
@@ -44,7 +44,7 @@ export type ContinuationGroupId = string;
 export type ModelId = string;
 export type UtcTimestamp = string;
 
-export const KNOWN_PROVIDER_FAMILIES = ["codex", "claude", "cursor", "grok", "opencode"] as const;
+export const KNOWN_PROVIDER_FAMILIES = ["codex", "claude", "cursor", "grok", "opencode", "acp"] as const;
 export type KnownProviderFamily = (typeof KNOWN_PROVIDER_FAMILIES)[number];
 
 export const SAFETY_MODES = ["ask_for_approval", "approve_for_me", "full_access", "custom"] as const;
@@ -154,6 +154,24 @@ export const PROBE_STATES = [
 ] as const;
 export type ProbeState = (typeof PROBE_STATES)[number];
 
+export const PROVIDER_VERSION_ADMISSIONS = [
+  "supported",
+  "untested_newer",
+  "below_minimum",
+  "at_or_above_ceiling",
+  "unreadable",
+] as const;
+/** Where a probed CLI version falls against the provider's compatibility range. */
+export type ProviderVersionAdmission = (typeof PROVIDER_VERSION_ADMISSIONS)[number];
+
+export const PROVIDER_AUTH_SOURCES = ["api_key", "account_login"] as const;
+/** How a provider authenticates the sessions it starts: an API key or the CLI's account login. */
+export type ProviderAuthSource = (typeof PROVIDER_AUTH_SOURCES)[number];
+
+export const PROVIDER_ACCOUNT_PLANS = ["subscription", "api_key", "free"] as const;
+/** What the signed-in account pays for a provider: a paid plan, API key billing, or the free plan. */
+export type ProviderAccountPlan = (typeof PROVIDER_ACCOUNT_PLANS)[number];
+
 export const MODEL_AVAILABILITIES = ["available", "unavailable", "deprecated", "stale", "unknown"] as const;
 export type ModelAvailability = (typeof MODEL_AVAILABILITIES)[number];
 
@@ -189,6 +207,9 @@ export const PROVIDER_IMPLEMENTATION_STATUSES = ["metadata_only", "available", "
 export type ProviderImplementationStatus = (typeof PROVIDER_IMPLEMENTATION_STATUSES)[number];
 export const PROVIDER_MATURITIES = ["stable", "beta", "experimental"] as const;
 export type ProviderMaturity = (typeof PROVIDER_MATURITIES)[number];
+/** The terminal a provider install guide writes its commands for. */
+export const PROVIDER_INSTALL_SHELLS = ["terminal", "powershell"] as const;
+export type ProviderInstallShell = (typeof PROVIDER_INSTALL_SHELLS)[number];
 
 export const CHAT_ERROR_CODES = [
   "validation",
@@ -209,6 +230,8 @@ export const CHAT_ERROR_CODES = [
   "permission",
   "trust_decision_required",
   "runtime_approval_required",
+  "process_not_found",
+  "process_identity_changed",
   "timeout",
   "cancelled",
   "persistence",

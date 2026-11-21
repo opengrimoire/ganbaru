@@ -9,6 +9,7 @@ use crate::chat::channels::{chat_pool, now_timestamp, persistence_error, timesta
 use crate::chat::scratch;
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use crate::vault;
+use ganbaru_chat::coordination::access::{access_ceiling, effective_access_level_sql};
 use ganbaru_chat::coordination::contracts::*;
 use ganbaru_chat::repository::attachments::{self, AttachmentBytesImport, ChatAttachmentKind};
 use ganbaru_chat_contracts::models::*;
@@ -285,73 +286,53 @@ async fn require_destination_channel(
     parse_id(storage_folder_id)
 }
 
+/// Requires that the scratch agent is still in the destination channel, the folder is a folder
+/// of the channel's project that is not archived, and the channel's current access level lets
+/// agents edit files.
 async fn require_edit_folder_grant(
     pool: &SqlitePool,
     identity: &ScratchIdentity,
     channel_id: &ChatChannelId,
     working_folder_id: &ProjectWorkingFolderId,
 ) -> ChatResult<()> {
-    let row = sqlx::query(
-        "SELECT grant_row.capability, revision.maximum_folder_capability,
-                grant_row.capability_inherits_profile
+    let level: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT {} AS access_level
          FROM chat_channels channel
          JOIN chat_conversations conversation ON conversation.id = channel.conversation_id
          JOIN chat_conversation_memberships membership
            ON membership.conversation_id = channel.conversation_id
           AND membership.participant_id = ?
-         JOIN chat_teammate_channel_memberships access
+         JOIN chat_agent_channel_memberships access
            ON access.conversation_id = membership.conversation_id
-          AND access.teammate_id = membership.participant_id
+          AND access.agent_id = membership.participant_id
           AND access.removed_at IS NULL
-         JOIN chat_access_profiles profile ON profile.id = access.access_profile_id
-         JOIN chat_access_profile_effective_revisions revision
-           ON revision.access_profile_id = profile.id
-         JOIN chat_teammate_working_folder_grants grant_row
-           ON grant_row.conversation_id = membership.conversation_id
-          AND grant_row.teammate_id = membership.participant_id
-          AND grant_row.working_folder_id = ?
-         JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
+         JOIN project_working_folders folder
+           ON folder.id = ? AND folder.project_id = conversation.project_id
          WHERE channel.id = ? AND channel.conversation_id = ?
+           AND channel.project_id = conversation.project_id
            AND channel.archived_at IS NULL AND membership.removed_at IS NULL
-           AND grant_row.revoked_at IS NULL AND folder.archived_at IS NULL
-           AND grant_row.project_id = conversation.project_id
-           AND folder.project_id = conversation.project_id",
-    )
-    .bind(identity.teammate_id.as_str())
+           AND folder.archived_at IS NULL",
+        effective_access_level_sql("channel.conversation_id"),
+    )))
+    .bind(identity.agent_id.as_str())
     .bind(working_folder_id.as_str())
     .bind(channel_id.as_str())
     .bind(identity.conversation_id.as_str())
     .fetch_optional(pool)
     .await
-    .map_err(persistence_error)?
-    .ok_or_else(|| {
+    .map_err(persistence_error)?;
+    let level = level.ok_or_else(|| {
         ChatError::new(
             ChatErrorCode::Permission,
-            "The destination folder is not granted in this channel",
+            "The destination folder is not available in this channel",
             false,
         )
     })?;
-    let grant_rank = folder_capability_rank(
-        &row.try_get::<String, _>("capability")
-            .map_err(persistence_error)?,
-    )?;
-    let profile_rank = folder_capability_rank(
-        &row.try_get::<String, _>("maximum_folder_capability")
-            .map_err(persistence_error)?,
-    )?;
-    let effective_rank = if row
-        .try_get::<i64, _>("capability_inherits_profile")
-        .map_err(persistence_error)?
-        != 0
-    {
-        profile_rank
-    } else {
-        grant_rank.min(profile_rank)
-    };
-    if effective_rank < 2 {
+    let level = ChatAgentAccess::parse(&level).ok_or_else(corrupt_scratch_error)?;
+    if access_ceiling(level).folder_capability.rank() < ChatFolderCapability::Edit.rank() {
         return Err(ChatError::new(
             ChatErrorCode::Permission,
-            "Scratch promotion requires current edit access to the destination folder",
+            "Scratch promotion requires a channel access level that edits files",
             false,
         ));
     }
@@ -536,17 +517,6 @@ fn validate_content_revision(value: &str) -> ChatResult<()> {
     Ok(())
 }
 
-fn folder_capability_rank(value: &str) -> ChatResult<u8> {
-    match value {
-        "none" => Ok(0),
-        "read" => Ok(1),
-        "edit" => Ok(2),
-        "execute" => Ok(3),
-        "publish" => Ok(4),
-        _ => Err(corrupt_scratch_error()),
-    }
-}
-
 fn vault_error<T>(_error: T) -> ChatError {
     ChatError::new(
         ChatErrorCode::Persistence,
@@ -559,26 +529,17 @@ fn vault_error<T>(_error: T) -> ChatError {
 mod tests {
     use super::*;
     use crate::chat::scratch::tests::{
-        GENERATION, TEAMMATE, destination_conversation, pool_with_scratch_assignment,
+        AGENT, GENERATION, destination_conversation, pool_with_scratch_assignment,
     };
 
-    /// Gives the scratch teammate edit access through the build profile, grants it the project's
-    /// managed folder in the default channel, and stores what only a sync apply can: a channel of
-    /// the same conversation whose replicated project was rewritten to another project, with a
-    /// grant for that project's folder.
-    async fn pool_with_foreign_channel_grant() -> SqlitePool {
-        let pool = pool_with_scratch_assignment(TEAMMATE).await;
+    /// The scratch fixture at ask, which lets the agent edit the project folders of its channel,
+    /// plus what only a sync apply can store: a channel of the same conversation whose replicated
+    /// project was rewritten to another project with its own folder.
+    async fn pool_with_foreign_channel() -> SqlitePool {
+        let pool = pool_with_scratch_assignment(AGENT).await;
         let conversation = destination_conversation();
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "UPDATE chat_teammate_channel_memberships
-             SET access_profile_id = 'access-profile:build-and-test'
-             WHERE conversation_id = '{conversation}' AND teammate_id = '{TEAMMATE}';
-             INSERT INTO chat_teammate_working_folder_grants
-                 (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
-                  capability, capability_inherits_profile, is_default, created_at)
-             VALUES ('{conversation}', '{TEAMMATE}', 'project-chat', 'workspace-1',
-                     'grant:honest', 'edit', 0, 1, '2026-09-18T12:00:00.000Z');
-             UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
+            "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
              INSERT INTO projects (id, group_id, name, order_key)
              VALUES ('project:foreign', 'group-chat', 'Foreign', 'a2');
              INSERT INTO project_working_folders
@@ -591,11 +552,6 @@ mod tests {
                      '2026-09-18T12:00:00.000Z', '2026-09-18T12:00:00.000Z');
              UPDATE chat_channels SET project_id = 'project:foreign'
              WHERE id = 'channel:foreign';
-             INSERT INTO chat_teammate_working_folder_grants
-                 (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
-                  capability, capability_inherits_profile, is_default, created_at)
-             VALUES ('{conversation}', '{TEAMMATE}', 'project:foreign', 'folder:foreign',
-                     'grant:foreign', 'edit', 0, 0, '2026-09-18T12:00:00.000Z');
              UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;"
         )))
         .execute(&pool)
@@ -605,8 +561,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn promotion_refuses_a_grant_outside_the_conversation_project() {
-        let pool = pool_with_foreign_channel_grant().await;
+    async fn promotion_refuses_a_folder_outside_the_conversation_project() {
+        let pool = pool_with_foreign_channel().await;
         let identity =
             read_scratch_identity(&pool, &ChatScratchGenerationId::new(GENERATION).unwrap())
                 .await
@@ -622,7 +578,7 @@ mod tests {
             &ProjectWorkingFolderId::new("workspace-1").unwrap(),
         )
         .await
-        .expect("an honest edit grant in the conversation's project allows promotion");
+        .expect("a project folder of the channel at ask allows promotion");
         let refused = require_edit_folder_grant(
             &pool,
             &identity,
@@ -630,7 +586,7 @@ mod tests {
             &ProjectWorkingFolderId::new("folder:foreign").unwrap(),
         )
         .await
-        .expect_err("a channel claiming another project lends its grant no authority");
+        .expect_err("a channel claiming another project lends its folder no authority");
         assert_eq!(refused.code, ChatErrorCode::Permission);
     }
 

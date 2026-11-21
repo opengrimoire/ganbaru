@@ -9,9 +9,15 @@
 pub mod authorization;
 pub mod backup;
 pub mod bounds;
-pub mod builtin_profiles;
 pub mod certificate;
 pub mod charter;
+pub mod chat_agents;
+pub mod chat_channel_notes;
+pub mod chat_provider_status;
+pub mod chat_push_approvals;
+pub mod chat_recurrence;
+pub mod chat_remembered_approvals;
+pub mod chat_usage;
 pub mod codec;
 pub mod crypto;
 pub mod hlc;

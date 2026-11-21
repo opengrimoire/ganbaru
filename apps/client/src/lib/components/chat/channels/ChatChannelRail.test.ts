@@ -2,11 +2,10 @@
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatChannelRead } from "$lib/chat/contracts";
+import type { ChatChannelRead, ChatReviewQueueItemRead, ChatReviewQueueKind } from "$lib/chat/contracts";
 import { readChatSidebarSections, saveChatSidebarSections } from "$lib/chat/channel-sections";
 import { chatPaneEvents } from "$lib/chat/pane-events";
 import { getChat } from "$lib/stores/chat.svelte";
-import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
 import { setActiveVaultIdentity } from "$lib/vault/active-vault";
 import { SUBMENU_CLOSE_DELAY_MS } from "$lib/utils/menu-aim";
 import { TOUCH_LONG_PRESS_MS } from "$lib/utils/touch-hold";
@@ -39,6 +38,7 @@ describe("ChatChannelRail", () => {
     chat.channelsLoading = false;
     chat.selectedChannelId = "channel-general";
     chat.channelArchiveOpen = false;
+    chat.reviewQueue = null;
     saveChatSidebarSections("project-1", [{
       id: "section-design",
       name: "Design",
@@ -74,7 +74,6 @@ describe("ChatChannelRail", () => {
     expect(toggles.map((toggle) => toggle.textContent?.trim())).toEqual([
       "Channels",
       "Design",
-      "Direct messages",
     ]);
     for (const toggle of toggles) {
       expect(toggle.firstElementChild?.tagName).toBe("SPAN");
@@ -84,11 +83,9 @@ describe("ChatChannelRail", () => {
 
     toggles[0]?.click();
     toggles[1]?.click();
-    toggles[2]?.click();
     await tick();
 
     expect(toggles.map((toggle) => toggle.getAttribute("aria-expanded"))).toEqual([
-      "false",
       "false",
       "false",
     ]);
@@ -192,7 +189,7 @@ describe("ChatChannelRail", () => {
     });
     await tick();
     const labels = [...target.querySelectorAll<HTMLElement>(".section-toggle > span")];
-    expect(labels.map((label) => label.textContent)).toEqual(["Channels", "Design", "Direct messages"]);
+    expect(labels.map((label) => label.textContent)).toEqual(["Channels", "Design"]);
 
     for (const label of labels) {
       let renderedWidth = 80;
@@ -234,7 +231,7 @@ describe("ChatChannelRail", () => {
     await tick();
     expect(target.querySelector("form")).toBeNull();
     expect(document.activeElement).toBe(trigger);
-    expect([...target.querySelectorAll(".section-toggle")].map((toggle) => toggle.textContent?.trim())).toEqual(["Channels", "Design", "Direct messages"]);
+    expect([...target.querySelectorAll(".section-toggle")].map((toggle) => toggle.textContent?.trim())).toEqual(["Channels", "Design"]);
     trigger?.click();
     await tick();
     target.querySelector<HTMLButtonElement>(".section-context-menu button")?.click();
@@ -282,26 +279,6 @@ describe("ChatChannelRail", () => {
     await tick();
     document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     await tick();
-    expect(target.querySelector(".section-context-menu")).toBeNull();
-  });
-
-  it("opens contacts and invitations from the direct messages header menu", async () => {
-    const open = vi.spyOn(getSettingsLauncher(), "open").mockImplementation(() => undefined);
-    component = mount(ChatChannelRail, {
-      target,
-      props: { expanded: true, showCollapsedStrip: true, onExpand: vi.fn(), onCollapse: vi.fn() },
-    });
-    await tick();
-    const trigger = target.querySelector<HTMLButtonElement>("[data-chat-direct-messages] .section-heading .explorer-row-action");
-    expect(trigger).not.toBeNull();
-    trigger?.click();
-    await tick();
-    const menu = target.querySelector<HTMLElement>(".section-context-menu");
-    expect([...menu?.querySelectorAll('[role="menuitem"]') ?? []].map((item) => item.textContent?.trim())).toEqual(["Contacts", "Invitations"]);
-    expect(trigger?.getAttribute("aria-expanded")).toBe("true");
-    menu?.querySelector<HTMLButtonElement>("[data-chat-invitations]")?.click();
-    await tick();
-    expect(open).toHaveBeenCalledWith("contacts", { contactsTab: "invitations" });
     expect(target.querySelector(".section-context-menu")).toBeNull();
   });
 
@@ -686,6 +663,127 @@ describe("ChatChannelRail", () => {
     expect(readChatSidebarSections("project-1")[0]?.channelIds).toEqual(["channel-design", "channel-general"]);
     expect(selectChannel).not.toHaveBeenCalled();
   });
+
+  describe("review queue", () => {
+    function mountRail(presentation: "column" | "panel" = "column"): void {
+      component = mount(ChatChannelRail, {
+        target,
+        props: {
+          presentation,
+          expanded: true,
+          showCollapsedStrip: presentation === "column",
+          onExpand: vi.fn(),
+          onCollapse: vi.fn(),
+        },
+      });
+    }
+
+    it("is hidden while no work waits", async () => {
+      getChat().reviewQueue = { items: [], total: 0, failureCount: 0, truncated: false };
+      mountRail();
+      await tick();
+
+      expect(document.querySelector("[data-chat-review-queue]")).toBeNull();
+    });
+
+    it("counts the total without failures and says how many items the cap leaves out", async () => {
+      getChat().reviewQueue = {
+        items: [
+          queueItem("assignment-answer", "answer"),
+          queueItem("assignment-failure", "failure"),
+          queueItem("assignment-review", "review"),
+        ],
+        total: 206,
+        failureCount: 1,
+        truncated: true,
+      };
+      mountRail();
+      await tick();
+
+      const queue = document.querySelector<HTMLElement>("[data-chat-review-queue]");
+      expect(queue?.getAttribute("aria-label")).toBe("Needs you, 205 items");
+      expect([...queue?.querySelectorAll<HTMLElement>("[data-review-kind]") ?? []].map((row) => row.dataset.reviewKind))
+        .toEqual(["answer", "review"]);
+      expect(queue?.textContent).toContain("203 more items are not shown");
+    });
+
+    it("uses the same heading as the other sections and collapses the queue", async () => {
+      getChat().reviewQueue = { items: [queueItem("assignment-answer", "answer")], total: 1, failureCount: 0, truncated: false };
+      mountRail();
+      await tick();
+
+      const queue = document.querySelector<HTMLElement>("[data-chat-review-queue]");
+      const toggle = queue?.querySelector<HTMLButtonElement>(".section-heading .section-toggle");
+      expect(toggle?.textContent?.trim()).toBe("Needs you");
+      expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+      toggle?.click();
+      await tick();
+      expect(queue?.querySelectorAll("[data-review-kind]")).toHaveLength(0);
+    });
+
+    it("stays hidden while only failures are queued, and marks the channel instead", async () => {
+      const chat = getChat();
+      chat.reviewQueue = { items: [queueItem("assignment-failure", "failure")], total: 1, failureCount: 1, truncated: false };
+      chat.activeChannels = [
+        { ...channel("channel-general", "general"), unreadCount: 2, unreadReplyCount: 1, unseenFailure: true },
+        { ...channel("channel-design", "design"), unseenFailure: true },
+        { ...channel("channel-quiet", "quiet"), unreadCount: 3 },
+      ];
+      mountRail();
+      await tick();
+
+      expect(document.querySelector("[data-chat-review-queue]")).toBeNull();
+      const row = (id: string) => document.querySelector<HTMLElement>(`[data-chat-channel-id="${id}"]`);
+      expect(row("channel-general")?.querySelector(".unread-count")?.textContent).toBe("3");
+      expect(row("channel-general")?.querySelector(".unread-count")?.getAttribute("aria-label")).toBe("3 new messages");
+      expect(row("channel-general")?.querySelector("[data-chat-unseen-failure]")?.getAttribute("aria-label"))
+        .toBe("An agent run failed");
+      expect(row("channel-design")?.querySelector(".unread-count")).toBeNull();
+      expect(row("channel-design")?.querySelector("[data-chat-unseen-failure]")).not.toBeNull();
+      expect(row("channel-quiet")?.querySelector(".unread-count")?.textContent).toBe("3");
+      expect(row("channel-quiet")?.querySelector("[data-chat-unseen-failure]")).toBeNull();
+    });
+
+    it("offers selection for reviews in the docked rail and leaves it out of the phone panel", async () => {
+      getChat().reviewQueue = {
+        items: [queueItem("assignment-review", "review"), queueItem("assignment-failure", "failure")],
+        total: 2,
+        failureCount: 1,
+        truncated: false,
+      };
+      mountRail();
+      await tick();
+
+      const docked = document.querySelector<HTMLElement>("[data-chat-review-queue]");
+      expect(docked?.querySelectorAll("input[type='checkbox']")).toHaveLength(1);
+      expect(docked?.querySelector(".queue-accept")).not.toBeNull();
+      expect(docked?.textContent).not.toContain("more item");
+
+      if (component) await unmount(component);
+      component = null;
+      mountRail("panel");
+      await tick();
+
+      const phone = document.querySelector<HTMLElement>("[data-chat-review-queue]");
+      expect(phone).not.toBeNull();
+      expect(phone?.querySelectorAll("input[type='checkbox']")).toHaveLength(0);
+      expect(phone?.querySelector(".queue-accept")).toBeNull();
+    });
+
+    it("marks channels whose work waits for the person and keeps working channels quiet", async () => {
+      const chat = getChat();
+      chat.activeChannels = [
+        { ...channel("channel-general", "general"), attentionState: "ready_for_review" },
+        { ...channel("channel-design", "design"), attentionState: "working" },
+      ];
+      mountRail();
+      await tick();
+
+      const markers = [...document.querySelectorAll<HTMLElement>(".attention-marker")];
+      expect(markers.map((marker) => marker.getAttribute("aria-label"))).toEqual(["Ready for your review"]);
+      expect(markers[0].closest("[data-chat-channel-id]")?.getAttribute("data-chat-channel-id")).toBe("channel-general");
+    });
+  });
 });
 
 function channel(id: string, name: string): ChatChannelRead {
@@ -700,6 +798,8 @@ function channel(id: string, name: string): ChatChannelRead {
     memberships: [],
     messageCount: 0,
     unreadCount: 0,
+    unreadReplyCount: 0,
+    unseenFailure: false,
     latestPreview: null,
     lastActivityAt: timestamp,
     attentionState: null,
@@ -707,5 +807,24 @@ function channel(id: string, name: string): ChatChannelRead {
     archivedAt: null,
     createdAt: timestamp,
     updatedAt: timestamp,
+  };
+}
+
+function queueItem(assignmentId: string, kind: ChatReviewQueueKind): ChatReviewQueueItemRead {
+  return {
+    assignmentId,
+    revision: 2,
+    kind,
+    projectId: "project-1",
+    projectName: "Ganbaru",
+    channelId: "channel-general",
+    channelName: "general",
+    replyThreadId: `reply-thread-${assignmentId}`,
+    agentParticipantId: "participant-builder",
+    agentDisplayName: "Builder",
+    stateReason: null,
+    changedFileCount: 2,
+    executedHere: true,
+    updatedAt: "2026-08-05T12:00:00.000Z",
   };
 }

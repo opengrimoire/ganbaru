@@ -8,6 +8,7 @@
   import Moon from "@lucide/svelte/icons/moon";
   import { themeDisplayName } from "$lib/i18n/theme-labels";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { getTheme } from "$lib/stores/theme.svelte";
   import { getThemeEditor } from "$lib/stores/theme-editor.svelte";
   import type { ThemeId } from "$lib/themes";
@@ -160,7 +161,7 @@
     } catch (err) {
       console.error("import from file failed", err);
       importErrors = [
-        err instanceof Error ? err.message : t("settings.theme.fileReadFailed"),
+        userErrorMessage(err, t("settings.theme.fileReadFailed")),
       ];
     }
   }

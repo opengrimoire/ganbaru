@@ -13,6 +13,7 @@ import type {
 import { INTERACTION_MODES, PROVIDER_SESSION_STATES, SAFETY_MODES } from "../contracts";
 import { parseProviderCapabilities } from "./provider";
 import { parseAccountStatus, parseRateLimitStatus, parseThreadUsage } from "./events";
+import { parseChatRememberableApproval } from "./remembered-approvals";
 import {
   readArray,
   readBoolean,
@@ -91,6 +92,7 @@ function parsePendingRequest(value: unknown, label: string): ChatPendingRequestR
     safeDisplay: readVersionedJson(record.safeDisplay, `${label}.safeDisplay`),
     allowedDecisions: readVersionedJson(record.allowedDecisions, `${label}.allowedDecisions`),
     openedAt: readUtcTimestamp(record.openedAt, `${label}.openedAt`),
+    rememberable: readNullable(record.rememberable, `${label}.rememberable`, parseChatRememberableApproval),
   };
 }
 

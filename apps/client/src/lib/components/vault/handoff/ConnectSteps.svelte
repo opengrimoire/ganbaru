@@ -4,12 +4,10 @@
 </script>
 
 <script lang="ts">
-  import Check from "@lucide/svelte/icons/check";
-  import Copy from "@lucide/svelte/icons/copy";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { onMount, tick, untrack, type Snippet } from "svelte";
+  import { tick, untrack, type Snippet } from "svelte";
   import type { HTMLAttributes } from "svelte/elements";
   import { fade } from "svelte/transition";
   import { addSyncServer, SyncServerError } from "$lib/api/sync";
@@ -19,15 +17,15 @@
     recoverVaultThroughServer,
     releaseStarterVault,
   } from "$lib/api/vault-handoff";
+  import CommandBox from "$lib/components/ui/CommandBox.svelte";
   import MaskedCodeInput from "$lib/components/ui/MaskedCodeInput.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { SERVER_GUIDE_URL, syncServerErrorLabel } from "$lib/sync/server";
   import { cn } from "$lib/utils";
-  import { writeTextToClipboard } from "$lib/utils/clipboard";
   import { smoothHeight, smoothSwapTiming, swapIn, swapOut } from "$lib/utils/smooth-swap";
   import { isServerWithoutVault, serverConnectError } from "$lib/vault/server-connect";
   import ConnectSourceTabs from "./ConnectSourceTabs.svelte";
-  import ConnectStep, { stepCenteredBlockClass, stepTextIndentClass } from "./ConnectStep.svelte";
+  import NumberedStep, { stepCenteredBlockClass, stepTextIndentClass } from "$lib/components/ui/NumberedStep.svelte";
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
   import MobilePairingScanner from "./MobilePairingScanner.svelte";
   import RecoveryKitDialog from "./RecoveryKitDialog.svelte";
@@ -95,8 +93,6 @@
 
   /** The command an anchor server operator runs to print a setup code. */
   const SERVER_SETUP_COMMAND = "ganbaru-server anchor setup";
-  /** How long the copy button shows that the command was copied. */
-  const COPY_FEEDBACK_MS = 2_000;
 
   const { t } = getLocalization();
   const mobile = untrack(() => platform === "android");
@@ -112,8 +108,6 @@
   let kitDialogOpen = $state(false);
   let serverError = $state<string | null>(null);
   let serverNotice = $state<string | null>(null);
-  let commandCopied = $state(false);
-  let copyFeedbackTimer: number | undefined;
   /** Which sources show the camera instead of the code field; only Android scans. */
   const scanning = $state<Record<ConnectSource, boolean>>(
     untrack(() => ({ computer: mobile && autoScan, server: mobile && autoScan })),
@@ -174,18 +168,6 @@
     } catch (cause: unknown) {
       console.warn("server setup guide could not be opened", cause);
     }
-  }
-
-  async function copyCommand(): Promise<void> {
-    try {
-      await writeTextToClipboard(SERVER_SETUP_COMMAND);
-    } catch (cause: unknown) {
-      console.warn("the server setup command could not be copied", cause);
-      return;
-    }
-    commandCopied = true;
-    window.clearTimeout(copyFeedbackTimer);
-    copyFeedbackTimer = window.setTimeout(() => { commandCopied = false; }, COPY_FEEDBACK_MS);
   }
 
   /**
@@ -302,8 +284,6 @@
         : t("vaultHandoff.serverConnect.errors.failed");
     }
   }
-
-  onMount(() => () => window.clearTimeout(copyFeedbackTimer));
 </script>
 
 {#snippet scanner(which: ConnectSource)}
@@ -363,27 +343,27 @@
         <ol class="flex flex-col">
           <!-- A phone may be the first device with Ganbaru, so its steps start with installing the desktop app. -->
           {#if mobile}
-            <ConnectStep number={1} total={3}>
+            <NumberedStep number={1} total={3}>
               <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">{t("vaultHandoff.computerSteps.install")}</p>
-            </ConnectStep>
-            <ConnectStep number={2} total={3}>
+            </NumberedStep>
+            <NumberedStep number={2} total={3}>
               <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
                 {t("vaultHandoff.computerSteps.goTo")}
                 <SettingsPath trail={[t("settings.section.data"), t("vaultHandoff.heading")]} />
               </p>
-            </ConnectStep>
+            </NumberedStep>
           {:else}
-            <ConnectStep number={1} total={3}>
+            <NumberedStep number={1} total={3}>
               <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
                 {t("vaultHandoff.computerSteps.open")}
                 <SettingsPath trail={[t("settings.section.data")]} />
               </p>
-            </ConnectStep>
-            <ConnectStep number={2} total={3}>
+            </NumberedStep>
+            <NumberedStep number={2} total={3}>
               <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">{t("vaultHandoff.computerSteps.copy")}</p>
-            </ConnectStep>
+            </NumberedStep>
           {/if}
-          <ConnectStep number={3} total={3} beside={mobile ? "text" : "field"}>
+          <NumberedStep number={3} total={3} beside={mobile ? "text" : "field"}>
             <div class="min-w-0 flex-1">
               {#if mobile}{@render codeMode("computer")}{/if}
               <div {...codeInputPanel("computer")}>
@@ -412,7 +392,7 @@
               {/if}
               {@render cameraNotice("computer")}
             </div>
-          </ConnectStep>
+          </NumberedStep>
         </ol>
         {#if busy && enrollmentCode}
           <div in:swapIn={swap} out:swapOut={swap} class="mt-5">
@@ -423,7 +403,7 @@
     {:else if source === "server"}
       <div in:swapIn={swap} out:swapOut={swap} class="mx-auto w-full max-w-md min-w-0">
         <ol class="flex flex-col">
-          <ConnectStep number={1} total={3}>
+          <NumberedStep number={1} total={3}>
             <p class="min-w-0 flex-1 pt-0.5 pb-4 text-sm leading-5 text-foreground">
               {t("vaultHandoff.serverConnect.installPrefix")}
               <button
@@ -435,28 +415,14 @@
               </button>
               {t("vaultHandoff.serverConnect.installSuffix")}
             </p>
-          </ConnectStep>
-          <ConnectStep number={2} total={3}>
+          </NumberedStep>
+          <NumberedStep number={2} total={3}>
             <div class="min-w-0 flex-1 pt-0.5 pb-4">
               <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.serverConnect.run")}</p>
-              <div class="mt-2 flex h-8 items-center gap-2 rounded-md bg-muted ps-3 pe-1" dir="ltr">
-                <code class="min-w-0 flex-1 overflow-x-auto font-mono text-[0.8rem] whitespace-nowrap text-foreground">
-                  <span class="text-muted-foreground select-none" aria-hidden="true">$</span> {SERVER_SETUP_COMMAND}
-                </code>
-                <button
-                  type="button"
-                  data-copy-command
-                  class="flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-background hover:text-foreground pointer-coarse:size-9"
-                  title={commandCopied ? t("vaultHandoff.serverConnect.commandCopied") : t("vaultHandoff.serverConnect.copyCommand")}
-                  aria-label={commandCopied ? t("vaultHandoff.serverConnect.commandCopied") : t("vaultHandoff.serverConnect.copyCommand")}
-                  onclick={() => void copyCommand()}
-                >
-                  {#if commandCopied}<Check size={14} aria-hidden="true" />{:else}<Copy size={14} aria-hidden="true" />{/if}
-                </button>
-              </div>
+              <CommandBox class="mt-2" command={SERVER_SETUP_COMMAND} />
             </div>
-          </ConnectStep>
-          <ConnectStep number={3} total={3} beside={mobile ? "text" : "field"}>
+          </NumberedStep>
+          <NumberedStep number={3} total={3} beside={mobile ? "text" : "field"}>
             <div class="min-w-0 flex-1">
               {#if mobile}{@render codeMode("server")}{/if}
               <div {...codeInputPanel("server")}>
@@ -490,7 +456,7 @@
               {/if}
               {@render cameraNotice("server")}
             </div>
-          </ConnectStep>
+          </NumberedStep>
         </ol>
         {#if mobile && useKit}
           <p in:swapIn={swap} out:swapOut={swap} role="status" class="mt-4 text-center text-[0.8rem] leading-5 text-muted-foreground">

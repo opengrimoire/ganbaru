@@ -191,84 +191,264 @@ fn driver_fixture_covers_fresh_plan_interrupt_and_shutdown() {
     });
 }
 
+fn organizational_scope_driver(
+    workspace: &Path,
+    scope: Option<ProviderOrganizationalScope>,
+) -> (CodexProviderDriver, Arc<AppServerFixtureState>) {
+    fixture_driver_with(workspace, FixtureScenario::Organizational, |config| {
+        if let Some(server) = config.internal_mcp.as_mut() {
+            server.organizational_scope = scope;
+        }
+    })
+}
+
 #[test]
 fn organizational_fixture_verifies_permissions_and_mcp_before_dispatch() {
     crate::test_block_on(async {
-        let workspace = TestDirectory::new("driver-organizational");
-        let (mut driver, fixture) =
-            fixture_driver(workspace.path(), FixtureScenario::Organizational);
+        for (scope, expected_profile) in [
+            (
+                ProviderOrganizationalScope::Conversation,
+                ORGANIZATIONAL_READ_PERMISSION_PROFILE,
+            ),
+            (
+                ProviderOrganizationalScope::Folder {
+                    capability: ProviderFolderCapability::Read,
+                },
+                ORGANIZATIONAL_READ_PERMISSION_PROFILE,
+            ),
+            (
+                ProviderOrganizationalScope::Folder {
+                    capability: ProviderFolderCapability::Edit,
+                },
+                ORGANIZATIONAL_PERMISSION_PROFILE,
+            ),
+            (
+                ProviderOrganizationalScope::Folder {
+                    capability: ProviderFolderCapability::Execute,
+                },
+                ORGANIZATIONAL_PERMISSION_PROFILE,
+            ),
+            (
+                ProviderOrganizationalScope::Scratch,
+                ORGANIZATIONAL_PERMISSION_PROFILE,
+            ),
+        ] {
+            let workspace = TestDirectory::new("driver-organizational");
+            let (mut driver, fixture) = organizational_scope_driver(workspace.path(), Some(scope));
+            let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+            let snapshot = driver
+                .start_session(
+                    start_request(workspace.path()),
+                    sink,
+                    &context("organizational-start"),
+                )
+                .await
+                .unwrap();
+
+            driver
+                .send_turn(
+                    fixture_turn(&snapshot.session_id, "build"),
+                    &context("organizational-send"),
+                )
+                .await
+                .unwrap();
+
+            let received = fixture.received();
+            let thread = received
+                .iter()
+                .find(|message| message["method"] == "thread/start")
+                .unwrap();
+            let turn = received
+                .iter()
+                .find(|message| message["method"] == "turn/start")
+                .unwrap();
+            for request in [thread, turn] {
+                assert_eq!(request["params"]["permissions"], expected_profile);
+                assert_eq!(
+                    request["params"]["runtimeWorkspaceRoots"],
+                    json!([workspace.path()])
+                );
+                assert!(request["params"].get("sandbox").is_none());
+                assert!(request["params"].get("sandboxPolicy").is_none());
+            }
+            let turn_position = received
+                .iter()
+                .position(|message| message["method"] == "turn/start")
+                .unwrap();
+            let mcp_status_positions = received
+                .iter()
+                .enumerate()
+                .filter_map(|(index, message)| {
+                    (message["method"] == "mcpServerStatus/list").then_some(index)
+                })
+                .collect::<Vec<_>>();
+            assert!(mcp_status_positions.len() >= 2);
+            assert!(
+                mcp_status_positions
+                    .iter()
+                    .any(|index| *index < turn_position)
+            );
+            for request_id in [
+                "fixture-organizational-escalation",
+                "fixture-organizational-file-change",
+            ] {
+                let response = wait_for_fixture_message(&fixture, |message| {
+                    message["id"] == request_id && message.get("result").is_some()
+                })
+                .await;
+                assert_eq!(response["result"]["decision"], "decline", "{request_id}");
+            }
+
+            driver
+                .stop_session(
+                    StopSessionRequest {
+                        session_id: snapshot.session_id,
+                        force: true,
+                    },
+                    &context("organizational-stop"),
+                )
+                .await
+                .unwrap();
+        }
+    });
+}
+
+#[test]
+fn organizational_session_without_a_scope_fails_before_launch() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("driver-organizational-unscoped");
+        let (mut driver, fixture) = organizational_scope_driver(workspace.path(), None);
+        let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+        let error = driver
+            .start_session(
+                start_request(workspace.path()),
+                sink,
+                &context("organizational-unscoped-start"),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, ChatErrorCode::Permission);
+        assert_eq!(fixture.connections.load(Ordering::Acquire), 0);
+    });
+}
+
+#[test]
+fn a_device_without_the_codex_sandbox_refuses_folder_and_scratch_scopes_before_launch() {
+    crate::test_block_on(async {
+        for scope in [
+            ProviderOrganizationalScope::Folder {
+                capability: ProviderFolderCapability::Read,
+            },
+            ProviderOrganizationalScope::Folder {
+                capability: ProviderFolderCapability::Edit,
+            },
+            ProviderOrganizationalScope::Folder {
+                capability: ProviderFolderCapability::Execute,
+            },
+            ProviderOrganizationalScope::Scratch,
+        ] {
+            let workspace = TestDirectory::new("driver-organizational-no-sandbox");
+            let (mut driver, fixture) = organizational_scope_driver(workspace.path(), Some(scope));
+            driver.set_test_sandbox_starts(false);
+            let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+            let error = driver
+                .start_session(
+                    start_request(workspace.path()),
+                    sink,
+                    &context("organizational-no-sandbox-start"),
+                )
+                .await
+                .unwrap_err();
+
+            assert_eq!(error.code, ChatErrorCode::Permission, "{scope:?}");
+            assert!(error.message.contains("command sandbox"), "{scope:?}");
+            assert_eq!(fixture.connections.load(Ordering::Acquire), 0, "{scope:?}");
+        }
+    });
+}
+
+#[test]
+fn a_device_without_the_codex_sandbox_still_opens_conversations() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("driver-organizational-conversation-no-sandbox");
+        let (mut driver, _fixture) = organizational_scope_driver(
+            workspace.path(),
+            Some(ProviderOrganizationalScope::Conversation),
+        );
+        driver.set_test_sandbox_starts(false);
         let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
         let snapshot = driver
             .start_session(
                 start_request(workspace.path()),
                 sink,
-                &context("organizational-start"),
+                &context("organizational-conversation-no-sandbox-start"),
             )
             .await
             .unwrap();
 
-        driver
-            .send_turn(
-                fixture_turn(&snapshot.session_id, "build"),
-                &context("organizational-send"),
-            )
-            .await
-            .unwrap();
-
-        let received = fixture.received();
-        let thread = received
-            .iter()
-            .find(|message| message["method"] == "thread/start")
-            .unwrap();
-        let turn = received
-            .iter()
-            .find(|message| message["method"] == "turn/start")
-            .unwrap();
-        for request in [thread, turn] {
-            assert_eq!(
-                request["params"]["permissions"],
-                ORGANIZATIONAL_PERMISSION_PROFILE
-            );
-            assert_eq!(
-                request["params"]["runtimeWorkspaceRoots"],
-                json!([workspace.path()])
-            );
-            assert!(request["params"].get("sandbox").is_none());
-            assert!(request["params"].get("sandboxPolicy").is_none());
-        }
-        let turn_position = received
-            .iter()
-            .position(|message| message["method"] == "turn/start")
-            .unwrap();
-        let mcp_status_positions = received
-            .iter()
-            .enumerate()
-            .filter_map(|(index, message)| {
-                (message["method"] == "mcpServerStatus/list").then_some(index)
-            })
-            .collect::<Vec<_>>();
-        assert!(mcp_status_positions.len() >= 2);
-        assert!(
-            mcp_status_positions
-                .iter()
-                .any(|index| *index < turn_position)
+        assert_eq!(
+            driver.authority_support(),
+            organizational_conversation_support()
         );
-        let escalation_response = wait_for_fixture_message(&fixture, |message| {
-            message["id"] == "fixture-organizational-escalation" && message.get("result").is_some()
-        })
-        .await;
-        assert_eq!(escalation_response["result"]["decision"], "decline");
-
         driver
             .stop_session(
                 StopSessionRequest {
                     session_id: snapshot.session_id,
                     force: true,
                 },
-                &context("organizational-stop"),
+                &context("organizational-conversation-no-sandbox-stop"),
             )
             .await
             .unwrap();
+    });
+}
+
+#[test]
+fn authority_support_follows_the_codex_sandbox_check() {
+    let workspace = TestDirectory::new("driver-authority-sandbox");
+    let (mut driver, _fixture) = fixture_driver(workspace.path(), FixtureScenario::Healthy);
+    assert_eq!(
+        driver.authority_support(),
+        organizational_authority_support()
+    );
+    driver.set_test_sandbox_starts(false);
+    let support = driver.authority_support();
+    assert_eq!(support, organizational_conversation_support());
+    assert!(support.isolated_conversation && support.internal_host_tools);
+    assert!(!support.read_only_root && !support.writable_root && !support.deny_shell);
+    assert!(!support.confined_commands && !support.network_boundary);
+}
+
+#[test]
+fn organizational_session_rejects_a_profile_wider_than_the_scope() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("driver-organizational-mismatch");
+        let (mut driver, fixture) = organizational_scope_driver(
+            workspace.path(),
+            Some(ProviderOrganizationalScope::Folder {
+                capability: ProviderFolderCapability::Read,
+            }),
+        );
+        // The app server reports the writable profile although the launch asked for read.
+        *fixture.organizational_access.lock().unwrap() = Some(CodexOrganizationalAccess::Edit);
+        let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+        let error = driver
+            .start_session(
+                start_request(workspace.path()),
+                sink,
+                &context("organizational-mismatch-start"),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, ChatErrorCode::ConfigurationInvalid);
+        assert!(
+            !fixture
+                .received()
+                .iter()
+                .any(|message| message["method"] == "thread/start")
+        );
     });
 }
 
@@ -449,6 +629,7 @@ fn driver_fixture_routes_native_approval_and_structured_question() {
                                     question_id: "strategy".to_string(),
                                     selected_option_ids: vec!["q0-option-0".to_string()],
                                     free_form_text: None,
+                                    attachment_ids: Vec::new(),
                                 }],
                             },
                             &context("answer"),
@@ -578,4 +759,151 @@ fn provider_path_skips_programs_in_folders_any_user_can_write() {
 
     assert_eq!(resolved.executable, private.join("codex"));
     fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn fixture_endpoint(token: &str) -> ProviderInternalMcpConfig {
+    ProviderInternalMcpConfig {
+        name: "ganbaru-chat".to_string(),
+        url: "http://127.0.0.1:41827/mcp".to_string(),
+        bearer_token: token.to_string(),
+        organizational_authority: false,
+        pre_approved_tools: Vec::new(),
+        organizational_scope: None,
+    }
+}
+
+fn reload_count(fixture: &AppServerFixtureState) -> usize {
+    fixture
+        .received()
+        .iter()
+        .filter(|message| message["method"] == "config/mcpServer/reload")
+        .count()
+}
+
+async fn start_default_reload_session(
+    workspace: &Path,
+    endpoint: Option<ProviderInternalMcpConfig>,
+) -> (
+    CodexProviderDriver,
+    Arc<AppServerFixtureState>,
+    ProviderSessionSnapshot,
+) {
+    let (mut driver, fixture) =
+        fixture_driver_with(workspace, FixtureScenario::Healthy, |config| {
+            config.provider_config.value["refreshMcpBeforeTurn"] = Value::Bool(false);
+            config.internal_mcp = endpoint;
+        });
+    let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+    let snapshot = driver
+        .start_session(start_request(workspace), sink, &context("start"))
+        .await
+        .unwrap();
+    (driver, fixture, snapshot)
+}
+
+#[test]
+fn turn_start_sends_detailed_summary() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("driver-summary");
+        let (mut driver, fixture, snapshot) =
+            start_default_reload_session(workspace.path(), None).await;
+        driver
+            .send_turn(
+                fixture_turn(&snapshot.session_id, "build"),
+                &context("send"),
+            )
+            .await
+            .unwrap();
+        let turn =
+            wait_for_fixture_message(&fixture, |message| message["method"] == "turn/start").await;
+        assert_eq!(turn["params"]["summary"], "detailed");
+    });
+}
+
+#[test]
+fn mcp_reload_skipped_when_endpoint_unchanged() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("driver-reload-skip");
+        let (mut driver, fixture, snapshot) =
+            start_default_reload_session(workspace.path(), Some(fixture_endpoint("token-a"))).await;
+        driver
+            .send_turn(
+                fixture_turn(&snapshot.session_id, "build"),
+                &context("send"),
+            )
+            .await
+            .unwrap();
+        wait_for_fixture_message(&fixture, |message| message["method"] == "turn/start").await;
+        assert_eq!(reload_count(&fixture), 0);
+    });
+}
+
+#[test]
+fn mcp_reload_runs_when_token_changes() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("driver-reload-rotate");
+        let (mut driver, fixture, snapshot) =
+            start_default_reload_session(workspace.path(), Some(fixture_endpoint("token-a"))).await;
+        driver.replace_internal_mcp(Some(fixture_endpoint("token-b")));
+        driver
+            .send_turn(
+                fixture_turn(&snapshot.session_id, "build"),
+                &context("send"),
+            )
+            .await
+            .unwrap();
+        wait_for_fixture_message(&fixture, |message| message["method"] == "turn/start").await;
+        assert_eq!(reload_count(&fixture), 1);
+        let received = fixture.received();
+        let reload = received
+            .iter()
+            .position(|message| message["method"] == "config/mcpServer/reload")
+            .unwrap();
+        let turn = received
+            .iter()
+            .position(|message| message["method"] == "turn/start")
+            .unwrap();
+        assert!(reload < turn, "the reload precedes the turn it serves");
+    });
+}
+
+#[test]
+fn thread_admin_reuses_live_connection() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("driver-admin-live");
+        let (mut driver, fixture, _snapshot) =
+            start_default_reload_session(workspace.path(), None).await;
+        let opened = fixture.connections.load(Ordering::Acquire);
+        driver
+            .rename_thread(
+                ProviderThreadLifecycleRequest {
+                    provider_thread_id: identifier("fixture-thread-other", ProviderThreadId::new),
+                    title: Some("Renamed".to_string()),
+                },
+                &context("rename"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fixture.connections.load(Ordering::Acquire), opened);
+        let rename =
+            wait_for_fixture_message(&fixture, |message| message["method"] == "thread/name/set")
+                .await;
+        assert_eq!(rename["params"]["threadId"], "fixture-thread-other");
+
+        driver
+            .unsubscribe_thread(
+                ProviderThreadLifecycleRequest {
+                    provider_thread_id: identifier("fixture-thread-new", ProviderThreadId::new),
+                    title: None,
+                },
+                &context("unsubscribe-own"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.connections.load(Ordering::Acquire),
+            opened + 1,
+            "unsubscribing the live thread uses its own connection"
+        );
+    });
 }

@@ -1,0 +1,2 @@
+{"type":"transcript_start","provider":"opencode","protocol":"http","cli_version":"1.14.19","scenario":"exit_before_first_frame","generated_by":"hand-authored from the OpenCode 1.14.19 server event fixtures"}
+{"type":"runtime_exit","status":1}

@@ -107,8 +107,8 @@ describe("MusicBuilderDialog", () => {
     expect(dialog?.textContent).not.toContain("What would you like to add?");
     expect(dialog?.textContent).not.toContain("contacts YouTube");
     expect(dialog?.textContent).not.toContain("Add to library");
-    expect(input?.classList.contains("h-11")).toBe(true);
-    expect(previewButton?.classList.contains("h-11")).toBe(true);
+    expect(input?.classList.contains("field")).toBe(true);
+    expect(previewButton?.classList.contains("h-(--control-height)")).toBe(true);
   });
 
   it("presents source removal as one concise choice with an exact action", async () => {

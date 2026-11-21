@@ -12,7 +12,7 @@ use ganbaru_sync_contracts::{
 
 use super::authorization::{seal_at, view};
 use super::block_on;
-use super::chat::{CHANNEL, folder_grant_sql};
+use super::chat::{CHANNEL, folder_approval_sql};
 use super::engine::with_group;
 use super::replica::{
     Replica, converge, forge_change, forge_changes, pair, quoted, rank, sealed_change,
@@ -1212,38 +1212,40 @@ pub(super) fn folder_tombstone(folder: &str) -> Change {
     }
 }
 
-/// SQL adding the shared project's folders and a Chat grant on its managed folder.
+/// SQL adding the shared project's folders and a Chat push approval on its managed folder.
 pub(super) fn managed_folder_sql() -> String {
     format!(
         "{}{}",
         folders_sql(),
-        folder_grant_sql(PROJECT, MANAGED_FOLDER)
+        folder_approval_sql(PROJECT, MANAGED_FOLDER)
     )
 }
 
-/// Every replica holding the shared project, its folders, and a Chat grant on the managed one.
+/// Every replica holding the shared project, its folders, and a Chat push approval on the
+/// managed one.
 pub(super) async fn shared_managed_folder(count: usize) -> Vec<Replica> {
     shared(count, &managed_folder_sql()).await
 }
 
-/// The folders of the shared project and the folders Chat grants name.
-pub(super) async fn folders_and_grants(replica: &mut Replica) -> (Vec<String>, Vec<String>) {
+/// The folders of the shared project and the folders Chat push approvals in it name.
+pub(super) async fn folders_and_approvals(replica: &mut Replica) -> (Vec<String>, Vec<String>) {
     let folders = texts(
         replica,
         "SELECT id FROM project_working_folders WHERE project_id = 'project-shared' ORDER BY id",
     )
     .await;
-    let grants = texts(
+    let approvals = texts(
         replica,
-        "SELECT working_folder_id FROM chat_teammate_working_folder_grants
-         WHERE project_id = 'project-shared'",
+        "SELECT approval.working_folder_id FROM chat_push_approvals approval
+         JOIN chat_conversations conversation ON conversation.id = approval.conversation_id
+         WHERE conversation.project_id = 'project-shared'",
     )
     .await;
-    (folders, grants)
+    (folders, approvals)
 }
 
-/// The result of [`folders_and_grants`] with both folders of the shared project kept.
-pub(super) fn every_folder_and_grant() -> (Vec<String>, Vec<String>) {
+/// The result of [`folders_and_approvals`] with both folders of the shared project kept.
+pub(super) fn every_folder_and_approval() -> (Vec<String>, Vec<String>) {
     (
         vec![EXTERNAL_FOLDER.to_owned(), MANAGED_FOLDER.to_owned()],
         vec![MANAGED_FOLDER.to_owned()],
@@ -1295,8 +1297,8 @@ fn tombstone_of_a_managed_folder_keeps_it_while_the_project_lives() {
         deliver(&mut replicas[3], &delivery).await;
         for replica in &mut replicas[2..] {
             assert_eq!(
-                folders_and_grants(replica).await,
-                every_folder_and_grant(),
+                folders_and_approvals(replica).await,
+                every_folder_and_approval(),
                 "replica {} lost the folder",
                 replica.index
             );
@@ -1306,7 +1308,10 @@ fn tombstone_of_a_managed_folder_keeps_it_while_the_project_lives() {
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
         for replica in &mut replicas {
-            assert_eq!(folders_and_grants(replica).await, every_folder_and_grant());
+            assert_eq!(
+                folders_and_approvals(replica).await,
+                every_folder_and_approval()
+            );
             assert_eq!(surfaced(replica).await, (0, 0));
         }
 
@@ -1359,7 +1364,10 @@ fn kept_folder_with_an_unseen_edit_reports_no_recovery_offer() {
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
         for replica in &mut replicas {
-            assert_eq!(folders_and_grants(replica).await, every_folder_and_grant());
+            assert_eq!(
+                folders_and_approvals(replica).await,
+                every_folder_and_approval()
+            );
             assert_eq!(surfaced(replica).await, (0, 0));
         }
     });
@@ -1384,7 +1392,7 @@ fn project_deletion_removes_a_kept_folder_in_either_arrival_order() {
         deliver(&mut replicas[3], std::slice::from_ref(&forged)).await;
         for replica in &mut replicas[2..] {
             assert_eq!(
-                folders_and_grants(replica).await,
+                folders_and_approvals(replica).await,
                 (Vec::new(), Vec::new()),
                 "replica {} kept the folder",
                 replica.index
@@ -1403,7 +1411,7 @@ fn tombstone_of_an_external_folder_removes_it() {
         let forged = forge_change(&mut replicas[0], folder_tombstone(EXTERNAL_FOLDER)).await;
         deliver(&mut replicas[1], std::slice::from_ref(&forged)).await;
         assert_eq!(
-            folders_and_grants(&mut replicas[1]).await,
+            folders_and_approvals(&mut replicas[1]).await,
             (
                 vec![MANAGED_FOLDER.to_owned()],
                 vec![MANAGED_FOLDER.to_owned()]
@@ -1470,7 +1478,10 @@ fn a_chat_tombstone_caused_by_a_kept_folder_is_offered_on_its_own() {
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
         for replica in &mut replicas {
-            assert_eq!(folders_and_grants(replica).await, every_folder_and_grant());
+            assert_eq!(
+                folders_and_approvals(replica).await,
+                every_folder_and_approval()
+            );
             assert_eq!(
                 offered_roots(replica).await,
                 [(CHANNELS_TABLE, CHANNEL.to_owned())],
@@ -1495,7 +1506,10 @@ fn a_deleted_project_offers_what_its_forged_folder_tombstone_caused_under_the_pr
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
         for replica in &mut replicas {
-            assert_eq!(folders_and_grants(replica).await, (Vec::new(), Vec::new()));
+            assert_eq!(
+                folders_and_approvals(replica).await,
+                (Vec::new(), Vec::new())
+            );
             assert_eq!(
                 offered_roots(replica).await,
                 [(PROJECTS_TABLE, PROJECT.to_owned())],
@@ -1612,7 +1626,10 @@ async fn assert_forged_managed_key_create_is_held(created: Vec<Field>) {
             "replica {}",
             replica.index
         );
-        assert_eq!(folders_and_grants(replica).await, every_folder_and_grant());
+        assert_eq!(
+            folders_and_approvals(replica).await,
+            every_folder_and_approval()
+        );
         replica.check_invariants().await;
     }
 

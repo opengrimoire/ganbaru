@@ -2,6 +2,8 @@
   import type { Snippet } from "svelte";
   import GripVertical from "@lucide/svelte/icons/grip-vertical";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { cn } from "$lib/utils";
   import { collectionWindow } from "./collection-window";
 
@@ -23,6 +25,7 @@
     virtualize?: boolean;
   } = $props();
 
+  const { t } = getLocalization();
   let dragged: { item: Item; groupId: string } | null = $state(null);
   let target: { groupId: string; itemId: string | null; position: "before" | "after" } | null = $state(null);
   let pendingId = $state<string | null>(null);
@@ -92,7 +95,7 @@
     try {
       await onMove(current.item, group, overItem, over?.position ?? "after");
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = userErrorMessage(caught, t("collections.items.moveFailed"));
     } finally {
       pendingId = null;
     }

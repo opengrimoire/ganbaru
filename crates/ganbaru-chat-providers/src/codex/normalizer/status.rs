@@ -33,31 +33,37 @@ impl CodexEventNormalizer {
         )?])
     }
 
+    /// Merges a sparse rate limit update and reports the merged limits when they changed.
+    ///
+    /// Each event carries every merged limit, because readers keep only the newest status. An
+    /// update without a snapshot object is ignored, since a missing status must not end the
+    /// session.
     pub(super) fn rate_limit_status(
         &self,
-        state: &CodexRouteState,
+        state: &mut CodexRouteState,
         params: Value,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
         let object = required_object(&params, "account/rateLimits/updated")?;
-        let limits = object.get("rateLimits").unwrap_or(&Value::Null);
-        Ok(vec![
-            self.event(
-                state,
-                "account/rateLimits/updated",
-                None,
-                None,
-                None,
-                CanonicalEvent::RateLimitStatus(RateLimitStatusEvent {
-                    limited: limits
-                        .get("limitReached")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                    resets_at: None,
-                    detail: None,
-                    provider_data: bounded_shape(limits),
-                }),
-            )?,
-        ])
+        let Some(limits) = object.get("rateLimits").and_then(Value::as_object) else {
+            return Ok(Vec::new());
+        };
+        if !state.rate_limits.merge(limits) {
+            return Ok(Vec::new());
+        }
+        let projection = state.rate_limits.projection();
+        Ok(vec![self.event(
+            state,
+            "account/rateLimits/updated",
+            None,
+            None,
+            None,
+            CanonicalEvent::RateLimitStatus(RateLimitStatusEvent {
+                limited: projection.limited,
+                resets_at: projection.resets_at,
+                detail: None,
+                provider_data: Some(projection.provider_data),
+            }),
+        )?])
     }
 
     pub(super) fn mcp_status(
@@ -180,27 +186,34 @@ impl CodexEventNormalizer {
         let message = error
             .and_then(|value| text(value, "message"))
             .unwrap_or("Codex turn failed");
-        Ok(vec![
-            self.event(
-                state,
-                "error",
-                route_turn(state, Some(object)),
-                provider_turn_from(object),
-                None,
-                CanonicalEvent::RuntimeError(RuntimeErrorEvent {
-                    code: "codex_runtime_error".to_string(),
-                    message: bounded_text(message, MAX_PROVIDER_TEXT_BYTES),
-                    recoverable: object
-                        .get("willRetry")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                    safe_details: error.map(|value| VersionedJson {
-                        schema_version: 1,
-                        value: json!({ "keys": bounded_keys(value) }),
-                    }),
+        // A capacity error the session retries itself is recoverable even when Codex will not
+        // retry it.
+        let session_retries = error.is_some_and(CodexStopReason::is_capacity)
+            && state
+                .capacity_retry
+                .as_ref()
+                .is_some_and(|retry| retry.available());
+        let recoverable = session_retries
+            || object
+                .get("willRetry")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        Ok(vec![self.event(
+            state,
+            "error",
+            route_turn(state, Some(object)),
+            provider_turn_from(object),
+            None,
+            CanonicalEvent::RuntimeError(RuntimeErrorEvent {
+                code: "codex_runtime_error".to_string(),
+                message: bounded_text(message, MAX_PROVIDER_TEXT_BYTES),
+                recoverable,
+                safe_details: error.map(|value| VersionedJson {
+                    schema_version: 1,
+                    value: json!({ "keys": bounded_keys(value) }),
                 }),
-            )?,
-        ])
+            }),
+        )?])
     }
 
     pub(super) fn session_closed(

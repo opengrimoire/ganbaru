@@ -58,6 +58,8 @@ export interface StartSessionRequest {
   modes: TurnModeSnapshot;
   modelId: ModelId | null;
   modelOptions: ModelOptionSelection[];
+  /** Instructions the provider places at system level when the session opens. */
+  developerInstructions: string | null;
 }
 
 export interface ResumeSessionRequest {
@@ -68,6 +70,10 @@ export interface ResumeSessionRequest {
   continuationGroupId: ContinuationGroupId;
   resumeCursor: VersionedJson;
   modes: TurnModeSnapshot;
+  /** Instructions the provider places at system level when the session resumes. */
+  developerInstructions: string | null;
+  /** Whether the native session already received `developerInstructions` on an earlier turn. */
+  developerInstructionsDelivered: boolean;
 }
 
 export interface SendTurnRequest {
@@ -114,6 +120,8 @@ export interface UserInputAnswer {
   questionId: string;
   selectedOptionIds: string[];
   freeFormText: string | null;
+  /** Managed attachments for the answer; the app passes them to the provider as `Attached:` lines. */
+  attachmentIds?: ChatAttachmentId[];
 }
 
 export interface ResolveUserInputRequest {

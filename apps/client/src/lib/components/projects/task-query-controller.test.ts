@@ -163,7 +163,7 @@ describe("Project task query controller policy", () => {
     await expect(saving).resolves.toBeUndefined();
     expect(controller.listColumns).toEqual(["status", "due"]);
     expect(controller.listColumnsSaving).toBe(false);
-    expect(controller.listColumnsError).toBe("projects.columns.saveFailed: Disk is full");
+    expect(controller.listColumnsError).toBe("projects.columns.saveFailed");
 
     await controller.toggleColumn("status");
     expect(saveTaskListColumns).toHaveBeenLastCalledWith("view-project-1", ["due"]);
@@ -206,7 +206,7 @@ describe("Project task query controller policy", () => {
     rejectWrite(new Error("Read-only vault"));
     await saving;
     expect(controller.listPresentation).toEqual(defaultProjectListPresentation());
-    expect(controller.presentationError).toBe("projects.columns.presentationFailed: Read-only vault");
+    expect(controller.presentationError).toBe("projects.columns.presentationFailed");
     expect(controller.presentationSaving).toBe(false);
     await controller.savePresentation(next);
     expect(controller.listPresentation).toEqual(next);
@@ -221,7 +221,7 @@ describe("Project task query controller policy", () => {
     expect(addCustomField).toHaveBeenCalledWith("project-1", "Points", "number", null);
     expect(saveTaskListColumns).toHaveBeenCalledWith("view-project-1", ["status", "custom:created", "due"]);
     expect(controller.listColumns).toEqual(["status", "due"]);
-    expect(controller.listColumnsError).toBe("projects.columns.saveFailed: Preference write failed");
+    expect(controller.listColumnsError).toBe("projects.columns.saveFailed");
     expect(controller.propertySaving).toBe(false);
     await controller.toggleColumn("custom:created");
     expect(controller.listColumns).toEqual(["status", "due", "custom:created"]);

@@ -248,10 +248,7 @@ pub(super) fn load_close_authorization<R: Runtime>(
     if let Some(state) = &limit_state {
         let zone = ganbaru_civil_time::system_zone()?;
         let current_date =
-            ganbaru_civil_time::instant_to_local(checked_at.timestamp_millis(), &zone)?
-                .date()
-                .format("%Y-%m-%d")
-                .to_string();
+            ganbaru_civil_time::local_date_key(checked_at.timestamp_millis(), &zone)?;
         if state.local_date != current_date {
             return Err("usage limit snapshot belongs to an earlier local day".into());
         }

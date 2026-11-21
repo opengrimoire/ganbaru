@@ -6,13 +6,13 @@ import type {
   ChatDiagnosticPreferences,
   ChatDiagnosticsRead,
   ChatStopAllResult,
+  ChatProcessListRead,
   ChatRebuildResult,
   ChatPanelPreferences,
   ChatSettingsRead,
   ChatThreadId,
   ProjectWorkingFolderId,
   CredentialReferenceId,
-  ModelId,
   ProviderInstanceConfig,
   ProviderInstanceId,
   ProviderInstanceRead,
@@ -20,7 +20,11 @@ import type {
   ProviderProbeResult,
   ProviderRefreshResult,
   ProviderFileRead,
+  ProviderFileSave,
+  ProviderFilesRead,
   ProviderSetupTestRead,
+  ProviderUpdateRead,
+  ProviderUpdateRunRead,
   RemoveProviderResult,
   RememberedComposerSelection,
 } from "$lib/chat/contracts";
@@ -28,6 +32,7 @@ import {
   parseChatDiagnosticPreferences,
   parseChatDiagnosticsRead,
   parseChatStopAllResult,
+  parseChatProcessList,
   parseChatRebuildResult,
   parseChatSettingsRead,
   parseChatConfiguration,
@@ -38,6 +43,8 @@ import {
   parseProviderFileRead,
   parseProviderFiles,
   parseProviderSetupTestRead,
+  parseProviderUpdates,
+  parseProviderUpdateRunRead,
   parseRemoveProviderResult,
 } from "$lib/chat/validation";
 
@@ -53,17 +60,19 @@ export async function refreshAllChatProviders(): Promise<ProviderRefreshResult> 
   return parseProviderRefreshResult(await invoke<unknown>("chat_refresh_all_providers"));
 }
 
-export async function readChatProviderFiles(instanceId: ProviderInstanceId): Promise<ProviderFileRead[]> {
+export async function readChatProviderFiles(instanceId: ProviderInstanceId): Promise<ProviderFilesRead> {
   return parseProviderFiles(await invoke<unknown>("chat_read_provider_files", { instanceId }));
 }
 
-export async function saveChatProviderFile(request: {
-  instanceId: ProviderInstanceId;
-  fileId: string;
-  contents: string;
-  expectedRevision: string;
-}): Promise<ProviderFileRead> {
-  return parseProviderFileRead(await invoke<unknown>("chat_save_provider_file", { request }));
+/**
+ * Writes the edited text of one provider file with its agent preference edits applied on top,
+ * in one write, and returns the saved file.
+ */
+export async function saveChatProviderFile(
+  instanceId: ProviderInstanceId,
+  save: ProviderFileSave,
+): Promise<ProviderFileRead> {
+  return parseProviderFileRead(await invoke<unknown>("chat_save_provider_file", { request: { instanceId, ...save } }));
 }
 
 export async function readChatDiagnostics(): Promise<ChatDiagnosticsRead> {
@@ -90,6 +99,26 @@ export async function stopAllChatProcesses(confirmation: string): Promise<ChatSt
   return parseChatStopAllResult(await invoke<unknown>("chat_stop_all_processes", { request: { confirmation } }));
 }
 
+/** Confirmation phrase the native stop command requires after the user confirms in the dialog. */
+const STOP_CHAT_PROCESS_CONFIRMATION = "STOP CHAT PROCESS";
+
+/** Lists the running Chat provider and terminal processes with their bounded descendants. */
+export async function listChatProcesses(): Promise<ChatProcessListRead> {
+  return parseChatProcessList(await invoke<unknown>("chat_list_processes"));
+}
+
+/**
+ * Stops one listed Chat process group.
+ *
+ * @param pid Process ID from the list.
+ * @param startTime Start time from the same list row; the native side refuses a reused process ID.
+ */
+export async function stopChatProcess(pid: number, startTime: number): Promise<void> {
+  await invoke<unknown>("chat_stop_process", {
+    request: { pid, startTime, confirmation: STOP_CHAT_PROCESS_CONFIRMATION },
+  });
+}
+
 export async function rebuildChatProjections(confirmation: string): Promise<ChatRebuildResult> {
   return parseChatRebuildResult(await invoke<unknown>("chat_rebuild_projections", {
     dbUrl: await ensureDbUrl(), request: { confirmation },
@@ -103,12 +132,12 @@ export async function setLastSelectedChatThread(threadId: ChatThreadId | null): 
 /** Localized text for the native runtime confirmation; the listed values are resolved natively. */
 function providerRuntimePrompt() {
   return {
-    title: translate("settings.chat.setup.runtimeReviewTitle"),
-    message: translate("settings.chat.setup.runtimeReviewMessage"),
-    allowLabel: translate("settings.chat.setup.runtimeReviewAllow"),
-    cancelLabel: translate("settings.chat.setup.runtimeReviewCancel"),
-    moreLabel: translate("settings.chat.setup.runtimeReviewMore"),
-    sharedProgramLabel: translate("settings.chat.setup.runtimeReviewSharedProgram"),
+    title: translate("settings.agents.setup.runtimeReviewTitle"),
+    message: translate("settings.agents.setup.runtimeReviewMessage"),
+    allowLabel: translate("settings.agents.setup.runtimeReviewAllow"),
+    cancelLabel: translate("settings.agents.setup.runtimeReviewCancel"),
+    moreLabel: translate("settings.agents.setup.runtimeReviewMore"),
+    sharedProgramLabel: translate("settings.agents.setup.runtimeReviewSharedProgram"),
   };
 }
 
@@ -154,20 +183,21 @@ export async function probeChatProvider(instanceId: ProviderInstanceId): Promise
   return parseProviderProbeResult(await invoke<unknown>("chat_probe_provider", { instanceId }));
 }
 
-export async function refreshChatProviderModels(instanceId: ProviderInstanceId): Promise<ProviderModelCatalog> {
-  return parseProviderModelCatalog(await invoke<unknown>("chat_refresh_provider_models", { instanceId }));
+/** Newer CLI releases for the enabled provider instances, read from each provider's own release source. */
+export async function checkChatProviderUpdates(): Promise<ProviderUpdateRead[]> {
+  return parseProviderUpdates(await invoke<unknown>("chat_check_provider_updates"));
 }
 
-export async function updateChatProviderModels(
+/** Runs the provider's own update command for `instanceId`, installing `targetVersion` where the CLI takes a version. */
+export async function runChatProviderUpdate(
   instanceId: ProviderInstanceId,
-  visibleModelIds: ModelId[],
-  favoriteModelIds: ModelId[],
-): Promise<ProviderInstanceRead> {
-  return parseProviderInstanceRead(await invoke<unknown>("chat_update_provider_models", {
-    instanceId,
-    visibleModelIds,
-    favoriteModelIds,
-  }));
+  targetVersion: string,
+): Promise<ProviderUpdateRunRead> {
+  return parseProviderUpdateRunRead(await invoke<unknown>("chat_run_provider_update", { instanceId, targetVersion }));
+}
+
+export async function refreshChatProviderModels(instanceId: ProviderInstanceId): Promise<ProviderModelCatalog> {
+  return parseProviderModelCatalog(await invoke<unknown>("chat_refresh_provider_models", { instanceId }));
 }
 
 export async function updateChatBehavior(behavior: ChatBehaviorPreferences): Promise<ChatSettingsRead["configuration"]> {
@@ -213,4 +243,21 @@ export async function pickChatProviderExecutable(title: string): Promise<string 
 
 export async function pickChatProviderHome(title: string): Promise<string | null> {
   return invoke<string | null>("chat_pick_provider_home", { title });
+}
+
+/** Tauri event the app emits after a turn changed a provider's last use or plan limits on this device. */
+const CHAT_PROVIDER_ACTIVITY_EVENT = "chat://provider-activity";
+
+/**
+ * Runs `onActivity` whenever a turn changes a provider's last use or plan limits on this device,
+ * and resolves to a function that stops listening. The event carries no payload: the listener
+ * rereads settings, which already include both values. Android runs no providers, so its build
+ * listens for nothing and keeps the Tauri event module out of its bundle.
+ */
+export async function listenForProviderActivity(onActivity: () => void): Promise<() => void> {
+  if (typeof __GANBARU_BUILD_PLATFORM__ !== "undefined" && __GANBARU_BUILD_PLATFORM__ === "android") {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen(CHAT_PROVIDER_ACTIVITY_EVENT, () => onActivity());
 }

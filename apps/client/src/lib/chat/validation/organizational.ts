@@ -1,37 +1,48 @@
 import {
-  CHAT_ACCESS_ISSUE_CODES,
-  CHAT_ACCESS_PROFILE_BUILTIN_KEYS,
+  CHAT_AGENT_RUN_ATTEMPT_REASONS,
+  CHAT_AGENT_RUN_HANDOFF_REASONS,
+  CHAT_ASSIGNMENT_INPUT_DELIVERY_STATES,
+  CHAT_ASSIGNMENT_INPUT_ROUTING_KINDS,
+  CHAT_ASSIGNMENT_REVIEW_OUTCOMES,
   CHAT_ASSIGNMENT_TARGET_BINDING_STATES,
   CHAT_ASSIGNMENT_TARGET_KINDS,
   CHAT_ASSIGNMENT_TARGET_LIFECYCLE_STATES,
   CHAT_FOLDER_CAPABILITIES,
+  CHAT_FOLLOWUP_ROUTINGS,
   CHAT_PARTICIPANT_KINDS,
   CHAT_RUNTIME_APPROVAL_POLICIES,
   CHAT_SCRATCH_CLEANUP_JOB_STATES,
   CHAT_SCRATCH_DEVICE_AVAILABILITIES,
   CHAT_SCRATCH_DIRECTORY_ENTRY_KINDS,
   CHAT_SCRATCH_GENERATION_LIFECYCLE_STATES,
+  CHAT_SCRATCH_RECLAIM_REASONS,
   CHAT_SCRATCH_SCOPE_LIFECYCLE_STATES,
+  CHAT_REVIEW_QUEUE_KINDS,
   CHAT_SCHEDULED_MESSAGE_STATES,
-  CHAT_TEAMMATE_CONFIGURATION_STATES,
+  CHAT_AGENT_CONFIGURATION_STATES,
+  CHAT_AGENT_KINDS,
+  CHAT_CUSTOM_AGENT_REMOVAL_KINDS,
   CHAT_WORK_ASSIGNMENT_STATES,
-  SAFETY_MODES,
+  CHAT_ACCESS_DOWNGRADE_REASONS,
+  CHAT_AGENT_ACCESS_LEVELS,
+  CHAT_AGENT_ACCESS_SOURCES,
+  CHAT_EFFECTIVE_AGENT_ACCESS_LEVELS,
+  INTERACTION_MODES,
   type ChatAgentRunRead,
-  type ChatAccessProfileRead,
-  type ChatAccessProfileImpactPreviewRead,
-  type ChatAccessProfileRevision,
-  type ChatAiTeammateRead,
-  type ChatAssignmentAcceptanceFolderRead,
-  type ChatAssignmentAcceptanceOfferRead,
+  type ChatAssignmentInputRead,
+  type ChatAiAgentRead,
+  type ChatLinkedProviderStatusRead,
+  type ChatCustomAgentRemoval,
+  type ChatAssignmentDelegationRead,
+  type ChatAgentUsageDayRead,
+  type ChatAssignmentReview,
   type ChatAssignmentTargetRead,
   type ChatChannelPageRead,
   type ChatChannelMembershipRemovalPreview,
-  type ChatChannelRosterAiSummary,
   type ChatChannelRosterRead,
   type ChatConversationMembershipRead,
-  type ChatFolderGrant,
+  type ChatDelegatedChildRead,
   type ChatExecutionTarget,
-  type ChatHistoryBoundary,
   type ChatMessageRead,
   type ChatMessageReference,
   type ChatMessageSearchResultRead,
@@ -39,10 +50,14 @@ import {
   type ChatProjectPrimaryWorkingFolderRead,
   type ChatReplyThreadPageRead,
   type ChatReplyThreadSummaryRead,
+  type ChatReviewQueueItemRead,
+  type ChatReviewQueueRead,
   type ChatScheduledMessageDispatchRead,
   type ChatScheduledMessageRead,
   type ChatScratchCleanupPreviewRead,
   type ChatScratchCleanupResultRead,
+  type ChatScratchReclaimReportRead,
+  type ChatScratchReclaimRow,
   type ChatScratchDirectoryEntryRead,
   type ChatScratchDirectoryPageRead,
   type ChatScratchGenerationRead,
@@ -50,16 +65,21 @@ import {
   type ChatScratchPromotionResultRead,
   type ChatScratchScopeRead,
   type ChatScratchSourceSummaryRead,
-  type ChatTeammatePolicyRead,
-  type ChatTeammateAccessPreviewRead,
-  type ChatTeammateAccessPreviewIssue,
-  type ChatTeammateAccessRead,
-  type ChatTeammateChannelAccess,
-  type ChatWaitingAssignmentRead,
+  type ChatSecretRequestRead,
+  type ChatAgentPolicyRead,
+  type ChatAgentAccess,
+  type ChatAgentResolvedAccessRead,
+  type ChatAppAgentSettingsRead,
+  type ChatChannelAgentSettingsRead,
+  type ChatEffectiveChannelAccessRead,
+  type ChatModelSelection,
+  type ChatProjectAgentSettingsRead,
   type ChatWorkAssignmentRead,
   type PostChatMessageResult,
 } from "../contracts";
-import { parseModelOptionSelection } from "./provider";
+import { parseModelOptionSelection, parseProviderModel } from "./provider";
+import { parseProviderUsageLimitsObservation } from "./settings";
+import { parseChatPushApprovals } from "./push-requests";
 import { normalizeChatMessageReferences } from "$lib/chat/composer/message-references";
 import {
   readArray,
@@ -75,6 +95,7 @@ import {
   readVersionedJson,
 } from "./readers";
 import { compareCodeUnits } from "$lib/utils/order-key";
+import { parseChatScheduledRecurrence } from "./scheduling";
 
 const AGENT_RUN_STATES = [
   "queued", "starting", "working", "waiting", "completed", "failed", "cancelled",
@@ -119,46 +140,81 @@ export function parseChatParticipant(value: unknown, label = "Chat participant")
   };
 }
 
-export function parseChatTeammatePolicy(value: unknown, label = "Chat teammate policy"): ChatTeammatePolicyRead {
+export function parseChatAgentPolicy(value: unknown, label = "Chat agent policy"): ChatAgentPolicyRead {
   const record = readRecord(value, label);
   return {
     id: readIdentifier(record.id, `${label}.id`),
-    teammateId: readIdentifier(record.teammateId, `${label}.teammateId`),
+    agentId: readIdentifier(record.agentId, `${label}.agentId`),
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
-    providerInstanceId: readIdentifier(record.providerInstanceId, `${label}.providerInstanceId`),
-    safetyMode: readEnum(record.safetyMode, SAFETY_MODES, `${label}.safetyMode`),
     providerManagedModel: readBoolean(record.providerManagedModel, `${label}.providerManagedModel`),
     modelId: readNullable(record.modelId, `${label}.modelId`, readIdentifier),
     modelOptions: readArray(record.modelOptions, `${label}.modelOptions`, parseModelOptionSelection),
-    effort: readNullable(record.effort, `${label}.effort`, readString),
-    speed: readNullable(record.speed, `${label}.speed`, readString),
     providerOptions: readVersionedJson(record.providerOptions, `${label}.providerOptions`),
+    interactionMode: readEnum(record.interactionMode, INTERACTION_MODES, `${label}.interactionMode`),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
   };
 }
 
-export function parseChatAiTeammate(value: unknown, label = "Chat AI teammate"): ChatAiTeammateRead {
+export function parseChatAiAgent(value: unknown, label = "Chat AI agent"): ChatAiAgentRead {
   const record = readRecord(value, label);
   return {
     participant: parseChatParticipant(record.participant, `${label}.participant`),
-    role: readString(record.role, `${label}.role`),
-    instructions: readString(record.instructions, `${label}.instructions`),
+    providerFamilyId: readIdentifier(record.providerFamilyId, `${label}.providerFamilyId`),
+    agentKind: readEnum(record.agentKind, CHAT_AGENT_KINDS, `${label}.agentKind`),
+    localProviderInstanceId: readNullable(
+      record.localProviderInstanceId,
+      `${label}.localProviderInstanceId`,
+      readIdentifier,
+    ),
     configurationState: readEnum(
       record.configurationState,
-      CHAT_TEAMMATE_CONFIGURATION_STATES,
+      CHAT_AGENT_CONFIGURATION_STATES,
       `${label}.configurationState`,
     ),
-    latestPolicy: readNullable(record.latestPolicy, `${label}.latestPolicy`, parseChatTeammatePolicy),
+    latestPolicy: readNullable(record.latestPolicy, `${label}.latestPolicy`, parseChatAgentPolicy),
     channelCount: readNonNegativeSafeInteger(record.channelCount, `${label}.channelCount`),
     activeAssignmentCount: readNonNegativeSafeInteger(
       record.activeAssignmentCount,
       `${label}.activeAssignmentCount`,
     ),
+    hiddenAt: readNullable(record.hiddenAt, `${label}.hiddenAt`, readUtcTimestamp),
+    linkedProviderStatus: record.linkedProviderStatus === undefined
+      ? null
+      : readNullable(record.linkedProviderStatus, `${label}.linkedProviderStatus`, parseChatLinkedProviderStatus),
   };
 }
 
-export function parseChatAiTeammates(value: unknown, label = "Chat AI teammates"): ChatAiTeammateRead[] {
-  return readArray(value, label, parseChatAiTeammate);
+/** Reads what a linked desktop shares about one provider family. */
+export function parseChatLinkedProviderStatus(
+  value: unknown,
+  label = "Chat linked provider status",
+): ChatLinkedProviderStatusRead {
+  const record = readRecord(value, label);
+  return {
+    deviceId: readIdentifier(record.deviceId, `${label}.deviceId`),
+    available: readBoolean(record.available, `${label}.available`),
+    models: readArray(record.models, `${label}.models`, parseProviderModel),
+    usageLimits: readNullable(record.usageLimits, `${label}.usageLimits`, parseProviderUsageLimitsObservation),
+  };
+}
+
+export function parseChatAiAgents(value: unknown, label = "Chat AI agents"): ChatAiAgentRead[] {
+  return readArray(value, label, parseChatAiAgent);
+}
+
+/** Reads what removing an agent a person named did, with the archived agent when it was kept. */
+export function parseChatCustomAgentRemoval(
+  value: unknown,
+  label = "Chat custom agent removal",
+): ChatCustomAgentRemoval {
+  const record = readRecord(value, label);
+  const kind = readEnum(record.kind, CHAT_CUSTOM_AGENT_REMOVAL_KINDS, `${label}.kind`);
+  switch (kind) {
+    case "deleted":
+      return { kind };
+    case "archived":
+      return { kind, agent: parseChatAiAgent(record.agent, `${label}.agent`) };
+  }
 }
 
 export function parseChatConversationMembership(
@@ -169,72 +225,9 @@ export function parseChatConversationMembership(
   return {
     conversationId: readIdentifier(record.conversationId, `${label}.conversationId`),
     participant: parseChatParticipant(record.participant, `${label}.participant`),
-    aiAccess: readNullable(record.aiAccess, `${label}.aiAccess`, parseChatChannelRosterAiSummary),
+    agentInChannel: readBoolean(record.agentInChannel, `${label}.agentInChannel`),
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
     removedAt: readNullable(record.removedAt, `${label}.removedAt`, readUtcTimestamp),
-  };
-}
-
-function parseChatHistoryBoundary(value: unknown, label: string): ChatHistoryBoundary {
-  const record = readRecord(value, label);
-  const kind = readEnum(record.kind, ["entire", "fromGrant"] as const, `${label}.kind`);
-  if (kind === "entire") return { kind };
-  return record.lowerOrderKey === undefined || record.lowerOrderKey === null
-    ? { kind }
-    : { kind, lowerOrderKey: readOrderKey(record.lowerOrderKey, `${label}.lowerOrderKey`) };
-}
-
-function parseChatFolderGrant(value: unknown, label: string): ChatFolderGrant {
-  const record = readRecord(value, label);
-  return {
-    workingFolderId: readIdentifier(record.workingFolderId, `${label}.workingFolderId`),
-    displayName: readString(record.displayName, `${label}.displayName`),
-    capability: readEnum(record.capability, CHAT_FOLDER_CAPABILITIES, `${label}.capability`),
-    isDefault: readBoolean(record.isDefault, `${label}.isDefault`),
-    runtimeApprovalOverride: readNullable(
-      record.runtimeApprovalOverride,
-      `${label}.runtimeApprovalOverride`,
-      (entry, entryLabel) => readEnum(entry, CHAT_RUNTIME_APPROVAL_POLICIES, entryLabel),
-    ),
-    revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
-    revokedAt: readNullable(record.revokedAt, `${label}.revokedAt`, readUtcTimestamp),
-  };
-}
-
-function parseChatChannelRosterAiSummary(
-  value: unknown,
-  label: string,
-): ChatChannelRosterAiSummary {
-  const record = readRecord(value, label);
-  const capabilities = readRecord(record.capabilities, `${label}.capabilities`);
-  return {
-    accessProfileId: readIdentifier(record.accessProfileId, `${label}.accessProfileId`),
-    accessProfileRevision: readNonNegativeSafeInteger(
-      record.accessProfileRevision,
-      `${label}.accessProfileRevision`,
-    ),
-    accessProfileBuiltinKey: readNullable(
-      record.accessProfileBuiltinKey,
-      `${label}.accessProfileBuiltinKey`,
-      (entry, entryLabel) => readEnum(entry, CHAT_ACCESS_PROFILE_BUILTIN_KEYS, entryLabel),
-    ),
-    accessProfileName: readString(record.accessProfileName, `${label}.accessProfileName`),
-    capabilities: {
-      readHistory: readBoolean(capabilities.readHistory, `${label}.capabilities.readHistory`),
-      participate: readBoolean(capabilities.participate, `${label}.capabilities.participate`),
-    },
-    historyBoundary: parseChatHistoryBoundary(record.historyBoundary, `${label}.historyBoundary`),
-    runtimeApprovalOverride: readNullable(
-      record.runtimeApprovalOverride,
-      `${label}.runtimeApprovalOverride`,
-      (entry, entryLabel) => readEnum(entry, CHAT_RUNTIME_APPROVAL_POLICIES, entryLabel),
-    ),
-    scratchRuntimeApprovalOverride: readNullable(
-      record.scratchRuntimeApprovalOverride,
-      `${label}.scratchRuntimeApprovalOverride`,
-      (entry, entryLabel) => readEnum(entry, CHAT_RUNTIME_APPROVAL_POLICIES, entryLabel),
-    ),
-    folderGrants: readArray(record.folderGrants, `${label}.folderGrants`, parseChatFolderGrant),
   };
 }
 
@@ -257,7 +250,7 @@ export function parseChatChannelMembershipRemovalPreview(
 ): ChatChannelMembershipRemovalPreview {
   const record = readRecord(value, label);
   return {
-    teammateId: readIdentifier(record.teammateId, `${label}.teammateId`),
+    agentId: readIdentifier(record.agentId, `${label}.agentId`),
     channelId: readIdentifier(record.channelId, `${label}.channelId`),
     activeAssignmentCount: readNonNegativeSafeInteger(
       record.activeAssignmentCount,
@@ -268,191 +261,100 @@ export function parseChatChannelMembershipRemovalPreview(
       `${label}.activeAuthorizationCount`,
     ),
     willRevokeActiveWork: readBoolean(record.willRevokeActiveWork, `${label}.willRevokeActiveWork`),
-    proposedAccess: parseChatTeammateAccess(record.proposedAccess, `${label}.proposedAccess`),
   };
 }
 
-export function parseChatTeammateChannelAccess(
-  value: unknown,
-  label = "Chat teammate channel access",
-): ChatTeammateChannelAccess {
+function readAgentAccess(value: unknown, label: string): ChatAgentAccess {
+  return readEnum(value, CHAT_AGENT_ACCESS_LEVELS, label);
+}
+
+/** Reads a model selection; the backend fills absent fields with the provider default. */
+export function parseChatModelSelection(value: unknown, label = "Chat model selection"): ChatModelSelection {
   const record = readRecord(value, label);
-  const capabilities = readRecord(record.capabilities, `${label}.capabilities`);
+  const modelId = record.modelId === undefined
+    ? null
+    : readNullable(record.modelId, `${label}.modelId`, readIdentifier);
+  const providerManagedModel = record.providerManagedModel === undefined
+    ? false
+    : readBoolean(record.providerManagedModel, `${label}.providerManagedModel`);
+  return {
+    providerManagedModel,
+    modelId,
+    modelOptions: record.modelOptions === undefined
+      ? []
+      : readArray(record.modelOptions, `${label}.modelOptions`, parseModelOptionSelection),
+  };
+}
+
+function parseEffectiveChannelAccess(value: unknown, label: string): ChatEffectiveChannelAccessRead {
+  const record = readRecord(value, label);
+  return {
+    access: readAgentAccess(record.access, `${label}.access`),
+    source: readEnum(record.source, CHAT_AGENT_ACCESS_SOURCES, `${label}.source`),
+  };
+}
+
+function parseAgentResolvedAccess(value: unknown, label: string): ChatAgentResolvedAccessRead {
+  const record = readRecord(value, label);
+  return {
+    agentId: readIdentifier(record.agentId, `${label}.agentId`),
+    requested: readAgentAccess(record.requested, `${label}.requested`),
+    effective: readNullable(
+      record.effective,
+      `${label}.effective`,
+      (entry, entryLabel) => readEnum(entry, CHAT_EFFECTIVE_AGENT_ACCESS_LEVELS, entryLabel),
+    ),
+    downgradeReason: readNullable(
+      record.downgradeReason,
+      `${label}.downgradeReason`,
+      (entry, entryLabel) => readEnum(entry, CHAT_ACCESS_DOWNGRADE_REASONS, entryLabel),
+    ),
+    installed: readBoolean(record.installed, `${label}.installed`),
+    ownOffered: readBoolean(record.ownOffered, `${label}.ownOffered`),
+  };
+}
+
+export function parseChatAppAgentSettings(
+  value: unknown,
+  label = "Chat app agent settings",
+): ChatAppAgentSettingsRead {
+  const record = readRecord(value, label);
+  return {
+    access: readAgentAccess(record.access, `${label}.access`),
+    instructions: readString(record.instructions, `${label}.instructions`),
+    revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
+    updatedAt: readUtcTimestamp(record.updatedAt, `${label}.updatedAt`),
+  };
+}
+
+export function parseChatProjectAgentSettings(
+  value: unknown,
+  label = "Chat project agent settings",
+): ChatProjectAgentSettingsRead {
+  const record = readRecord(value, label);
+  return {
+    projectId: readIdentifier(record.projectId, `${label}.projectId`),
+    access: readNullable(record.access, `${label}.access`, readAgentAccess),
+    instructions: readString(record.instructions, `${label}.instructions`),
+    effective: parseEffectiveChannelAccess(record.effective, `${label}.effective`),
+    revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
+  };
+}
+
+export function parseChatChannelAgentSettings(
+  value: unknown,
+  label = "Chat channel agent settings",
+): ChatChannelAgentSettingsRead {
+  const record = readRecord(value, label);
   return {
     channelId: readIdentifier(record.channelId, `${label}.channelId`),
     conversationId: readIdentifier(record.conversationId, `${label}.conversationId`),
-    projectId: readIdentifier(record.projectId, `${label}.projectId`),
-    groupId: readNullable(record.groupId, `${label}.groupId`, readIdentifier),
-    channelName: readString(record.channelName, `${label}.channelName`),
-    accessProfileId: readIdentifier(record.accessProfileId, `${label}.accessProfileId`),
-    accessProfileRevisionId: readIdentifier(
-      record.accessProfileRevisionId,
-      `${label}.accessProfileRevisionId`,
-    ),
-    accessProfileRevision: readNonNegativeSafeInteger(
-      record.accessProfileRevision,
-      `${label}.accessProfileRevision`,
-    ),
-    capabilities: {
-      readHistory: readBoolean(capabilities.readHistory, `${label}.capabilities.readHistory`),
-      participate: readBoolean(capabilities.participate, `${label}.capabilities.participate`),
-    },
-    historyBoundary: parseChatHistoryBoundary(record.historyBoundary, `${label}.historyBoundary`),
-    runtimeApprovalOverride: readNullable(
-      record.runtimeApprovalOverride,
-      `${label}.runtimeApprovalOverride`,
-      (entry, entryLabel) => readEnum(entry, CHAT_RUNTIME_APPROVAL_POLICIES, entryLabel),
-    ),
-    scratchRuntimeApprovalOverride: readNullable(
-      record.scratchRuntimeApprovalOverride,
-      `${label}.scratchRuntimeApprovalOverride`,
-      (entry, entryLabel) => readEnum(entry, CHAT_RUNTIME_APPROVAL_POLICIES, entryLabel),
-    ),
-    folderGrants: readArray(record.folderGrants, `${label}.folderGrants`, parseChatFolderGrant),
-    membershipRevision: readNonNegativeSafeInteger(
-      record.membershipRevision,
-      `${label}.membershipRevision`,
-    ),
-    removedAt: readNullable(record.removedAt, `${label}.removedAt`, readUtcTimestamp),
-  };
-}
-
-export function parseChatTeammateAccess(
-  value: unknown,
-  label = "Chat teammate access",
-): ChatTeammateAccessRead {
-  const record = readRecord(value, label);
-  return {
-    teammateId: readIdentifier(record.teammateId, `${label}.teammateId`),
-    accessRevision: readNonNegativeSafeInteger(record.accessRevision, `${label}.accessRevision`),
-    teammateDefaultRuntimeApproval: readEnum(
-      record.teammateDefaultRuntimeApproval,
-      CHAT_RUNTIME_APPROVAL_POLICIES,
-      `${label}.teammateDefaultRuntimeApproval`,
-    ),
-    channels: readArray(record.channels, `${label}.channels`, parseChatTeammateChannelAccess),
-  };
-}
-
-export function parseChatAccessProfileRevision(
-  value: unknown,
-  label = "Chat access profile revision",
-): ChatAccessProfileRevision {
-  const record = readRecord(value, label);
-  return {
-    id: readIdentifier(record.id, `${label}.id`),
-    accessProfileId: readIdentifier(record.accessProfileId, `${label}.accessProfileId`),
+    access: readNullable(record.access, `${label}.access`, readAgentAccess),
+    instructions: readString(record.instructions, `${label}.instructions`),
+    effective: parseEffectiveChannelAccess(record.effective, `${label}.effective`),
+    agents: readArray(record.agents, `${label}.agents`, parseAgentResolvedAccess),
+    pushApprovals: parseChatPushApprovals(record.pushApprovals, `${label}.pushApprovals`),
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
-    defaultChannelCapabilities: (() => {
-      const capabilities = readRecord(
-        record.defaultChannelCapabilities,
-        `${label}.defaultChannelCapabilities`,
-      );
-      return {
-        readHistory: readBoolean(
-          capabilities.readHistory,
-          `${label}.defaultChannelCapabilities.readHistory`,
-        ),
-        participate: readBoolean(
-          capabilities.participate,
-          `${label}.defaultChannelCapabilities.participate`,
-        ),
-      };
-    })(),
-    defaultHistoryBoundary: parseChatHistoryBoundary(
-      record.defaultHistoryBoundary,
-      `${label}.defaultHistoryBoundary`,
-    ),
-    maximumFolderCapability: readEnum(
-      record.maximumFolderCapability,
-      CHAT_FOLDER_CAPABILITIES,
-      `${label}.maximumFolderCapability`,
-    ),
-    createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
-  };
-}
-
-export function parseChatAccessProfile(
-  value: unknown,
-  label = "Chat access profile",
-): ChatAccessProfileRead {
-  const record = readRecord(value, label);
-  return {
-    id: readIdentifier(record.id, `${label}.id`),
-    builtinKey: readNullable(
-      record.builtinKey,
-      `${label}.builtinKey`,
-      (entry, entryLabel) => readEnum(
-        entry,
-        CHAT_ACCESS_PROFILE_BUILTIN_KEYS,
-        entryLabel,
-      ),
-    ),
-    displayName: readString(record.displayName, `${label}.displayName`),
-    latestRevision: parseChatAccessProfileRevision(record.latestRevision, `${label}.latestRevision`),
-    revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
-    archivedAt: readNullable(record.archivedAt, `${label}.archivedAt`, readUtcTimestamp),
-  };
-}
-
-export function parseChatAccessProfiles(
-  value: unknown,
-  label = "Chat access profiles",
-): ChatAccessProfileRead[] {
-  return readArray(value, label, parseChatAccessProfile);
-}
-
-function parseChatTeammateAccessPreviewIssue(
-  value: unknown,
-  label: string,
-): ChatTeammateAccessPreviewIssue {
-  const record = readRecord(value, label);
-  return {
-    code: readEnum(record.code, CHAT_ACCESS_ISSUE_CODES, `${label}.code`),
-    fieldPath: readString(record.fieldPath, `${label}.fieldPath`),
-    message: readString(record.message, `${label}.message`),
-  };
-}
-
-export function parseChatTeammateAccessPreview(
-  value: unknown,
-  label = "Chat teammate access preview",
-): ChatTeammateAccessPreviewRead {
-  const record = readRecord(value, label);
-  return {
-    proposed: readNullable(record.proposed, `${label}.proposed`, parseChatTeammateAccess),
-    isExpansion: readBoolean(record.isExpansion, `${label}.isExpansion`),
-    addedChannelIds: readArray(record.addedChannelIds, `${label}.addedChannelIds`, readIdentifier),
-    removedChannelIds: readArray(record.removedChannelIds, `${label}.removedChannelIds`, readIdentifier),
-    issues: readArray(record.issues, `${label}.issues`, parseChatTeammateAccessPreviewIssue),
-  };
-}
-
-export function parseChatAccessProfileImpactPreview(
-  value: unknown,
-  label = "Chat access profile impact preview",
-): ChatAccessProfileImpactPreviewRead {
-  const record = readRecord(value, label);
-  return {
-    accessProfileId: readIdentifier(record.accessProfileId, `${label}.accessProfileId`),
-    currentRevision: parseChatAccessProfileRevision(record.currentRevision, `${label}.currentRevision`),
-    isExpansion: readBoolean(record.isExpansion, `${label}.isExpansion`),
-    isReduction: readBoolean(record.isReduction, `${label}.isReduction`),
-    affectedTeammateIds: readArray(
-      record.affectedTeammateIds,
-      `${label}.affectedTeammateIds`,
-      readIdentifier,
-    ),
-    affectedChannelIds: readArray(
-      record.affectedChannelIds,
-      `${label}.affectedChannelIds`,
-      readIdentifier,
-    ),
-    activeAuthorizationCount: readNonNegativeSafeInteger(
-      record.activeAuthorizationCount,
-      `${label}.activeAuthorizationCount`,
-    ),
-    issues: readArray(record.issues, `${label}.issues`, parseChatTeammateAccessPreviewIssue),
   };
 }
 
@@ -672,8 +574,8 @@ export function parseChatScratchScope(
   return {
     id: readIdentifier(record.id, `${label}.id`),
     replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
-    teammateId: readIdentifier(record.teammateId, `${label}.teammateId`),
-    teammateName: readString(record.teammateName, `${label}.teammateName`),
+    agentId: readIdentifier(record.agentId, `${label}.agentId`),
+    agentName: readString(record.agentName, `${label}.agentName`),
     channelId: readIdentifier(record.channelId, `${label}.channelId`),
     channelName: readString(record.channelName, `${label}.channelName`),
     projectId: readIdentifier(record.projectId, `${label}.projectId`),
@@ -854,6 +756,50 @@ export function parseChatScratchCleanupResult(
   };
 }
 
+function parseChatScratchReclaimRow(
+  value: unknown,
+  label = "Chat scratch reclaim row",
+): ChatScratchReclaimRow {
+  const record = readRecord(value, label);
+  return {
+    scratchScopeId: readIdentifier(record.scratchScopeId, `${label}.scratchScopeId`),
+    scratchGenerationId: readIdentifier(
+      record.scratchGenerationId,
+      `${label}.scratchGenerationId`,
+    ),
+    replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
+    generation: readNonNegativeSafeInteger(record.generation, `${label}.generation`),
+    agentName: readString(record.agentName, `${label}.agentName`),
+    channelName: readString(record.channelName, `${label}.channelName`),
+    projectName: readString(record.projectName, `${label}.projectName`),
+    groupName: readNullable(record.groupName, `${label}.groupName`, readString),
+    reason: readEnum(record.reason, CHAT_SCRATCH_RECLAIM_REASONS, `${label}.reason`),
+    byteSize: readNonNegativeSafeInteger(record.byteSize, `${label}.byteSize`),
+    sizeTruncated: readBoolean(record.sizeTruncated, `${label}.sizeTruncated`),
+    deviceAvailability: readEnum(
+      record.deviceAvailability,
+      CHAT_SCRATCH_DEVICE_AVAILABILITIES,
+      `${label}.deviceAvailability`,
+    ),
+    lastActivityAt: readUtcTimestamp(record.lastActivityAt, `${label}.lastActivityAt`),
+  };
+}
+
+/** Validates the reclaimable scratch report returned by the native command. */
+export function parseChatScratchReclaimReport(
+  value: unknown,
+  label = "Chat scratch reclaim report",
+): ChatScratchReclaimReportRead {
+  const record = readRecord(value, label);
+  return {
+    rows: readArray(record.rows, `${label}.rows`, parseChatScratchReclaimRow),
+    totalBytes: readNonNegativeSafeInteger(record.totalBytes, `${label}.totalBytes`),
+    totalTruncated: readBoolean(record.totalTruncated, `${label}.totalTruncated`),
+    omitted: readNonNegativeSafeInteger(record.omitted, `${label}.omitted`),
+    idleDays: readNonNegativeSafeInteger(record.idleDays, `${label}.idleDays`),
+  };
+}
+
 export function parseChatReplyThreadSummary(
   value: unknown,
   label = "Chat reply thread summary",
@@ -865,6 +811,7 @@ export function parseChatReplyThreadSummary(
     lastActivityAt: readUtcTimestamp(record.lastActivityAt, `${label}.lastActivityAt`),
     participants: readArray(record.participants, `${label}.participants`, parseChatParticipant),
     unread: readBoolean(record.unread, `${label}.unread`),
+    unseenFailure: readBoolean(record.unseenFailure, `${label}.unseenFailure`),
     workState: readNullable(
       record.workState,
       `${label}.workState`,
@@ -896,6 +843,7 @@ export function parseChatMessage(value: unknown, label = "Chat message"): ChatMe
     orderKey: readOrderKey(record.orderKey, `${label}.orderKey`),
     editedAt: readNullable(record.editedAt, `${label}.editedAt`, readUtcTimestamp),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
+    awaitingDelivery: readBoolean(record.awaitingDelivery, `${label}.awaitingDelivery`),
   };
 }
 
@@ -914,67 +862,187 @@ export function parseChatWorkAssignment(
   label = "Chat work assignment",
 ): ChatWorkAssignmentRead {
   const record = readRecord(value, label);
+  const state = readEnum(record.state, CHAT_WORK_ASSIGNMENT_STATES, `${label}.state`);
+  const review = readNullable(record.review, `${label}.review`, parseAssignmentReview);
+  if (review && state !== "completed") {
+    throw new Error(`${label}.review is only valid on completed work`);
+  }
   return {
     id: readIdentifier(record.id, `${label}.id`),
     replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
-    teammate: parseChatParticipant(record.teammate, `${label}.teammate`),
+    agent: parseChatParticipant(record.agent, `${label}.agent`),
     triggeringMessageItemId: readIdentifier(record.triggeringMessageItemId, `${label}.triggeringMessageItemId`),
     previousAssignmentId: readNullable(record.previousAssignmentId, `${label}.previousAssignmentId`, readIdentifier),
-    state: readEnum(record.state, CHAT_WORK_ASSIGNMENT_STATES, `${label}.state`),
+    state,
     stateReason: readNullable(record.stateReason, `${label}.stateReason`, readString),
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
     settledAt: readNullable(record.settledAt, `${label}.settledAt`, readUtcTimestamp),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
     updatedAt: readUtcTimestamp(record.updatedAt, `${label}.updatedAt`),
-    localAcceptance: readNullable(record.localAcceptance, `${label}.localAcceptance`, parseAssignmentAcceptanceOffer),
-  };
-}
-
-function parseAssignmentAcceptanceFolder(value: unknown, label: string): ChatAssignmentAcceptanceFolderRead {
-  const record = readRecord(value, label);
-  return {
-    displayName: readString(record.displayName, `${label}.displayName`),
-    capability: readEnum(record.capability, CHAT_FOLDER_CAPABILITIES, `${label}.capability`),
-    runtimeApproval: readEnum(record.runtimeApproval, CHAT_RUNTIME_APPROVAL_POLICIES, `${label}.runtimeApproval`),
-  };
-}
-
-function parseAssignmentAcceptanceOffer(value: unknown, label: string): ChatAssignmentAcceptanceOfferRead {
-  const record = readRecord(value, label);
-  return {
-    digest: readIdentifier(record.digest, `${label}.digest`),
-    providerInstanceId: readIdentifier(record.providerInstanceId, `${label}.providerInstanceId`),
-    folders: readArray(record.folders, `${label}.folders`, parseAssignmentAcceptanceFolder),
-    scratchRuntimeApproval: readEnum(
-      record.scratchRuntimeApproval,
-      CHAT_RUNTIME_APPROVAL_POLICIES,
-      `${label}.scratchRuntimeApproval`,
+    review,
+    delegation: readNullable(record.delegation, `${label}.delegation`, parseAssignmentDelegation),
+    modelSelection: parseChatModelSelection(record.modelSelection, `${label}.modelSelection`),
+    instructions: readString(record.instructions, `${label}.instructions`),
+    modelLabel: readNullable(record.modelLabel, `${label}.modelLabel`, readString),
+    latestRunProviderThreadId: readNullable(
+      record.latestRunProviderThreadId,
+      `${label}.latestRunProviderThreadId`,
+      readIdentifier,
     ),
   };
 }
 
-function parseWaitingAssignment(value: unknown, label: string): ChatWaitingAssignmentRead {
+const LOCAL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Validates one local day of an agent's usage. */
+export function parseChatAgentUsageDay(value: unknown, label = "Chat agent usage day"): ChatAgentUsageDayRead {
+  const record = readRecord(value, label);
+  const localDate = readString(record.localDate, `${label}.localDate`);
+  if (!LOCAL_DATE_PATTERN.test(localDate)) throw new Error(`${label}.localDate must be a YYYY-MM-DD date`);
+  return {
+    localDate,
+    countedTokens: readNonNegativeSafeInteger(record.countedTokens, `${label}.countedTokens`),
+    workingSeconds: readNonNegativeSafeInteger(record.workingSeconds, `${label}.workingSeconds`),
+    runCount: readNonNegativeSafeInteger(record.runCount, `${label}.runCount`),
+    deviceIds: readArray(record.deviceIds, `${label}.deviceIds`, readIdentifier),
+  };
+}
+
+function parseAssignmentReview(value: unknown, label: string): ChatAssignmentReview {
+  const record = readRecord(value, label);
+  return {
+    outcome: readEnum(record.outcome, CHAT_ASSIGNMENT_REVIEW_OUTCOMES, `${label}.outcome`),
+    reviewedAt: readUtcTimestamp(record.reviewedAt, `${label}.reviewedAt`),
+    reviewedByParticipantId: readIdentifier(record.reviewedByParticipantId, `${label}.reviewedByParticipantId`),
+  };
+}
+
+/** Deepest delegation chain the host accepts, matching the backend delegation limit. */
+const MAX_CHAT_DELEGATION_DEPTH = 2;
+
+function parseAssignmentDelegation(value: unknown, label: string): ChatAssignmentDelegationRead {
+  const record = readRecord(value, label);
+  const depth = readNonNegativeSafeInteger(record.depth, `${label}.depth`);
+  if (depth < 1 || depth > MAX_CHAT_DELEGATION_DEPTH) {
+    throw new Error(`${label}.depth must be between 1 and ${MAX_CHAT_DELEGATION_DEPTH}`);
+  }
+  return {
+    parentAssignmentId: readIdentifier(record.parentAssignmentId, `${label}.parentAssignmentId`),
+    parentReplyThreadId: readNullable(record.parentReplyThreadId, `${label}.parentReplyThreadId`, readIdentifier),
+    depth,
+    objective: readString(record.objective, `${label}.objective`),
+    expectedResult: readString(record.expectedResult, `${label}.expectedResult`),
+  };
+}
+
+function parseDelegatedChild(value: unknown, label: string): ChatDelegatedChildRead {
   const record = readRecord(value, label);
   return {
     assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`),
-    projectId: readIdentifier(record.projectId, `${label}.projectId`),
-    channelId: readIdentifier(record.channelId, `${label}.channelId`),
-    channelName: readString(record.channelName, `${label}.channelName`),
+    parentAssignmentId: readIdentifier(record.parentAssignmentId, `${label}.parentAssignmentId`),
     replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
-    teammateDisplayName: readString(record.teammateDisplayName, `${label}.teammateDisplayName`),
+    agent: parseChatParticipant(record.agent, `${label}.agent`),
+    objective: readString(record.objective, `${label}.objective`),
+    state: readEnum(record.state, CHAT_WORK_ASSIGNMENT_STATES, `${label}.state`),
+    stateReason: readNullable(record.stateReason, `${label}.stateReason`, readString),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
   };
 }
 
-export function parseChatWaitingAssignments(
-  value: unknown,
-  label = "Chat waiting assignments",
-): ChatWaitingAssignmentRead[] {
-  return readArray(value, label, parseWaitingAssignment);
+function parseSecretRequest(value: unknown, label: string): ChatSecretRequestRead {
+  const record = readRecord(value, label);
+  const createdAt = readUtcTimestamp(record.createdAt, `${label}.createdAt`);
+  const expiresAt = readUtcTimestamp(record.expiresAt, `${label}.expiresAt`);
+  if (Date.parse(expiresAt) <= Date.parse(createdAt)) {
+    throw new Error(`${label}.expiresAt must be after createdAt`);
+  }
+  return {
+    id: readIdentifier(record.id, `${label}.id`),
+    assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`),
+    label: readString(record.label, `${label}.label`),
+    purpose: readString(record.purpose, `${label}.purpose`),
+    createdAt,
+    expiresAt,
+  };
 }
 
-function parseAgentRun(value: unknown, label: string): ChatAgentRunRead {
+/** Validates the pending secret requests of one reply thread. */
+export function parseChatSecretRequests(value: unknown, label = "Chat secret requests"): ChatSecretRequestRead[] {
+  return readArray(value, label, parseSecretRequest);
+}
+
+function parseReviewQueueItem(value: unknown, label: string): ChatReviewQueueItemRead {
   const record = readRecord(value, label);
+  return {
+    assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`),
+    revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
+    kind: readEnum(record.kind, CHAT_REVIEW_QUEUE_KINDS, `${label}.kind`),
+    projectId: readIdentifier(record.projectId, `${label}.projectId`),
+    projectName: readString(record.projectName, `${label}.projectName`),
+    channelId: readIdentifier(record.channelId, `${label}.channelId`),
+    channelName: readString(record.channelName, `${label}.channelName`),
+    replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
+    agentParticipantId: readIdentifier(record.agentParticipantId, `${label}.agentParticipantId`),
+    agentDisplayName: readString(record.agentDisplayName, `${label}.agentDisplayName`),
+    stateReason: readNullable(record.stateReason, `${label}.stateReason`, readString),
+    changedFileCount: readNonNegativeSafeInteger(record.changedFileCount, `${label}.changedFileCount`),
+    executedHere: readBoolean(record.executedHere, `${label}.executedHere`),
+    updatedAt: readUtcTimestamp(record.updatedAt, `${label}.updatedAt`),
+  };
+}
+
+/**
+ * Validates the capped review queue. The total never counts fewer than the items, and `truncated` must agree with
+ * whether it counts more.
+ */
+export function parseChatReviewQueue(value: unknown, label = "Chat review queue"): ChatReviewQueueRead {
+  const record = readRecord(value, label);
+  const items = readArray(record.items, `${label}.items`, parseReviewQueueItem);
+  const total = readNonNegativeSafeInteger(record.total, `${label}.total`);
+  const failureCount = readNonNegativeSafeInteger(record.failureCount, `${label}.failureCount`);
+  const truncated = readBoolean(record.truncated, `${label}.truncated`);
+  if (total < items.length) throw new Error(`${label}.total is below the item count`);
+  if (truncated !== total > items.length) throw new Error(`${label}.truncated disagrees with the total`);
+  if (failureCount > total) throw new Error(`${label}.failureCount exceeds the total`);
+  return { items, total, failureCount, truncated };
+}
+
+/** Validates one assignment input read. */
+export function parseChatAssignmentInput(value: unknown, label = "Chat assignment input"): ChatAssignmentInputRead {
+  const record = readRecord(value, label);
+  return {
+    inputId: readIdentifier(record.inputId, `${label}.inputId`),
+    messageItemId: readIdentifier(record.messageItemId, `${label}.messageItemId`),
+    ordinal: readNonNegativeSafeInteger(record.ordinal, `${label}.ordinal`),
+    routingKind: readEnum(record.routingKind, CHAT_ASSIGNMENT_INPUT_ROUTING_KINDS, `${label}.routingKind`),
+    deliveryState: readEnum(record.deliveryState, CHAT_ASSIGNMENT_INPUT_DELIVERY_STATES, `${label}.deliveryState`),
+    held: readBoolean(record.held, `${label}.held`),
+    deliveredAt: readNullable(record.deliveredAt, `${label}.deliveredAt`, readUtcTimestamp),
+    deliveredRevisionId: readNullable(record.deliveredRevisionId, `${label}.deliveredRevisionId`, readIdentifier),
+    currentRevisionId: readNullable(record.currentRevisionId, `${label}.currentRevisionId`, readIdentifier),
+    preview: readString(record.preview, `${label}.preview`),
+    previewTruncated: readBoolean(record.previewTruncated, `${label}.previewTruncated`),
+    authorParticipantId: readNullable(record.authorParticipantId, `${label}.authorParticipantId`, readIdentifier),
+  };
+}
+
+/** Validates the inputs of one assignment, in delivery order. */
+export function parseChatAssignmentInputs(value: unknown, label = "Chat assignment inputs"): ChatAssignmentInputRead[] {
+  return readArray(value, label, parseChatAssignmentInput);
+}
+
+/** Validates an agent run read, whose handoff reason is set exactly when it started as a handoff. */
+export function parseChatAgentRun(value: unknown, label = "Chat agent run"): ChatAgentRunRead {
+  const record = readRecord(value, label);
+  const attemptReason = readEnum(record.attemptReason, CHAT_AGENT_RUN_ATTEMPT_REASONS, `${label}.attemptReason`);
+  const handoffReason = readNullable(
+    record.handoffReason,
+    `${label}.handoffReason`,
+    (reason, reasonLabel) => readEnum(reason, CHAT_AGENT_RUN_HANDOFF_REASONS, reasonLabel),
+  );
+  if ((attemptReason === "handoff") !== (handoffReason !== null)) {
+    throw new Error(`${label}.handoffReason must be set exactly when the run is a handoff`);
+  }
   return {
     id: readIdentifier(record.id, `${label}.id`),
     assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`),
@@ -989,8 +1057,6 @@ function parseAgentRun(value: unknown, label: string): ChatAgentRunRead {
       `${label}.scratchGenerationId`,
       readIdentifier,
     ),
-    teammatePolicyRevisionId: readIdentifier(record.teammatePolicyRevisionId, `${label}.teammatePolicyRevisionId`),
-    effort: readNullable(record.effort, `${label}.effort`, readString),
     providerExecutionTurnId: readIdentifier(record.providerExecutionTurnId, `${label}.providerExecutionTurnId`),
     providerExecutionThreadId: readNullable(
       record.providerExecutionThreadId,
@@ -999,6 +1065,8 @@ function parseAgentRun(value: unknown, label: string): ChatAgentRunRead {
     ),
     state: readEnum(record.state, AGENT_RUN_STATES, `${label}.state`),
     runOrdinal: readNonNegativeSafeInteger(record.runOrdinal, `${label}.runOrdinal`),
+    attemptReason,
+    handoffReason,
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
     updatedAt: readUtcTimestamp(record.updatedAt, `${label}.updatedAt`),
   };
@@ -1014,7 +1082,8 @@ export function parseChatReplyThreadPage(
     rootMessage: parseChatMessage(record.rootMessage, `${label}.rootMessage`),
     replies: readArray(record.replies, `${label}.replies`, parseChatMessage),
     assignment: readNullable(record.assignment, `${label}.assignment`, parseChatWorkAssignment),
-    agentRuns: readArray(record.agentRuns, `${label}.agentRuns`, parseAgentRun),
+    agentRuns: readArray(record.agentRuns, `${label}.agentRuns`, parseChatAgentRun),
+    delegatedChildren: readArray(record.delegatedChildren, `${label}.delegatedChildren`, parseDelegatedChild),
     previousCursor: readNullable(record.previousCursor, `${label}.previousCursor`, readString),
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
   };
@@ -1030,6 +1099,9 @@ export function parsePostChatMessageResult(
     replyThreadId: readNullable(record.replyThreadId, `${label}.replyThreadId`, readIdentifier),
     assignment: readNullable(record.assignment, `${label}.assignment`, parseChatWorkAssignment),
     assignmentInputQueued: readBoolean(record.assignmentInputQueued, `${label}.assignmentInputQueued`),
+    routedAs: readNullable(record.routedAs, `${label}.routedAs`, (entry, path) =>
+      readEnum(entry, CHAT_FOLLOWUP_ROUTINGS, path),
+    ),
   };
 }
 
@@ -1056,6 +1128,7 @@ export function parseChatScheduledMessage(
     scheduledFor: readUtcTimestamp(record.scheduledFor, `${label}.scheduledFor`),
     lastError: readNullable(record.lastError, `${label}.lastError`, readString),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
+    recurrence: readNullable(record.recurrence, `${label}.recurrence`, parseChatScheduledRecurrence),
   };
 }
 

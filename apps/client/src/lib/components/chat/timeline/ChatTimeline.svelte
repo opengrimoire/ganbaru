@@ -19,15 +19,17 @@
   import Wrench from "@lucide/svelte/icons/wrench";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import { executionMessageActionTarget } from "$lib/chat/timeline/message-action-target";
+  import { noticeCode, resolveNoticeTitle } from "$lib/chat/timeline/notice-title";
   import { chatScrollBehavior } from "$lib/chat/responsive-layout";
-  import type { ChatParticipantRead, ChatThreadShellRead, ChatTimelinePageRead, ChatTurnId, ProviderInstanceId, ProviderProbeResult } from "$lib/chat/contracts";
-  import { activityFilePath, fileChangePresentation, fileReadActivityPresentation, fileSearchActivityPresentation, isFileReadActivity, isFileSearchActivity, isImageViewActivity, summarizeActivityKinds, transientActivitySummary, type ActivitySummaryCount } from "$lib/chat/timeline/activity-presentation";
-  import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
-  import { chatModelParticipant, type ChatModelParticipant } from "$lib/chat/teammates/participant-identity";
-  import { buildTimelineDisplayRows, includeOptimisticTimelineMessage, projectTimelineReadModel, timelineActivityShowsLiveStatus, timelineActivitySupportsDisclosure, timelineModelGroupStartIds, timelineRowsForTurn, type TimelineActivityGroupRow, type TimelineActivityRow, type TimelineDisplayRow, type TimelineMessageRow, type TimelinePlanRow, type TimelineTurnFoldRow } from "$lib/chat/timeline/model";
+  import type { ChatParticipantRead, ChatThreadShellRead, ChatTimelinePageRead, ChatTurnId, ProviderFamilyId, ProviderInstanceId, ProviderProbeResult } from "$lib/chat/contracts";
+  import { activityFilePath, fileChangePresentation, fileReadActivityPresentation, fileSearchActivityPresentation, isFileReadActivity, isFileSearchActivity, isImageViewActivity, summarizeActivityKinds, transientActivitySummary, webActivityPresentation, type ActivitySummaryCount } from "$lib/chat/timeline/activity-presentation";
+  import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/agents/participant-display";
+  import { chatModelParticipant, type ChatModelParticipant } from "$lib/chat/agents/participant-identity";
+  import { buildTimelineDisplayRows, includeOptimisticTimelineMessage, projectTimelineReadModel, stabilizeTimelineRows, timelineActivityShowsLiveStatus, timelineActivitySupportsDisclosure, timelineFinishedRenderKey, timelineModelGroupStartIds, timelineRowsForTurn, type TimelineActivityGroupRow, type TimelineActivityRow, type TimelineDisplayRow, type TimelineMessageRow, type TimelinePlanRow, type TimelineRow, type TimelineTurnFoldRow } from "$lib/chat/timeline/model";
   import { computeTimelineVirtualWindow, nextTimelineUnreadCount, scrollTopForPreservedAnchor, timelineMinimapRows, timelineScrollbarThumbGeometry, timelineScrollIntent, type TimelineScrollbarThumbGeometry, type TimelineScrollIntent } from "$lib/chat/timeline/virtualization";
   import { formatDateTime, formatList, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage, providerProbeMessage } from "$lib/chat/error-presentation";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -52,18 +54,28 @@
     bottomInsetPx = 0,
     embedded = false,
     hideUserMessages = false,
-    teammate = null,
+    agent = null,
     turnId = null,
     timelinePage = null,
     executionThread = null,
+    readOnly = false,
+    providerFamilyId = null,
   } = $props<{
     bottomInsetPx?: number;
     embedded?: boolean;
     hideUserMessages?: boolean;
-    teammate?: ChatParticipantRead | null;
+    agent?: ChatParticipantRead | null;
     turnId?: ChatTurnId | null;
     timelinePage?: ChatTimelinePageRead | null;
     executionThread?: ChatThreadShellRead | null;
+    /**
+     * Shows an embedded `timelinePage` another device executes: rows and their detail previews stay visible, while
+     * whole activity details, changed files, reactions, message actions, plan actions, revert, and usage, which read or
+     * change data this device does not hold, are left out.
+     */
+    readOnly?: boolean;
+    /** The provider family that names the model in a read-only page, which has no thread shell on this device. */
+    providerFamilyId?: ProviderFamilyId | null;
   }>();
   const COMPOSER_READING_GAP_PX = 8;
   const TIMELINE_EDGE_PADDING_PX = 16;
@@ -111,6 +123,8 @@
   const timelineItems = $derived(timelinePage ? timelinePage.items : chat.timelineItems);
   const timelineLoading = $derived(timelinePage ? false : chat.timelineLoading);
   const pageTurns = $derived(timelinePages.flatMap((page) => page.turns));
+  /** Context usage of each turn, which a read-only timeline gives its identity cards in place of a provider thread read. */
+  const turnUsage = $derived(new Map(pageTurns.map((turn) => [turn.turnId as string, turn.usage])));
   const projection = $derived(projectTimelineReadModel(timelineItems, pageTurns));
   const selectedThread = $derived(executionThread ?? chat.selectedThread);
   const timelineIdentity = $derived(chat.selectedChannelId ?? selectedThread?.id ?? null);
@@ -127,12 +141,22 @@
     turnId,
   )
     .filter((row) => !hideUserMessages || row.kind !== "message" || row.role !== "user"));
-  const displayRows = $derived(buildTimelineDisplayRows(timelineRows.filter((row) => row.kind !== "plan" || !dismissedPlans.includes(row.id)), projection.turns, new Set(expandedTurns), new Set(expandedGroups)));
+  let lastStableRows: readonly TimelineRow[] = [];
+  let lastStableDisplayRows: readonly TimelineDisplayRow[] = [];
+  const stableRows = $derived.by(() => {
+    lastStableRows = stabilizeTimelineRows(lastStableRows, timelineRows);
+    return lastStableRows;
+  });
+  const displayRows = $derived(buildTimelineDisplayRows(stableRows.filter((row) => row.kind !== "plan" || !dismissedPlans.includes(row.id)), projection.turns, new Set(expandedTurns), new Set(expandedGroups)));
+  const stableDisplayRows = $derived.by(() => {
+    lastStableDisplayRows = stabilizeTimelineRows(lastStableDisplayRows, displayRows);
+    return lastStableDisplayRows;
+  });
   const turnsById = $derived(new Map(projection.turns.map((turn) => [turn.id, turn])));
-  const modelGroupStartIds = $derived(timelineModelGroupStartIds(displayRows));
+  const modelGroupStartIds = $derived(timelineModelGroupStartIds(stableDisplayRows));
   const assistantActionMessages = $derived.by(() => {
     const messages = new Map<ChatTurnId, TimelineMessageRow>();
-    for (const row of displayRows) {
+    for (const row of stableDisplayRows) {
       if (row.kind !== "message" || row.role !== "assistant" || row.state !== "complete" || !row.turnId) continue;
       const current = messages.get(row.turnId);
       const replacesCurrent = !current
@@ -144,9 +168,9 @@
     }
     return messages;
   });
-  const virtualWindow = $derived(computeTimelineVirtualWindow(displayRows, measuredHeights, scrollTop, viewportHeight));
+  const virtualWindow = $derived(computeTimelineVirtualWindow(stableDisplayRows, measuredHeights, scrollTop, viewportHeight));
   const renderedRows = $derived(embedded
-    ? displayRows.map((row, index) => ({ row, index }))
+    ? stableDisplayRows.map((row, index) => ({ row, index }))
     : virtualWindow.items);
   const selectedWorkingFolder = $derived(executionThread
     ? chat.workingFolders.find((entry) => entry.workingFolder.id === executionThread.workingFolderId) ?? null
@@ -160,8 +184,8 @@
     revision: 0,
     archivedAt: null,
   });
-  const minimapRows = $derived(timelineMinimapRows(displayRows));
-  const showMinimap = $derived(!embedded && displayRows.length >= 80 && viewportWidth >= 900 && minimapRows.length > 0);
+  const minimapRows = $derived(timelineMinimapRows(stableDisplayRows));
+  const showMinimap = $derived(!embedded && stableDisplayRows.length >= 80 && viewportWidth >= 900 && minimapRows.length > 0);
   const latestTimelinePage = $derived(timelinePages.at(-1));
   const timelineRevision = $derived(`${latestTimelinePage
     ? "revision" in latestTimelinePage
@@ -172,12 +196,12 @@
     + (bottomInsetPx > 0 ? bottomInsetPx + COMPOSER_READING_GAP_PX : TIMELINE_EDGE_PADDING_PX));
 
   $effect(() => {
-    if (!timelineLoading || displayRows.length > 0) {
+    if (!timelineLoading || stableDisplayRows.length > 0) {
       initialTimelineLoadingVisible = false;
       return;
     }
     const timer = window.setTimeout(() => {
-      if (timelineLoading && displayRows.length === 0) {
+      if (timelineLoading && stableDisplayRows.length === 0) {
         initialTimelineLoadingVisible = true;
       }
     }, 180);
@@ -455,6 +479,7 @@
   }
 
   function touchActionsKey(row: TimelineDisplayRow): string | null {
+    if (readOnly) return null;
     if (isModelOwnedRow(row) && row.turnId) return `${touchActionsScope}:turn:${row.turnId}`;
     if (row.kind === "message" && row.role === "user") return `${touchActionsScope}:message:${row.id}`;
     return null;
@@ -466,7 +491,7 @@
   }
 
   function reportError(error: unknown): void {
-    operationError = error instanceof Error ? error.message : String(error);
+    operationError = chatErrorMessage(error);
   }
 
   function durationLabel(milliseconds: number | null): string {
@@ -511,11 +536,11 @@
 
   function scrollToMinimapRow(rowId: string): void {
     if (!scroller) return;
-    const index = displayRows.findIndex((row) => row.id === rowId);
+    const index = stableDisplayRows.findIndex((row) => row.id === rowId);
     if (index < 0) return;
-    const denominator = Math.max(1, displayRows.length - 1);
+    const denominator = Math.max(1, stableDisplayRows.length - 1);
     scroller.scrollTo({ top: (index / denominator) * Math.max(0, scroller.scrollHeight - scroller.clientHeight), behavior: chatScrollBehavior(reducedMotion) });
-    intent = index === displayRows.length - 1 ? "following" : "anchored";
+    intent = index === stableDisplayRows.length - 1 ? "following" : "anchored";
   }
 
   function minimapLabel(row: TimelineMessageRow | TimelineActivityRow): string {
@@ -527,6 +552,8 @@
     if (activity.activityKind === "channel_session_boundary") return t("chat.timeline.sessionBoundary", activity.title);
     if (activityIsThinking(activity)) return transientActivitySummary(activity) ?? t("chat.timeline.thinking");
     if (activity.title === "thread_reverted") return t("chat.timeline.threadRestored");
+    const code = activity.activityKind === "notice" ? noticeCode(activity.metadata?.value) : null;
+    if (code) return resolveNoticeTitle(code, activity.title, t);
     const active = activity.status === "pending" || activity.status === "active" || activity.status === "waiting";
     if (activity.activityKind === "file_change" || activity.activityKind === "file_change_output") {
       const path = activityFilePath(activity);
@@ -549,6 +576,15 @@
           : t("chat.timeline.searchedFor", search.query);
       }
       return active ? t("chat.timeline.searchingFiles") : t("chat.timeline.searchedFiles");
+    }
+    const web = webActivityPresentation(activity);
+    if (web?.kind === "fetch") {
+      if (web.link) return active ? t("chat.timeline.fetchingPage", web.link.host) : t("chat.timeline.fetchedPage", web.link.host);
+      return active ? t("chat.timeline.fetchingWebPage") : t("chat.timeline.fetchedWebPage");
+    }
+    if (web?.kind === "search") {
+      if (web.query) return active ? t("chat.timeline.searchingWebFor", web.query) : t("chat.timeline.searchedWebFor", web.query);
+      return active ? t("chat.timeline.searchingWeb") : t("chat.timeline.searchedWeb");
     }
     if (activity.activityKind === "web_search") {
       const query = activity.title.trim();
@@ -625,6 +661,10 @@
           : multiple ? t("chat.timeline.readFiles") : t("chat.timeline.readFile");
       case "file_searches": return active ? t("chat.timeline.searchingFiles") : t("chat.timeline.searchedFiles");
       case "web_searches": return active ? t("chat.timeline.searchingWeb") : t("chat.timeline.searchedWeb");
+      case "web_fetches":
+        return active
+          ? multiple ? t("chat.timeline.fetchingWebPages") : t("chat.timeline.fetchingWebPage")
+          : multiple ? t("chat.timeline.fetchedWebPages") : t("chat.timeline.fetchedWebPage");
       case "image_views":
         return active
           ? multiple ? t("chat.timeline.viewingImages") : t("chat.timeline.viewingImage")
@@ -674,7 +714,7 @@
   }
 
   function activityDetail(activity: TimelineActivityRow): string | null {
-    if (activity.title !== "thread_reverted") return activity.detail;
+    if (activity.title !== "thread_reverted") return activity.detailPreview;
     const value = activity.metadata?.value;
     if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
     const count = "revertedTurnCount" in value && typeof value.revertedTurnCount === "number"
@@ -728,15 +768,16 @@
     const sourceThread = [executionThread, ...chat.activeThreads, ...chat.archivedThreads]
       .filter((thread): thread is ChatThreadShellRead => thread !== null)
       .find((thread) => thread.id === sourceThreadId)
-      ?? selectedThread;
+      ?? (readOnly ? null : selectedThread);
     const sourceProvider = chat.settings?.providerInstances.find((provider) => (
       provider.configuration.instanceId === sourceThread?.providerInstanceId
-    )) ?? selectedProvider;
+    )) ?? (readOnly ? null : selectedProvider);
     const turn = row.turnId ? turnsById.get(row.turnId) : null;
     const modelId = row.kind === "message" && row.metadata?.modelId
       ? row.metadata.modelId
       : turn?.effectiveModelId ?? turn?.modelId ?? sourceThread?.modelId ?? null;
-    const familyId = sourceThread?.providerFamilyId
+    const familyId = (readOnly ? providerFamilyId : null)
+      ?? sourceThread?.providerFamilyId
       ?? sourceProvider?.configuration.familyId
       ?? "opencode";
     return {
@@ -802,7 +843,7 @@
       <div class="chat-disclosure-region" class:expanded={activityExpanded} aria-hidden={!activityExpanded} inert={!activityExpanded}>
         <div class="chat-disclosure-inner">
           <div class="chat-step-detail">
-            <ChatActivityDetail {activity} detail={activityDetail(activity)} />
+            <ChatActivityDetail {activity} detail={activityDetail(activity)} threadId={readOnly ? null : activity.sourceThreadId ?? selectedThread?.id ?? chat.selectedThreadId} expanded={activityExpanded} onError={reportError} />
           </div>
         </div>
       </div>
@@ -827,8 +868,8 @@
         ?? (sourceThreadId === selectedThread?.id ? selectedThread.workingFolderId : null)
       : null}
     <article class="chat-assistant-message">
-      <ChatMarkdown markdown={message.markdown} onError={reportError} />
-      {#if message.turnId && message.metadata?.changedFiles.length}
+      <ChatMarkdown markdown={message.markdown} renderKey={timelineFinishedRenderKey(message)} onError={reportError} />
+      {#if !readOnly && message.turnId && message.metadata?.changedFiles.length}
         <ChatChangedFilesSummary
           turnId={message.turnId}
           files={message.metadata.changedFiles}
@@ -836,7 +877,7 @@
           {sourceWorkingFolderId}
         />
       {/if}
-      {#if message.state === "complete"}
+      {#if !readOnly && message.state === "complete"}
         <ChatMessageReactionList target={executionMessageActionTarget(message)} />
       {/if}
     </article>
@@ -885,9 +926,9 @@
     {@const plan = row as TimelinePlanRow}
     <article class="chat-plan">
       <h3><ListChecks size={16} />{t("chat.timeline.plan")}</h3>
-      <ChatMarkdown markdown={plan.markdown} onError={reportError} />
+      <ChatMarkdown markdown={plan.markdown} renderKey={timelineFinishedRenderKey(plan)} onError={reportError} />
       {#if plan.steps.length > 0}<ol>{#each plan.steps as step}<li><span>{step.text}</span><small>{statusLabel(step.status)}</small></li>{/each}</ol>{/if}
-      <div class="chat-plan-actions"><button type="button" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-continue-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.continuePlanning")}</button><button type="button" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-implement-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.implementPlan")}</button><button type="button" onclick={() => { dismissedPlans = [...dismissedPlans, plan.id]; }}>{t("chat.timeline.dismiss")}</button></div>
+      {#if !readOnly}<div class="chat-plan-actions"><button type="button" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-continue-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.continuePlanning")}</button><button type="button" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-implement-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.implementPlan")}</button><button type="button" onclick={() => { dismissedPlans = [...dismissedPlans, plan.id]; }}>{t("chat.timeline.dismiss")}</button></div>{/if}
     </article>
   {/if}
 {/snippet}
@@ -923,12 +964,12 @@
           role="status"
           tone="warning"
           icon={Unplug}
-          message={selectedProvider.lastProbe?.detail ?? t("chat.status.providerUnavailable")}
+          message={providerProbeMessage(selectedProvider.lastProbe?.state)}
           retryLabel={t("chat.timeline.retry")}
           onRetry={() => retryProvider(selectedProvider.configuration.instanceId)}
           copy={selectedProvider.lastProbe?.detail ?? false}
         >
-          {#snippet actions()}<button type="button" class="notice-action-text" onclick={() => settings.open("chat", { chatSubsection: "providers" })}>{t("chat.timeline.openSettings")}</button>{/snippet}
+          {#snippet actions()}<button type="button" class="notice-action-text" onclick={() => settings.open("agents", { agentsSubsection: "providers" })}>{t("chat.timeline.openSettings")}</button>{/snippet}
         </Notice>
       </div>
     {/if}
@@ -964,7 +1005,7 @@
           role="article"
           aria-label={rowAriaLabel(row)}
           aria-posinset={virtual.index + 1}
-          aria-setsize={displayRows.length}
+          aria-setsize={stableDisplayRows.length}
           tabindex="-1"
           use:messageTouchActions={touchActionsKey(row)}
           data-message-touch-actions={touchActionsKey(row) === null ? undefined : ""}
@@ -993,18 +1034,20 @@
                     <div use:measureExpandableHeight class="chat-message-expandable" data-selectable-content class:collapsed={message.markdown.length > 1200 && !messageExpanded} class:expanded={messageExpanded}><div><p class="wrap-break-word whitespace-pre-wrap">{message.markdown}</p></div></div>
                     {#if messageImages(message).length > 0}<ChatImageGallery images={messageImages(message)} />{/if}
                     {#if message.userContext && hasMessageContextChips(message)}<div class="chat-user-context">{#each message.userContext.attachments.filter((attachment) => attachment.kind !== "image") as attachment}<button type="button" title={attachment.status} onclick={() => copy(attachment.displayName)}><FileText size={12} /><span>{attachment.displayName}</span><small>{formatNumber(localization.locale, attachment.byteSize)} B</small></button>{/each}{#each message.userContext.mentions as mention}<button type="button" title={t("chat.timeline.mention")} onclick={() => copy(mention.relativePath)}><span>@</span><span>{mention.relativePath}</span></button>{/each}{#each message.userContext.terminalContext as context}<button type="button" title={t("chat.timeline.terminalContext")} onclick={() => copy(context)}><Terminal size={12} /><span>{context}</span></button>{/each}</div>{/if}
-                    <ChatMessageReactionList target={executionMessageActionTarget(message)} />
-                    {#if message.markdown.length > 1200 || message.userContext?.preCheckpointId && (!message.sourceThreadId || message.sourceThreadId === chat.selectedThreadId)}
+                    {#if !readOnly}<ChatMessageReactionList target={executionMessageActionTarget(message)} />{/if}
+                    {#if message.markdown.length > 1200 || !readOnly && message.userContext?.preCheckpointId && (!message.sourceThreadId || message.sourceThreadId === chat.selectedThreadId)}
                       <div class="chat-message-secondary-actions text-muted-foreground">
                         {#if message.markdown.length > 1200}<button type="button" data-timeline-disclosure-expanded={messageExpanded} aria-expanded={messageExpanded} onclick={() => { expandedMessages = toggle(expandedMessages, message.id); }}>{messageExpanded ? t("chat.timeline.showLess") : t("chat.timeline.showMore")}</button>{/if}
-                        {#if message.userContext?.preCheckpointId && (!message.sourceThreadId || message.sourceThreadId === chat.selectedThreadId)}<button type="button" class="inline-flex items-center gap-1" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-revert-message", { detail: { threadId: message.sourceThreadId ?? chat.selectedThreadId, checkpointId: message.userContext?.preCheckpointId, turnId: message.turnId } }))}><RotateCcw size={11} />{t("chat.timeline.revert")}</button>{/if}
+                        {#if !readOnly && message.userContext?.preCheckpointId && (!message.sourceThreadId || message.sourceThreadId === chat.selectedThreadId)}<button type="button" class="inline-flex items-center gap-1" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-revert-message", { detail: { threadId: message.sourceThreadId ?? chat.selectedThreadId, checkpointId: message.userContext?.preCheckpointId, turnId: message.turnId } }))}><RotateCcw size={11} />{t("chat.timeline.revert")}</button>{/if}
                       </div>
                     {/if}
-                    <ChatMessageActionToolbar
-                      target={executionMessageActionTarget(message)}
-                      visible={hoveredActionMessageId === message.id || heldMessageActionsKey() === touchActionsKey(row)}
-                      onError={reportError}
-                    />
+                    {#if !readOnly}
+                      <ChatMessageActionToolbar
+                        target={executionMessageActionTarget(message)}
+                        visible={hoveredActionMessageId === message.id || heldMessageActionsKey() === touchActionsKey(row)}
+                        onError={reportError}
+                      />
+                    {/if}
                   </article>
                 </div>
               </div>
@@ -1012,8 +1055,8 @@
               {@const identity = modelIdentityForRow(row)}
               {@const actionMessage = row.turnId ? assistantActionMessages.get(row.turnId) : undefined}
               <div class="chat-participant-row">
-                <ChatIdentityButton participant={teammate} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} />
-                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={teammate} model={identity.model} presentation="name" triggerLabel={teammate?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
+                <ChatIdentityButton participant={agent} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} usage={readOnly && row.turnId ? turnUsage.get(row.turnId) ?? null : null} />
+                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={agent} model={identity.model} presentation="name" triggerLabel={agent?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} usage={readOnly && row.turnId ? turnUsage.get(row.turnId) ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage && !readOnly}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
               </div>
             {:else}
               <div class="chat-participant-followup">{@render modelRowContent(row)}</div>
@@ -1023,8 +1066,8 @@
               {@const identity = modelIdentityForRow(row)}
               {@const actionMessage = row.turnId ? assistantActionMessages.get(row.turnId) : undefined}
               <div class="chat-participant-row">
-                <ChatIdentityButton participant={teammate} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} />
-                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={teammate} model={identity.model} presentation="name" triggerLabel={teammate?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
+                <ChatIdentityButton participant={agent} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} usage={readOnly && row.turnId ? turnUsage.get(row.turnId) ?? null : null} />
+                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={agent} model={identity.model} presentation="name" triggerLabel={agent?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} usage={readOnly && row.turnId ? turnUsage.get(row.turnId) ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage && !readOnly}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
               </div>
             {:else}
               <div class="chat-participant-followup">{@render modelRowContent(row)}</div>
@@ -1066,21 +1109,24 @@
   .chat-execution-timeline.embedded { --chat-conversation-font-size:var(--chat-organizational-font-size,calc(0.875rem * var(--type-scale))); --chat-conversation-line-height:var(--chat-organizational-line-height,calc(1.3125rem * var(--type-scale))); min-height:0; flex:none; overflow:visible; }
   .chat-execution-timeline.embedded .chat-timeline-scroller { height:auto; overflow:visible; }
   .chat-execution-timeline.embedded .chat-timeline-content { width:100%; min-height:0; justify-content:flex-start; }
-  .chat-execution-timeline.embedded .chat-timeline-row { --chat-participant-gap:0.65rem; margin:0; padding:0 1rem; }
+  .chat-execution-timeline.embedded .chat-timeline-row { --chat-participant-gap:0.65rem; margin:0; padding:0 var(--chat-message-row-padding-inline,1rem); }
   .chat-execution-timeline.embedded .chat-timeline-row.participant-start { margin-top:0; }
   .chat-execution-timeline.embedded .chat-participant-row { grid-template-columns:34px minmax(0,1fr); }
   .chat-execution-timeline.embedded .chat-participant-followup { margin-left:calc(34px + var(--chat-participant-gap)); }
+  /* The header matches a Chat message's, so a reply that gives way to its run's turn keeps its text in place. */
+  .chat-execution-timeline.embedded .chat-participant-header { min-height:1.3rem; gap:0.4rem; margin-bottom:0; line-height:inherit; }
+  .chat-execution-timeline.embedded .chat-participant-header strong { font-weight:700; }
   .chat-execution-timeline.embedded .chat-participant-header span { font-size:var(--chat-organizational-time-font-size,calc(0.6875rem * var(--type-scale))); }
   .chat-timeline-content { width:min(calc(100% - var(--chat-conversation-gutter,1rem) - var(--chat-conversation-gutter,1rem)),var(--chat-conversation-max-width,60rem)); }
   .chat-timeline-scroller { overflow-anchor: none; scrollbar-width: none; }
   .chat-timeline-scroller::-webkit-scrollbar { display: none; width: 0; height: 0; }
-  .chat-timeline-scrollbar { pointer-events: none; position: absolute; right: 0; z-index: 30; width: 8px; contain: strict; opacity: 0; touch-action: none; }
+  .chat-timeline-scrollbar { pointer-events: none; position: absolute; right: 0; z-index: 30; width: var(--app-scrollbar-size); contain: strict; opacity: 0; touch-action: none; }
   .chat-timeline-scrollbar.visible { pointer-events: auto; opacity: 1; }
-  .chat-timeline-scrollbar-thumb { position: absolute; left: 2px; width: 4px; contain: strict; border-radius: 9999px; background-color: var(--app-scrollbar-thumb); cursor: default; will-change: height, transform; }
+  .chat-timeline-scrollbar-thumb { position: absolute; left: 0; width: 100%; box-sizing: border-box; contain: strict; border: 2px solid transparent; border-radius: 9999px; background-color: var(--app-scrollbar-thumb); background-clip: content-box; cursor: default; will-change: height, transform; }
   .chat-timeline-scrollbar-thumb:hover, .chat-timeline-scrollbar-thumb.dragging { background-color: var(--app-scrollbar-thumb-hover); }
   .chat-timeline-row { --chat-participant-gap: 0.75rem; border-radius: 0.4rem; }
   .chat-timeline-row.optimistic { animation: chat-message-in 140ms ease-out; }
-  .chat-timeline-row.participant-start { margin-top: 1.1rem; }
+  .chat-timeline-row.participant-start { margin-top: var(--chat-participant-start-space, 1.1rem); }
   .chat-timeline-row:first-child { margin-top: 0; }
   .chat-participant-row { display: grid; min-width: 0; grid-template-columns: 36px minmax(0, 1fr); align-items: start; gap: var(--chat-participant-gap); }
   .chat-participant-content { --chat-message-action-anchor-bottom:1.25rem; position:relative; min-width:0; transform:translateY(-4px); }
@@ -1117,7 +1163,7 @@
   .chat-process-step-label { display: inline-flex; width: fit-content; min-width: 0; max-width: 100%; align-items: flex-start; gap: 0.25rem; justify-self: start; }
   .chat-process-step-label > span { min-width: 0; overflow-wrap: anywhere; }
   .chat-file-change-counts { display: inline-flex; flex: 0 0 auto; gap: 0.25rem; font-size: calc(0.7rem * var(--type-scale)); }
-  .chat-file-change-counts .additions { color: var(--action-confirm); }
+  .chat-file-change-counts .additions { color: var(--action-confirm-signal); }
   .chat-file-change-counts .deletions { color: var(--destructive); }
   .chat-process-step-label :global(svg) { flex: 0 0 auto; margin-top: calc((var(--chat-process-line-height, calc(1.1875rem * var(--type-scale))) - 0.875rem) / 2); }
   .chat-process-step.active, .chat-process-toggle.active { color: color-mix(in srgb, var(--muted-foreground) 78%, var(--foreground)); }

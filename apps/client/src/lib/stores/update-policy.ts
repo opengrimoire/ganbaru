@@ -1,4 +1,5 @@
 import { translate, type Translate } from "$lib/i18n/translator.svelte";
+import { technicalErrorDetail, userErrorMessage } from "$lib/i18n/user-errors";
 
 export const DEFAULT_AUTO_UPDATE_NOTIFICATIONS = true;
 export const UPDATE_AUTO_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -181,7 +182,8 @@ function parseContextReleasePageUrl(value: unknown, repository: string): string 
 }
 
 /**
- * Convert updater errors into user-facing copy.
+ * Convert updater errors into localized user-facing copy. Native updater text is only matched,
+ * never shown.
  *
  * @param error Unknown thrown value.
  * @returns Short error message.
@@ -190,23 +192,10 @@ export function updateCheckErrorMessage(
   error: unknown,
   t: Translate = translate,
 ): string {
-  const message = errorText(error);
-  if (/endpoint|pubkey|public key|configured|configuration/i.test(message)) {
+  if (/endpoint|pubkey|public key|configured|configuration/i.test(technicalErrorDetail(error) ?? "")) {
     return t("updates.feedNotConfigured");
   }
-  return message;
-}
-
-/**
- * Convert an unknown error value to text.
- *
- * @param error Unknown thrown value.
- * @returns Error text.
- */
-export function errorText(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-  return String(error);
+  return userErrorMessage(error, t("updates.checkFailed"));
 }
 
 /** Newer release found by the Rust update check. */

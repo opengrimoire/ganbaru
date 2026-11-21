@@ -3,6 +3,7 @@
   import { getMusicContextAssignments, getMusicPlaylistSummaries } from "$lib/music/platform-library";
   import { FALLBACK_COLOR_INDEX, type EventColor } from "$lib/calendar/types";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { pomodoroPresetChoices, type PomodoroPresetKey } from "$lib/pomodoro/rhythm";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -196,28 +197,28 @@
     moveEntry: structure.moveStatus,
     setError: (error) => { sessionState.projectSettingsError = error; },
     reorderFailedMessage: () => t("projects.settings.statusReorderFailed"),
-    saveFailedMessage: (message) => t("projects.settings.statusSaveFailed", message),
+    saveFailedMessage: () => t("projects.settings.statusSaveFailed"),
   });
   const prioritySortable = createProjectSettingsSortableController({
     getEntries: () => priorities,
     moveEntry: structure.movePriority,
     setError: (error) => { sessionState.projectSettingsError = error; },
     reorderFailedMessage: () => t("projects.settings.priorityReorderFailed"),
-    saveFailedMessage: (message) => t("projects.settings.prioritySaveFailed", message),
+    saveFailedMessage: () => t("projects.settings.prioritySaveFailed"),
   });
   const tagSortable = createProjectSettingsSortableController({
     getEntries: () => projectTags,
     moveEntry: structure.moveTag,
     setError: (error) => { sessionState.projectSettingsError = error; },
     reorderFailedMessage: () => t("projects.settings.tagReorderFailed"),
-    saveFailedMessage: (message) => t("projects.settings.tagSaveFailed", message),
+    saveFailedMessage: () => t("projects.settings.tagSaveFailed"),
   });
   const customFieldSortable = createProjectSettingsSortableController({
     getEntries: () => projectCustomFields,
     moveEntry: structure.moveCustomField,
     setError: (error) => { sessionState.projectSettingsError = error; },
     reorderFailedMessage: () => t("projects.customFields.reorderFailed"),
-    saveFailedMessage: (message) => t("projects.customFields.saveFailed", message),
+    saveFailedMessage: () => t("projects.customFields.saveFailed"),
   });
   const customFieldOptionSortable = createProjectSettingsSortableController({
     getEntries: () => projectCustomFields.flatMap(customFieldOptions),
@@ -225,7 +226,7 @@
     moveEntry: structure.moveCustomFieldOption,
     setError: (error) => { sessionState.projectSettingsError = error; },
     reorderFailedMessage: () => t("projects.customFields.optionReorderFailed"),
-    saveFailedMessage: (message) => t("projects.customFields.optionSaveFailed", message),
+    saveFailedMessage: () => t("projects.customFields.optionSaveFailed"),
   });
 
   $effect(() => {
@@ -542,10 +543,7 @@
       sessionState.statusCategoryDrafts = remainingCategories;
       sessionState.statusColorDrafts = remainingColors;
     } catch (error) {
-      sessionState.projectSettingsError = t(
-        "projects.settings.statusDeleteFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      sessionState.projectSettingsError = userErrorMessage(error, t("projects.settings.statusDeleteFailed"));
     }
   }
 
@@ -609,10 +607,7 @@
       sessionState.priorityNameDrafts = remainingNames;
       sessionState.priorityColorDrafts = remainingColors;
     } catch (error) {
-      sessionState.projectSettingsError = t(
-        "projects.settings.priorityDeleteFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      sessionState.projectSettingsError = userErrorMessage(error, t("projects.settings.priorityDeleteFailed"));
     }
   }
 
@@ -634,10 +629,7 @@
       );
       await scrollToNewPriorityRow();
     } catch (error) {
-      sessionState.projectSettingsError = t(
-        "projects.settings.prioritySaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      sessionState.projectSettingsError = userErrorMessage(error, t("projects.settings.prioritySaveFailed"));
     }
   }
 
@@ -660,10 +652,7 @@
       );
       await scrollToNewStatusRow();
     } catch (error) {
-      sessionState.projectSettingsError = t(
-        "projects.settings.statusSaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      sessionState.projectSettingsError = userErrorMessage(error, t("projects.settings.statusSaveFailed"));
     }
   }
 
@@ -701,10 +690,7 @@
       );
       await scrollToNewTagRow();
     } catch (error) {
-      sessionState.projectSettingsError = t(
-        "projects.settings.tagSaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      sessionState.projectSettingsError = userErrorMessage(error, t("projects.settings.tagSaveFailed"));
     }
   }
 
@@ -713,10 +699,7 @@
     try {
       await structure.moveTag(tag, direction);
     } catch (error) {
-      sessionState.projectSettingsError = t(
-        "projects.settings.tagSaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      sessionState.projectSettingsError = userErrorMessage(error, t("projects.settings.tagSaveFailed"));
     }
   }
 
@@ -742,10 +725,7 @@
       sessionState.tagNameDrafts = remainingNames;
       sessionState.tagColorDrafts = remainingColors;
     } catch (error) {
-      sessionState.projectSettingsError = t(
-        "projects.settings.tagDeleteFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      sessionState.projectSettingsError = userErrorMessage(error, t("projects.settings.tagDeleteFailed"));
     }
   }
 
@@ -760,10 +740,7 @@
     try {
       await structure.moveCustomField(field, direction);
     } catch (error) {
-      sessionState.projectSettingsError = t(
-        "projects.customFields.saveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      sessionState.projectSettingsError = userErrorMessage(error, t("projects.customFields.saveFailed"));
     }
   }
 
@@ -777,10 +754,7 @@
     try {
       await structure.moveCustomFieldOption(option, direction);
     } catch (error) {
-      sessionState.projectSettingsError = t(
-        "projects.customFields.optionSaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      sessionState.projectSettingsError = userErrorMessage(error, t("projects.customFields.optionSaveFailed"));
     }
   }
 
@@ -793,10 +767,7 @@
     try {
       await structure.moveStatus(status, direction);
     } catch (error) {
-      sessionState.projectSettingsError = t(
-        "projects.settings.statusSaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      sessionState.projectSettingsError = userErrorMessage(error, t("projects.settings.statusSaveFailed"));
     }
   }
 
@@ -805,10 +776,7 @@
     try {
       await structure.movePriority(priority, direction);
     } catch (error) {
-      sessionState.projectSettingsError = t(
-        "projects.settings.prioritySaveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      sessionState.projectSettingsError = userErrorMessage(error, t("projects.settings.prioritySaveFailed"));
     }
   }
 

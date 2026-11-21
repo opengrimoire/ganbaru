@@ -1,6 +1,19 @@
 //! Bounded Git process execution and typed porcelain parsing.
 
+mod draft_context;
 pub mod hardened;
+pub(crate) mod push;
+
+pub use draft_context::{
+    COMMIT_DRAFT_MAX_FILES, COMMIT_DRAFT_MAX_PATCH_BYTES, COMMIT_DRAFT_RECENT_SUBJECTS,
+    ChatCommitDraftContextRead, change_request_draft_context, commit_draft_context,
+};
+pub use push::{
+    GitPushTarget, GitPushTargetError, GitWorktreeCommit, GitWorktreeCommitError,
+    MAX_COMMIT_MESSAGE_CHARS, advance_branch, commit_tree, is_object_id, is_supported_push_url,
+    normalize_commit_message, push_object, push_target, remote_branch_names_object,
+    worktree_commit,
+};
 
 use super::models::{ChatError, ChatErrorCode, ChatResult};
 use hardened::{GIT_NETWORK_DEADLINE, GIT_READ_DEADLINE, GitFolderTrust, GitPolicy, OwnedGitRun};
@@ -189,10 +202,20 @@ pub async fn unstage(folder: GitFolder<'_>, paths: &[String]) -> ChatResult<()> 
     run(folder, &arguments, GitCall::User).await.map(|_| ())
 }
 
+/// Commits the staged changes of `folder` with `message`, which may span several lines.
+///
+/// The message reaches Git on standard input, so Git never parses any of it as an argument,
+/// even a first line that starts with `-`.
 pub async fn commit(folder: GitFolder<'_>, message: &str) -> ChatResult<()> {
-    run(folder, &["commit", "-m", message], GitCall::User)
-        .await
-        .map(|_| ())
+    run_bounded(
+        folder,
+        &["commit", "-F", "-"],
+        GitCall::User,
+        Some(message.as_bytes()),
+        MAX_GIT_OUTPUT_BYTES,
+    )
+    .await
+    .map(|_| ())
 }
 
 pub async fn fetch(folder: GitFolder<'_>, remote: Option<&str>) -> ChatResult<()> {
@@ -593,6 +616,8 @@ enum GitCall {
     User,
     /// Requested by the user and reaching a remote.
     UserNetwork,
+    /// Requested by an agent, confirmed by a person, and possibly reaching a remote.
+    Requested,
 }
 
 impl GitCall {
@@ -600,13 +625,14 @@ impl GitCall {
         match self {
             Self::Internal => GitPolicy::internal(trust),
             Self::User | Self::UserNetwork => GitPolicy::user(trust),
+            Self::Requested => GitPolicy::requested(),
         }
     }
 
     fn deadline(self) -> Duration {
         match self {
             Self::Internal | Self::User => GIT_READ_DEADLINE,
-            Self::UserNetwork => GIT_NETWORK_DEADLINE,
+            Self::UserNetwork | Self::Requested => GIT_NETWORK_DEADLINE,
         }
     }
 }
@@ -629,6 +655,18 @@ pub async fn review_output(
     )
     .await
     .map(|output| output.stdout)
+}
+
+/// Runs an internal review read capped at `maximum_output_bytes`, returning `None`
+/// when the output would exceed the cap so the caller can degrade instead of failing.
+pub async fn review_output_unless_too_large(
+    folder: GitFolder<'_>,
+    arguments: &[&str],
+    maximum_output_bytes: usize,
+) -> ChatResult<Option<Vec<u8>>> {
+    run_unless_too_large(folder, arguments, maximum_output_bytes)
+        .await
+        .map(|output| output.map(|output| output.stdout))
 }
 
 /// Runs a user-requested review mutation (stage, unstage, or discard) with
@@ -727,7 +765,7 @@ async fn run_bounded_with_storage(
     stdout_file: Option<&Path>,
     storage: GitStorage<'_>,
 ) -> ChatResult<GitOutput> {
-    let output = hardened::run(OwnedGitRun {
+    let run = OwnedGitRun {
         root: folder.root.to_path_buf(),
         arguments: arguments.iter().map(OsString::from).collect(),
         policy: call.policy(folder.trust),
@@ -736,8 +774,37 @@ async fn run_bounded_with_storage(
         maximum_output_bytes,
         stdout_file: stdout_file.map(Path::to_path_buf),
         environment: storage_environment(storage)?,
-    })
-    .await?;
+    };
+    successful_output(hardened::run(run).await?)
+}
+
+/// Runs an internal read that keeps its output in memory and reports output past
+/// `maximum_output_bytes` as `None` instead of an error, so a caller can degrade.
+async fn run_unless_too_large(
+    folder: GitFolder<'_>,
+    arguments: &[&str],
+    maximum_output_bytes: usize,
+) -> ChatResult<Option<GitOutput>> {
+    let call = GitCall::Internal;
+    let run = OwnedGitRun {
+        root: folder.root.to_path_buf(),
+        arguments: arguments.iter().map(OsString::from).collect(),
+        policy: call.policy(folder.trust),
+        deadline: call.deadline(),
+        input: None,
+        maximum_output_bytes,
+        stdout_file: None,
+        environment: Vec::new(),
+    };
+    match hardened::run(run).await {
+        Ok(output) => successful_output(output).map(Some),
+        Err(hardened::GitRunError::OutputTooLarge) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Maps a finished Git run to its output, or to a safe conflict error when Git failed.
+fn successful_output(output: hardened::GitRunOutput) -> ChatResult<GitOutput> {
     if !output.status.success() {
         let detail = diagnostic_text(&output.stderr);
         return Err(ChatError {
@@ -949,8 +1016,8 @@ fn git_protocol_error(message: &str) -> ChatError {
 #[cfg(test)]
 mod tests {
     use super::{
-        GitCall, GitFolder, discard_paths, fetch, initialize, parse_status, pathspec_below_prefix,
-        pull, push, run, stage, status, unstage, validate_branch_name,
+        GitCall, GitFolder, commit, discard_paths, fetch, initialize, parse_status,
+        pathspec_below_prefix, pull, push, run, stage, status, unstage, validate_branch_name,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1077,6 +1144,44 @@ mod tests {
             "base\n"
         );
         assert!(!root.join("untracked.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn commit_keeps_every_line_of_a_message_that_starts_with_a_dash() {
+        let directory = TestDirectory::new();
+        let root = directory.path();
+        let folder = GitFolder::untrusted(root);
+        initialize(folder, Some("main"))
+            .await
+            .expect("repository should initialize");
+        for (key, value) in [
+            ("user.name", "Ganbaru test"),
+            ("user.email", "test@example.invalid"),
+            ("commit.gpgsign", "false"),
+        ] {
+            run(folder, &["config", key, value], GitCall::User)
+                .await
+                .expect("test identity should configure");
+        }
+        fs::write(root.join("tracked.txt"), "base\n").expect("tracked file should write");
+        stage(folder, &["tracked.txt".to_string()])
+            .await
+            .expect("tracked file should stage");
+        let message = "--amend is not an option here\n\nThe body keeps\tits tab.";
+
+        commit(folder, message)
+            .await
+            .expect("message should commit");
+
+        let logged = run(folder, &["log", "-1", "--format=%B"], GitCall::User)
+            .await
+            .expect("log should read");
+        assert_eq!(
+            String::from_utf8(logged.stdout)
+                .expect("log should be UTF-8")
+                .trim_end(),
+            message
+        );
     }
 
     #[test]

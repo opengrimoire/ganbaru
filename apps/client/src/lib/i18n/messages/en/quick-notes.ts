@@ -155,6 +155,8 @@ export const quickNotes = {
   reordered: (position: number, total: number) => `Note moved to position ${position} of ${total}`,
   reorderFailed: "The note order could not be saved",
   loadFailed: "Quick notes could not be loaded",
+  actionFailed: "The quick note could not be changed",
+  openFailed: "The quick note could not be opened",
   retry: "Retry",
   selectionActions: "Selected note actions",
 } as const;

@@ -169,7 +169,7 @@
         <label class="text-[0.8rem] text-muted-foreground" for="sync-server-code">{t("sync.server.codeLabel")}</label>
         <MaskedCodeInput
           id="sync-server-code"
-          class="field h-9 w-full px-3 font-mono text-sm"
+          class="field w-full px-3 font-mono text-sm"
           clearLabel={t("common.clearCode")}
           dir="ltr"
           autocomplete="off"

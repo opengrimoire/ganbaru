@@ -33,6 +33,11 @@ export function listenForChatChanges(
   return listen<unknown>("chat://change", (event) => onPayload(event.payload));
 }
 
+/** Subscribes the desktop shell to native changes of organizational Chat rows that name no thread. */
+export function listenForChatOrganizationChanges(onChange: () => void): Promise<StopChatChangeListener> {
+  return listen<unknown>("chat://organization-change", () => onChange());
+}
+
 /** Lazily loads the desktop private scratch inspector. */
 export function loadChatScratchManager(): Promise<ChatScratchManagerComponent> {
   return import("$lib/components/settings/chat/ChatScratchManager.svelte")

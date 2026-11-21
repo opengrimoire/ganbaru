@@ -1,29 +1,24 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderCapabilities, ProviderInstanceRead, ProviderModel } from "$lib/chat/contracts";
 import {
+  CHAT_IMAGE_LIMIT,
   clipboardImageFiles,
-  composerActionState,
   composerRateLimitWindows,
-  composerModeCommand,
   composerTokenTrigger,
   contextMeter,
   copyModelOptionSelections,
   copyVersionedJson,
+  defaultEffortValue,
   defaultModelOptions,
   filterPromptCatalog,
   filterWorkspacePaths,
-  interactionModeForPrompt,
   parseApprovalChoices,
   parseApprovalDisplay,
   parseUserInputQuestions,
   queuedFollowupDispatchReady,
   rankedModels,
   resolveDefaultProviderModel,
-  shouldSendComposerKey,
-  supportsImagePrompt,
-  validateComposerSelections,
   validateImageFiles,
-  validateModelOptions,
   validateUserInputAnswers,
 } from "./model";
 
@@ -49,8 +44,6 @@ function provider(
       launchArguments: [],
       environment: {},
       credentialReferences: {},
-      visibleModelIds: [],
-      favoriteModelIds: [],
       providerConfig: { schemaVersion: 1, value: {} },
     },
     runtimeReview: [],
@@ -60,6 +53,8 @@ function provider(
       version: null,
       negotiatedProtocolVersion: null,
       accountLabel: null,
+      authSource: null,
+      accountPlan: null,
       capabilities: capabilities(),
       authoritySupport: {
         isolatedConversation: true,
@@ -70,14 +65,20 @@ function provider(
         confinedCommands: true,
         networkBoundary: true,
         classifiedPublish: true,
+        personApprovedCommands: false,
       },
       checkedAt: "2026-08-01T00:00:00Z",
       detail: null,
+      versionAdmission: null,
+      agentMinimumVersion: null,
     },
     lastSuccessfulProbeAt: state === "healthy" ? "2026-08-01T00:00:00Z" : null,
+    usageLimits: null,
+    lastUsedAt: null, duplicateOf: null,
     modelCatalog: {
       instanceId,
       models,
+      recommendedModelId: null,
       source: "provider",
       discoveredAt: "2026-08-01T00:00:00Z",
       stale: false,
@@ -86,39 +87,10 @@ function provider(
 }
 
 describe("Chat composer model", () => {
-  it("prioritizes requests and Stop while selecting capability-driven follow-up behavior", () => {
-    expect(composerActionState("waiting_for_approval", capabilities("steering"), true, true).primary).toBe("resolve_request");
-    expect(composerActionState("active", capabilities("steering"), true, false)).toMatchObject({ primary: "stop", followup: "steer" });
-    expect(composerActionState("active", capabilities("queued_follow_up"), true, false).followup).toBe("queue");
-    expect(composerActionState("active", capabilities(), true, false).followup).toBe("retain");
-    expect(composerActionState("ready", capabilities(), true, false)).toMatchObject({ primary: "send", sendEnabled: true });
+  it("dispatches a queued follow-up once the session is ready or the turn has settled", () => {
     expect(queuedFollowupDispatchReady("ready", "completed")).toBe(true);
     expect(queuedFollowupDispatchReady("stopped", "failed")).toBe(true);
     expect(queuedFollowupDispatchReady("stopped", "active")).toBe(false);
-  });
-
-  it("requires every explicit first-use choice and workspace-specific broad permission trust", () => {
-    expect(validateComposerSelections({
-      workingFolderId: null,
-      providerInstanceId: null,
-      modelId: null,
-      providerManagedModel: false,
-      safetyMode: null,
-      interactionMode: null,
-      fullAccessTrusted: false,
-    }, capabilities())).toHaveLength(5);
-    expect(validateComposerSelections({
-      workingFolderId: "workspace-1",
-      providerInstanceId: "codex",
-      modelId: "gpt-5",
-      providerManagedModel: false,
-      safetyMode: "full_access",
-      interactionMode: "plan",
-      fullAccessTrusted: false,
-    }, capabilities())).toEqual([
-      { field: "interaction", message: "This provider does not support native Plan mode" },
-      { field: "trust", message: "Confirm broad permission trust for this provider and workspace" },
-    ]);
   });
 
   it("detects mention, skill, and command tokens at the caret", () => {
@@ -127,25 +99,6 @@ describe("Chat composer model", () => {
     expect(composerTokenTrigger("/review", 7)).toMatchObject({ kind: "command", query: "review" });
     expect(composerTokenTrigger("  /review", 9)).toMatchObject({ kind: "command", query: "review", start: 2 });
     expect(composerTokenTrigger("Run /review", 11)).toBeNull();
-  });
-
-  it("extracts universal mode commands without sending the command prefix to providers", () => {
-    expect(composerModeCommand("/plan inspect the architecture")).toEqual({
-      mode: "plan",
-      prompt: "inspect the architecture",
-    });
-    expect(composerModeCommand(" /BUILD implement it")).toEqual({
-      mode: "build",
-      prompt: "implement it",
-    });
-    expect(composerModeCommand("Explain /plan behavior")).toBeNull();
-  });
-
-  it("maps the universal plan command to Plan mode and otherwise preserves the current mode", () => {
-    expect(interactionModeForPrompt("  /plan inspect the architecture", "build")).toBe("plan");
-    expect(interactionModeForPrompt("/PLAN", null)).toBe("plan");
-    expect(interactionModeForPrompt("Implement the plan", "plan")).toBe("plan");
-    expect(interactionModeForPrompt("Implement the change", null)).toBe("build");
   });
 
   it("fuzzy-ranks provider menus and workspace paths while preserving stale entries", () => {
@@ -164,9 +117,33 @@ describe("Chat composer model", () => {
   it("ranks favorite and recent models before the remaining catalog without replacing raw IDs", () => {
     const models = ["z-model", "favorite", "recent"].map((id) => ({
       id, displayName: id, description: null, contextLimit: null, availability: "available" as const,
-      capabilities: [], options: [], custom: false,
+      capabilities: [], options: [],
     }));
     expect(rankedModels(models, ["favorite"], ["recent"], "").map((model) => model.id)).toEqual(["favorite", "recent", "z-model"]);
+  });
+
+  it("starts effort on medium, else the highest choice, and keeps other provider defaults", () => {
+    const choice = (key: string, label: string, values: string[], defaultValue: string | null) => ({
+      kind: "choice" as const,
+      key,
+      label,
+      description: null,
+      options: values.map((value) => ({ value, label: value, description: null })),
+      defaultValue,
+    });
+    expect(defaultEffortValue(choice("effort", "Effort", ["low", "Medium", "high"], null).options)).toBe("Medium");
+    expect(defaultEffortValue(choice("effort", "Effort", ["low", "high", "max"], null).options)).toBe("max");
+    expect(defaultEffortValue([])).toBeNull();
+    expect(defaultModelOptions([
+      choice("thinking", "Reasoning", ["low", "high"], "low"),
+      choice("tier", "Service tier", ["default", "fast"], "default"),
+    ])).toEqual([
+      { key: "thinking", value: { kind: "choice", value: "high" } },
+      { key: "tier", value: { kind: "choice", value: "default" } },
+    ]);
+    expect(defaultModelOptions([choice("effort", "Effort", [], "auto")])).toEqual([
+      { key: "effort", value: { kind: "choice", value: "auto" } },
+    ]);
   });
 
   it("defaults to the strongest OpenAI model at Medium effort when OpenAI is connected", () => {
@@ -190,12 +167,11 @@ describe("Chat composer model", () => {
       availability: "available",
       capabilities: [],
       options: [effort],
-      custom: false,
     });
     const claude = provider("claude-local", "claude", [model("claude-opus-4-1")]);
     const codex = provider("codex-local", "codex", [model("gpt-5.5-sol"), model("gpt-5.6-sol")]);
 
-    const resolved = resolveDefaultProviderModel([claude, codex]);
+    const resolved = resolveDefaultProviderModel([codex, claude]);
 
     expect(resolved?.provider.configuration.instanceId).toBe("codex-local");
     expect(resolved?.model?.id).toBe("gpt-5.6-sol");
@@ -277,10 +253,7 @@ describe("Chat composer model", () => {
     expect(parseApprovalDisplay({ schemaVersion: 1, value: "approval" }).title).toBeNull();
   });
 
-  it("validates typed traits and structured answers without accepting unknown options", () => {
-    expect(validateModelOptions([
-      { kind: "choice", key: "effort", label: "Effort", description: null, options: [{ value: "high", label: "High", description: null }], defaultValue: "high" },
-    ], [{ key: "effort", value: { kind: "choice", value: "invalid" } }])).toEqual(["effort"]);
+  it("validates structured answers without accepting unknown options", () => {
     const questions = parseUserInputQuestions({
       schemaVersion: 1,
       value: [{ id: "q1", question: "Choose", options: [{ id: "a", label: "A" }], multiple: false, freeFormAllowed: false, required: true }],
@@ -288,6 +261,17 @@ describe("Chat composer model", () => {
     expect(validateUserInputAnswers(questions, [{ questionId: "q1", selectedOptionIds: [], freeFormText: null }])).toEqual(["q1"]);
     expect(validateUserInputAnswers(questions, [{ questionId: "q1", selectedOptionIds: ["a"], freeFormText: null }])).toEqual([]);
     expect(validateUserInputAnswers(questions, [{ questionId: "q1", selectedOptionIds: ["missing"], freeFormText: null }])).toEqual(["q1"]);
+    expect(validateUserInputAnswers(questions, [{ questionId: "q1", selectedOptionIds: ["a"], freeFormText: null, attachmentIds: ["image-1"] }])).toEqual(["q1"]);
+  });
+
+  it("accepts answer attachments only where free-form text is allowed and up to the limit", () => {
+    const questions = parseUserInputQuestions({
+      schemaVersion: 1,
+      value: [{ id: "q1", question: "Describe", options: [], multiple: false, freeFormAllowed: true, required: true }],
+    });
+    expect(validateUserInputAnswers(questions, [{ questionId: "q1", selectedOptionIds: [], freeFormText: null, attachmentIds: ["image-1"] }])).toEqual([]);
+    const tooMany = Array.from({ length: CHAT_IMAGE_LIMIT + 1 }, (_, index) => `image-${index}`);
+    expect(validateUserInputAnswers(questions, [{ questionId: "q1", selectedOptionIds: [], freeFormText: "See", attachmentIds: tooMany }])).toEqual(["q1"]);
   });
 
   it("shows only provider-reported context facts and caps visual ratios", () => {
@@ -305,9 +289,22 @@ describe("Chat composer model", () => {
       providerData: {
         schemaVersion: 1,
         value: {
-          limitId: "codex",
-          primary: { usedPercent: 31, windowDurationMins: 300, resetsAt: 1_730_948_100 },
-          secondary: { usedPercent: 108, windowDurationMins: 10_080, resetsAt: 1_731_000_000 },
+          rateLimitsByLimitId: {
+            codex: {
+              limitId: "codex",
+              limitName: null,
+              primary: { usedPercent: 31, windowDurationMins: 300, resetsAt: 1_730_948_100 },
+              secondary: { usedPercent: 108, windowDurationMins: 10_080, resetsAt: 1_731_000_000 },
+              rateLimitReachedType: null,
+            },
+            codex_mini: {
+              limitId: "codex_mini",
+              limitName: "GPT mini",
+              primary: { usedPercent: 100, windowDurationMins: null, resetsAt: null },
+              secondary: null,
+              rateLimitReachedType: "rate_limit_reached",
+            },
+          },
         },
       },
     })).toEqual([
@@ -317,6 +314,7 @@ describe("Chat composer model", () => {
         usedPercent: 31,
         windowDurationMinutes: 300,
         resetsAtSeconds: 1_730_948_100,
+        accountWide: true,
       },
       {
         id: "codex:secondary",
@@ -324,34 +322,80 @@ describe("Chat composer model", () => {
         usedPercent: 100,
         windowDurationMinutes: 10_080,
         resetsAtSeconds: 1_731_000_000,
+        accountWide: true,
+      },
+      {
+        id: "codex_mini:primary",
+        label: "GPT mini",
+        usedPercent: 100,
+        windowDurationMinutes: null,
+        resetsAtSeconds: null,
+        accountWide: false,
+      },
+    ]);
+    expect(composerRateLimitWindows({
+      limited: true,
+      resetsAt: null,
+      detail: null,
+      providerData: { schemaVersion: 1, value: { primary: { usedPercent: 50 } } },
+    })).toEqual([]);
+  });
+
+  it("reads Claude limit types as windows, a rejected type without utilization as fully used and an allowed one as unmetered", () => {
+    expect(composerRateLimitWindows({
+      limited: true,
+      resetsAt: "2030-01-01T00:00:00Z",
+      detail: null,
+      providerData: {
+        schemaVersion: 1,
+        value: {
+          rateLimitsByType: {
+            five_hour: { rateLimitType: "five_hour", status: "allowed_warning", resetsAt: 1_893_456_000, utilization: 0.85 },
+            seven_day: { rateLimitType: "seven_day", status: "allowed", resetsAt: 1_893_900_000 },
+            seven_day_opus: { rateLimitType: "seven_day_opus", status: "rejected", resetsAt: 1_893_900_000 },
+            overage: { rateLimitType: "overage", status: "allowed", resetsAt: null, utilization: 1.4 },
+          },
+        },
+      },
+    })).toEqual([
+      {
+        id: "claude:five_hour",
+        label: "5h",
+        usedPercent: 85,
+        windowDurationMinutes: 300,
+        resetsAtSeconds: 1_893_456_000,
+        accountWide: true,
+      },
+      {
+        id: "claude:seven_day",
+        label: "7d",
+        usedPercent: null,
+        windowDurationMinutes: 10_080,
+        resetsAtSeconds: 1_893_900_000,
+        accountWide: true,
+      },
+      {
+        id: "claude:seven_day_opus",
+        label: "7d opus",
+        usedPercent: 100,
+        windowDurationMinutes: 10_080,
+        resetsAtSeconds: 1_893_900_000,
+        accountWide: false,
+      },
+      {
+        id: "claude:overage",
+        label: "overage",
+        usedPercent: 100,
+        windowDurationMinutes: null,
+        resetsAtSeconds: null,
+        accountWide: false,
       },
     ]);
   });
 
-  it("implements send keys and image limits", () => {
-    expect(shouldSendComposerKey({ key: "Enter", shiftKey: false, ctrlKey: false, metaKey: false, isComposing: false }, "enter")).toBe(true);
-    expect(shouldSendComposerKey({ key: "Enter", shiftKey: true, ctrlKey: false, metaKey: false, isComposing: false }, "enter")).toBe(false);
+  it("enforces image count and total size limits", () => {
     expect(validateImageFiles(Array.from({ length: 2 }, (_, index) => ({ name: `${index}.png`, size: 10, type: "image/png" })) as File[], 7)).toContain("8 images");
     expect(validateImageFiles([{ name: "large.png", size: 2 * 1024 * 1024, type: "image/png" }] as File[], 1, 49 * 1024 * 1024)).toContain("50 MiB");
-  });
-
-  it("respects model-specific Codex image input support", () => {
-    const spark = {
-      id: "gpt-5.3-codex-spark",
-      displayName: "GPT-5.3-Codex-Spark",
-      description: null,
-      contextLimit: null,
-      availability: "available" as const,
-      capabilities: [],
-      options: [],
-      custom: false,
-    };
-    const sol = { ...spark, id: "gpt-5.6-sol", capabilities: ["images" as const] };
-
-    expect(supportsImagePrompt("codex", spark, capabilities("images"))).toBe(false);
-    expect(supportsImagePrompt("codex", sol, capabilities())).toBe(true);
-    expect(supportsImagePrompt("cursor", spark, capabilities("images"))).toBe(true);
-    expect(supportsImagePrompt("codex", { ...spark, custom: true }, capabilities("images"))).toBe(true);
   });
 
   it("reads screenshot images exposed only as clipboard items", () => {

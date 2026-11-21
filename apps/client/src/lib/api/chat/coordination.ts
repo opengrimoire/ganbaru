@@ -7,12 +7,26 @@ import type {
   ChatParticipantId,
   ChatReplyThreadId,
   ChatWorkAssignmentId,
-  ChatAiTeammateRead,
-  ChatAccessProfileRead,
-  ChatAccessProfileImpactPreviewRead,
-  ChatTeammateAccessPreviewRead,
-  ChatTeammateAccessRead,
+  ChatAgentUsageDayRead,
+  ChatAssignmentInputEditRequest,
+  ChatAssignmentInputId,
+  ChatAssignmentInputRead,
+  ChatAssignmentReviewRequest,
+  ChatAiAgentRead,
+  ChatCustomAgentRemoval,
+  ChatAppAgentSettingsRead,
+  ChatChannelAgentRequest,
+  ChatChannelAgentSettingsRead,
+  ChatProjectAgentSettingsRead,
+  CreateChatAgentRequest,
+  SetChatAgentPolicyRequest,
+  UpdateChatAppAgentSettingsRequest,
+  UpdateChatChannelAgentSettingsRequest,
+  UpdateChatProjectAgentSettingsRequest,
   ChatChannelRosterRead,
+  ChatLiveFollowRead,
+  ChatRemoteApprovalDecision,
+  ChatRemoteApprovalOutcome,
   ChatChannelMembershipRemovalPreview,
   PreviewChatChannelMembershipRemovalRequest,
   ChatAssignmentTargetRead,
@@ -25,56 +39,59 @@ import type {
   ChatScratchCleanupResultRead,
   ChatScratchDirectoryPageRead,
   ChatScratchPromotionResultRead,
+  ChatScratchReclaimReportRead,
   ChatScratchScopeRead,
   ChatProjectPrimaryWorkingFolderRead,
   ChatChannelPageRead,
   ChatReplyThreadPageRead,
   ChatMessageSearchResultRead,
-  CreateChatTeammateRequest,
-  ReplaceChatTeammateAccessRequest,
-  CreateChatAccessProfileRequest,
-  DuplicateChatAccessProfileRequest,
-  PublishChatAccessProfileRevisionRequest,
-  ArchiveChatAccessProfileRequest,
   PostChatMessageRequest,
   PostChatMessageResult,
   ScheduleChatMessageRequest,
+  UpdateScheduledChatMessageRequest,
   ChatScheduledMessageDispatchRead,
   ChatScheduledMessageId,
   ChatScheduledMessageRead,
-  ChatWaitingAssignmentRead,
+  ChatReviewQueueRead,
+  ChatSecretRequestRead,
   CreateChatChannelRequest,
   UpdateChatChannelDetailsRequest,
   ProjectWorkingFolderId,
 } from "$lib/chat/contracts";
 import {
   parseChatChannel,
+  parseChatAgentUsageDay,
   parseChatChannels,
-  parseChatAiTeammate,
-  parseChatAiTeammates,
-  parseChatAccessProfiles,
-  parseChatAccessProfile,
-  parseChatAccessProfileImpactPreview,
-  parseChatTeammateAccess,
-  parseChatTeammateAccessPreview,
+  parseChatAiAgent,
+  parseChatAiAgents,
+  parseChatCustomAgentRemoval,
+  parseChatAppAgentSettings,
+  parseChatChannelAgentSettings,
+  parseChatProjectAgentSettings,
   parseChatChannelRoster,
+  parseChatLiveFollow,
+  parseChatRemoteApprovalOutcome,
   parseChatChannelMembershipRemovalPreview,
   parseChatAssignmentTargets,
   parseChatScratchCleanupPreview,
   parseChatScratchCleanupResult,
   parseChatScratchDirectoryPage,
   parseChatScratchPromotionResult,
+  parseChatScratchReclaimReport,
   parseChatScratchScopes,
   parseChatProjectPrimaryWorkingFolder,
   parseChatChannelPage,
   parseChatReplyThreadPage,
   parseChatMessageSearchResults,
-  parseChatWaitingAssignments,
+  parseChatReviewQueue,
+  parseChatSecretRequests,
   parsePostChatMessageResult,
   parseChatScheduledMessage,
   parseChatScheduledMessageDispatch,
   parseChatScheduledMessages,
   parseChatWorkAssignment,
+  parseChatAssignmentInput,
+  parseChatAssignmentInputs,
 } from "$lib/chat/validation";
 
 const localExecutionAvailable = platformHasCapability(
@@ -138,102 +155,152 @@ export async function setChatChannelRead(channelId: ChatChannelId, read: boolean
   }));
 }
 
-export async function listChatTeammates(archived = false): Promise<ChatAiTeammateRead[]> {
-  return parseChatAiTeammates(await invoke<unknown>("chat_list_teammates", {
+export async function listChatAgents(archived = false): Promise<ChatAiAgentRead[]> {
+  return parseChatAiAgents(await invoke<unknown>("chat_list_agents", {
     dbUrl: await ensureDbUrl(), archived,
   }));
 }
 
-export async function readChatTeammate(teammateId: ChatParticipantId): Promise<ChatAiTeammateRead> {
-  return parseChatAiTeammate(await invoke<unknown>("chat_read_teammate", {
-    dbUrl: await ensureDbUrl(), teammateId,
+export async function readChatAgent(agentId: ChatParticipantId): Promise<ChatAiAgentRead> {
+  return parseChatAiAgent(await invoke<unknown>("chat_read_agent", {
+    dbUrl: await ensureDbUrl(), agentId,
   }));
 }
 
-export async function listChatAccessProfiles(archived = false): Promise<ChatAccessProfileRead[]> {
-  return parseChatAccessProfiles(await invoke<unknown>("chat_list_access_profiles", {
-    dbUrl: await ensureDbUrl(), archived,
+/** Sets an agent's default model, which work starts on unless a channel or a thread overrides it. */
+export async function setChatAgentPolicy(request: SetChatAgentPolicyRequest): Promise<ChatAiAgentRead> {
+  return parseChatAiAgent(await invoke<unknown>("chat_set_agent_policy", {
+    dbUrl: await ensureDbUrl(),
+    request: {
+      agentId: request.agentId,
+      policy: {
+        providerManagedModel: request.policy.providerManagedModel,
+        modelId: request.policy.modelId,
+        modelOptions: request.policy.modelOptions,
+        providerOptions: request.policy.providerOptions,
+        interactionMode: request.policy.interactionMode,
+      },
+    },
   }));
 }
 
-export async function createChatAccessProfile(
-  request: CreateChatAccessProfileRequest,
-): Promise<ChatAccessProfileRead> {
-  return parseChatAccessProfile(await invoke<unknown>("chat_create_access_profile", {
+/**
+ * Creates a named agent that runs one provider family with the model and options it keeps. Names are unique, ignoring
+ * case, and cannot be a model line such as "Opus" or "Sol"; a taken or malformed name fails validation on `displayName`.
+ */
+export async function createChatAgent(request: CreateChatAgentRequest): Promise<ChatAiAgentRead> {
+  return parseChatAiAgent(await invoke<unknown>("chat_create_agent", {
+    dbUrl: await ensureDbUrl(),
+    request: {
+      displayName: request.displayName,
+      providerFamilyId: request.providerFamilyId,
+      policy: {
+        providerManagedModel: request.policy.providerManagedModel,
+        modelId: request.policy.modelId,
+        modelOptions: request.policy.modelOptions,
+        providerOptions: request.policy.providerOptions,
+        interactionMode: request.policy.interactionMode,
+      },
+    },
+  }));
+}
+
+/** Reads the app access and instructions every project and channel inherits. */
+export async function readChatAppAgentSettings(): Promise<ChatAppAgentSettingsRead> {
+  return parseChatAppAgentSettings(await invoke<unknown>("chat_read_app_agent_settings", {
+    dbUrl: await ensureDbUrl(),
+  }));
+}
+
+/** Saves the app access and instructions; a stale revision fails with `stale_revision`. */
+export async function updateChatAppAgentSettings(
+  request: UpdateChatAppAgentSettingsRequest,
+): Promise<ChatAppAgentSettingsRead> {
+  return parseChatAppAgentSettings(await invoke<unknown>("chat_update_app_agent_settings", {
     dbUrl: await ensureDbUrl(), request,
   }));
 }
 
-export async function duplicateChatAccessProfile(
-  request: DuplicateChatAccessProfileRequest,
-): Promise<ChatAccessProfileRead> {
-  return parseChatAccessProfile(await invoke<unknown>("chat_duplicate_access_profile", {
+/** Reads a project's access and instructions with the access its channels inherit. */
+export async function readChatProjectAgentSettings(projectId: string): Promise<ChatProjectAgentSettingsRead> {
+  return parseChatProjectAgentSettings(await invoke<unknown>("chat_read_project_agent_settings", {
+    dbUrl: await ensureDbUrl(), projectId,
+  }));
+}
+
+/** Saves a project's access and instructions; revision 0 creates them. */
+export async function updateChatProjectAgentSettings(
+  request: UpdateChatProjectAgentSettingsRequest,
+): Promise<ChatProjectAgentSettingsRead> {
+  return parseChatProjectAgentSettings(await invoke<unknown>("chat_update_project_agent_settings", {
     dbUrl: await ensureDbUrl(), request,
   }));
 }
 
-export async function previewChatAccessProfileRevision(
-  request: PublishChatAccessProfileRevisionRequest,
-): Promise<ChatAccessProfileImpactPreviewRead> {
-  return parseChatAccessProfileImpactPreview(await invoke<unknown>(
-    "chat_preview_access_profile_revision",
-    { dbUrl: await ensureDbUrl(), request },
-  ));
+/** Reads a channel's agent settings with what each agent in it does on this device. */
+export async function readChatChannelAgentSettings(
+  channelId: ChatChannelId,
+): Promise<ChatChannelAgentSettingsRead> {
+  return parseChatChannelAgentSettings(await invoke<unknown>("chat_read_channel_agent_settings", {
+    dbUrl: await ensureDbUrl(), channelId,
+  }));
 }
 
-export async function publishChatAccessProfileRevision(
-  request: PublishChatAccessProfileRevisionRequest,
-): Promise<ChatAccessProfileRead> {
-  return parseChatAccessProfile(await invoke<unknown>("chat_publish_access_profile_revision", {
+/** Saves a channel's access and instructions; a null access inherits. */
+export async function updateChatChannelAgentSettings(
+  request: UpdateChatChannelAgentSettingsRequest,
+): Promise<ChatChannelAgentSettingsRead> {
+  return parseChatChannelAgentSettings(await invoke<unknown>("chat_update_channel_agent_settings", {
     dbUrl: await ensureDbUrl(), request,
   }));
 }
 
-export async function archiveChatAccessProfile(
-  request: ArchiveChatAccessProfileRequest,
-): Promise<ChatAccessProfileRead> {
-  return parseChatAccessProfile(await invoke<unknown>("chat_archive_access_profile", {
+/** Adds an agent to a channel under the channel's access; adding a present agent changes nothing. */
+export async function addChatChannelAgent(request: ChatChannelAgentRequest): Promise<ChatChannelAgentSettingsRead> {
+  return parseChatChannelAgentSettings(await invoke<unknown>("chat_add_channel_agent", {
     dbUrl: await ensureDbUrl(), request,
   }));
 }
 
-export async function readChatTeammateAccess(
-  teammateId: ChatParticipantId,
-): Promise<ChatTeammateAccessRead> {
-  return parseChatTeammateAccess(await invoke<unknown>("chat_read_teammate_access", {
-    dbUrl: await ensureDbUrl(), teammateId,
-  }));
-}
-
-export async function previewChatTeammateAccess(
-  request: ReplaceChatTeammateAccessRequest,
-): Promise<ChatTeammateAccessPreviewRead> {
-  return parseChatTeammateAccessPreview(await invoke<unknown>("chat_preview_teammate_access", {
+/** Removes an agent from a channel, which stops its work there and ends its push approvals. */
+export async function removeChatChannelAgent(
+  request: ChatChannelAgentRequest,
+): Promise<ChatChannelAgentSettingsRead> {
+  return parseChatChannelAgentSettings(await invoke<unknown>("chat_remove_channel_agent", {
     dbUrl: await ensureDbUrl(), request,
   }));
 }
 
-export async function replaceChatTeammateAccess(
-  request: ReplaceChatTeammateAccessRequest,
-): Promise<ChatTeammateAccessRead> {
-  return parseChatTeammateAccess(await invoke<unknown>("chat_replace_teammate_access", {
-    dbUrl: await ensureDbUrl(), request,
-  }));
-}
-
-export async function createChatTeammate(request: CreateChatTeammateRequest): Promise<ChatAiTeammateRead> {
-  return parseChatAiTeammate(await invoke<unknown>("chat_create_teammate", {
-    dbUrl: await ensureDbUrl(), request,
-  }));
-}
-
-export async function archiveChatTeammate(
-  teammateId: ChatParticipantId,
+export async function archiveChatAgent(
+  agentId: ChatParticipantId,
   expectedRevision: number,
   archived: boolean,
-): Promise<ChatAiTeammateRead> {
-  return parseChatAiTeammate(await invoke<unknown>("chat_archive_teammate", {
-    dbUrl: await ensureDbUrl(), teammateId, expectedRevision, archived,
+): Promise<ChatAiAgentRead> {
+  return parseChatAiAgent(await invoke<unknown>("chat_archive_agent", {
+    dbUrl: await ensureDbUrl(), agentId, expectedRevision, archived,
+  }));
+}
+
+/**
+ * Removes an agent a person named. A never-used agent is deleted on every device; a used one is
+ * archived and hidden from the agent list, and the result carries it.
+ */
+export async function removeCustomChatAgent(
+  agentId: ChatParticipantId,
+  expectedRevision: number,
+): Promise<ChatCustomAgentRemoval> {
+  return parseChatCustomAgentRemoval(await invoke<unknown>("chat_remove_custom_agent", {
+    dbUrl: await ensureDbUrl(), agentId, expectedRevision,
+  }));
+}
+
+/** Brings a hidden agent a person named back to the agent list. It stays archived, so it stays off. */
+export async function restoreCustomChatAgent(
+  agentId: ChatParticipantId,
+  expectedRevision: number,
+): Promise<ChatAiAgentRead> {
+  return parseChatAiAgent(await invoke<unknown>("chat_restore_custom_agent", {
+    dbUrl: await ensureDbUrl(), agentId, expectedRevision,
   }));
 }
 
@@ -246,6 +313,36 @@ export async function readChatChannelRoster(channelId: ChatChannelId): Promise<C
   }));
 }
 
+/**
+ * Reads one page of the live execution of work a linked desktop runs, from that desktop over the LAN. With `wait`, the
+ * desktop holds the answer until the execution changes or a short bound passes. Only phones register the command.
+ */
+export async function readChatLiveExecution(
+  assignmentId: ChatWorkAssignmentId,
+  afterChange: number | null,
+  wait: boolean,
+): Promise<ChatLiveFollowRead> {
+  return parseChatLiveFollow(await invoke<unknown>("chat_read_live_execution", {
+    dbUrl: await ensureDbUrl(), assignmentId, afterChange, wait,
+  }));
+}
+
+/**
+ * Answers an approval that work a linked desktop runs holds open, on that desktop over the LAN. `commandId` names the
+ * answer, so sending it again never resolves twice. Only phones register the command.
+ */
+export async function resolveChatRemoteApproval(request: {
+  assignmentId: ChatWorkAssignmentId;
+  requestId: string;
+  decision: ChatRemoteApprovalDecision;
+  providerOptionId: string;
+  commandId: string;
+}): Promise<ChatRemoteApprovalOutcome> {
+  return parseChatRemoteApprovalOutcome(await invoke<unknown>("chat_resolve_remote_approval", {
+    dbUrl: await ensureDbUrl(), ...request,
+  }));
+}
+
 export async function listChatAssignmentTargets(
   request: ListChatAssignmentTargetsRequest,
 ): Promise<ChatAssignmentTargetRead[]> {
@@ -255,11 +352,11 @@ export async function listChatAssignmentTargets(
 }
 
 export async function listChatScratchScopes(
-  teammateId: ChatParticipantId | null = null,
+  agentId: ChatParticipantId | null = null,
   replyThreadId: ChatReplyThreadId | null = null,
 ): Promise<ChatScratchScopeRead[]> {
   return parseChatScratchScopes(await invoke<unknown>("chat_list_scratch_scopes", {
-    dbUrl: await ensureDbUrl(), teammateId, replyThreadId,
+    dbUrl: await ensureDbUrl(), agentId, replyThreadId,
   }));
 }
 
@@ -292,6 +389,17 @@ export async function cleanupChatScratch(
 ): Promise<ChatScratchCleanupResultRead> {
   return parseChatScratchCleanupResult(await invoke<unknown>("chat_cleanup_scratch", {
     dbUrl: await ensureDbUrl(), request,
+  }));
+}
+
+/**
+ * Reads the largest scratch generations that the confirmed cleanup can reclaim.
+ *
+ * The report never deletes anything; cleanup stays in the scratch manager.
+ */
+export async function readChatScratchReclaimReport(): Promise<ChatScratchReclaimReportRead> {
+  return parseChatScratchReclaimReport(await invoke<unknown>("chat_read_scratch_reclaim_report", {
+    dbUrl: await ensureDbUrl(),
   }));
 }
 
@@ -355,6 +463,15 @@ export async function cancelScheduledChatMessage(
   });
 }
 
+/** Replaces the content, time, and repeat rule of a scheduled message that is not being sent yet. */
+export async function updateScheduledChatMessage(
+  request: UpdateScheduledChatMessageRequest,
+): Promise<ChatScheduledMessageRead> {
+  return parseChatScheduledMessage(await invoke<unknown>("chat_update_scheduled_message", {
+    dbUrl: await ensureDbUrl(), request,
+  }));
+}
+
 export async function retryScheduledChatMessage(
   scheduledMessageId: ChatScheduledMessageId,
 ): Promise<ChatScheduledMessageRead> {
@@ -416,6 +533,17 @@ export async function cancelChatAssignment(
   }));
 }
 
+/** Accepts ready-for-review work, or posts a note that continues it in a follow-up assignment. */
+export async function reviewChatAssignment(
+  assignmentId: ChatWorkAssignmentId,
+  expectedRevision: number,
+  review: ChatAssignmentReviewRequest,
+): Promise<import("$lib/chat/contracts").ChatWorkAssignmentRead> {
+  return parseChatWorkAssignment(await invoke<unknown>("chat_review_assignment", {
+    dbUrl: await ensureDbUrl(), assignmentId, expectedRevision, review,
+  }));
+}
+
 export async function retryChatAssignment(
   assignmentId: ChatWorkAssignmentId,
   expectedRevision: number,
@@ -426,26 +554,128 @@ export async function retryChatAssignment(
 }
 
 /**
- * Starts synced work that waits for a local action on this device. `seenDigest` names the details the user saw;
- * when the work changed since then nothing starts and this returns null, so the caller refreshes the offer.
+ * Lists the assignments that wait for the person, ordered by priority and recency and capped,
+ * with the total count.
+ *
+ * @param projectId Limits the queue to one project, or `null` for every project.
  */
-export async function acceptChatAssignmentHere(
-  assignmentId: ChatWorkAssignmentId,
-  seenDigest: string,
-): Promise<import("$lib/chat/contracts").ChatWorkAssignmentRead | null> {
-  const started = await invoke<unknown>("chat_accept_assignment_here", {
-    dbUrl: await ensureDbUrl(), assignmentId, seenDigest,
-  });
-  return started === null ? null : parseChatWorkAssignment(started);
-}
-
-/** Lists the work that waits for a local action on this device across the vault, newest first. */
-export async function listChatWaitingAssignments(): Promise<ChatWaitingAssignmentRead[]> {
-  return parseChatWaitingAssignments(await invoke<unknown>("chat_list_waiting_assignments", {
+export async function listChatReviewQueue(projectId: string | null): Promise<ChatReviewQueueRead> {
+  return parseChatReviewQueue(await invoke<unknown>("chat_list_review_queue", {
     dbUrl: await ensureDbUrl(),
+    projectId,
   }));
 }
 
 export async function recoverChatAssignmentDispatchJobs(): Promise<number> {
   return invoke<number>("chat_recover_assignment_dispatch_jobs", { dbUrl: await ensureDbUrl() });
+}
+
+/**
+ * Lists the secret requests still open in a reply thread. Secret requests come from local runs, so a
+ * device without local execution has none.
+ */
+export async function listChatSecretRequests(
+  replyThreadId: ChatReplyThreadId,
+): Promise<ChatSecretRequestRead[]> {
+  if (!localExecutionAvailable) return [];
+  return parseChatSecretRequests(await invoke<unknown>("chat_list_secret_requests", {
+    dbUrl: await ensureDbUrl(), replyThreadId,
+  }));
+}
+
+/**
+ * Hands a secret value to the run that asked for it. The value goes to a private file for the run and
+ * is never stored in the vault.
+ *
+ * @throws When this device cannot run agents, or when the backend refuses the value with a secret refusal code.
+ */
+export async function provideChatSecret(requestId: string, value: string): Promise<void> {
+  requireLocalSecretRequests();
+  await invoke<unknown>("chat_provide_secret", { dbUrl: await ensureDbUrl(), requestId, value });
+}
+
+/**
+ * Declines a secret request so the run continues without the value.
+ *
+ * @throws When this device cannot run agents, or when the request is no longer open.
+ */
+export async function declineChatSecret(requestId: string): Promise<void> {
+  requireLocalSecretRequests();
+  await invoke<unknown>("chat_decline_secret", { dbUrl: await ensureDbUrl(), requestId });
+}
+
+function requireLocalSecretRequests(): void {
+  if (!localExecutionAvailable) {
+    throw new Error("Chat secret requests need local execution on this device");
+  }
+}
+
+/** Lists the replies addressed to one assignment, in delivery order. */
+export async function listChatAssignmentInputs(assignmentId: ChatWorkAssignmentId): Promise<ChatAssignmentInputRead[]> {
+  return parseChatAssignmentInputs(await invoke<unknown>("chat_list_assignment_inputs", {
+    dbUrl: await ensureDbUrl(), assignmentId,
+  }));
+}
+
+/** Replaces the text of a reply that has not reached the agent yet. */
+export async function editChatAssignmentInput(
+  inputId: ChatAssignmentInputId,
+  edit: ChatAssignmentInputEditRequest,
+): Promise<ChatAssignmentInputRead> {
+  return parseChatAssignmentInput(await invoke<unknown>("chat_edit_assignment_input", {
+    dbUrl: await ensureDbUrl(), inputId, edit,
+  }));
+}
+
+/** Cancels a reply that has not reached the agent yet, keeping it in the thread. */
+export async function cancelChatAssignmentInput(inputId: ChatAssignmentInputId): Promise<ChatAssignmentInputRead> {
+  return parseChatAssignmentInput(await invoke<unknown>("chat_cancel_assignment_input", {
+    dbUrl: await ensureDbUrl(), inputId,
+  }));
+}
+
+/** Holds a waiting reply back from delivery, or resumes it so it is delivered in its turn. */
+export async function setChatAssignmentInputHeld(
+  inputId: ChatAssignmentInputId,
+  held: boolean,
+): Promise<ChatAssignmentInputRead> {
+  return parseChatAssignmentInput(await invoke<unknown>("chat_set_assignment_input_held", {
+    dbUrl: await ensureDbUrl(), inputId, held,
+  }));
+}
+
+/** Sends one waiting reply into the agent's current turn now, resuming it when held. */
+export async function steerChatAssignmentInput(inputId: ChatAssignmentInputId): Promise<ChatAssignmentInputRead> {
+  return parseChatAssignmentInput(await invoke<unknown>("chat_steer_assignment_input", {
+    dbUrl: await ensureDbUrl(), inputId,
+  }));
+}
+
+/**
+ * Reorders the waiting replies of one assignment.
+ *
+ * @param orderedInputIds Every waiting reply of the assignment, in the new delivery order.
+ * @returns The replies addressed to the assignment, in delivery order.
+ * @throws When the waiting replies changed before the reorder.
+ */
+export async function reorderChatAssignmentInputs(
+  assignmentId: ChatWorkAssignmentId,
+  orderedInputIds: readonly ChatAssignmentInputId[],
+): Promise<ChatAssignmentInputRead[]> {
+  return parseChatAssignmentInputs(await invoke<unknown>("chat_reorder_assignment_inputs", {
+    dbUrl: await ensureDbUrl(), assignmentId, orderedInputIds,
+  }));
+}
+
+/** Reads an agent's usage per local day from `fromDate` to `toDate` (`YYYY-MM-DD`, both included). */
+export async function readChatAgentUsage(
+  agentId: ChatParticipantId,
+  fromDate: string,
+  toDate: string,
+): Promise<ChatAgentUsageDayRead[]> {
+  const days = await invoke<unknown>("chat_read_agent_usage", {
+    dbUrl: await ensureDbUrl(), agentId, fromDate, toDate,
+  });
+  if (!Array.isArray(days)) throw new Error("Chat agent usage must be an array");
+  return days.map((day: unknown, index) => parseChatAgentUsageDay(day, `Chat agent usage day ${index}`));
 }

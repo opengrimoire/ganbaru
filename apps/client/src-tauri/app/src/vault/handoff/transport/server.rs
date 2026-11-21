@@ -37,6 +37,9 @@ pub(crate) struct MemberServices {
     /// The snapshot copies a member desktop serves to enrolled devices. Phones serve none.
     #[cfg(desktop)]
     pub bundles: Option<MemberBundles>,
+    /// The Chat live execution reads of the work this desktop executes. Phones serve none.
+    #[cfg(desktop)]
+    pub chat_live: Option<ganbaru_sync_replica::serve::live::ChatLiveRoutes>,
 }
 
 /// Serves `listener` as the sync listener of a member desktop until shutdown.
@@ -71,7 +74,7 @@ pub(super) async fn serve_member(
         admission: services.admission,
         lan: services.lan,
         #[cfg(desktop)]
-        routes: services.bundles,
+        routes: (services.bundles, services.chat_live),
         #[cfg(not(desktop))]
         routes: ganbaru_sync_replica::serve::NoRoutes,
     };

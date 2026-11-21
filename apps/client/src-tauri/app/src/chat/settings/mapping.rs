@@ -5,7 +5,9 @@ use crate::chat::settings_commands::ProviderInstanceRead;
 use ganbaru_chat_contracts::config::ChatPortableProviderConfig;
 use ganbaru_chat_contracts::models::{
     ChatResult, ProviderInstanceConfig, ProviderInstanceId, ProviderModelCatalog,
+    ProviderProbeResult,
 };
+use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use std::collections::BTreeMap;
 
 pub(crate) fn read_provider(
@@ -40,22 +42,44 @@ pub(crate) fn provider_instance_read(
         launch_arguments: portable.launch_arguments.clone(),
         environment: portable.environment.clone(),
         credential_references: portable.credential_references.clone(),
-        visible_model_ids: portable.visible_model_ids.clone(),
-        favorite_model_ids: portable.favorite_model_ids.clone(),
         provider_config: portable.provider_config.clone(),
         internal_mcp: None,
+        private_home: None,
         unknown_fields: portable.unknown_fields.clone(),
     };
     let runtime_review = runtime_review_reads(&pending_portable_items(&configuration, device));
+    let last_probe = device
+        .and_then(|entry| entry.last_probe.clone())
+        .map(|probe| with_current_authority_support(probe, &configuration));
     ProviderInstanceRead {
         configuration,
         runtime_review,
-        last_probe: device.and_then(|entry| entry.last_probe.clone()),
+        last_probe,
         last_successful_probe_at: device.and_then(|entry| entry.last_successful_probe_at.clone()),
         model_catalog: device
             .and_then(|entry| entry.model_catalog.clone())
             .map(ProviderModelCatalog::without_deprecated_models),
+        usage_limits: device.and_then(|entry| entry.usage_limits.clone()),
+        last_used_at: device.and_then(|entry| entry.last_used_at.clone()),
+        duplicate_of: None,
     }
+}
+
+/// Replaces a stored probe's authority support with what the current driver
+/// enforces for this configuration. Authority support depends on the driver
+/// build and configuration rather than on the probed executable, so a probe
+/// saved by an older build would otherwise keep reporting outdated support
+/// until the provider is probed again. A configuration the driver rejects
+/// reports no support, matching the send gate, which cannot start that driver.
+fn with_current_authority_support(
+    mut probe: ProviderProbeResult,
+    configuration: &ProviderInstanceConfig,
+) -> ProviderProbeResult {
+    probe.authority_support = ProviderDriverRegistry
+        .create_driver(configuration.clone())
+        .map(|driver| driver.authority_support())
+        .unwrap_or_default();
+    probe
 }
 
 pub(crate) fn portable_configuration(
@@ -70,8 +94,6 @@ pub(crate) fn portable_configuration(
         launch_arguments: config.launch_arguments.clone(),
         environment: config.environment.clone(),
         credential_references: config.credential_references.clone(),
-        visible_model_ids: config.visible_model_ids.clone(),
-        favorite_model_ids: config.favorite_model_ids.clone(),
         provider_config: config.provider_config.clone(),
         unknown_fields: config.unknown_fields.clone(),
     }
@@ -91,6 +113,8 @@ pub(crate) fn device_configuration(config: &ProviderInstanceConfig) -> ChatProvi
         last_successful_probe_at: None,
         model_catalog: None,
         approved_runtime_items: Default::default(),
+        usage_limits: None,
+        last_used_at: None,
     }
 }
 

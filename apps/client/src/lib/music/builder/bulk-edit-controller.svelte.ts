@@ -1,6 +1,8 @@
 import { applyMusicReviewSelection, bulkEditMusicMemberships, bulkSetMusicReviewState, bulkSnoozeMusicItems, createMusicPlaylist, getMusicInspectorDetail, getMusicMembershipMatrix, setMusicItemSignals } from "$lib/api/music-library";
 import type { MusicLibraryController } from "$lib/music/library/controller.svelte";
 import type { MusicItemSignal, MusicPlaylistSummary, MusicReviewState, MusicSnoozeScope, MusicWeight } from "$lib/music/library/contracts";
+import { musicErrorMessage } from "$lib/music/user-errors";
+import { translate } from "$lib/i18n/translator.svelte";
 
 export type MusicBulkPlaylistState = "checked" | "mixed" | "unchecked";
 
@@ -81,7 +83,7 @@ export class MusicBulkEditController {
       return true;
     } catch (error) {
       if (generation !== this.openGeneration) return false;
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.selectionLoadFailed"));
       return false;
     } finally {
       if (generation === this.openGeneration) this.loading = false;
@@ -132,7 +134,7 @@ export class MusicBulkEditController {
       this.touchedPlaylistIds = new Set([...this.touchedPlaylistIds, playlistId]);
       return playlistId;
     } catch (error) {
-      this.createError = error instanceof Error ? error.message : String(error);
+      this.createError = musicErrorMessage(error, translate("music.errors.playlistCreateFailed"));
       return null;
     } finally {
       this.creatingPlaylist = false;
@@ -249,7 +251,7 @@ export class MusicBulkEditController {
         snapshot.item.reviewState = snapshot.reviewState;
         snapshot.item.updatedAtMs = snapshot.updatedAtMs;
       }
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
       return false;
     } finally {
       this.saving = false;
@@ -284,7 +286,7 @@ export class MusicBulkEditController {
       await this.library.refreshAfterMutation();
       return true;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
       return false;
     } finally {
       this.saving = false;
@@ -309,7 +311,7 @@ export class MusicBulkEditController {
       await this.library.refreshAfterMutation();
       return true;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
       return false;
     } finally {
       this.saving = false;
@@ -329,7 +331,7 @@ export class MusicBulkEditController {
       await this.library.refreshAfterMutation();
       return true;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.snoozeFailed"));
       return false;
     } finally {
       this.saving = false;
@@ -368,7 +370,7 @@ export class MusicBulkEditController {
       await this.library.refreshAfterMutation();
       return true;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
       return false;
     } finally {
       this.saving = false;

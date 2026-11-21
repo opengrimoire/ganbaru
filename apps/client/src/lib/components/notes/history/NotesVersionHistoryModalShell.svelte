@@ -3,6 +3,7 @@
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import X from "@lucide/svelte/icons/x";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import type { NotesFailure } from "$lib/notes/failure";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
   let {
@@ -37,7 +38,7 @@
     versionsBusy?: boolean;
     canRestore: boolean;
     restoring: boolean;
-    error?: string | null;
+    error?: NotesFailure | null;
     dismissBlocked?: boolean;
     onClose: () => void;
     onBack: () => void;
@@ -156,7 +157,7 @@
               </button>
             </div>
             {#if error}
-              <Notice class="mt-2 text-panel-detail" message={error} />
+              <Notice class="mt-2 text-panel-detail" message={error.message} copy={error.detail} />
             {/if}
           </div>
 

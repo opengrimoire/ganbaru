@@ -11,10 +11,10 @@ vi.mock("$lib/projects/window-sync", () => ({ publishProjectsSyncChange: vi.fn()
 const tEn: Translate = ((key, ...args) => translateFromPartialCatalog(en, key, ...args)) as Translate;
 const tEs: Translate = ((key, ...args) => translateFromPartialCatalog(es, key, ...args)) as Translate;
 
-const CONFLICT_TABLES = ["chat_participants", "chat_teammates", "chat_channels", "chat_communication_messages"];
+const CONFLICT_TABLES = ["chat_participants", "chat_agents", "chat_channels", "chat_communication_messages"];
 const RECOVERY_ROOT_TABLES = [
   "chat_participants",
-  "chat_teammates",
+  "chat_agents",
   "chat_conversations",
   "chat_channels",
   "chat_communication_messages",

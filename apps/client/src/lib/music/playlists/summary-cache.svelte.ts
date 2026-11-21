@@ -1,4 +1,6 @@
 import { getMusicPlaylistSummaries } from "$lib/api/music-library";
+import { musicErrorMessage } from "$lib/music/user-errors";
+import { translate } from "$lib/i18n/translator.svelte";
 import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
 
 export interface MusicPlaylistSummaryCacheApi {
@@ -54,7 +56,7 @@ export class MusicPlaylistSummaryCache {
         return true;
       } catch (error) {
         if (generation !== this.generation || vaultId !== this.vaultId) return false;
-        this.error = error instanceof Error ? error.message : String(error);
+        this.error = musicErrorMessage(error, translate("music.errors.playlistsLoadFailed"));
         return false;
       } finally {
         if (generation === this.generation && vaultId === this.vaultId) this.loading = false;

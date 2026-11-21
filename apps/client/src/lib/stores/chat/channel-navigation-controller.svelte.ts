@@ -5,6 +5,7 @@ import type {
   CreateChatChannelRequest,
 } from "$lib/chat/contracts";
 import { chatErrorMessage } from "$lib/chat/error-presentation";
+import { translate } from "$lib/i18n/translator.svelte";
 import { getConfigKey, setConfigKey } from "$lib/vault/config";
 
 const SHOW_ARCHIVED_IN_PICKERS_CONFIG_KEY = "chatSidebar.showArchivedInPickers";
@@ -154,7 +155,7 @@ export class ChatChannelNavigationController {
       if (this.options.currentProjectId() === projectId) {
         this.archivedChannelsError = chatErrorMessage(
           error,
-          "Archived Chat channels could not be loaded",
+          translate("chatErrors.actions.loadArchivedChannels"),
         );
       }
       throw error;

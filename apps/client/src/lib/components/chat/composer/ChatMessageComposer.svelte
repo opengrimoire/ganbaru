@@ -1,44 +1,71 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
-  import Bold from "@lucide/svelte/icons/bold";
-  import Bot from "@lucide/svelte/icons/bot";
   import CircleAlert from "@lucide/svelte/icons/circle-alert";
   import Clock3 from "@lucide/svelte/icons/clock-3";
-  import File from "@lucide/svelte/icons/file";
+  import FileIcon from "@lucide/svelte/icons/file";
+  import FileText from "@lucide/svelte/icons/file-text";
   import Folder from "@lucide/svelte/icons/folder";
   import GitBranch from "@lucide/svelte/icons/git-branch";
   import Hash from "@lucide/svelte/icons/hash";
   import Image from "@lucide/svelte/icons/image";
-  import Italic from "@lucide/svelte/icons/italic";
   import MessageSquareShare from "@lucide/svelte/icons/message-square-share";
+  import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
-  import Square from "@lucide/svelte/icons/square";
+  import Smile from "@lucide/svelte/icons/smile";
+  import AtSign from "@lucide/svelte/icons/at-sign";
+  import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
+  import { agentNeedsSetupHere } from "$lib/chat/agents/agent-setup";
+  import { chatAgentDefaultModelId } from "$lib/chat/agents/channel-access";
+  import { isActiveChannelMember } from "$lib/chat/agents/channel-members";
+  import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
   import type {
-    ChatAiTeammateRead,
+    ChatAttachmentRead,
+    ChatAssignmentInputRead,
+    ChatAssignmentReviewRequest,
     ChatAssignmentTargetRead,
     ChatChannelRead,
     ChatChannelRosterRead,
-    ChatExecutionTarget,
-    ChatFolderCapability,
+    ChatFollowupRouting,
+    ChatInteractionStateRead,
+    ChatMessageRead,
     ChatMessageReference,
+    ChatParticipantId,
     ChatParticipantRead,
+    ChatPromptCatalogEntry,
+    ChatRecurrenceSpec,
     ChatScheduledMessageRead,
-    ChatTeammateAccessRead,
-    ChatWorkAssignmentState,
-    ProjectWorkingFolderPathRead,
+    ChatWorkAssignmentId,
+    ProviderModel,
   } from "$lib/chat/contracts";
   import { ChatComposerEditor, type ChatComposerEditorChange } from "$lib/chat/composer/editor";
-  import { CHAT_IMAGE_LIMIT } from "$lib/chat/composer/model";
+  import { STOPPABLE_ASSIGNMENT_STATES } from "$lib/chat/timeline/reply-thread-model";
+  import {
+    channelModelChoices,
+    genericModelCommandEntry,
+    isModelCommandEntry,
+    mergePromptCatalog,
+    modelCommandEntries,
+  } from "$lib/chat/composer/command-model";
+  import { composerCollapsed } from "$lib/chat/composer/collapse";
+  import { composerMeterRead, type ComposerStatusRead } from "$lib/chat/composer/composer-meter";
+  import { CHAT_IMAGE_CONTENT_TYPES, CHAT_IMAGE_LIMIT, composerTokenTrigger, validateImageFiles } from "$lib/chat/composer/model";
+  import { pendingInputRows, pendingInputStartsWork, type PendingInputRow } from "$lib/chat/composer/pending-inputs";
+  import { formatShortcut, hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
+  import { latestStructuredPlanSteps, summarizePlanProgress } from "$lib/chat/composer/plan-progress";
+  import { suggestAgentMention, type MentionSuggestion } from "$lib/chat/composer/mention-suggestion";
+  import { pastedTextLineCount } from "$lib/chat/composer/paste";
+  import { providerTargetAuthorityBlockers } from "$lib/chat/composer/provider-authority";
   import {
     chatComposerDocumentFromText,
     chatComposerDocumentVersioned,
     chatComposerMarkdown,
     chatComposerPlainText,
+    replaceChatComposerText,
     parseChatComposerDocument,
     type ChatComposerDocument,
-    type ChatComposerMark,
     type ChatComposerSelection,
   } from "$lib/chat/composer/rich-text";
   import {
@@ -49,10 +76,23 @@
     type ChatReferenceClipboardSlice,
     type ChatReferenceTrigger,
   } from "$lib/chat/composer/message-references";
+  import {
+    candidateIsDisabled,
+    candidateReference,
+    firstPickerIndex,
+    groupReferenceCandidates,
+    inferAssignmentTarget,
+    lastPickerIndex,
+    matchesQuery,
+    nextPickerIndex,
+    type ReferenceCandidate,
+  } from "$lib/chat/composer/reference-candidates";
+  import { chatErrorCode, chatErrorMessage, chatErrorReason } from "$lib/chat/error-presentation";
   import { parseChatMessageReference } from "$lib/chat/validation";
-  import { formatList } from "$lib/i18n/formatters";
+  import { formatDateTime } from "$lib/i18n/formatters";
+  import { providerLimitNotice } from "$lib/chat/usage/provider-limit";
+  import { parseProjectIcon } from "$lib/projects/icons/values";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { formatShortcut } from "$lib/keyboard-shortcuts";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat, type ChatOrganizationalDraft } from "$lib/stores/chat.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
@@ -61,58 +101,18 @@
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
-  import Select from "$lib/components/ui/Select.svelte";
+  import ChatAssignmentReviewCard from "./ChatAssignmentReviewCard.svelte";
+  import ChatComposerFrame from "./ChatComposerFrame.svelte";
+  import ChatComposerInfoPanel from "./ChatComposerInfoPanel.svelte";
+  import ChatComposerSuggestionMenu from "./ChatComposerSuggestionMenu.svelte";
+  import ChatQueuedReplies from "./ChatQueuedReplies.svelte";
+  import ChatTaskProgressCard from "./ChatTaskProgressCard.svelte";
   import { isAppFloatingSurfaceTarget } from "$lib/utils";
-  import { cloneData } from "$lib/utils/clone";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { chatReferencePickerPosition } from "./reference-picker-position";
 
   type ScheduleMenuComponent = typeof import("./ChatMessageScheduleMenu.svelte").default;
-
-  type ReferenceCandidate =
-    | {
-        key: string;
-        kind: "participant";
-        group: string;
-        label: string;
-        description: string;
-        participant: ChatParticipantRead;
-        teammate: ChatAiTeammateRead | null;
-        needsMembership: boolean;
-      }
-    | {
-        key: string;
-        kind: "channel";
-        group: string;
-        label: string;
-        description: string;
-        channel: ChatChannelRead;
-      }
-    | {
-        key: string;
-        kind: "workingFolder";
-        group: string;
-        label: string;
-        description: string;
-        workingFolderId: string;
-      }
-    | {
-        key: string;
-        kind: "workspacePath";
-        group: string;
-        label: string;
-        description: string;
-        workingFolderId: string;
-        path: ProjectWorkingFolderPathRead;
-      }
-    | {
-        key: string;
-        kind: "executionEnvironment";
-        group: string;
-        label: string;
-        description: string;
-        target: ChatAssignmentTargetRead;
-      };
+  type EmojiPickerComponent = typeof import("$lib/components/icon-picker/IconPicker.svelte").default;
 
   interface DisclosureBlocker {
     message: string;
@@ -120,19 +120,8 @@
     sourceReferenceId: string | null;
   }
 
-  interface ReferenceCandidateGroup {
-    label: string;
-    entries: Array<{ candidate: ReferenceCandidate; index: number }>;
-  }
-
   const REFERENCE_CLIPBOARD_TYPE = "application/x-ganbaru-chat-references+json";
   const MAX_MESSAGE_BYTES = 131_072;
-  const STOPPABLE_ASSIGNMENT_STATES = new Set<ChatWorkAssignmentState>([
-    "queued",
-    "working",
-    "waiting_for_answer",
-    "waiting_for_approval",
-  ]);
 
   let {
     destination,
@@ -147,6 +136,7 @@
   } = $props();
 
   const chat = useChat();
+  const preferences = getPreferences();
   const paneEvents = useChatPaneEvents();
   const projects = useProjects();
   const localization = getLocalization();
@@ -155,14 +145,24 @@
     BUILD_PLATFORM_PROFILE,
     "chat.local-execution",
   );
+  /**
+   * Without local execution, attachments go to the channel project's primary working folder,
+   * the folder this device may import into and an organizational run reads from.
+   */
+  let primaryAttachmentFolderId = $state<string | null>(null);
+  let primaryAttachmentFolderRequest = 0;
+  /** The system image picker used when there is no native file dialog. */
+  let imageInput = $state<HTMLInputElement | null>(null);
   const focusEditorOnMount = BUILD_PLATFORM_PROFILE.shell === "desktop";
+  /** The phone composer rests as one row until it is used, which keeps the conversation in view. */
+  const collapsible = BUILD_PLATFORM_PROFILE.shell === "mobile";
   const initialDraft = untrack(() => chat.organizationalDraft(destination));
   const initialDocument = parseChatComposerDocument(
     initialDraft.richContent,
     initialDraft.normalizedMarkdown,
   );
 
-  let editorRoot = $state<HTMLDivElement | null>(null);
+  let editorRoot = $state<HTMLDivElement | undefined>();
   let editorController: ChatComposerEditor | null = null;
   let editorDocument = $state<ChatComposerDocument>(initialDocument);
   let normalizedMarkdown = $state(chatComposerMarkdown(initialDocument));
@@ -171,11 +171,8 @@
     initialDraft.references,
   ));
   let attachmentIds = $state([...initialDraft.attachmentIds]);
-  let executionTarget = $state<ChatExecutionTarget | null>(initialDraft.executionTarget);
   let selectionStart = $state(initialDraft.selectionStart);
   let selectionEnd = $state(initialDraft.selectionEnd);
-  let isBoldActive = $state(false);
-  let isItalicActive = $state(false);
   let composing = $state(false);
   let pickerOpen = $state(false);
   let pickerTrigger = $state<ChatReferenceTrigger | null>(null);
@@ -186,40 +183,78 @@
   let pickerRoot = $state<HTMLDivElement | null>(null);
   let pickerScroll = $state<HTMLDivElement | null>(null);
   let composerRoot = $state<HTMLDivElement | null>(null);
+  let focusWithin = $state(false);
+  let emojiPickerOpen = $state(false);
   let scheduleMenuOpen = $state(false);
   let scheduleMenuAnchor = $state<HTMLDivElement | null>(null);
   let scheduledMessagesOpen = $state(false);
   let scheduledMessagesAnchor = $state<HTMLDivElement | null>(null);
   let ScheduleMenu = $state<ScheduleMenuComponent | null>(null);
   let scheduleMenuLoad = $state<Promise<void> | null>(null);
+  let EmojiPicker = $state<EmojiPickerComponent | null>(null);
   let scheduledFor = $state<string | null>(initialDraft.scheduledFor);
-  let scheduledMessages = $state<ChatScheduledMessageRead[]>([]);
+  let scheduledRecurrence = $state<ChatRecurrenceSpec | null>(initialDraft.recurrence);
+  let scheduledMessages = $state<ChatScheduledMessageRead[]>(untrack(() => chat.knownScheduledMessages(destination) ?? []));
   let scheduledMessagesRequest = 0;
   let alsoSendToChannel = $state(false);
   let sending = $state(false);
   let stopping = $state(false);
-  let retryingAssignment = $state(false);
+  let reviewNote = $state("");
+  let reviewNoteOpen = $state(false);
+  let reviewing = $state(false);
+  /** The reviewed work the open review card belongs to, so a note typed for it never reaches other work. */
+  let reviewNoteAssignmentId: ChatWorkAssignmentId | null = null;
   let error = $state<string | null>(null);
   let disclosureBlocker = $state<DisclosureBlocker | null>(null);
   let blockerElement = $state<HTMLDivElement | null>(null);
   let announcement = $state("");
-  let teammateAccess = $state<ChatTeammateAccessRead | null>(null);
+  /** Attachment reads the chips label from, by attachment id. */
+  let attachmentReads = $state<Record<string, ChatAttachmentRead>>({});
+  const draftPlainText = $derived(chatComposerPlainText(editorDocument));
+  /** Agents whose mention suggestion was dismissed for this draft. */
+  let dismissedMentionSuggestions = $state<ChatParticipantId[]>([]);
   let assignmentTargets = $state<ChatAssignmentTargetRead[]>([]);
   let assignmentPreviewLoading = $state(false);
   let assignmentPreviewRequest = 0;
+  /** The assignment preview read in flight, which a send waits for before checking its blockers. */
+  let assignmentPreviewPending: Promise<void> | null = null;
   let navigationChannels = $state<ChatChannelRead[]>([]);
   let navigationChannelsLoaded = false;
+  let promptMenuKind = $state<"skill" | "command" | null>(null);
+  let promptMenuEntries = $state<ChatPromptCatalogEntry[]>([]);
+  let promptMenuIndex = $state(0);
+  let promptMenuLoading = $state(false);
+  let promptMenuRequest = 0;
+  let promptMenuRoot = $state<HTMLDivElement | undefined>();
+  let promptMenuIncludeIgnored = $state(false);
+  let promptCatalogCache: { key: string; entries: ChatPromptCatalogEntry[] } | null = null;
+  let statusPanelOpen = $state(false);
+  let interactionState = $state<ChatInteractionStateRead | null>(null);
+  let interactionRequest = 0;
+  let routingNotice = $state<string | null>(null);
+  let assignmentInputs = $state<ChatAssignmentInputRead[]>([]);
+  let assignmentInputsRequest = 0;
+  /** The waiting reply the editor holds; the destination draft stays in the store until the edit ends. */
+  let editingInput = $state<ChatAssignmentInputRead | null>(null);
+  let inputBusyId = $state<string | null>(null);
+  /**
+   * The scheduled message the editor holds, with the share choice of the draft it set aside; the
+   * destination draft, its time, and its repeat rule stay in the store until the edit ends.
+   */
+  let editingScheduled = $state<{ message: ChatScheduledMessageRead; draftAlsoSendToChannel: boolean } | null>(null);
+  /** Why every tool beyond text is off: an edit replaces only the text of a waiting reply. */
+  const editLockReason = $derived(editingInput ? t("chat.composer.pendingInputs.textOnly") : null);
 
   const participantReferences = $derived(editorReferences.filter((reference) => (
     reference.kind === "participant"
   )));
   const aiParticipantReferences = $derived(participantReferences.filter((reference) => (
-    reference.kind === "participant" && reference.participantKind === "ai_teammate"
+    reference.kind === "participant" && reference.participantKind === "ai_agent"
   )));
   const invokedAiCount = $derived(new Set(aiParticipantReferences.map((reference) => (
     reference.kind === "participant" ? reference.participantId : ""
   ))).size);
-  const mentionedTeammateId = $derived(aiParticipantReferences.find((reference) => (
+  const mentionedAgentId = $derived(aiParticipantReferences.find((reference) => (
     reference.kind === "participant"
   ))?.participantId ?? null);
   const validation = $derived(invokedAiCount > 1 ? t("chat.organization.oneAgentOnly") : null);
@@ -232,68 +267,101 @@
     const assignment = threadComposer ? chat.replyThread?.assignment : null;
     return assignment && STOPPABLE_ASSIGNMENT_STATES.has(assignment.state) ? assignment : null;
   });
-  const failedAssignment = $derived.by(() => {
-    const assignment = threadComposer ? chat.replyThread?.assignment : null;
-    return assignment?.state === "failed" ? assignment : null;
-  });
-  const assignmentAwaitingStart = $derived.by(() => {
-    const assignment = threadComposer ? chat.replyThread?.assignment : null;
-    return assignment?.localAcceptance ? assignment : null;
-  });
-  const workAwaitsStartMessage = $derived.by(() => {
-    const offer = assignmentAwaitingStart?.localAcceptance;
-    if (!offer) return "";
-    const provider = chat.settings?.providerInstances.find(
-      (entry) => entry.configuration.instanceId === offer.providerInstanceId,
-    )?.configuration.label ?? offer.providerInstanceId;
-    const access = formatList(localization.locale, [
-      ...offer.folders.map((folder) => t(
-        "chat.organization.workAccessFolder",
-        folderCapabilityLabel(folder.capability),
-        folder.displayName,
-        runtimeApprovalLabel(folder.runtimeApproval),
-      )),
-      t("chat.organization.workAccessScratch", runtimeApprovalLabel(offer.scratchRuntimeApproval)),
-    ], { style: "long", type: "conjunction" });
-    return `${t("chat.organization.workAwaitsStart")} ${t("chat.organization.workAwaitsStartAccess", provider, access)}`;
+  const assignmentAwaitingReview = $derived.by(() => {
+    const assignment = threadComposer && localExecutionAvailable ? chat.replyThread?.assignment : null;
+    return assignment?.state === "ready_for_review" ? assignment : null;
   });
   const inferredTarget = $derived.by(() => inferAssignmentTarget(
-    executionTarget,
     editorReferences,
     assignmentTargets,
   ));
-  const secondaryFolderNames = $derived.by(() => {
-    const targetFolderId = inferredTarget?.executionTarget?.kind === "workingFolder"
-      ? inferredTarget.executionTarget.workingFolderId
-      : null;
-    const ids = new Set(editorReferences.flatMap((reference) => {
-      if (reference.kind !== "workingFolder" && reference.kind !== "workspacePath") return [];
-      return reference.workingFolderId === targetFolderId ? [] : [reference.workingFolderId];
-    }));
-    return [...ids].map((id) => (
-      chat.workingFolders.find((folder) => folder.workingFolder.id === id)?.workingFolder.displayName ?? id
-    ));
-  });
   const providerBlockers = $derived.by(() => assignmentProviderBlockers(
-    mentionedTeammateId,
+    mentionedAgentId,
     inferredTarget,
     editorReferences,
-    teammateAccess,
+    chat.selectedChannel,
     assignmentTargets,
   ));
-  const executionTargetOptions = $derived([
-    { value: "", label: t("chat.organization.automaticTarget") },
-    ...assignmentTargets.flatMap((target) => target.executionTarget ? [{
-      value: target.executionTarget.executionEnvironmentId,
-      label: `${target.displayName}${target.isDefault ? ` · ${t("chat.organization.defaultTarget")}` : ""}`,
-      disabled: !target.eligible,
-    }] : []),
-  ]);
   const pickerGroups = $derived.by(() => groupReferenceCandidates(pickerEntries));
   const nextScheduledMessage = $derived(
     scheduledMessages.find((message) => message.state !== "failed") ?? scheduledMessages[0] ?? null,
   );
-  const stopShortcut = formatShortcut("Mod + .");
+  // A repeating message next posts at its pending occurrence, later when that occurrence waits for a quiet period.
+  const nextScheduledDelivery = $derived(nextScheduledMessage
+    ? nextScheduledMessage.recurrence?.deferredUntil ?? nextScheduledMessage.recurrence?.nextOccurrenceAt ?? nextScheduledMessage.scheduledFor
+    : null);
+  const threadAssignment = $derived(threadComposer ? chat.replyThread?.assignment ?? null : null);
+  /** The agent a post starts or continues work for: the mentioned one, else the thread's. */
+  const targetAgentId = $derived(mentionedAgentId ?? threadAssignment?.agent.id ?? null);
+  const targetAgent = $derived(chat.agents.find((candidate) => (
+    candidate.participant.id === targetAgentId
+  )) ?? null);
+  const targetProvider = $derived(chat.settings?.providerInstances.find((entry) => (
+    entry.configuration.instanceId === targetAgent?.localProviderInstanceId
+  )) ?? null);
+  const catalogWorkingFolderId = $derived.by(() => {
+    const available = (id: string) => chat.workingFolders.some((folder) => (
+      folder.workingFolder.id === id
+        && folder.workingFolder.archivedAt === null
+        && folder.bindingStatus === "available"
+    ));
+    const targetFolderId = inferredTarget?.executionTarget?.kind === "workingFolder"
+      ? inferredTarget.executionTarget.workingFolderId
+      : null;
+    if (targetFolderId && available(targetFolderId)) return targetFolderId;
+    return chat.workingFolders.find((folder) => (
+      folder.workingFolder.projectId === chat.selectedChannel?.projectId
+        && available(folder.workingFolder.id)
+    ))?.workingFolder.id ?? null;
+  });
+  const promptCatalogKey = $derived([
+    catalogWorkingFolderId ?? "",
+    targetAgent?.localProviderInstanceId ?? "",
+    threadAssignment?.latestRunProviderThreadId ?? "",
+  ].join("\u0000"));
+  /** Whether the thread has work whose provider session /status can describe. */
+  const statusAvailable = $derived(threadAssignment !== null);
+  const meterRead = $derived(composerMeterRead(
+    interactionState?.usage ?? null,
+    interactionState?.rateLimitStatus ?? null,
+  ));
+  /** Whether a post becomes a reply to work an agent is on, which Enter queues and Mod+Enter steers. */
+  const routesFollowups = $derived(activeAssignment !== null && !scheduledFor && !editingInput);
+  const sendTooltip = $derived(routesFollowups
+    ? t("chat.composer.queueOrSteerTooltip", "Enter", formatShortcut("Mod + Enter"))
+    : editingInput ? t("chat.composer.pendingInputs.save")
+    : editingScheduled ? t("chat.organization.saveScheduledMessage")
+    : scheduledFor ? t("chat.organization.scheduleMessage")
+    : t("chat.composer.sendTooltip", "Enter"));
+  /** The provider limit that stopped or holds the work of this thread, with its reset time when known. */
+  const providerLimit = $derived(threadComposer
+    ? providerLimitNotice(threadAssignment, chat.replyThread?.replies ?? [], interactionState?.rateLimitStatus ?? null)
+    : null);
+  const pendingRows = $derived(pendingInputRows(assignmentInputs));
+  /** The latest structured plan of the running work, while some of its steps are still to do. */
+  const taskProgress = $derived.by(() => {
+    if (!activeAssignment) return null;
+    const summary = summarizePlanProgress(latestStructuredPlanSteps(chat.replyThread?.replies ?? [], activeAssignment.id) ?? []);
+    return summary && summary.completed < summary.total ? summary : null;
+  });
+  const sendBlocked = $derived(Boolean(validation || disclosureBlocker || providerBlockers.length || messageTooLarge));
+  /** Channel agents that can take work, for the mention suggestion. */
+  const mentionRoster = $derived((chat.selectedChannel?.memberships ?? []).flatMap((membership) => (
+    isActiveChannelMember(membership)
+      && membership.participant.archivedAt === null
+      && membership.participant.kind === "ai_agent"
+      ? [{
+        id: membership.participant.id,
+        displayName: membership.participant.displayName,
+      }]
+      : []
+  )));
+  /** An agent the draft names without mentioning, offered as a local chip; never while editing a waiting reply. */
+  const mentionSuggestion = $derived.by((): MentionSuggestion | null => {
+    if (editingInput || pickerOpen) return null;
+    const roster = mentionRoster.filter((candidate) => !dismissedMentionSuggestions.includes(candidate.id));
+    return suggestAgentMention(draftPlainText, editorReferences, roster);
+  });
 
   onMount(() => {
     if (!editorRoot) return;
@@ -306,20 +374,94 @@
       },
       editorReferences,
     );
-    const selectionChanged = () => {
-      if (document.activeElement === editorRoot) editorController?.handleSelectionChange();
-    };
+    void loadAttachmentReads(attachmentIds);
     const stop = () => { void stopAssignment(); };
-    document.addEventListener("selectionchange", selectionChanged);
     paneEvents.addEventListener("ganbaru:chat-stop-requested", stop);
     if (focusEditorOnMount) {
       editorController.focus({ start: selectionStart, end: selectionEnd });
     }
     return () => {
-      document.removeEventListener("selectionchange", selectionChanged);
       paneEvents.removeEventListener("ganbaru:chat-stop-requested", stop);
+      // The destination draft stayed in the store while a waiting reply was edited, so the next mount restores it.
+      editingInput = null;
+      editingScheduled = null;
+      releaseReviewNote();
       editorController = null;
     };
+  });
+
+  $effect(() => {
+    const threadId = threadAssignment?.latestRunProviderThreadId ?? null;
+    const _revision = threadAssignment?.revision;
+    const _state = threadAssignment?.state;
+    const request = ++interactionRequest;
+    if (!threadId) {
+      interactionState = null;
+      return;
+    }
+    chatApi.readChatInteractionState(threadId)
+      .then((read) => { if (request === interactionRequest) interactionState = read; })
+      .catch(() => {
+        // The meter keeps its last reading; usage is advisory and a failed read must not block replies.
+      });
+  });
+
+  $effect(() => {
+    const assignmentId = threadAssignment?.id ?? null;
+    const _revision = threadAssignment?.revision;
+    const _state = threadAssignment?.state;
+    const _threadRevision = chat.replyThread?.revision;
+    const _replies = chat.replyThread?.replies.length;
+    void loadAssignmentInputs(assignmentId);
+  });
+
+  $effect(() => {
+    if (localExecutionAvailable) return;
+    const projectId = chat.selectedChannel?.projectId ?? null;
+    const request = ++primaryAttachmentFolderRequest;
+    primaryAttachmentFolderId = null;
+    if (!projectId) return;
+    chatApi.readChatProjectPrimaryWorkingFolder(projectId)
+      .then((read) => {
+        if (request !== primaryAttachmentFolderRequest) return;
+        primaryAttachmentFolderId = read.workingFolderId;
+        void loadAttachmentReads(attachmentIds);
+      })
+      .catch((cause: unknown) => {
+        if (request === primaryAttachmentFolderRequest) error = chatErrorMessage(cause, t("chatErrors.actions.fileAction"));
+      });
+  });
+
+  $effect(() => {
+    const key = promptCatalogKey;
+    untrack(() => {
+      if (promptCatalogCache && promptCatalogCache.key !== key) promptCatalogCache = null;
+    });
+  });
+
+  $effect(() => {
+    if (!promptMenuKind || !promptMenuRoot) return;
+    const selectedIndex = promptMenuIndex;
+    void tick().then(() => {
+      const menu = promptMenuRoot;
+      const selected = menu?.querySelector<HTMLElement>(`[data-menu-index="${selectedIndex}"]`);
+      if (!menu || !selected) return;
+      const top = selected.offsetTop;
+      const bottom = top + selected.offsetHeight;
+      if (top < menu.scrollTop) menu.scrollTop = top;
+      else if (bottom > menu.scrollTop + menu.clientHeight) menu.scrollTop = Math.max(0, bottom - menu.clientHeight);
+    });
+  });
+
+  $effect(() => {
+    const reviewedId = assignmentAwaitingReview?.id ?? null;
+    if (reviewing) return;
+    untrack(() => {
+      if (reviewedId === reviewNoteAssignmentId) return;
+      // Without earlier reviewed work no card held a note, and one opened before this first run belongs to it.
+      if (reviewNoteAssignmentId !== null) releaseReviewNote();
+      reviewNoteAssignmentId = reviewedId;
+    });
   });
 
   $effect(() => {
@@ -329,20 +471,19 @@
   });
 
   $effect(() => {
-    const teammateId = mentionedTeammateId;
+    const agentId = mentionedAgentId;
     const channelId = chat.selectedChannel?.id ?? null;
     const replyThreadId = destinationReplyThreadId(destination);
-    if (!teammateId || !channelId) {
+    // Targets are device-local folders, so only a device that runs the work lists them.
+    if (!agentId || !channelId || !localExecutionAvailable) {
       assignmentPreviewRequest += 1;
-      teammateAccess = null;
       assignmentTargets = [];
       assignmentPreviewLoading = false;
-      executionTarget = null;
+      assignmentPreviewPending = null;
       return;
     }
-    teammateAccess = null;
     assignmentTargets = [];
-    void loadAssignmentPreview(teammateId, channelId, replyThreadId);
+    assignmentPreviewPending = loadAssignmentPreview(agentId, channelId, replyThreadId);
   });
 
   $effect(() => {
@@ -355,29 +496,38 @@
   });
 
   $effect(() => {
-    if (!scheduleMenuOpen && !scheduledMessagesOpen && !pickerOpen) return;
+    if (!scheduleMenuOpen && !scheduledMessagesOpen && !pickerOpen && !promptMenuKind) return;
     const closeMenusFromOutside = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node) || isAppFloatingSurfaceTarget(target)) return;
       if (scheduleMenuOpen && !scheduleMenuAnchor?.contains(target)) scheduleMenuOpen = false;
       if (scheduledMessagesOpen && !scheduledMessagesAnchor?.contains(target)) scheduledMessagesOpen = false;
       if (pickerOpen && !editorRoot?.contains(target) && !pickerRoot?.contains(target)) closePicker();
+      if (promptMenuKind && !editorRoot?.contains(target) && !promptMenuRoot?.contains(target)) closePromptMenu();
     };
     window.addEventListener("pointerdown", closeMenusFromOutside, true);
     return () => window.removeEventListener("pointerdown", closeMenusFromOutside, true);
   });
 
+  /** Ends focus within the composer only when focus moves outside it, so moving between its controls keeps it open. */
+  function trackFocusLeaving(event: FocusEvent): void {
+    const next = event.relatedTarget;
+    if (next instanceof Node && composerRoot?.contains(next)) return;
+    focusWithin = false;
+  }
+
   function persist(): void {
+    if (editingInput || editingScheduled) return;
     const references = chatReferencesForMarkdown(editorDocument, editorReferences);
     const draft: ChatOrganizationalDraft = {
       normalizedMarkdown,
       richContent: chatComposerDocumentVersioned(editorDocument),
       attachmentIds: [...attachmentIds],
       references,
-      executionTarget: executionTarget ? cloneData(executionTarget) : null,
       selectionStart,
       selectionEnd,
       scheduledFor,
+      recurrence: scheduledRecurrence,
     };
     chat.setOrganizationalDraft(destination, draft);
   }
@@ -387,40 +537,64 @@
     normalizedMarkdown = change.markdown;
     editorReferences = change.references;
     disclosureBlocker = null;
+    routingNotice = null;
     persist();
     const end = change.plainText.length;
-    void updateReferencePicker(change.plainText, editorController?.selection() ?? { start: end, end }, change.references);
+    updateTokenMenus(change.plainText, editorController?.selection() ?? { start: end, end }, change.references);
   }
 
-  function handleEditorSelectionChange(selection: ChatComposerSelection, marks: ChatComposerMark[]): void {
+  function handleEditorSelectionChange(selection: ChatComposerSelection): void {
     selectionStart = selection.start;
     selectionEnd = selection.end;
-    isBoldActive = marks.includes("bold");
-    isItalicActive = marks.includes("italic");
     persist();
-    void updateReferencePicker(editorController?.plainText() ?? "", selection, editorController?.messageReferences() ?? editorReferences);
+    updateTokenMenus(editorController?.plainText() ?? "", selection, editorController?.messageReferences() ?? editorReferences);
   }
 
-  function handleBeforeInput(event: InputEvent): void {
-    editorController?.handleBeforeInput(event);
-  }
-
-  function handleInput(): void {
-    editorController?.handleInput();
-  }
-
-  function handleCompositionStart(): void {
-    composing = true;
-    editorController?.handleCompositionStart();
-  }
-
-  function handleCompositionEnd(): void {
-    composing = false;
-    editorController?.handleCompositionEnd();
+  /**
+   * Opens the one token menu the caret calls for: the reference picker for `@` and `#`, which owns
+   * those triggers, otherwise the skill or command menu for `$` and a line-start `/`.
+   */
+  function updateTokenMenus(
+    text: string,
+    selection: ChatComposerSelection,
+    references: readonly ChatMessageReference[],
+  ): void {
+    if (editingInput) {
+      closePicker();
+      closePromptMenu();
+      return;
+    }
+    if (chatReferenceTriggerAtCaret(text, selection, references)) {
+      closePromptMenu();
+      void updateReferencePicker(text, selection, references);
+      return;
+    }
+    closePicker();
+    const trigger = selection.start === selection.end ? composerTokenTrigger(text, selection.start) : null;
+    if (trigger?.kind === "skill" || trigger?.kind === "command") void updatePromptMenu(trigger.kind, trigger.query);
+    else closePromptMenu();
   }
 
   function handleKeydown(event: KeyboardEvent): void {
     if (composing || event.isComposing || event.keyCode === 229) return;
+    if (promptMenuKind && promptMenuEntries.length > 0) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const direction = event.key === "ArrowDown" ? 1 : -1;
+        promptMenuIndex = (promptMenuIndex + direction + promptMenuEntries.length) % promptMenuEntries.length;
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        void choosePromptEntry(promptMenuIndex);
+        return;
+      }
+    }
+    if (promptMenuKind && event.key === "Escape") {
+      event.preventDefault();
+      closePromptMenu();
+      return;
+    }
     if (pickerOpen) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
@@ -452,7 +626,7 @@
     if (editorController?.handleKeydown(event)) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      void post();
+      void post(hasOnlyShortcutModifier(event) ? "steer" : "queue");
     }
   }
 
@@ -471,20 +645,19 @@
     }
   }
 
-  function handlePaste(event: ClipboardEvent): void {
-    if (!event.clipboardData || !editorController) return;
-    event.preventDefault();
+  /** Pastes a copied slice that carries references; the frame pastes images and plain text. */
+  function handlePaste(event: ClipboardEvent): boolean {
+    if (!event.clipboardData || !editorController || editingInput) return false;
     const plainText = event.clipboardData.getData("text/plain").replace(/\r\n?/gu, "\n");
     const semantic = parseReferenceClipboardSlice(
       event.clipboardData.getData(REFERENCE_CLIPBOARD_TYPE),
       plainText,
     );
-    if (semantic) {
-      editorController.pasteReferenceSlice(semantic);
-      announcement = t("chat.organization.referencesPasted", semantic.references.length);
-    } else {
-      editorController.insertPlainText(plainText);
-    }
+    if (!semantic) return false;
+    event.preventDefault();
+    editorController.pasteReferenceSlice(semantic);
+    announcement = t("chat.organization.referencesPasted", semantic.references.length);
+    return true;
   }
 
   function parseReferenceClipboardSlice(
@@ -528,11 +701,15 @@
       return;
     }
     const request = ++pickerRequest;
+    // While the query is being refined, the current results stay until the new ones replace them, so typing never blanks the list.
+    const refining = pickerOpen && pickerTrigger?.kind === trigger.kind;
     pickerTrigger = trigger;
     pickerOpen = true;
-    pickerIndex = 0;
-    pickerLoading = true;
-    pickerEntries = [];
+    if (!refining) {
+      pickerIndex = 0;
+      pickerLoading = true;
+      pickerEntries = [];
+    }
     try {
       const entries = trigger.kind === "channel"
         ? await channelCandidates(trigger.query)
@@ -542,7 +719,7 @@
       pickerIndex = firstPickerIndex(entries);
       announcement = t("chat.organization.referenceResults", entries.length);
     } catch (cause: unknown) {
-      if (request === pickerRequest) error = cause instanceof Error ? cause.message : String(cause);
+      if (request === pickerRequest) error = chatErrorMessage(cause);
     } finally {
       if (request === pickerRequest) pickerLoading = false;
     }
@@ -575,57 +752,29 @@
   async function mentionCandidates(query: string): Promise<ReferenceCandidate[]> {
     const normalized = query.trim().toLocaleLowerCase();
     const memberships = (chat.selectedChannel?.memberships ?? []).filter((membership) => (
-      membership.removedAt === null
+      isActiveChannelMember(membership)
         && membership.participant.archivedAt === null
-        && (membership.participant.kind !== "ai_teammate"
-          || membership.aiAccess?.capabilities.participate === true)
     ));
-    const memberIds = new Set(memberships.map((membership) => membership.participant.id));
     const entries: ReferenceCandidate[] = memberships.flatMap((membership) => {
-      const teammate = chat.teammates.find((candidate) => (
+      const agent = chat.agents.find((candidate) => (
         candidate.participant.id === membership.participant.id
       )) ?? null;
-      if (!matchesQuery(normalized, membership.participant.displayName, teammate?.role ?? "")) return [];
+      const label = chatParticipantDisplayName(membership.participant, preferences.profileDisplayName, t("chat.timeline.you"));
+      if (!matchesQuery(normalized, label, membership.participant.displayName)) return [];
       return [{
         key: `participant:${membership.participant.id}`,
         kind: "participant" as const,
         group: t("chat.organization.channelParticipants"),
-        label: membership.participant.displayName,
-        description: teammate?.role || t("chat.organization.humanMember"),
+        label,
+        description: agent ? t("chat.organization.aiAgent") : t("chat.organization.humanMember"),
         participant: membership.participant,
-        teammate,
-        needsMembership: false,
+        agent,
       }];
     });
-    for (const teammate of chat.teammates) {
-      if (memberIds.has(teammate.participant.id)
-        || !matchesQuery(normalized, teammate.participant.displayName, teammate.role)) continue;
-      entries.push({
-        key: `outside-participant:${teammate.participant.id}`,
-        kind: "participant",
-        group: t("chat.organization.otherTeammates"),
-        label: teammate.participant.displayName,
-        description: t("chat.organization.addBeforeMentioning"),
-        participant: teammate.participant,
-        teammate,
-        needsMembership: true,
-      });
-    }
     const projectId = chat.selectedChannel?.projectId;
-    const selectedAccess = mentionedTeammateId
-      ? teammateAccess?.channels.find((channel) => (
-        channel.channelId === chat.selectedChannel?.id && channel.removedAt === null
-      )) ?? null
-      : null;
-    const grantedFolderIds = mentionedTeammateId
-      ? new Set(selectedAccess?.folderGrants.flatMap((grant) => (
-        grant.revokedAt === null && grant.capability !== "none" ? [grant.workingFolderId] : []
-      )) ?? [])
-      : null;
     const folders = chat.workingFolders.filter((folder) => (
       folder.workingFolder.projectId === projectId
         && folder.workingFolder.archivedAt === null
-        && (grantedFolderIds === null || grantedFolderIds.has(folder.workingFolder.id))
     ));
     for (const folder of folders) {
       if (!matchesQuery(normalized, folder.workingFolder.displayName)) continue;
@@ -690,17 +839,6 @@
       announcement = candidate.target.unavailableReason ?? t("chat.organization.targetUnavailable");
       return;
     }
-    if (candidate.kind === "participant" && candidate.needsMembership) {
-      persist();
-      closePicker();
-      paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-configure-teammate", {
-        detail: {
-          participantId: candidate.participant.id,
-          channelId: chat.selectedChannel?.id,
-        },
-      }));
-      return;
-    }
     if (candidate.kind === "channel") {
       const blocker = await channelDisclosureBlocker(candidate.channel, null);
       if (blocker) {
@@ -722,45 +860,6 @@
     }
   }
 
-  function candidateReference(candidate: ReferenceCandidate): ChatMessageReference | null {
-    const metadata = {
-      referenceId: crypto.randomUUID(),
-      labelSnapshot: candidate.label.replace(/^[@#]/u, ""),
-      startOffset: 0,
-      endOffset: 0,
-      plainTextProjection: candidate.kind === "channel"
-        ? candidate.label
-        : `@${candidate.label.replace(/^@/u, "")}`,
-    };
-    switch (candidate.kind) {
-      case "participant":
-        return {
-          kind: "participant",
-          metadata,
-          participantId: candidate.participant.id,
-          participantKind: candidate.participant.kind,
-        };
-      case "channel":
-        return { kind: "channel", metadata, channelId: candidate.channel.id };
-      case "workingFolder":
-        return { kind: "workingFolder", metadata, workingFolderId: candidate.workingFolderId };
-      case "workspacePath":
-        return {
-          kind: "workspacePath",
-          metadata,
-          workingFolderId: candidate.workingFolderId,
-          pathKind: candidate.path.kind === "directory" ? "folder" : "file",
-          relativePath: candidate.path.relativePath,
-        };
-      case "executionEnvironment":
-        return candidate.target.executionTarget ? {
-          kind: "executionEnvironment",
-          metadata,
-          executionEnvironmentId: candidate.target.executionTarget.executionEnvironmentId,
-        } : null;
-    }
-  }
-
   function closePicker(): void {
     pickerRequest += 1;
     pickerOpen = false;
@@ -770,39 +869,565 @@
     pickerIndex = 0;
   }
 
+  /**
+   * Opens the skill or command menu for the typed query. App commands show at once; the provider
+   * catalog of the agent's working folder follows when the agent's provider can run here.
+   */
+  async function updatePromptMenu(kind: "skill" | "command", query: string): Promise<void> {
+    const request = ++promptMenuRequest;
+    const appEntries = kind === "command" ? agentCommandCatalog() : [];
+    const providerInstanceId = targetAgent?.localProviderInstanceId ?? null;
+    const workingFolderId = catalogWorkingFolderId;
+    const canReadProvider = localExecutionAvailable && providerInstanceId !== null && workingFolderId !== null;
+    if (!canReadProvider && kind === "skill") {
+      closePromptMenu();
+      return;
+    }
+    promptMenuKind = kind;
+    const cached = promptCatalogCache?.key === promptCatalogKey ? promptCatalogCache.entries : null;
+    promptMenuEntries = mergePromptCatalog(appEntries, cached ?? [], kind, query);
+    promptMenuIndex = Math.min(promptMenuIndex, Math.max(0, promptMenuEntries.length - 1));
+    if (!canReadProvider || cached) {
+      promptMenuLoading = false;
+      return;
+    }
+    promptMenuLoading = true;
+    const key = promptCatalogKey;
+    try {
+      const entries = await chatApi.listChatPromptCatalog(
+        workingFolderId,
+        providerInstanceId,
+        threadAssignment?.latestRunProviderThreadId ?? null,
+      );
+      if (key === promptCatalogKey) promptCatalogCache = { key, entries };
+      if (request !== promptMenuRequest) return;
+      promptMenuEntries = mergePromptCatalog(agentCommandCatalog(), entries, kind, query);
+      promptMenuIndex = Math.min(promptMenuIndex, Math.max(0, promptMenuEntries.length - 1));
+    } catch {
+      // App commands stay available when the provider catalog cannot be read on this device.
+      if (request === promptMenuRequest) {
+        promptMenuEntries = mergePromptCatalog(agentCommandCatalog(), [], kind, query);
+      }
+    } finally {
+      if (request === promptMenuRequest) promptMenuLoading = false;
+    }
+  }
+
+  function closePromptMenu(): void {
+    promptMenuRequest += 1;
+    promptMenuKind = null;
+    promptMenuEntries = [];
+    promptMenuIndex = 0;
+    promptMenuLoading = false;
+  }
+
+  /**
+   * Applies the chosen menu entry at the typed token: an app command runs and removes the token,
+   * while a skill or provider command replaces the token with its text.
+   */
+  async function choosePromptEntry(index: number): Promise<void> {
+    const entry = promptMenuEntries[index];
+    if (!entry || !editorController) return;
+    const selection = editorController.selection();
+    const trigger = composerTokenTrigger(editorController.plainText(), selection.start);
+    closePromptMenu();
+    if (!trigger || trigger.kind === "mention") return;
+    if (entry.source === "app" && !isModelCommandEntry(entry)) {
+      editorController.replaceRange(trigger.start, trigger.end, "");
+      await runAgentCommand(entry.value);
+      return;
+    }
+    editorController.replaceRange(trigger.start, trigger.end, `${entry.value} `);
+  }
+
+  async function runAgentCommand(value: string): Promise<void> {
+    switch (value) {
+      case "/schedule": toggleScheduleMenu(); return;
+      case "/attach": await pickImages(); return;
+      case "/stop": await stopAssignment(); return;
+      case "/status": statusPanelOpen = true; return;
+    }
+  }
+
+  /** The app commands an agent conversation offers; provider direct actions never show here. */
+  function agentCommandCatalog(): ChatPromptCatalogEntry[] {
+    return [
+      appCommand("/schedule", t("chat.composer.agentCommands.schedule"), t("chat.composer.agentCommands.scheduleDescription")),
+      ...(localExecutionAvailable
+        ? [appCommand("/attach", t("chat.composer.agentCommands.attach"), t("chat.composer.agentCommands.attachDescription"))]
+        : []),
+      ...(activeAssignment
+        ? [appCommand("/stop", t("chat.composer.agentCommands.stop"), t("chat.composer.agentCommands.stopDescription"))]
+        : []),
+      ...(statusAvailable
+        ? [appCommand("/status", t("chat.composer.agentCommands.status"), t("chat.composer.agentCommands.statusDescription"))]
+        : []),
+      ...modelCommandCatalog(),
+    ];
+  }
+
+  /**
+   * The `/model` suggestions: the target agent's models, else every model the channel's agents offer here, else the
+   * bare command so it stays discoverable.
+   */
+  function modelCommandCatalog(): ChatPromptCatalogEntry[] {
+    const models = targetAgent
+      ? targetProvider?.modelCatalog?.models ?? []
+      : channelModelChoices(channelAgentModelCatalogs());
+    if (models.length === 0) {
+      return [genericModelCommandEntry("/model", t("chat.composer.agentCommands.modelGenericDescription"), t("chat.composer.agentCommands.modelArgument"))];
+    }
+    return modelCommandEntries(models, (name) => t("chat.composer.agentCommands.modelDescription", name));
+  }
+
+  function channelAgentModelCatalogs(): ProviderModel[][] {
+    return (chat.selectedChannel?.memberships ?? []).flatMap((membership) => {
+      if (membership.participant.kind !== "ai_agent" || !isActiveChannelMember(membership)) return [];
+      const agent = chat.agents.find((candidate) => candidate.participant.id === membership.participant.id);
+      const provider = chat.settings?.providerInstances.find((entry) => (
+        entry.configuration.instanceId === agent?.localProviderInstanceId
+      ));
+      return provider?.modelCatalog ? [provider.modelCatalog.models] : [];
+    });
+  }
+
+  function appCommand(value: string, label: string, description: string): ChatPromptCatalogEntry {
+    return { value, label, description, argumentHint: null, kind: "command", source: "app", stale: false };
+  }
+
+  /** What the status panel shows about the provider session of the thread's latest run. */
+  function agentComposerStatus(): ComposerStatusRead {
+    const defaultModelId = chatAgentDefaultModelId(targetAgent?.latestPolicy ?? null, targetProvider?.modelCatalog ?? null);
+    return {
+      providerLabel: targetProvider?.configuration.label ?? null,
+      sessionId: interactionState?.sessionId ?? null,
+      sessionState: interactionState?.sessionState ?? "stopped",
+      modelLabel: targetProvider?.modelCatalog?.models.find((entry) => entry.id === defaultModelId)?.displayName ?? null,
+      accountLabel: interactionState?.accountStatus?.accountLabel ?? null,
+      planLabel: interactionState?.accountStatus?.planLabel ?? null,
+      usage: meterRead,
+    };
+  }
+
+  async function loadAssignmentInputs(assignmentId: ChatWorkAssignmentId | null): Promise<void> {
+    const request = ++assignmentInputsRequest;
+    if (!assignmentId) {
+      assignmentInputs = [];
+      return;
+    }
+    try {
+      const inputs = await chatApi.listChatAssignmentInputs(assignmentId);
+      if (request === assignmentInputsRequest) assignmentInputs = inputs;
+    } catch {
+      // The list keeps its last reading; the thread timeline still shows every reply.
+    }
+  }
+
+  function replyForInput(input: ChatAssignmentInputRead): ChatMessageRead | null {
+    return chat.replyThread?.replies.find((reply) => reply.itemId === input.messageItemId) ?? null;
+  }
+
+  function canEditInput(row: PendingInputRow): boolean {
+    return !pendingInputStartsWork(row.input) && replyForInput(row.input) !== null;
+  }
+
+  /** Replaces the editor content without the store draft, as loading a waiting reply or restoring the draft does. */
+  function loadEditorContent(
+    document: ChatComposerDocument,
+    references: readonly ChatMessageReference[],
+    attachments: readonly string[],
+    selection?: ChatComposerSelection,
+  ): void {
+    editorDocument = document;
+    normalizedMarkdown = chatComposerMarkdown(document);
+    editorReferences = chatReferencesForEditor(document, references);
+    attachmentIds = [...attachments];
+    const end = chatComposerPlainText(document).length;
+    selectionStart = Math.min(selection?.start ?? end, end);
+    selectionEnd = Math.min(selection?.end ?? end, end);
+    editorController?.setDocument(document, editorReferences);
+    editorController?.focus({ start: selectionStart, end: selectionEnd });
+  }
+
+  function startInputEdit(row: PendingInputRow): void {
+    const reply = replyForInput(row.input);
+    if (!reply || editingInput || editingScheduled) return;
+    persist();
+    closePicker();
+    closePromptMenu();
+    error = null;
+    editingInput = row.input;
+    // The saved revision carries no references, so the editor shows their text as plain text.
+    loadEditorContent(parseChatComposerDocument(reply.richContent, reply.normalizedMarkdown), [], []);
+  }
+
+  function restoreDraftAfterEdit(): void {
+    editingInput = null;
+    const draft = chat.organizationalDraft(destination);
+    loadEditorContent(parseChatComposerDocument(draft.richContent, draft.normalizedMarkdown), draft.references, draft.attachmentIds, {
+      start: draft.selectionStart,
+      end: draft.selectionEnd,
+    });
+  }
+
+  function discardInputEdit(): void {
+    if (!editingInput || inputBusyId) return;
+    restoreDraftAfterEdit();
+  }
+
+  /**
+   * Loads a scheduled message into the editor with its references, attachments, time, and repeat
+   * rule. A repeating message shows its pending occurrence as the time, so saving without touching
+   * the time keeps its series where it is.
+   */
+  function startScheduledEdit(message: ChatScheduledMessageRead): void {
+    if (editingInput || editingScheduled || sending || message.state === "dispatching") return;
+    persist();
+    closePicker();
+    closePromptMenu();
+    error = null;
+    editingScheduled = { message, draftAlsoSendToChannel: alsoSendToChannel };
+    const recurrence = message.recurrence;
+    scheduledFor = recurrence ? recurrence.nextOccurrenceAt : message.scheduledFor;
+    scheduledRecurrence = recurrence
+      ? { rule: { ...recurrence.rule }, timeZone: recurrence.timeZone, quietPolicy: recurrence.quietPolicy }
+      : null;
+    alsoSendToChannel = message.alsoSendToChannel;
+    loadEditorContent(
+      parseChatComposerDocument(message.richContent, message.normalizedMarkdown),
+      message.references,
+      message.attachmentIds,
+    );
+    void loadAttachmentReads(message.attachmentIds);
+  }
+
+  /** Ends a scheduled message edit and puts the set aside draft, with its time and repeat rule, back in the editor. */
+  function restoreDraftAfterScheduledEdit(): void {
+    const editing = editingScheduled;
+    if (!editing) return;
+    editingScheduled = null;
+    const draft = chat.organizationalDraft(destination);
+    scheduledFor = draft.scheduledFor;
+    scheduledRecurrence = draft.recurrence;
+    alsoSendToChannel = editing.draftAlsoSendToChannel;
+    loadEditorContent(parseChatComposerDocument(draft.richContent, draft.normalizedMarkdown), draft.references, draft.attachmentIds, {
+      start: draft.selectionStart,
+      end: draft.selectionEnd,
+    });
+  }
+
+  function discardScheduledEdit(): void {
+    if (!editingScheduled || sending) return;
+    restoreDraftAfterScheduledEdit();
+  }
+
+  /**
+   * Saves the editor over the scheduled message it holds. A message that was sent, cancelled, or
+   * started sending meanwhile ends the edit with an explanation and a fresh list.
+   */
+  async function saveScheduledEdit(): Promise<void> {
+    const editing = editingScheduled;
+    if (!editing || sending || !hasMessageContent) return;
+    const original = editing.message;
+    const originalScheduledFor = original.recurrence?.nextOccurrenceAt ?? original.scheduledFor;
+    if (!scheduledFor) {
+      error = t("chat.organization.invalidScheduleTime");
+      return;
+    }
+    if (validation || providerBlockers.length > 0 || messageTooLarge) {
+      await focusBlocker();
+      return;
+    }
+    sending = true;
+    error = null;
+    try {
+      const blocker = await validateChannelDisclosures();
+      if (blocker) {
+        disclosureBlocker = blocker;
+        await focusBlocker();
+        return;
+      }
+      if (scheduledFor !== originalScheduledFor) {
+        const { chatScheduleIsFuture } = await import("$lib/chat/composer/message-scheduling");
+        if (!chatScheduleIsFuture(scheduledFor)) {
+          error = t("chat.organization.invalidScheduleTime");
+          return;
+        }
+      }
+      const updated = await chat.updateScheduledOrganizationalMessage({
+        scheduledMessageId: original.id,
+        scheduledFor,
+        normalizedMarkdown,
+        richContent: chatComposerDocumentVersioned(editorDocument),
+        attachmentIds: [...attachmentIds],
+        references: chatReferencesForMarkdown(editorDocument, editorReferences),
+        alsoSendToChannel: threadComposer && alsoSendToChannel,
+        recurrence: scheduledRecurrence,
+      });
+      updateScheduledMessages(scheduledMessages.map((message) => message.id === updated.id ? updated : message)
+        .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor)));
+      restoreDraftAfterScheduledEdit();
+    } catch (cause: unknown) {
+      const code = chatErrorCode(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.scheduleAction"));
+      if (code === "not_found" || code === "busy") {
+        restoreDraftAfterScheduledEdit();
+        await loadScheduledMessages(destination);
+      }
+    } finally {
+      sending = false;
+    }
+  }
+
+  /**
+   * The explanation of an edit or cancel refused because the reply already left the list's view of
+   * it, as when it reached the agent or started its own work after the list loaded, or null for
+   * any other failure.
+   *
+   * @param cause The failure of the edit or cancel.
+   */
+  function settledInputMessage(cause: unknown): string | null {
+    switch (chatErrorReason(cause)) {
+      case "input_already_delivered": return t("chat.composer.pendingInputs.alreadyDelivered");
+      case "input_starts_work": return t("chat.composer.pendingInputs.startsWork");
+      default: return null;
+    }
+  }
+
+  async function refreshAfterInputChange(): Promise<void> {
+    const replyThreadId = destinationReplyThreadId(destination);
+    await Promise.all([
+      replyThreadId ? chat.loadReplyThread(replyThreadId, true) : Promise.resolve(),
+      loadAssignmentInputs(threadAssignment?.id ?? null),
+    ]);
+  }
+
+  async function saveInputEdit(): Promise<void> {
+    const input = editingInput;
+    if (!input || inputBusyId || !normalizedMarkdown.trim()) return;
+    inputBusyId = input.inputId;
+    error = null;
+    try {
+      await chatApi.editChatAssignmentInput(input.inputId, {
+        normalizedMarkdown,
+        richContent: chatComposerDocumentVersioned(editorDocument),
+      });
+      restoreDraftAfterEdit();
+      await refreshAfterInputChange();
+    } catch (cause: unknown) {
+      const settled = settledInputMessage(cause);
+      if (settled) {
+        error = settled;
+        restoreDraftAfterEdit();
+        await refreshAfterInputChange().catch(() => undefined);
+      } else {
+        error = chatErrorMessage(cause, t("chatErrors.actions.updateMessage"));
+      }
+    } finally {
+      inputBusyId = null;
+    }
+  }
+
+  async function cancelInput(row: PendingInputRow): Promise<void> {
+    if (inputBusyId || editingInput) return;
+    inputBusyId = row.input.inputId;
+    error = null;
+    try {
+      await chatApi.cancelChatAssignmentInput(row.input.inputId);
+      await refreshAfterInputChange();
+    } catch (cause: unknown) {
+      const settled = settledInputMessage(cause);
+      error = settled ?? chatErrorMessage(cause, t("chatErrors.actions.updateMessage"));
+      if (settled) await refreshAfterInputChange().catch(() => undefined);
+    } finally {
+      inputBusyId = null;
+    }
+  }
+
+  /**
+   * Runs one change to a waiting reply and reloads the queue, explaining a refusal because the reply
+   * already left the queue.
+   *
+   * @param row The waiting reply the change applies to.
+   * @param change The change to request.
+   */
+  async function changeWaitingInput(row: PendingInputRow, change: () => Promise<unknown>): Promise<void> {
+    if (inputBusyId || editingInput) return;
+    inputBusyId = row.input.inputId;
+    error = null;
+    try {
+      await change();
+      await refreshAfterInputChange();
+    } catch (cause: unknown) {
+      const settled = settledInputMessage(cause);
+      error = settled ?? chatErrorMessage(cause, t("chatErrors.actions.updateMessage"));
+      if (settled) await refreshAfterInputChange().catch(() => undefined);
+    } finally {
+      inputBusyId = null;
+    }
+  }
+
+  function setInputHeld(row: PendingInputRow, held: boolean): Promise<void> {
+    return changeWaitingInput(row, () => chatApi.setChatAssignmentInputHeld(row.input.inputId, held));
+  }
+
+  function steerInput(row: PendingInputRow): Promise<void> {
+    return changeWaitingInput(row, () => chatApi.steerChatAssignmentInput(row.input.inputId));
+  }
+
+  /** Saves the waiting replies in a new order, reloading the queue when it changed meanwhile. */
+  async function reorderInputs(orderedInputIds: string[]): Promise<void> {
+    const assignmentId = threadAssignment?.id;
+    if (!assignmentId || editingInput) return;
+    const request = ++assignmentInputsRequest;
+    error = null;
+    try {
+      const inputs = await chatApi.reorderChatAssignmentInputs(assignmentId, orderedInputIds);
+      if (request === assignmentInputsRequest) assignmentInputs = inputs;
+    } catch (cause: unknown) {
+      error = chatErrorMessage(cause, t("chatErrors.actions.updateMessage"));
+      await loadAssignmentInputs(assignmentId);
+    }
+  }
+
+  function composerWorkingFolderId(): string | null {
+    if (!localExecutionAvailable) return primaryAttachmentFolderId;
+    return chat.selectedWorkingFolderId
+      ?? chat.workingFolders.find((folder) => folder.workingFolder.projectId === chat.selectedChannel?.projectId)
+        ?.workingFolder.id
+      ?? null;
+  }
+
+  /** Imports images pasted or dropped into the composer into the folder the image picker uses. */
+  async function importFiles(files: File[]): Promise<void> {
+    if (editLockReason) {
+      error = editLockReason;
+      return;
+    }
+    const workingFolderId = composerWorkingFolderId();
+    if (!workingFolderId) return;
+    const invalid = validateImageFiles(files, attachmentIds.length);
+    if (invalid) {
+      error = invalid;
+      return;
+    }
+    error = null;
+    try {
+      const imported = await Promise.all(files.map(async (file) => chatApi.importChatImage(
+        workingFolderId,
+        crypto.randomUUID(),
+        file.name,
+        new Uint8Array(await file.arrayBuffer()),
+      )));
+      rememberAttachments(imported);
+      attachmentIds = [...attachmentIds, ...imported.map((attachment) => attachment.id)];
+      persist();
+    } catch (cause: unknown) {
+      error = chatErrorMessage(cause, t("chatErrors.actions.fileAction"));
+    }
+  }
+
+  function handleImageInput(event: Event & { currentTarget: HTMLInputElement }): void {
+    const files = [...(event.currentTarget.files ?? [])];
+    event.currentTarget.value = "";
+    if (files.length > 0) void importFiles(files);
+  }
+
+  /** Attaches pasted or dropped text too large to read inline as a text attachment. */
+  async function importLargeText(text: string): Promise<void> {
+    if (editLockReason) {
+      error = editLockReason;
+      return;
+    }
+    const workingFolderId = composerWorkingFolderId();
+    if (!workingFolderId) {
+      error = t("chat.composer.paste.attachmentUnavailable");
+      return;
+    }
+    if (attachmentIds.length >= CHAT_IMAGE_LIMIT) {
+      error = t("chat.composer.paste.attachmentLimit", CHAT_IMAGE_LIMIT);
+      return;
+    }
+    error = null;
+    try {
+      const attachment = await chatApi.importChatTextSnippet(
+        workingFolderId,
+        crypto.randomUUID(),
+        t("chat.composer.paste.snippetName", pastedTextLineCount(text)),
+        text,
+      );
+      rememberAttachments([attachment]);
+      attachmentIds = [...attachmentIds, attachment.id];
+      persist();
+    } catch (cause: unknown) {
+      error = chatErrorMessage(cause, t("chatErrors.actions.fileAction"));
+    }
+  }
+
+  function rememberAttachments(attachments: readonly ChatAttachmentRead[]): void {
+    attachmentReads = { ...attachmentReads, ...Object.fromEntries(attachments.map((attachment) => [attachment.id, attachment])) };
+  }
+
+  /** Reads the draft's attachments so their chips show names; on failure the chips keep generic labels and the error shows. */
+  async function loadAttachmentReads(ids: readonly string[]): Promise<void> {
+    const workingFolderId = composerWorkingFolderId();
+    if (ids.length === 0 || !workingFolderId) return;
+    try {
+      rememberAttachments(await chatApi.readChatAttachments(workingFolderId, [...ids]));
+    } catch (cause: unknown) {
+      error = chatErrorMessage(cause, t("chatErrors.actions.fileAction"));
+    }
+  }
+
+  function attachmentChipLabel(id: string): string {
+    const read = attachmentReads[id];
+    if (read?.kind === "text_snippet") return read.originalDisplayName;
+    const imageIndex = attachmentIds.filter((entry) => attachmentReads[entry]?.kind !== "text_snippet").indexOf(id);
+    return t("chat.organization.imageNumber", imageIndex + 1);
+  }
+
+  /** Turns the suggested agent's name into a mention reference; nothing is posted. */
+  function applyMentionSuggestion(suggestion: MentionSuggestion): void {
+    if (!editorController) return;
+    const participant = mentionRoster.find((candidate) => candidate.id === suggestion.participantId);
+    if (!participant) return;
+    const label = participant.displayName;
+    const inserted = editorController.insertReference(suggestion.start, suggestion.end, {
+      kind: "participant",
+      participantId: participant.id,
+      participantKind: "ai_agent",
+      metadata: { referenceId: crypto.randomUUID(), labelSnapshot: label, startOffset: 0, endOffset: 0, plainTextProjection: `@${label}` },
+    });
+    announcement = inserted
+      ? t("chat.organization.referenceInserted", label)
+      : t("chat.organization.duplicateReference", label);
+  }
+
   async function loadAssignmentPreview(
-    teammateId: string,
+    agentId: string,
     channelId: string,
     replyThreadId: string | null,
   ): Promise<void> {
     const requestId = ++assignmentPreviewRequest;
     assignmentPreviewLoading = true;
     try {
-      const [access, targets] = await Promise.all([
-        chatApi.readChatTeammateAccess(teammateId),
-        chatApi.listChatAssignmentTargets({ teammateId, channelId, replyThreadId }),
-      ]);
+      const targets = await chatApi.listChatAssignmentTargets({ agentId, channelId, replyThreadId });
       if (
         requestId !== assignmentPreviewRequest
-        || mentionedTeammateId !== teammateId
+        || mentionedAgentId !== agentId
         || chat.selectedChannel?.id !== channelId
         || destinationReplyThreadId(destination) !== replyThreadId
       ) return;
-      teammateAccess = access;
       assignmentTargets = targets;
-      if (executionTarget && !targets.some((target) => sameExecutionTarget(target.executionTarget, executionTarget))) {
-        executionTarget = null;
-        persist();
-      }
     } catch (cause: unknown) {
       if (
         requestId === assignmentPreviewRequest
-        && mentionedTeammateId === teammateId
+        && mentionedAgentId === agentId
         && chat.selectedChannel?.id === channelId
         && destinationReplyThreadId(destination) === replyThreadId
       ) {
         assignmentTargets = [];
-        error = cause instanceof Error ? cause.message : String(cause);
+        error = chatErrorMessage(cause);
       }
     } finally {
       if (requestId === assignmentPreviewRequest) assignmentPreviewLoading = false;
@@ -835,14 +1460,14 @@
     const requester = sourceRoster.memberships.find((membership) => (
       membership.participant.kind === "local_user" && membership.removedAt === null
     ));
-    const teammateCanRead = aiParticipantReferences.every((reference) => (
+    const agentCanRead = aiParticipantReferences.every((reference) => (
       reference.kind !== "participant" || sourceReaders.has(reference.participantId)
     ));
     const missing = rosterReaders(destinationRoster).filter((reader) => !sourceReaders.has(reader.id));
-    if (requester && teammateCanRead && missing.length === 0) return null;
+    if (requester && agentCanRead && missing.length === 0) return null;
     const labels = missing.map((reader) => reader.displayName);
     if (!requester) labels.unshift(t("chat.organization.you"));
-    if (!teammateCanRead) {
+    if (!agentCanRead) {
       for (const reference of aiParticipantReferences) {
         if (reference.kind === "participant" && !sourceReaders.has(reference.participantId)) {
           labels.push(reference.metadata.labelSnapshot);
@@ -864,12 +1489,7 @@
   }
 
   function rosterReaders(roster: ChatChannelRosterRead): ChatParticipantRead[] {
-    return roster.memberships.flatMap((membership) => {
-      if (membership.removedAt !== null) return [];
-      if (membership.participant.kind === "ai_teammate"
-        && membership.aiAccess?.capabilities.readHistory !== true) return [];
-      return [membership.participant];
-    });
+    return roster.memberships.flatMap((membership) => (isActiveChannelMember(membership) ? [membership.participant] : []));
   }
 
   function rosterReaderIds(roster: ChatChannelRosterRead): Set<string> {
@@ -893,17 +1513,20 @@
   }
 
   async function pickImages(): Promise<void> {
-    const workingFolderId = chat.selectedWorkingFolderId
-      ?? chat.workingFolders.find((folder) => folder.workingFolder.projectId === chat.selectedChannel?.projectId)
-        ?.workingFolder.id;
-    if (!workingFolderId) return;
+    const workingFolderId = composerWorkingFolderId();
+    if (!workingFolderId || editLockReason) return;
     const available = Math.max(0, CHAT_IMAGE_LIMIT - attachmentIds.length);
     if (available === 0) return;
+    if (!localExecutionAvailable) {
+      imageInput?.click();
+      return;
+    }
     const imported = await chatApi.pickChatImages(
       workingFolderId,
       Array.from({ length: available }, () => crypto.randomUUID()),
       t("chat.composer.attachImages"),
     );
+    rememberAttachments(imported);
     attachmentIds = [...attachmentIds, ...imported.map((attachment) => attachment.id)];
     persist();
   }
@@ -913,26 +1536,41 @@
     normalizedMarkdown = "";
     editorReferences = [];
     attachmentIds = [];
-    executionTarget = null;
     selectionStart = 0;
     selectionEnd = 0;
     alsoSendToChannel = false;
     scheduledFor = null;
-    teammateAccess = null;
+    scheduledRecurrence = null;
     assignmentTargets = [];
     disclosureBlocker = null;
+    dismissedMentionSuggestions = [];
     editorController?.setDocument(editorDocument, []);
     persist();
   }
 
-  async function post(): Promise<void> {
-    if (activeAssignment || sending || !hasMessageContent) return;
+  /**
+   * Sends the draft, or saves the reply being edited. A reply to work an agent is on carries `followupRouting`;
+   * other posts ignore it.
+   */
+  async function post(followupRouting: ChatFollowupRouting = "queue"): Promise<void> {
+    if (editingInput) {
+      await saveInputEdit();
+      return;
+    }
+    if (editingScheduled) {
+      await saveScheduledEdit();
+      return;
+    }
+    if (sending || !hasMessageContent) return;
+    await waitForAssignmentPreview();
+    if (!hasMessageContent) return;
     if (validation || providerBlockers.length > 0 || messageTooLarge) {
       await focusBlocker();
       return;
     }
     sending = true;
     error = null;
+    let delivered = false;
     try {
       const blocker = await validateChannelDisclosures();
       if (blocker) {
@@ -950,20 +1588,54 @@
         const scheduled = await chat.scheduleOrganizationalMessage(destination, scheduledFor, {
           alsoSendToChannel: threadComposer && alsoSendToChannel,
         });
-        scheduledMessages = [...scheduledMessages.filter((message) => message.id !== scheduled.id), scheduled]
-          .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor));
+        updateScheduledMessages([...scheduledMessages.filter((message) => message.id !== scheduled.id), scheduled]
+          .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor)));
       } else {
-        await chat.postOrganizationalMessage(destination, {
+        const routing = routesFollowups ? followupRouting : null;
+        const result = await chat.postOrganizationalMessage(destination, {
           alsoSendToChannel: threadComposer && alsoSendToChannel,
+          ...(routing ? { followupRouting: routing } : {}),
+          // The post is in the vault once written, so the composer clears and takes the next message without waiting for
+          // the reads after it.
+          onWritten: () => {
+            delivered = true;
+            sending = false;
+            clearComposerAfterDelivery();
+          },
         });
+        routingNotice = routing === "steer" && result.routedAs === "queue"
+          ? t("chat.composer.routing.downgraded")
+          : null;
         onRequestScrollToBottom();
       }
-      clearComposerAfterDelivery();
+      if (!delivered) clearComposerAfterDelivery();
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = delivered
+        ? t("chatErrors.actions.refreshAfterSend")
+        : chatErrorMessage(cause, t("chatErrors.actions.sendMessage"));
+    } finally {
+      if (!delivered) sending = false;
+    }
+  }
+
+  /**
+   * Waits for the mentioned agent's access and targets so a send checks its blockers against them instead of
+   * flashing a resolving state; the send stays busy meanwhile so a second send cannot start.
+   */
+  async function waitForAssignmentPreview(): Promise<void> {
+    if (!assignmentPreviewLoading || !assignmentPreviewPending) return;
+    sending = true;
+    try {
+      while (assignmentPreviewLoading && assignmentPreviewPending) await assignmentPreviewPending;
     } finally {
       sending = false;
     }
+  }
+
+  function providerLimitMessage(resetsAt: string | null): string {
+    return resetsAt === null
+      ? t("chat.composer.providerLimitUntimed")
+      : t("chat.composer.providerLimit", formatDateTime(localization.locale, Date.parse(resetsAt), { hour: "numeric", minute: "2-digit" }));
   }
 
   async function focusBlocker(): Promise<void> {
@@ -979,48 +1651,75 @@
     try {
       await chat.cancelAssignment(assignment.id);
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.workAction"));
     } finally {
       stopping = false;
     }
   }
 
-  async function retryFailedAssignment(): Promise<void> {
-    const assignment = failedAssignment;
-    if (!assignment || retryingAssignment) return;
-    retryingAssignment = true;
+  async function reviewWork(review: ChatAssignmentReviewRequest): Promise<boolean> {
+    const assignment = assignmentAwaitingReview;
+    if (!assignment || reviewing) return false;
     error = null;
+    reviewing = true;
     try {
-      await chat.retryAssignment(assignment.id);
-      onRequestScrollToBottom();
+      const reviewed = await chat.reviewAssignment(assignment.id, review);
+      if (reviewed) {
+        reviewNote = "";
+        reviewNoteOpen = false;
+      } else {
+        error = t("chat.organization.reviewChanged");
+      }
+      return reviewed;
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
-      throw cause;
+      error = reviewRefusalMessage(cause);
+      return false;
     } finally {
-      retryingAssignment = false;
+      reviewing = false;
     }
   }
 
-  async function startAssignmentHere(): Promise<void> {
-    const assignment = assignmentAwaitingStart;
-    if (!assignment?.localAcceptance || retryingAssignment) return;
-    retryingAssignment = true;
-    error = null;
-    try {
-      const started = await chat.acceptAssignmentHere(assignment.id, assignment.localAcceptance.digest);
-      if (started) onRequestScrollToBottom();
-      else error = t("chat.organization.workAccessChanged");
-    } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
-      throw cause;
-    } finally {
-      retryingAssignment = false;
+  /** The localized reason a review was refused, or the failure message when the refusal names no known reason. */
+  function reviewRefusalMessage(cause: unknown): string {
+    switch (chatErrorReason(cause)) {
+      case "pending_replies": return t("chat.organization.reviewPendingReplies");
+      case "no_executing_device": return t("chat.organization.reviewNoDevice");
+      default: return chatErrorMessage(cause, t("chatErrors.actions.workAction"));
     }
   }
 
-  function performPrimaryAction(): void {
-    if (activeAssignment) void stopAssignment();
-    else void post();
+  /**
+   * Moves a Request changes note the card no longer shows into the reply draft, where it posts as a plain reply,
+   * which also asks for more work. The note follows any text already in the draft.
+   */
+  function releaseReviewNote(): void {
+    const note = reviewNote.trim();
+    reviewNote = "";
+    reviewNoteOpen = false;
+    if (!note) return;
+    const existing = chatComposerPlainText(editorDocument);
+    const end = existing.length;
+    const separator = existing.trim() ? "\n\n" : "";
+    const next = replaceChatComposerText(editorDocument, { start: end, end }, `${separator}${note}`);
+    editorDocument = next.document;
+    normalizedMarkdown = chatComposerMarkdown(next.document);
+    selectionStart = next.selection.start;
+    selectionEnd = next.selection.end;
+    editorController?.setDocument(editorDocument, editorReferences);
+    persist();
+    error = t("chat.organization.reviewNoteMoved");
+  }
+
+  async function acceptReviewedWork(): Promise<boolean> {
+    const reviewed = await reviewWork({ kind: "accept" });
+    if (reviewed) announcement = t("chat.organization.reviewAccepted");
+    return reviewed;
+  }
+
+  async function requestChangesOnReviewedWork(note: string): Promise<boolean> {
+    const reviewed = await reviewWork({ kind: "requestChanges", note });
+    if (reviewed) onRequestScrollToBottom();
+    return reviewed;
   }
 
   function formatScheduledInstant(value: string): string {
@@ -1039,9 +1738,33 @@
     if (ScheduleMenu) return Promise.resolve();
     scheduleMenuLoad ??= import("./ChatMessageScheduleMenu.svelte")
       .then((module) => { ScheduleMenu = module.default; })
-      .catch((cause: unknown) => { error = cause instanceof Error ? cause.message : String(cause); })
+      .catch((cause: unknown) => { error = chatErrorMessage(cause); })
       .finally(() => { scheduleMenuLoad = null; });
     return scheduleMenuLoad;
+  }
+
+  /** Loads the emoji picker on first use; it then mounts already open. */
+  async function openEmojiPicker(): Promise<void> {
+    if (EmojiPicker) return;
+    try {
+      EmojiPicker = (await import("$lib/components/icon-picker/IconPicker.svelte")).default;
+    } catch (cause: unknown) {
+      error = chatErrorMessage(cause);
+    }
+  }
+
+  /** Puts a picked native emoji in place of the draft selection and keeps the caret after it. */
+  function insertEmoji(value: string): void {
+    const icon = parseProjectIcon(value);
+    if (icon.kind !== "emoji") return;
+    const next = replaceChatComposerText(editorDocument, { start: selectionStart, end: selectionEnd }, icon.emoji);
+    editorDocument = next.document;
+    normalizedMarkdown = chatComposerMarkdown(next.document);
+    selectionStart = next.selection.end;
+    selectionEnd = next.selection.end;
+    editorController?.setDocument(editorDocument, editorReferences);
+    editorController?.focus({ start: selectionStart, end: selectionEnd });
+    persist();
   }
 
   function toggleScheduleMenu(): void {
@@ -1050,16 +1773,15 @@
     if (scheduleMenuOpen) void loadScheduleMenu();
   }
 
-  function selectSchedule(nextScheduledFor: string): void {
+  function selectSchedule(nextScheduledFor: string, nextRecurrence: ChatRecurrenceSpec | null): void {
     scheduledFor = nextScheduledFor;
-    scheduleMenuOpen = false;
+    scheduledRecurrence = nextRecurrence;
     persist();
-    void tick().then(() => editorController?.focus());
   }
 
   function clearSchedule(): void {
     scheduledFor = null;
-    scheduleMenuOpen = false;
+    scheduledRecurrence = null;
     persist();
   }
 
@@ -1083,6 +1805,7 @@
 
   function updateScheduledMessages(messages: ChatScheduledMessageRead[]): void {
     scheduledMessages = messages;
+    chat.rememberScheduledMessages(destination, messages);
     if (messages.length === 0) scheduledMessagesOpen = false;
   }
 
@@ -1090,10 +1813,6 @@
     const project = projects.projects.find((entry) => entry.id === channel.projectId);
     const group = projects.groups.find((entry) => entry.id === project?.groupId);
     return [group?.name, project?.name].filter(Boolean).join(" / ") || channel.projectId;
-  }
-
-  function matchesQuery(query: string, ...values: string[]): boolean {
-    return !query || values.some((value) => value.toLocaleLowerCase().includes(query));
   }
 
   function candidateSort(left: ReferenceCandidate, right: ReferenceCandidate): number {
@@ -1106,130 +1825,37 @@
     if (candidate.kind === "channel") {
       return candidate.channel.projectId === chat.selectedChannel?.projectId ? 0 : 1;
     }
-    if (candidate.kind === "participant") return candidate.needsMembership ? 1 : 0;
+    if (candidate.kind === "participant") return 0;
     if (candidate.kind === "workingFolder") return 2;
     if (candidate.kind === "workspacePath") return 3;
     return 4;
   }
 
-  function groupReferenceCandidates(candidates: readonly ReferenceCandidate[]): ReferenceCandidateGroup[] {
-    const groups: ReferenceCandidateGroup[] = [];
-    candidates.forEach((candidate, index) => {
-      const group = groups.at(-1);
-      if (group?.label === candidate.group) group.entries.push({ candidate, index });
-      else groups.push({ label: candidate.group, entries: [{ candidate, index }] });
-    });
-    return groups;
-  }
-
-  function candidateIsDisabled(candidate: ReferenceCandidate): boolean {
-    return candidate.kind === "executionEnvironment" && !candidate.target.eligible;
-  }
-
-  function firstPickerIndex(candidates: readonly ReferenceCandidate[]): number {
-    const index = candidates.findIndex((candidate) => !candidateIsDisabled(candidate));
-    return index < 0 ? 0 : index;
-  }
-
-  function lastPickerIndex(candidates: readonly ReferenceCandidate[]): number {
-    for (let index = candidates.length - 1; index >= 0; index -= 1) {
-      if (!candidateIsDisabled(candidates[index]!)) return index;
-    }
-    return 0;
-  }
-
-  function nextPickerIndex(
-    candidates: readonly ReferenceCandidate[],
-    current: number,
-    direction: 1 | -1,
-  ): number {
-    if (candidates.length === 0) return 0;
-    let index = current;
-    for (let attempts = 0; attempts < candidates.length; attempts += 1) {
-      index = (index + direction + candidates.length) % candidates.length;
-      if (!candidateIsDisabled(candidates[index]!)) return index;
-    }
-    return current;
-  }
-
-  function inferAssignmentTarget(
-    explicit: ChatExecutionTarget | null,
-    references: readonly ChatMessageReference[],
-    targets: readonly ChatAssignmentTargetRead[],
-  ): ChatAssignmentTargetRead | null {
-    if (explicit) {
-      const selected = targets.find((target) => sameExecutionTarget(target.executionTarget, explicit));
-      if (selected) return selected;
-    }
-    const referencedEnvironmentIds = new Set(references.flatMap((reference) => (
-      reference.kind === "executionEnvironment" ? [reference.executionEnvironmentId] : []
-    )));
-    if (referencedEnvironmentIds.size === 1) {
-      const environmentId = [...referencedEnvironmentIds][0];
-      const target = targets.find((candidate) => (
-        candidate.executionTarget?.executionEnvironmentId === environmentId && candidate.eligible
-      ));
-      if (target) return target;
-    }
-    return targets.find((target) => target.isDefault && target.eligible)
-      ?? targets.find((target) => target.kind === "scratch" && target.eligible)
-      ?? null;
-  }
-
-  function sameExecutionTarget(
-    left: ChatExecutionTarget | null,
-    right: ChatExecutionTarget | null,
-  ): boolean {
-    if (!left || !right || left.kind !== right.kind) return false;
-    return left.executionEnvironmentId === right.executionEnvironmentId;
-  }
-
+  /**
+   * Why the mentioned agent cannot take this post's work here. An agent without a provider on this device is
+   * no blocker: its work waits in the thread for Start here on a device that has one.
+   */
   function assignmentProviderBlockers(
-    teammateId: string | null,
+    agentId: string | null,
     target: ChatAssignmentTargetRead | null,
     references: readonly ChatMessageReference[],
-    access: ChatTeammateAccessRead | null,
+    channel: ChatChannelRead | null,
     targets: readonly ChatAssignmentTargetRead[],
   ): string[] {
-    if (!teammateId) return [];
-    const teammate = chat.teammates.find((candidate) => candidate.participant.id === teammateId);
+    if (!agentId) return [];
+    const agent = chat.agents.find((candidate) => candidate.participant.id === agentId);
     const blockers: string[] = [];
-    if (assignmentPreviewLoading) blockers.push(t("chat.organization.assignmentStillResolving"));
-    if (!teammate?.latestPolicy) blockers.push(t("chat.organization.providerNotConfigured"));
-    if (teammate && teammate.configurationState !== "healthy") {
-      blockers.push(t("chat.organization.teammateNeedsSetup", teammate.participant.displayName));
+    if (agent && agentNeedsSetupHere(agent.configurationState, localExecutionAvailable)) {
+      blockers.push(t("chat.organization.agentNeedsSetup", agent.participant.displayName));
     }
-    if (!assignmentPreviewLoading && !target) blockers.push(t("chat.organization.noEligibleTarget"));
     if (target && !target.eligible) {
       blockers.push(target.unavailableReason ?? t("chat.organization.targetUnavailable"));
     }
-    const channelAccess = access?.channels.find((channel) => (
-      channel.channelId === chat.selectedChannel?.id && channel.removedAt === null
-    )) ?? null;
-    if (!assignmentPreviewLoading && !channelAccess) {
-      blockers.push(t("chat.organization.teammateChannelAccessUnavailable"));
-    }
-    if (channelAccess) {
-      const grantedFolderIds = new Set(channelAccess.folderGrants.flatMap((grant) => (
-        grant.revokedAt === null && grant.capability !== "none" ? [grant.workingFolderId] : []
-      )));
-      const referencedFolderIds = new Set(references.flatMap((reference) => (
-        reference.kind === "workingFolder" || reference.kind === "workspacePath"
-          ? [reference.workingFolderId]
-          : []
-      )));
-      const ungrantedFolders = [...referencedFolderIds]
-        .filter((folderId) => !grantedFolderIds.has(folderId))
-        .map((folderId) => chat.workingFolders.find((folder) => (
-          folder.workingFolder.id === folderId
-        ))?.workingFolder.displayName ?? folderId);
-      if (ungrantedFolders.length > 0) {
-        blockers.push(t(
-          "chat.organization.ungrantedFolderReferences",
-          new Intl.ListFormat(localization.locale, { style: "long", type: "conjunction" })
-            .format(ungrantedFolders),
-        ));
-      }
+    const member = channel?.memberships.some((membership) => (
+      membership.participant.id === agentId && isActiveChannelMember(membership)
+    )) ?? false;
+    if (!assignmentPreviewLoading && !member) {
+      blockers.push(t("chat.organization.agentChannelAccessUnavailable"));
     }
     const unavailableEnvironments = references
       .filter((reference): reference is Extract<ChatMessageReference, { kind: "executionEnvironment" }> => (
@@ -1247,11 +1873,11 @@
           .format(unavailableEnvironments),
       ));
     }
-    const provider = chat.settings?.providerInstances.find((entry) => (
-      entry.configuration.instanceId === teammate?.latestPolicy?.providerInstanceId
-    ));
+    const provider = agent?.localProviderInstanceId
+      ? chat.settings?.providerInstances.find((entry) => entry.configuration.instanceId === agent.localProviderInstanceId)
+      : undefined;
     const authority = provider?.lastProbe?.authoritySupport;
-    if (teammate?.latestPolicy && !authority && !assignmentPreviewLoading) {
+    if (provider && !authority && !assignmentPreviewLoading) {
       blockers.push(t("chat.organization.providerAuthorityNotVerified"));
     }
     const requiresHostTools = references.some((reference) => (
@@ -1262,28 +1888,9 @@
     if (requiresHostTools && authority && !authority.internalHostTools) {
       blockers.push(t("chat.organization.providerCannotUseHostTools"));
     }
-    if (target?.kind === "scratch" && authority) {
-      if (!authority.writableRoot) blockers.push(t("chat.organization.providerCannotWriteRoot"));
-      if (!authority.confinedCommands) blockers.push(t("chat.organization.providerCannotConfineCommands"));
-      if (!authority.networkBoundary) blockers.push(t("chat.organization.providerCannotEnforceNetwork"));
-    }
-    if (target?.folderCapability && authority) {
-      const capability = target.folderCapability;
-      if (capability === "read" && !authority.readOnlyRoot) blockers.push(t("chat.organization.providerCannotReadRoot"));
-      if (["edit", "execute", "publish"].includes(capability) && !authority.writableRoot) {
-        blockers.push(t("chat.organization.providerCannotWriteRoot"));
-      }
-      if (["read", "edit"].includes(capability) && !authority.denyShell) {
-        blockers.push(t("chat.organization.providerCannotDenyShell"));
-      }
-      if (["execute", "publish"].includes(capability) && !authority.confinedCommands) {
-        blockers.push(t("chat.organization.providerCannotConfineCommands"));
-      }
-      if (["execute", "publish"].includes(capability) && !authority.networkBoundary) {
-        blockers.push(t("chat.organization.providerCannotEnforceNetwork"));
-      }
-      if (capability === "publish" && !authority.classifiedPublish) {
-        blockers.push(t("chat.organization.providerCannotPublish"));
+    if (target && authority) {
+      for (const blocker of providerTargetAuthorityBlockers(authority, target)) {
+        blockers.push(t(blocker));
       }
     }
     return [...new Set(blockers)];
@@ -1292,193 +1899,183 @@
   function destinationReplyThreadId(value: string): string | null {
     return value.startsWith("reply-thread:") ? value.slice("reply-thread:".length) : null;
   }
-
-  function folderCapabilityLabel(capability: ChatFolderCapability): string {
-    switch (capability) {
-      case "none": return t("settings.chat.teammates.folderCapabilities.none");
-      case "read": return t("settings.chat.teammates.folderCapabilities.read");
-      case "edit": return t("settings.chat.teammates.folderCapabilities.edit");
-      case "execute": return t("settings.chat.teammates.folderCapabilities.execute");
-      case "publish": return t("settings.chat.teammates.folderCapabilities.publish");
-    }
-  }
-
-  function runtimeApprovalLabel(policy: ChatAssignmentTargetRead["effectiveRuntimeApproval"]): string {
-    switch (policy) {
-      case "ask": return t("settings.chat.teammates.runtime.ask");
-      case "autoApprove": return t("settings.chat.teammates.runtime.autoApprove");
-      case "unattended": return t("settings.chat.teammates.runtime.unattended");
-      case "providerCustom": return t("settings.chat.teammates.runtime.providerCustom");
-    }
-  }
 </script>
 
 <div class="composer-stack">
   <span class="sr-only" aria-live="polite">{announcement}</span>
-  {#if failedAssignment}
-    <Notice class="assignment-notice" role="status" message={t("chat.organization.workStopped")} retryLabel={t("chat.organization.retry")} onRetry={retryFailedAssignment} copy={false} />
+  {#if providerLimit}
+    <Notice class="assignment-notice" role="status" tone="warning" message={providerLimitMessage(providerLimit.resetsAt)} copy={false} />
   {/if}
-  {#if assignmentAwaitingStart}
-    <Notice class="assignment-notice" role="status" message={workAwaitsStartMessage} retryLabel={t("chat.organization.startHere")} onRetry={startAssignmentHere} copy={false} />
+  {#if assignmentAwaitingReview}
+    <ChatAssignmentReviewCard bind:note={reviewNote} bind:composingNote={reviewNoteOpen} onAccept={acceptReviewedWork} onRequestChanges={requestChangesOnReviewedWork} />
   {/if}
-  {#if nextScheduledMessage}
+  {#if editingScheduled}
+    <div class="scheduled-summary" data-scheduled-edit>
+      <Pencil size={13} />
+      <span>{t("chat.organization.editingScheduledMessage")}</span>
+      <button type="button" data-scheduled-edit-action="discard" disabled={sending} onclick={discardScheduledEdit}>{t("chat.organization.discardScheduledMessageEdit")}</button>
+      <button type="button" data-scheduled-edit-action="save" disabled={sending || !hasMessageContent} onclick={() => { void saveScheduledEdit(); }}>{t("chat.composer.pendingInputs.save")}</button>
+    </div>
+  {:else if nextScheduledMessage}
     <div class="scheduled-summary">
       <Clock3 size={13} />
-      <span>{t("chat.organization.scheduledMessageSummary", scheduledMessages.length, formatScheduledInstant(nextScheduledMessage.scheduledFor))}</span>
+      <span>{t("chat.organization.scheduledMessageSummary", scheduledMessages.length, formatScheduledInstant(nextScheduledDelivery ?? nextScheduledMessage.scheduledFor))}</span>
       <div bind:this={scheduledMessagesAnchor} class="scheduled-summary-anchor">
         <button type="button" aria-haspopup="dialog" aria-expanded={scheduledMessagesOpen} onpointerenter={() => { void loadScheduleMenu(); }} onfocus={() => { void loadScheduleMenu(); }} onclick={toggleScheduledMessages}>{t("chat.organization.viewScheduledMessages", scheduledMessages.length)}</button>
         {#if scheduledMessagesOpen}
           {#if ScheduleMenu}
             {@const LoadedScheduledMessagesMenu = ScheduleMenu}
-            <LoadedScheduledMessagesMenu mode="manage" align="right" {scheduledMessages} onMessagesChange={updateScheduledMessages} onClose={() => { scheduledMessagesOpen = false; }} />
+            <LoadedScheduledMessagesMenu mode="manage" align="right" {scheduledMessages} onMessagesChange={updateScheduledMessages} onEdit={editingInput ? undefined : startScheduledEdit} onClose={() => { scheduledMessagesOpen = false; }} />
           {:else}<div class="composer-menu schedule-loading align-right surface-floating surface-floating-body"><Loading layout="fill" /></div>{/if}
         {/if}
       </div>
     </div>
   {/if}
 
-  {#if mentionedTeammateId}
-    <section class="assignment-preview" aria-label={t("chat.organization.assignmentPreview")}>
-      <Bot size={13} />
-      <div>
-        <strong>{#if assignmentPreviewLoading}<Loading layout="inline" label={t("chat.organization.resolvingAssignment")} />{:else}{inferredTarget?.displayName ?? t("chat.organization.privateScratch")}{/if}</strong>
-        <span>{secondaryFolderNames.length ? t("chat.organization.secondaryFolders", secondaryFolderNames.join(", ")) : t("chat.organization.noSecondaryFolders")}</span>
-      </div>
-      {#if inferredTarget}<span class="approval-pill">{runtimeApprovalLabel(inferredTarget.effectiveRuntimeApproval)}</span>{/if}
-      {#if assignmentTargets.length > 0}
-        <Select
-          inline
-          class="assignment-target-select"
-          ariaLabel={t("chat.organization.executionTarget")}
-          value={executionTarget?.executionEnvironmentId ?? ""}
-          options={executionTargetOptions}
-          onChange={(value) => {
-            const selected = assignmentTargets.find((target) => target.executionTarget?.executionEnvironmentId === value);
-            executionTarget = selected?.executionTarget ? cloneData(selected.executionTarget) : null;
-            persist();
-          }}
-        />
-      {/if}
-    </section>
+  {#if taskProgress}<ChatTaskProgressCard summary={taskProgress} />{/if}
+
+  {#if pendingRows.length > 0}
+    <ChatQueuedReplies rows={pendingRows} editingInputId={editingInput?.inputId ?? null} busyInputId={inputBusyId} canEdit={canEditInput} onEdit={startInputEdit} onCancel={(row) => { void cancelInput(row); }} onSave={() => { void saveInputEdit(); }} onDiscard={discardInputEdit} onSetHeld={(row, held) => { void setInputHeld(row, held); }} onSteer={(row) => { void steerInput(row); }} onReorder={reorderInputs} />
   {/if}
 
-  <div bind:this={composerRoot} class="organizational-composer" data-organizational-composer>
-    <div class="editor-frame">
-      <div
-        bind:this={editorRoot}
-        class="organizational-editor"
-        class:empty={!chatComposerPlainText(editorDocument)}
-        contenteditable="true"
-        role="combobox"
-        tabindex="0"
-        aria-label={placeholder}
-        aria-autocomplete="list"
-        aria-haspopup="listbox"
-        aria-expanded={pickerOpen}
-        aria-controls={pickerOpen ? "chat-reference-picker" : undefined}
-        aria-activedescendant={pickerOpen && pickerEntries[pickerIndex] ? `chat-reference-${pickerIndex}` : undefined}
-        data-placeholder={placeholder}
-        data-chat-composer
-        onbeforeinput={handleBeforeInput}
-        oninput={handleInput}
-        onkeydown={handleKeydown}
-        oncopy={handleCopy}
-        onpaste={handlePaste}
-        oncompositionstart={handleCompositionStart}
-        oncompositionend={handleCompositionEnd}
-      ></div>
-    </div>
-
-    {#if pickerOpen}
-      <div bind:this={pickerRoot} use:chatReferencePickerPosition={{ composer: composerRoot, scrollArea: () => pickerScroll, contentKey: [pickerLoading, pickerEntries] }} id="chat-reference-picker" class="reference-picker surface-floating" data-app-floating-surface role="listbox" aria-label={pickerTrigger?.kind === "channel" ? t("chat.organization.referenceChannel") : t("chat.organization.referencePeopleAndResources")}>
-        <div bind:this={pickerScroll} class="reference-picker-scroll surface-floating-body" use:scrollEdgeFadeAction>
-          {#if pickerLoading}<Loading layout="rows" rows={3} />
-          {:else if pickerEntries.length === 0}<p>{t("chat.organization.noReferenceResults")}</p>
-          {:else}
-            {#each pickerGroups as group, groupIndex (group.label)}
-              <div role="group" aria-labelledby={`chat-reference-group-${groupIndex}`}>
-                <div id={`chat-reference-group-${groupIndex}`} class="picker-group menu-label">{group.label}</div>
-                {#each group.entries as entry (entry.candidate.key)}
-                  {@const candidate = entry.candidate}
-                  {@const index = entry.index}
-                  <button id={`chat-reference-${index}`} data-reference-index={index} type="button" role="option" tabindex="-1" aria-selected={pickerIndex === index} disabled={candidateIsDisabled(candidate)} class="menu-item" data-highlighted={pickerIndex === index ? "" : undefined} onpointerenter={() => { if (!candidateIsDisabled(candidate)) pickerIndex = index; }} onpointerdown={(event) => event.preventDefault()} onclick={() => void chooseReferenceCandidate(candidate)}>
-                    <span class="candidate-icon">
-                      {#if candidate.kind === "participant"}<ChatParticipantAvatar participant={candidate.participant} teammate={candidate.teammate ?? undefined} size={28} />
-                      {:else if candidate.kind === "channel"}<Hash size={15} />
-                      {:else if candidate.kind === "workingFolder"}<Folder size={15} />
-                      {:else if candidate.kind === "workspacePath"}{#if candidate.path.kind === "directory"}<Folder size={15} />{:else}<File size={15} />{/if}
-                      {:else}<GitBranch size={15} />{/if}
-                    </span>
-                    <span class="candidate-copy"><strong>{candidate.label}</strong><small>{candidate.description}</small></span>
-                    {#if candidate.kind === "participant" && candidate.needsMembership}<Plus size={13} />{/if}
-                  </button>
-                {/each}
-              </div>
+  <div bind:this={composerRoot} class="organizational-composer" data-organizational-composer onfocusin={() => { focusWithin = true; }} onfocusout={trackFocusLeaving}>
+    <ChatComposerFrame
+      bind:editorRoot
+      {collapsible}
+      collapsed={composerCollapsed({
+        collapsible,
+        focusWithin,
+        hasContent: hasMessageContent,
+        optionSet: Boolean(scheduledFor) || alsoSendToChannel,
+        menuOpen: pickerOpen || promptMenuKind !== null || scheduleMenuOpen || statusPanelOpen || emojiPickerOpen,
+        showsStatus: Boolean(error || routingNotice || validation || disclosureBlocker || providerBlockers.length || messageTooLarge || editingInput || editingScheduled),
+      })}
+      editor={() => editorController ?? undefined}
+      disabled={false}
+      label={placeholder}
+      {placeholder}
+      role="combobox"
+      menuOpen={pickerOpen || promptMenuKind !== null}
+      menuId={pickerOpen ? "chat-reference-picker" : "chat-composer-menu"}
+      activeOptionId={pickerOpen
+        ? pickerEntries[pickerIndex] ? `chat-reference-${pickerIndex}` : undefined
+        : promptMenuEntries[promptMenuIndex] ? `chat-composer-option-${promptMenuIndex}` : undefined}
+      showMeter={false}
+      onKeydown={handleKeydown}
+      onFiles={(files) => { void importFiles(files); }}
+      onLargeText={(text) => { void importLargeText(text); }}
+      onPaste={handlePaste}
+      onCopy={handleCopy}
+      onCompositionChange={(value) => { composing = value; }}
+    >
+      {#snippet above()}
+        {#if statusPanelOpen}
+          <ChatComposerInfoPanel panel="status" status={agentComposerStatus()} mcpStatus={null} loading={false} error={null} onClose={() => { statusPanelOpen = false; }} />
+        {/if}
+        {#if attachmentIds.length > 0}
+          <div class="context-chips">
+            {#each attachmentIds as id (id)}
+              {@const chipLabel = attachmentChipLabel(id)}
+              <button type="button" aria-label={t("chat.composer.removeAttachment", chipLabel)} onclick={() => { attachmentIds = attachmentIds.filter((entry) => entry !== id); persist(); }}>{#if attachmentReads[id]?.kind === "text_snippet"}<FileText size={12} />{:else}<Image size={12} />{/if}<span class="chip-label">{chipLabel}</span><span aria-hidden="true">×</span></button>
             {/each}
-          {/if}
-        </div>
-      </div>
-    {/if}
-
-    {#if attachmentIds.length > 0}
-      <div class="context-chips">
-        {#each attachmentIds as id, index (id)}<button type="button" onclick={() => { attachmentIds = attachmentIds.filter((entry) => entry !== id); persist(); }}><Image size={12} />{t("chat.organization.imageNumber", index + 1)}<span>×</span></button>{/each}
-      </div>
-    {/if}
-
-    <div class="composer-footer">
-      <div class="composer-tools">
-        {#if localExecutionAvailable}<button type="button" class="tool-button" aria-label={t("chat.composer.attachImages")} title={t("chat.composer.attachImages")} onclick={() => void pickImages()}><Plus size={16} /></button>{/if}
-        <button type="button" class="tool-button" class:active={isBoldActive} aria-label={t("chat.organization.bold")} aria-pressed={isBoldActive} onclick={() => editorController?.toggleMark("bold")}><Bold size={15} /></button>
-        <button type="button" class="tool-button" class:active={isItalicActive} aria-label={t("chat.organization.italic")} aria-pressed={isItalicActive} onclick={() => editorController?.toggleMark("italic")}><Italic size={15} /></button>
+          </div>
+        {/if}
+        {#if mentionSuggestion}
+          {@const suggestion = mentionSuggestion}
+          <div class="mention-suggestion" data-chat-mention-suggestion>
+            <button type="button" class="mention-suggestion-action" onpointerdown={(event) => event.preventDefault()} onclick={() => applyMentionSuggestion(suggestion)}><AtSign size={12} />{t("chat.composer.mentionSuggestion.action", suggestion.displayName)}</button>
+            <button type="button" class="mention-suggestion-dismiss" aria-label={t("chat.composer.mentionSuggestion.dismiss")} onclick={() => { dismissedMentionSuggestions = [...dismissedMentionSuggestions, suggestion.participantId]; }}><X size={11} /></button>
+          </div>
+        {/if}
+      {/snippet}
+      {#snippet menu()}
+        {#if pickerOpen}
+          <div bind:this={pickerRoot} use:chatReferencePickerPosition={{ composer: composerRoot, scrollArea: () => pickerScroll, contentKey: [pickerLoading, pickerEntries] }} id="chat-reference-picker" class="reference-picker surface-floating" data-app-floating-surface role="listbox" aria-label={pickerTrigger?.kind === "channel" ? t("chat.organization.referenceChannel") : t("chat.organization.referencePeopleAndResources")}>
+            <div bind:this={pickerScroll} class="reference-picker-scroll surface-floating-body" use:scrollEdgeFadeAction>
+              {#if pickerLoading}<Loading layout="rows" rows={3} />
+              {:else if pickerEntries.length === 0}<p>{t("chat.organization.noReferenceResults")}</p>
+              {:else}
+                {#each pickerGroups as group, groupIndex (group.label)}
+                  <div role="group" aria-labelledby={`chat-reference-group-${groupIndex}`}>
+                    <div id={`chat-reference-group-${groupIndex}`} class="picker-group menu-label">{group.label}</div>
+                    {#each group.entries as entry (entry.candidate.key)}
+                      {@const candidate = entry.candidate}
+                      {@const index = entry.index}
+                      <button id={`chat-reference-${index}`} data-reference-index={index} type="button" role="option" tabindex="-1" aria-selected={pickerIndex === index} disabled={candidateIsDisabled(candidate)} class="menu-item" data-highlighted={pickerIndex === index ? "" : undefined} onpointerenter={() => { if (!candidateIsDisabled(candidate)) pickerIndex = index; }} onpointerdown={(event) => event.preventDefault()} onclick={() => void chooseReferenceCandidate(candidate)}>
+                        <span class="candidate-icon">
+                          {#if candidate.kind === "participant"}<ChatParticipantAvatar participant={candidate.participant} agent={candidate.agent ?? undefined} size={28} />
+                          {:else if candidate.kind === "channel"}<Hash size={15} />
+                          {:else if candidate.kind === "workingFolder"}<Folder size={15} />
+                          {:else if candidate.kind === "workspacePath"}{#if candidate.path.kind === "directory"}<Folder size={15} />{:else}<FileIcon size={15} />{/if}
+                          {:else}<GitBranch size={15} />{/if}
+                        </span>
+                        <span class="candidate-copy"><strong>{candidate.label}</strong><small>{candidate.description}</small></span>                      </button>
+                    {/each}
+                  </div>
+                {/each}
+              {/if}
+            </div>
+          </div>
+        {:else if promptMenuKind}
+          <ChatComposerSuggestionMenu bind:element={promptMenuRoot} bind:includeIgnored={promptMenuIncludeIgnored} kind={promptMenuKind} entries={promptMenuEntries} selectedIndex={promptMenuIndex} loading={promptMenuLoading} hasMore={false} onRefreshMentions={() => undefined} onChoose={(index) => { void choosePromptEntry(index); }} onLoadMore={() => undefined} />
+        {/if}
+      {/snippet}
+      {#snippet leading()}
+        <button type="button" class="tool-button" disabled={editLockReason !== null || (!localExecutionAvailable && primaryAttachmentFolderId === null)} aria-label={t("chat.composer.attachImages")} title={editLockReason ?? t("chat.composer.attachImages")} onclick={() => void pickImages()}><Plus size={16} /></button>
+        {#if !localExecutionAvailable}<input bind:this={imageInput} type="file" accept={CHAT_IMAGE_CONTENT_TYPES.join(",")} multiple class="hidden" tabindex="-1" aria-hidden="true" onchange={handleImageInput} />{/if}
+        {#if EmojiPicker}
+          <EmojiPicker value="none" onChange={insertEmoji} ariaLabel={t("chat.composer.insertEmoji")} showIcons={false} showUpload={false} showRemove={false} showCustomEmoji={false} panelAlign="start" initiallyOpen onOpenChange={(open) => { emojiPickerOpen = open; }}>
+            {#snippet trigger({ open, toggle, panelId })}
+              <button type="button" class="tool-button" class:active={open} aria-label={t("chat.composer.insertEmoji")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} disabled={editLockReason !== null} title={editLockReason ?? t("chat.composer.insertEmoji")} onclick={toggle}><Smile size={15} /></button>
+            {/snippet}
+          </EmojiPicker>
+        {:else}
+          <button type="button" class="tool-button" aria-label={t("chat.composer.insertEmoji")} aria-haspopup="dialog" aria-expanded="false" disabled={editLockReason !== null} title={editLockReason ?? t("chat.composer.insertEmoji")} onclick={() => void openEmojiPicker()}><Smile size={15} /></button>
+        {/if}
         <div bind:this={scheduleMenuAnchor} class="menu-anchor">
-          <button type="button" class="tool-button" class:active={scheduleMenuOpen || Boolean(scheduledFor)} aria-label={scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage")} aria-haspopup="dialog" aria-expanded={scheduleMenuOpen} aria-pressed={Boolean(scheduledFor)} title={scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage")} onpointerenter={() => { void loadScheduleMenu(); }} onfocus={() => { void loadScheduleMenu(); }} onclick={toggleScheduleMenu}><Clock3 size={15} /></button>
+          <button type="button" class="tool-button" class:active={scheduleMenuOpen || Boolean(scheduledFor)} aria-label={scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage")} aria-haspopup="dialog" aria-expanded={scheduleMenuOpen} disabled={editLockReason !== null} aria-pressed={Boolean(scheduledFor)} title={editLockReason ?? (scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage"))} onpointerenter={() => { void loadScheduleMenu(); }} onfocus={() => { void loadScheduleMenu(); }} onclick={toggleScheduleMenu}><Clock3 size={15} /></button>
           {#if scheduleMenuOpen}
             {#if ScheduleMenu}
               {@const LoadedScheduleMenu = ScheduleMenu}
-              <LoadedScheduleMenu mode="choose" selectedScheduledFor={scheduledFor} disabled={sending} onSelect={selectSchedule} onClear={clearSchedule} onClose={() => { scheduleMenuOpen = false; }} />
+              <LoadedScheduleMenu mode="choose" persistent selectedScheduledFor={scheduledFor} selectedRecurrence={scheduledRecurrence} allowClear={!editingScheduled} disabled={sending} onSelect={selectSchedule} onClear={clearSchedule} onClose={() => { scheduleMenuOpen = false; }} />
             {:else}<div class="composer-menu schedule-loading surface-floating surface-floating-body"><Loading layout="fill" /></div>{/if}
           {/if}
         </div>
-        {#if threadComposer}<button type="button" class="tool-button" class:active={alsoSendToChannel} aria-label={t("chat.organization.shareReplyToChannel", channelName)} aria-pressed={alsoSendToChannel} title={t("chat.organization.shareReplyToChannel", channelName)} onclick={() => { alsoSendToChannel = !alsoSendToChannel; }}><MessageSquareShare size={15} /></button>{/if}
-      </div>
-      <button type="button" class="send-button" data-action={activeAssignment ? "stop" : "send"} disabled={sending || (!activeAssignment && !hasMessageContent)} aria-disabled={!activeAssignment && Boolean(validation || disclosureBlocker || providerBlockers.length || messageTooLarge)} aria-label={activeAssignment ? t("chat.organization.stopWorkShortcut", stopShortcut) : scheduledFor ? t("chat.organization.scheduleMessage") : t("chat.composer.send")} aria-busy={stopping || undefined} title={activeAssignment ? t("chat.organization.stopWorkShortcut", stopShortcut) : undefined} onclick={performPrimaryAction}>{#if activeAssignment}<Square size={13} />{:else}<ArrowUp size={16} />{/if}</button>
-    </div>
-
-    {#if validation || disclosureBlocker || providerBlockers.length || messageTooLarge}
-      <div bind:this={blockerElement} class="composer-blocker" tabindex="-1" role="alert">
-        <CircleAlert size={13} />
-        <div>
-          {#if validation}<p>{validation}</p>{/if}
-          {#if disclosureBlocker}<p>{disclosureBlocker.message}</p><span><button type="button" onclick={removeBlockedReference}>{t("chat.organization.removeReference")}</button><button type="button" onclick={manageBlockedSourceAccess}>{t("chat.organization.manageSourceAccess")}</button></span>{/if}
-          {#each providerBlockers as blocker}<p>{blocker}</p>{/each}
-          {#if messageTooLarge}<p>{t("chat.organization.messageTooLarge")}</p>{/if}
-        </div>
-      </div>
-    {/if}
-    {#if error}<Notice class="composer-error" message={error} />{/if}
+        {#if threadComposer}<button type="button" class="tool-button" class:active={alsoSendToChannel} aria-label={t("chat.organization.shareReplyToChannel", channelName)} disabled={editLockReason !== null} aria-pressed={alsoSendToChannel} title={editLockReason ?? t("chat.organization.shareReplyToChannel", channelName)} onclick={() => { alsoSendToChannel = !alsoSendToChannel; }}><MessageSquareShare size={15} /></button>{/if}
+      {/snippet}
+      {#snippet actions()}
+        <button type="button" class="send-button" data-action={editingInput || editingScheduled ? "save" : "send"} disabled={sending || inputBusyId !== null || !hasMessageContent} aria-disabled={sendBlocked} aria-label={editingInput ? t("chat.composer.pendingInputs.save") : editingScheduled ? t("chat.organization.saveScheduledMessage") : scheduledFor ? t("chat.organization.scheduleMessage") : t("chat.composer.send")} data-app-tooltip={sendTooltip} onclick={() => { void post(); }}><ArrowUp size={16} /></button>
+      {/snippet}
+      {#snippet below()}
+        {#if validation || disclosureBlocker || providerBlockers.length || messageTooLarge}
+          <div bind:this={blockerElement} class="composer-blocker" tabindex="-1" role="alert">
+            <CircleAlert size={13} />
+            <div>
+              {#if validation}<p>{validation}</p>{/if}
+              {#if disclosureBlocker}<p>{disclosureBlocker.message}</p><span><button type="button" onclick={removeBlockedReference}>{t("chat.organization.removeReference")}</button><button type="button" onclick={manageBlockedSourceAccess}>{t("chat.organization.manageSourceAccess")}</button></span>{/if}
+              {#each providerBlockers as blocker}<p>{blocker}</p>{/each}
+              {#if messageTooLarge}<p>{t("chat.organization.messageTooLarge")}</p>{/if}
+            </div>
+          </div>
+        {/if}
+        {#if error}<Notice class="composer-error" message={error} />{/if}
+        {#if routingNotice && !error}<Notice class="composer-error" role="status" tone="neutral" message={routingNotice} copy={false} />{/if}
+      {/snippet}
+    </ChatComposerFrame>
   </div>
 </div>
 
 <style>
-  .composer-stack { width:min(100%,var(--chat-conversation-max-width,60rem)); }
+  /* The stack floats over the timeline end, so its gaps pass pointer input through and each surface above the composer paints an opaque background. */
+  .composer-stack { width:min(100%,var(--chat-conversation-max-width,60rem)); pointer-events:none; }
+  .composer-stack > :global(*) { pointer-events:auto; }
   .scheduled-summary { display:flex; min-height:2rem; align-items:center; gap:0.45rem; margin:0 0.35rem 0.35rem; border-radius:0.55rem; padding:0.25rem 0.35rem 0.25rem 0.55rem; }
-  .composer-stack :global(.assignment-notice) { margin:0 0.35rem 0.35rem; padding:0.25rem 0.35rem 0.25rem 0.55rem; font-size:calc(0.7rem * var(--type-scale)); }
+  .composer-stack :global(.assignment-notice) { margin:0 0.35rem 0.35rem; border-radius:0.55rem; background:var(--cal-bg); padding:0.25rem 0.35rem 0.25rem 0.55rem; font-size:calc(0.7rem * var(--type-scale)); }
   .scheduled-summary > span { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:calc(0.7rem * var(--type-scale)); }
   .scheduled-summary button { min-height:1.75rem; border-radius:0.4rem; padding:0.2rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); font-weight:500; }
-  .scheduled-summary { background:color-mix(in srgb,var(--accent) 58%,transparent); color:var(--muted-foreground); }
+  .scheduled-summary { background:color-mix(in srgb,var(--accent) 58%,var(--cal-bg)); color:var(--muted-foreground); }
   .scheduled-summary-anchor,.menu-anchor { position:relative; }
-  .assignment-preview { display:grid; min-height:2.45rem; grid-template-columns:auto minmax(0,1fr) auto auto; align-items:center; gap:0.5rem; margin:0 0.4rem 0.4rem; border:1px solid color-mix(in srgb,var(--border) 68%,transparent); border-radius:0.65rem; background:color-mix(in srgb,var(--card) 80%,transparent); padding:0.35rem 0.55rem; color:var(--muted-foreground); }
-  .assignment-preview > div { display:grid; min-width:0; }
-  .assignment-preview strong,.assignment-preview span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .assignment-preview strong { color:var(--foreground); font-size:calc(0.68rem * var(--type-scale)); }.assignment-preview span { font-size:calc(0.6rem * var(--type-scale)); }
-  .assignment-preview :global(.assignment-target-select) { width:auto; max-width:12rem; }
-  .approval-pill { border-radius:999px; background:var(--accent); padding:0.18rem 0.4rem; color:var(--foreground); }
-  .organizational-composer { position:relative; width:100%; border:1px solid color-mix(in srgb,var(--border) 88%,transparent); border-radius:1.3rem; background:var(--card); box-shadow:0 8px 22px -18px rgb(0 0 0 / 0.24),0 1px 4px -3px rgb(0 0 0 / 0.16); }
-  .editor-frame { max-height:8.2rem; overflow-y:auto; padding:1rem 1.25rem 0.4rem; }
-  .organizational-editor { position:relative; min-height:2.625rem; outline:none; white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--chat-conversation-font-size,calc(0.875rem * var(--type-scale))); line-height:var(--chat-conversation-line-height,calc(1.3125rem * var(--type-scale))); }
-  .organizational-editor.empty::before { position:absolute; inset-inline:0; pointer-events:none; content:attr(data-placeholder); color:color-mix(in srgb,var(--muted-foreground) 52%,transparent); }
-  .organizational-editor :global(.chat-reference-atom) { display:inline-block; border-radius:0.3rem; background:color-mix(in srgb,var(--primary) 13%,transparent); padding-inline:0.12rem; color:color-mix(in srgb,var(--primary) 78%,var(--foreground)); box-decoration-break:clone; cursor:default; user-select:all; }
+  .organizational-composer { --composer-button-size:1.9rem; --composer-send-visual-size:2.35rem; --composer-control-size:var(--composer-button-size); position:relative; width:100%; }
   .reference-picker { z-index:100; display:flex; flex-direction:column; overflow:hidden; }
   .reference-picker-scroll { min-height:0; flex:1 1 auto; overflow-y:auto; }
   .reference-picker-scroll > p { padding:0.5rem; color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
@@ -1486,16 +2083,14 @@
   .candidate-icon { display:grid; width:2rem; flex:0 0 auto; place-items:center; color:var(--muted-foreground); }
   .candidate-copy { display:grid; min-width:0; flex:1 1 0%; }
   .reference-picker strong,.reference-picker small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.reference-picker strong { font-weight:500; }.reference-picker small { color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
-  .context-chips { display:flex; flex-wrap:wrap; gap:0.3rem; padding:0 0.75rem 0.35rem; }.context-chips button { display:flex; max-width:14rem; align-items:center; gap:0.25rem; border-radius:999px; background:var(--accent); padding:0.22rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); }.context-chips button span { color:var(--muted-foreground); }
-  .composer-footer { --composer-button-size:1.9rem; display:flex; min-height:2.6rem; align-items:center; justify-content:space-between; gap:0.5rem; padding:0 0.75rem 0.5rem; }.composer-tools { display:flex; align-items:center; gap:0.3rem; }
-  .tool-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); place-items:center; border-radius:0.5rem; color:var(--muted-foreground); }.tool-button:hover,.tool-button.active { background:var(--accent); color:var(--foreground); }
+  .context-chips { display:flex; flex-wrap:wrap; gap:0.3rem; padding:0.65rem 0.5rem 0; }.context-chips button { display:flex; max-width:14rem; align-items:center; gap:0.25rem; border-radius:999px; background:var(--accent); padding:0.22rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); }.context-chips button span { color:var(--muted-foreground); }.context-chips .chip-label { overflow:hidden; color:inherit; text-overflow:ellipsis; white-space:nowrap; }
+  .mention-suggestion { display:flex; width:fit-content; align-items:center; gap:0.1rem; margin-top:0.45rem; border-radius:999px; background:color-mix(in srgb,var(--primary) 10%,transparent); padding:0.1rem 0.15rem 0.1rem 0.45rem; color:color-mix(in srgb,var(--primary) 78%,var(--foreground)); font-size:calc(0.68rem * var(--type-scale)); }.mention-suggestion-action { display:flex; align-items:center; gap:0.25rem; }.mention-suggestion-dismiss { display:grid; width:1.25rem; height:1.25rem; place-items:center; border-radius:999px; color:var(--muted-foreground); }.mention-suggestion-dismiss:hover { background:var(--accent); color:var(--foreground); }
+  .tool-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); place-items:center; border-radius:0.5rem; color:var(--muted-foreground); }.tool-button:hover:not(:disabled),.tool-button.active { background:var(--accent); color:var(--foreground); }.tool-button:disabled { opacity:0.45; }
   .send-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); flex:0 0 auto; place-items:center; border-radius:999px; background:color-mix(in srgb,var(--primary) 92%,transparent); color:var(--primary-foreground); box-shadow:0 2px 7px color-mix(in srgb,var(--primary) 22%,transparent); transition:transform 120ms ease,filter 120ms ease; }.send-button:hover:not(:disabled) { filter:brightness(1.04); transform:scale(1.04); }.send-button:disabled,.send-button[aria-disabled="true"] { opacity:0.45; }
   .composer-menu { position:absolute; z-index:110; max-width:calc(100vw - 1rem); }.schedule-loading { bottom:calc(100% + 0.35rem); left:0; }.schedule-loading.align-right { right:0; left:auto; }
   .composer-blocker { display:flex; gap:0.45rem; margin:0 0.65rem 0.5rem; border-radius:0.5rem; background:color-mix(in srgb,var(--destructive) 8%,transparent); padding:0.45rem 0.55rem; color:var(--destructive); outline:none; }.composer-blocker:focus-visible { outline:2px solid var(--ring); }.composer-blocker > div { display:grid; gap:0.2rem; }.composer-blocker p { font-size:calc(0.68rem * var(--type-scale)); }.composer-blocker span { display:flex; flex-wrap:wrap; gap:0.25rem; }.composer-blocker button { min-height:1.75rem; border-radius:0.35rem; padding:0.2rem 0.4rem; font-size:calc(0.62rem * var(--type-scale)); font-weight:600; }.composer-blocker button:hover { background:color-mix(in srgb,var(--destructive) 10%,transparent); }
-  .composer-stack :global(.composer-error) { padding:0 0.75rem 0.5rem; font-size:calc(0.7rem * var(--type-scale)); }
+  .composer-stack :global(.composer-error) { padding:0 0.5rem 0.5rem; font-size:calc(0.7rem * var(--type-scale)); }
   .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
-  @media (max-width:42rem) { .assignment-preview { grid-template-columns:auto minmax(0,1fr); }.assignment-preview :global(.assignment-target-select),.approval-pill { grid-column:2; }.composer-tools { gap:0.05rem; } }
-  @media (pointer:coarse) { .tool-button,.send-button { min-width:2.75rem; min-height:2.75rem; } }
+  @media (pointer:coarse) { .tool-button,.send-button { min-width:2.75rem; min-height:2.75rem; } .organizational-composer { --composer-control-size:2.75rem; } .send-button { padding:calc((2.75rem - var(--composer-send-visual-size)) / 2); background-clip:content-box; box-shadow:none; filter:drop-shadow(0 2px 4px color-mix(in srgb,var(--primary) 22%,transparent)); } }
   @media (prefers-reduced-motion:reduce) { .send-button { transition:none; } }
-  @media (forced-colors:active) { .organizational-composer { border:1px solid CanvasText; } }
 </style>

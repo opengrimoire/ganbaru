@@ -38,6 +38,10 @@ pub struct SendChatTurnResult {
     pub thread: ganbaru_chat_contracts::models::ChatThreadShellRead,
     pub dispatch: Option<TurnDispatchReceipt>,
     pub launch_error: Option<ChatError>,
+    /// How the launch of an assignment run ended for its assignment. It stays in the backend
+    /// and is absent from a replayed receipt.
+    #[serde(skip)]
+    pub launch_settlement: Option<ganbaru_chat::agent_runs::LaunchSettlement>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -57,6 +61,10 @@ pub struct ResolveChatApprovalCommand {
     pub request_id: ChatRequestId,
     pub provider_request_id: ProviderRequestId,
     pub decision: ApprovalDecision,
+    /// Also remember the allow-once choice for the agent in the run's channel, so later
+    /// requests the same rule matches are allowed without asking.
+    #[serde(default)]
+    pub remember: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]

@@ -27,6 +27,7 @@ import {
 } from "./custom-field-drafts";
 import { projectHasLockedSystemIdentity } from "$lib/projects/system-defaults";
 import { getLocalization } from "$lib/i18n/translator.svelte";
+import { userErrorMessage } from "$lib/i18n/user-errors";
 import { getProjects, type ProjectsStore } from "$lib/stores/projects.svelte";
 import {
   PROJECT_TAG_DEFAULT_COLOR,
@@ -426,10 +427,7 @@ export function createProjectSettingsSession(options: ProjectSettingsSessionOpti
       if (shouldRevealInactive) options.onRevealInactive();
       return true;
     } catch (error) {
-      state.projectSettingsError = t(
-        "projects.settings.saveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      state.projectSettingsError = userErrorMessage(error, t("projects.settings.saveFailed"));
       return false;
     } finally {
       state.projectSettingsSaving = false;

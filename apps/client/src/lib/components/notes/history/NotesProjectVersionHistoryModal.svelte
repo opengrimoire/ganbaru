@@ -9,6 +9,7 @@
   } from "$lib/api/notes/project-history";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import type {
     NotesHistoricalPage,
     NotesProjectHistoryRestorePlan,
@@ -38,7 +39,7 @@
   let cursorId = $state<string | null>(null);
   let loadingVersions = $state(true);
   let loadingMore = $state(false);
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let selectedVersionId = $state<string | null>(null);
   let historicalTree = $state<NotesProjectHistoryTree | null>(null);
   let selectedPage = $state<NotesHistoricalPage | null>(null);
@@ -88,8 +89,7 @@
       if (reset && versions[0]) void selectVersion(versions[0].id, false);
     } catch (cause) {
       if (currentRequest !== versionsRequestId) return;
-      const message = cause instanceof Error ? cause.message : String(cause);
-      error = t("notes.projectHistoryLoadFailed", message);
+      error = notesFailure(cause, t("notes.projectHistoryLoadFailed"));
     } finally {
       if (currentRequest === versionsRequestId) {
         loadingVersions = false;
@@ -111,8 +111,7 @@
       if (!shouldOpenCompactPreview && compact) selectedVersionId = null;
     } catch (cause) {
       if (currentRequest !== previewRequestId) return;
-      const message = cause instanceof Error ? cause.message : String(cause);
-      error = t("notes.projectHistoryLoadFailed", message);
+      error = notesFailure(cause, t("notes.projectHistoryLoadFailed"));
     } finally {
       if (currentRequest === previewRequestId) loadingPreview = false;
     }
@@ -129,8 +128,7 @@
       selectedPage = page;
     } catch (cause) {
       if (currentRequest !== pageRequestId) return;
-      const message = cause instanceof Error ? cause.message : String(cause);
-      error = t("notes.projectHistoryLoadFailed", message);
+      error = notesFailure(cause, t("notes.projectHistoryLoadFailed"));
     } finally {
       if (currentRequest === pageRequestId) loadingPreview = false;
     }
@@ -143,8 +141,7 @@
     try {
       restorePlan = await previewNotesProjectHistoryRestore(projectId, selectedVersionId);
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      error = t("notes.projectHistoryRestoreFailed", message);
+      error = notesFailure(cause, t("notes.projectHistoryRestoreFailed"));
     } finally {
       restoring = false;
     }
@@ -161,8 +158,7 @@
       onRestored();
       onClose();
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      error = t("notes.projectHistoryRestoreFailed", message);
+      error = notesFailure(cause, t("notes.projectHistoryRestoreFailed"));
     } finally {
       restoring = false;
     }

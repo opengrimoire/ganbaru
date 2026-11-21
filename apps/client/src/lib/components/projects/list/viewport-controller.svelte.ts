@@ -32,6 +32,7 @@ function keyboardScrollAllowed(target: EventTarget | null): boolean {
 export class ProjectListViewportController {
   container = $state<HTMLDivElement | null>(null);
   resizeGesture = $state<ProjectTaskListColumnResizeGesture | null>(null);
+  /** Diagnostic text of the last failed width save, for secondary display under a localized message. */
   resizeError = $state<string | null>(null);
   private pendingWidths = $state<ProjectTaskListColumnWidths | null>(null);
   private resizeWriteId = 0;

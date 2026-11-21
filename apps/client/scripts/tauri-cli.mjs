@@ -15,6 +15,7 @@ const PRESERVE_GDK_BACKEND_ENV = "GANBARU_DEV_PRESERVE_GDK_BACKEND";
 const ANDROID_JAVA_HOME_ENV = "GANBARU_ANDROID_JAVA_HOME";
 const ANDROID_JAVA_MAJOR = 21;
 const FIREWALL_HELPER_PACKAGE = "ganbaru-linking-firewall";
+const SANDBOX_HELPER_PACKAGE = "ganbaru-sandbox";
 
 /**
  * Finds the boundary between Tauri CLI options and application arguments.
@@ -185,23 +186,24 @@ function tauriChildEnvironment(args, environment) {
 }
 
 /**
- * Builds the device linking firewall helper next to the Linux development app, so allowing
- * phone connections asks for the password once instead of once per firewall rule. A failed
- * build only warns, since the app then falls back to one prompt per rule.
+ * Builds a Linux helper binary next to the development app. A failed build only warns, since
+ * the app then keeps working without the helper.
  *
  * @param {string[]} args CLI arguments.
  * @param {NodeJS.ProcessEnv} environment Environment for Cargo.
+ * @param {string} packageName Cargo package of the helper.
+ * @param {string} fallback What the app does without the helper, for the warning.
  */
-function buildDevelopmentFirewallHelper(args, environment) {
+function buildDevelopmentHelper(args, environment, packageName, fallback) {
   if (args[0] !== "dev" || process.platform !== "linux") return;
-  const result = spawnSync("cargo", ["build", "-p", FIREWALL_HELPER_PACKAGE], {
+  const result = spawnSync("cargo", ["build", "-p", packageName], {
     cwd: CLIENT_ROOT,
     env: environment,
     stdio: "inherit",
   });
   if (result.error || result.status !== 0) {
     const reason = result.error?.message ?? `exit status ${result.status}`;
-    console.warn(`The firewall helper was not built (${reason}); phone linking asks for the password once per rule.`);
+    console.warn(`${packageName} was not built (${reason}); ${fallback}.`);
   }
 }
 
@@ -214,7 +216,10 @@ try {
   console.error(`Failed to prepare Tauri CLI environment: ${message}`);
   process.exit(1);
 }
-buildDevelopmentFirewallHelper(args, childEnv);
+// The firewall helper lets phone linking ask for the password once instead of once per rule.
+buildDevelopmentHelper(args, childEnv, FIREWALL_HELPER_PACKAGE, "phone linking asks for the password once per rule");
+// The sandbox helper confines the commands of Chat agents whose provider cannot.
+buildDevelopmentHelper(args, childEnv, SANDBOX_HELPER_PACKAGE, "Chat agents that need it are refused folder and command access");
 
 const child = spawn(process.execPath, [TAURI_CLI_ENTRY, ...withDevConfig(args)], {
   cwd: CLIENT_ROOT,

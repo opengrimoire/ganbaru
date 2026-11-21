@@ -3,6 +3,7 @@ import { ensureDbUrl } from "$lib/api/db";
 import type { EventColor } from "$lib/calendar/types";
 import { normalizeEventColor } from "$lib/calendar/utils";
 import { mapSyncDeviceRef } from "$lib/api/sync";
+import { encodeBase64 } from "$lib/utils/base64";
 import type {
   QuickNote,
   QuickNoteConflict,
@@ -242,16 +243,6 @@ async function invokeImage<T>(command: string, args?: Parameters<typeof invoke>[
 /** Android IPC cannot carry raw request bodies, so its image imports travel as base64 text. */
 function sendsBase64Bodies(): boolean {
   return typeof __GANBARU_BUILD_PLATFORM__ !== "undefined" && __GANBARU_BUILD_PLATFORM__ === "android";
-}
-
-const BASE64_CHUNK_BYTES = 0x8000;
-
-function encodeBase64(bytes: Uint8Array): string {
-  const parts: string[] = [];
-  for (let start = 0; start < bytes.length; start += BASE64_CHUNK_BYTES) {
-    parts.push(String.fromCharCode(...bytes.subarray(start, start + BASE64_CHUNK_BYTES)));
-  }
-  return btoa(parts.join(""));
 }
 
 /** Stores image bytes in the vault and returns the reference a note saves. */

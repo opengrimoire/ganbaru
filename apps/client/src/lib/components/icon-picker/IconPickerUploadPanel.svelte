@@ -81,12 +81,12 @@
       <div class="flex gap-2">
         <input
           bind:value={uploadUrl}
-          class="field h-8 min-w-0 flex-1 py-0"
+          class="field min-w-0 flex-1 py-0"
           placeholder={t("projects.iconPicker.imageUrl")}
         />
         <button
           type="button"
-          class="h-8 rounded-floating-item bg-primary px-2 font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          class="h-(--control-height) rounded-floating-item bg-primary px-2 font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
           disabled={uploading || !uploadUrl.trim()}
           onclick={() => { void onDownloadUrl(); }}
         >

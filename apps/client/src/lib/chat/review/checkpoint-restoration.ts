@@ -13,7 +13,8 @@ export interface ChatCheckpointRestoreRequest {
 export interface RestoreChatCheckpointOptions {
   thread: Pick<ChatThreadShellRead, "id" | "revision">;
   checkpointId: string;
-  confirm: (preview: ChatRestorePreviewRead) => boolean;
+  /** Shows the preview and resolves whether the user chose to restore. */
+  confirm: (preview: ChatRestorePreviewRead) => Promise<boolean>;
   onRestored: (threadId: ChatThreadId) => Promise<void>;
 }
 
@@ -23,13 +24,13 @@ export function isChatCheckpointRestoreRequest(value: unknown): value is ChatChe
   return typeof record.threadId === "string" && typeof record.checkpointId === "string";
 }
 
-/** Runs the preview, confirmation, and execution stages of checkpoint restoration. */
+/** Runs the preview, confirmation, and execution stages of checkpoint restoration; execution waits for the confirmation. */
 export async function restoreChatCheckpoint(options: RestoreChatCheckpointOptions): Promise<void> {
   const preview = await chatApi.previewChatCheckpointRestore(
     options.thread.id,
     options.checkpointId,
   );
-  if (!options.confirm(preview)) return;
+  if (!(await options.confirm(preview))) return;
   await chatApi.executeChatCheckpointRestore({
     command: {
       clientCommandId: crypto.randomUUID(),

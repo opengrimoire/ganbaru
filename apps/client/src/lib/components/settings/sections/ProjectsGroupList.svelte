@@ -4,6 +4,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { ROUTINE_GROUP_ID, systemProjectGroupName } from "$lib/projects/system-defaults";
   import { normalizeProjectName } from "$lib/projects/text";
   import type { ProjectGroup } from "$lib/projects/types";
@@ -34,9 +35,6 @@
     return projects.projectsForGroupIncludingInactive(group.id).length;
   }
 
-  function errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-  }
 
   function beginRename(group: ProjectGroup): void {
     renamingGroupId = group.id;
@@ -62,7 +60,7 @@
     try {
       await projects.updateGroup(group, { name });
     } catch (error: unknown) {
-      actionError = t("projects.navigator.groupSaveFailed", errorMessage(error));
+      actionError = userErrorMessage(error, t("projects.navigator.groupSaveFailed"));
     } finally {
       pendingGroupId = null;
     }
@@ -88,7 +86,7 @@
     try {
       await projects.removeGroup(group);
     } catch (error: unknown) {
-      actionError = t("projects.navigator.groupDeleteFailed", errorMessage(error));
+      actionError = userErrorMessage(error, t("projects.navigator.groupDeleteFailed"));
     } finally {
       pendingGroupId = null;
     }

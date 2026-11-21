@@ -447,19 +447,6 @@ const CLASSIFIED_TRIGGERS: &[(&str, TriggerClass)] = &[
         "calendar_event_archive_import_objects_sync_key_update",
         SYNC_KEY,
     ),
-    (
-        "chat_access_profile_builtin_protected",
-        TriggerClass::Net("a forged change can edit a built-in profile"),
-    ),
-    ("chat_access_profile_builtin_revision_protected", CROSS_ROW),
-    (
-        "chat_access_profile_revision_immutable_delete",
-        IMMUTABLE_ROW,
-    ),
-    (
-        "chat_access_profile_revision_immutable_update",
-        IMMUTABLE_ROW,
-    ),
     ("chat_channels_conversation_kind_insert", CROSS_ROW),
     (
         "chat_communication_message_revision_immutable_update",
@@ -471,12 +458,16 @@ const CLASSIFIED_TRIGGERS: &[(&str, TriggerClass)] = &[
         TriggerClass::Stateless("the participant row rule binds the local user to its key"),
     ),
     (
-        "chat_teammate_channel_membership_identity_insert",
-        TriggerClass::MergeState("the membership cascades from its teammate"),
+        "chat_agent_channel_membership_identity_insert",
+        TriggerClass::MergeState("the membership cascades from its agent"),
     ),
-    ("chat_teammate_policy_identity_insert", CROSS_ROW),
-    ("chat_teammate_policy_immutable_delete", IMMUTABLE_ROW),
-    ("chat_teammate_policy_immutable_update", IMMUTABLE_ROW),
+    ("chat_agent_policy_identity_insert", CROSS_ROW),
+    ("chat_agent_policy_immutable_delete", IMMUTABLE_ROW),
+    ("chat_agent_policy_immutable_update", IMMUTABLE_ROW),
+    (
+        "chat_work_assignment_delegation_insert",
+        TriggerClass::Net("a forged child can omit a delegation field or name itself as parent"),
+    ),
     (
         "contact_card_prevent_delete",
         TriggerClass::Net("a forged change can delete the card"),

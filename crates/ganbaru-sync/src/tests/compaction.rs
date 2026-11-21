@@ -7,7 +7,7 @@ use ganbaru_sync_contracts::{VersionVector, WriterId};
 
 use super::block_on;
 use super::projects::{
-    MANAGED_FOLDER, every_folder_and_grant, folder_tombstone, folders_and_grants,
+    MANAGED_FOLDER, every_folder_and_approval, folder_tombstone, folders_and_approvals,
     shared_managed_folder,
 };
 use super::replica::{Replica, converge, forge_change, quoted};
@@ -806,8 +806,8 @@ fn compaction_keeps_a_tombstoned_managed_folder_while_its_project_lives() {
             .unwrap();
         replicas[1].check_compacted().await;
         assert_eq!(
-            folders_and_grants(&mut replicas[1]).await,
-            every_folder_and_grant()
+            folders_and_approvals(&mut replicas[1]).await,
+            every_folder_and_approval()
         );
 
         // With the Create and the tombstone compacted, a later edit materializes the row from
@@ -823,8 +823,8 @@ fn compaction_keeps_a_tombstoned_managed_folder_while_its_project_lives() {
         compacted[1].pull(&mut editor[0]).await;
         compacted[1].apply_all().await.unwrap();
         assert_eq!(
-            folders_and_grants(&mut compacted[1]).await,
-            every_folder_and_grant()
+            folders_and_approvals(&mut compacted[1]).await,
+            every_folder_and_approval()
         );
         assert_eq!(
             compacted[1]

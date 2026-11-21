@@ -6,6 +6,7 @@
   import type { EventColor } from "$lib/calendar/types";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { activateModalFocus } from "$lib/modal-focus";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
   import { pickQuickNoteTagColor } from "$lib/quick-notes/tags";
@@ -116,7 +117,7 @@
     try {
       created = await onCreate(value, newColor);
     } catch (cause: unknown) {
-      createError = cause instanceof Error && cause.message ? cause.message : t("quickNotes.tag.saveFailed");
+      createError = userErrorMessage(cause, t("quickNotes.tag.saveFailed"));
     } finally {
       busy = false;
     }

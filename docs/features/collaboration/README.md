@@ -6,7 +6,7 @@ This document owns the shared model for human collaboration: identity, contacts,
 
 ## Why
 
-Ganbaru already coordinates work between a person and configured AI agents through explicit memberships and access profiles. Human collaboration adds other people to the same model instead of a second one. One picker, one access step, and one member list serve people and agents alike, so the only visible difference between adding a colleague and adding an AI agent is that the agent also has a configurable brain and execution limits. Users who know chat and planning apps should recognize the flow immediately: pick from contacts, choose a role, done.
+Ganbaru already coordinates work between a person and AI agents added to channels, each channel setting one access level for its agents. Human collaboration adds other people to the same model instead of a second one. One picker and one member list serve people and agents alike, so the only visible difference between adding a colleague and adding an AI agent is that the agent takes the channel's access instead of a role. Users who know chat and planning apps should recognize the flow immediately: pick from contacts, choose a role, done.
 
 ## Vocabulary
 
@@ -51,7 +51,7 @@ An invitation names one space, one role, and one history boundary: the entire re
 
 Invitations can only be addressed to contacts with the invite permission, so the participant picker never offers strangers. Inviting someone who is not yet a contact starts with the contact card exchange.
 
-An invitation is pending until it is accepted, declined, revoked by the sender, or expires after a bounded period. Pending invitations are visible to both sides: the recipient in the Chat sidebar and Settings, the sender in the member list of the space with a pending marker. Declining sends no reason, and the sender is told only that the invitation was declined.
+An invitation is pending until it is accepted, declined, revoked by the sender, or expires after a bounded period. Pending invitations are visible to both sides: the recipient in Settings > Contacts, the sender in the member list of the space with a pending marker. Declining sends no reason, and the sender is told only that the invitation was declined.
 
 Acceptance depends on the space, because consent is given once at the level where it matters:
 
@@ -70,7 +70,7 @@ A role is a preset over one capability set. The capabilities are grouped so a pe
 | Conversation | Read history, participate, assign work to agents |
 | Content | Create and edit Notes, create and edit tasks, edit Calendar events, share pages |
 | Management | Manage channels, manage members, manage agents, edit space settings |
-| Execution (agents only) | Working-folder ceiling and approval policy, as defined by [access profiles](../chat/agents-and-coordination.md) |
+| Execution (agents only) | The channel's access level, as defined by [channel configuration](../chat/channel-configuration.md) |
 
 The built-in roles are:
 
@@ -85,16 +85,16 @@ Roles inherit downward and can only narrow:
 
 - A group role is the default role in every project of the group. A project can restrict a person's inherited role but not widen it.
 - A project role is the default for its channels. A channel membership can further restrict history or participation.
-- An agent acts within the intersection of its owner's role and its own access profile, and never holds management capabilities.
+- An agent acts within the intersection of its owner's role and the channel's access level, and never holds management capabilities.
 
-This mirrors the rule in access control that no layer may widen another. Access profiles for agents remain what they are today; the role presets for people reuse the same capability vocabulary so one access step can present both.
+This mirrors the rule in access control that no layer may widen another. Agents keep the channel's access level; the role presets for people reuse the same vocabulary so one member list can present both.
 
 ## Agents and people as one model
 
-A person has an identity and access. An agent has an identity, access, a brain (provider, model, instructions, effort), and execution limits (working folders and approval policy). Everything else is shared:
+A person has an identity and access. An agent has an identity and a provider with its default model, and the channel sets its access, instructions, and model override. Everything else is shared:
 
-- The same picker lists contacts and agents and offers to invite a person or create an agent at the end of the list.
-- The same access step presents a role preset, a summary line, a history boundary, and a Custom expansion.
+- The same picker lists contacts and the agents of detected providers, and offers to invite a person at the end of the list.
+- The access step for a person presents a role preset, a summary line, a history boundary, and a Custom expansion; an added agent needs no step, because it takes the channel's access.
 - The same member rows, grouped as People and Agents, with the local person pinned first.
 
 An agent executes only on devices of the person who owns it. Other members of a space can mention it and assign it work only when the owner enabled assignment from others; a mention from someone else never widens what the agent may do.
@@ -102,8 +102,8 @@ An agent executes only on devices of the person who owns it. Other members of a 
 ## Where people appear
 
 - **Chat channels:** the channel dialog edits name, topic, section, and members together, and the header opens a details panel with the topic and members. Both use the shared picker and access step. See [Conversations](../chat/conversations.md).
-- **Chat sidebar:** a Direct messages section whose more-options menu opens Contacts and Invitations in Settings > Contacts.
-- **Settings > Contacts:** the person's contact card (until pressed, the QR and code show a blurred placeholder that is not derived from the real identity, so a shared screen leaks nothing), contacts with their trust scopes and expiry, pending received and sent invitations, and blocked contacts. AI agents stay under Settings > Chat while they are only usable in Chat.
+- **Chat sidebar:** no direct messages or contacts entry; direct messages are planned as a separate tab, and contacts and invitations stay in Settings > Contacts.
+- **Settings > Contacts:** the person's contact card (until pressed, the QR and code show a blurred placeholder that is not derived from the real identity, so a shared screen leaks nothing), contacts with their trust scopes and expiry, pending received and sent invitations, and blocked contacts. AI agents stay under Settings > Agents while they are only usable in Chat.
 - **Projects:** a Members list in project settings with roles, and the shared picker for task assignees and reviewers, limited to project members. Groups have the same Members list. See [Projects](../projects/README.md).
 - **Calendar:** attendees chosen with the shared picker, each with a response chip, next to imported attendees that stay read-only. See [Event editing](../calendar/event-editing.md#meeting-metadata).
 - **Notes:** a Share action on a page and on a database page that uses the shared picker with page or subtree scope and the Notes role names Can view, Can comment, Can edit, and Full access, which map onto the capability set above. See [Links and collaboration](../notes/links-and-collaboration.md#access).
@@ -122,6 +122,6 @@ Collaboration controls ship before their logic so the complete experience can be
 
 ## Open decisions
 
-- Whether AI agents move from Settings > Chat to Settings > Contacts once an agent can act outside Chat.
+- Whether AI agents move from Settings > Agents to Settings > Contacts once an agent can act outside Chat.
 - Whether a space owner can delegate ownership transfer to administrators.
 - Group direct conversations beyond a small fixed size.

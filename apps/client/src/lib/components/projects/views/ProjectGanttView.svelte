@@ -6,6 +6,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { technicalErrorDetail } from "$lib/i18n/user-errors";
   import {
     buildProjectGanttDatePatch,
     buildProjectGanttTimeline,
@@ -15,7 +16,7 @@
     type ProjectGanttTick,
   } from "$lib/projects/scheduling/gantt";
   import type { ProjectDependencyCascadeItem } from "$lib/api/project-cascade";
-  import { ProjectDependencyCascadeController } from "$lib/projects/scheduling/dependency-cascade-controller.svelte";
+  import { ProjectDependencyCascadeController, type ProjectDependencyCascadeFailure } from "$lib/projects/scheduling/dependency-cascade-controller.svelte";
   import type { ProjectSection, ProjectStatus, ProjectTask } from "$lib/projects/types";
   import { useProjects } from "$lib/stores/projects.svelte";
   import { cn } from "$lib/utils";
@@ -202,6 +203,14 @@
       : ganttDateRangeLabel(item.originalRangeStart, item.originalRangeEnd);
   }
 
+  function cascadeFailureMessage(action: ProjectDependencyCascadeFailure["action"]): string {
+    switch (action) {
+      case "review": return t("projects.gantt.cascadeReviewFailed");
+      case "apply": return t("projects.gantt.cascadeApplyFailed");
+      case "open": return t("projects.gantt.cascadeOpenTaskFailed");
+    }
+  }
+
   function cascadeShiftLabel(item: ProjectDependencyCascadeItem): string {
     return t("projects.gantt.cascadeShiftDays", item.shiftDays);
   }
@@ -215,7 +224,7 @@
       const task = projects.taskById(taskId);
       if (task) onOpenTask(task);
     } catch (error) {
-      if (projects.selectedProjectId === projectId) cascade.error = error instanceof Error ? error.message : String(error);
+      if (projects.selectedProjectId === projectId) cascade.error = { action: "open", detail: technicalErrorDetail(error) };
     }
   }
 
@@ -357,7 +366,7 @@
                   </p>
                 {/each}
                 {#if cascade.error}
-                  <Notice class="text-[0.766667rem]" message={cascade.error} />
+                  <Notice class="text-[0.766667rem]" message={cascadeFailureMessage(cascade.error.action)} copy={cascade.error.detail ?? false} />
                 {/if}
               </section>
             {/if}

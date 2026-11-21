@@ -1,10 +1,14 @@
 //! Provider session startup and serialized durable event ingestion.
 
 use super::checkpoints::ensure_post_turn_checkpoint;
+use super::live_authorization::LiveAuthorizationCache;
 use super::persistence::ThreadRuntimeData;
 use super::support::{PROVIDER_START_TIMEOUT, now_timestamp, operation_context};
 use super::validation::validate_modes;
-use crate::chat::ingestion::{ChatEventIngestor, TauriChatChangeEmitter};
+use crate::chat::authority_epoch::current_authority_epoch;
+use crate::chat::ingestion::{ChatEventIngestor, TauriChatChangeEmitter, run_idle_flush};
+use crate::chat::internal_mcp::{InternalMcpEndpoint, InternalMcpRegistry};
+use crate::chat::internal_mcp_tools::pre_approved_tool_names;
 use crate::chat::send_commands::SendChatTurnCommand;
 use crate::chat::workspace::AuthorizedWorkingFolder;
 use ganbaru_chat::agent_runs::AgentRunBinding;
@@ -13,33 +17,85 @@ use ganbaru_chat::runtime::ThreadRuntimeOwner;
 use ganbaru_chat_contracts::events::{CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary};
 use ganbaru_chat_contracts::models::{
     ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
-    ChatTeammatePolicyRevisionId, ChatThreadId, ChatTurnId, ChatWorkAssignmentId,
-    ContinuationGroupId, ProviderInstanceConfig, ProviderSessionSnapshot, ProviderSessionState,
-    ResumeSessionRequest, StartSessionRequest, VerifiedWorkspaceContext,
+    ChatThreadId, ChatTurnId, ChatWorkAssignmentId, ContinuationGroupId, ProviderInstanceConfig,
+    ProviderInternalMcpConfig, ProviderOrganizationalScope, ProviderSessionSnapshot,
+    ProviderSessionState, ResumeSessionRequest, StartSessionRequest, VerifiedWorkspaceContext,
 };
 use ganbaru_chat_providers::{
     DriverFuture, ProviderDriver, ProviderDriverFactory, ProviderDriverRegistry, ProviderEventSink,
 };
 use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
 const MAX_PROVIDER_CHANGED_FILES: usize = 512;
 const MAX_PROVIDER_CHANGED_FILE_PATH_BYTES: usize = 4_096;
 
+/// The server name providers list the internal host tools under.
+pub(super) const INTERNAL_MCP_SERVER_NAME: &str = "ganbaru-chat";
+
+/// A provider process this send starts reaches the thread's internal MCP endpoint.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct InternalMcpLaunch {
+    /// The authorized target scope when the endpoint serves an organizational run, or `None`
+    /// for a direct thread.
+    pub(super) organizational_scope: Option<ProviderOrganizationalScope>,
+}
+
+impl InternalMcpLaunch {
+    /// The provider configuration for an endpoint token issued to the process about to start.
+    pub(super) fn config(self, endpoint: InternalMcpEndpoint) -> ProviderInternalMcpConfig {
+        ProviderInternalMcpConfig {
+            name: INTERNAL_MCP_SERVER_NAME.to_string(),
+            url: endpoint.url,
+            bearer_token: endpoint.bearer_token,
+            organizational_authority: self.organizational_scope.is_some(),
+            pre_approved_tools: if self.organizational_scope.is_some() {
+                pre_approved_tool_names(INTERNAL_MCP_SERVER_NAME)
+            } else {
+                Vec::new()
+            },
+            organizational_scope: self.organizational_scope,
+        }
+    }
+
+    /// Rotates the running endpoint's token for a process about to start, which ends access
+    /// for any earlier process of the thread.
+    pub(super) async fn rotated_config(
+        self,
+        app: &tauri::AppHandle,
+        thread_id: &ChatThreadId,
+    ) -> ChatResult<ProviderInternalMcpConfig> {
+        let endpoint = app
+            .state::<InternalMcpRegistry>()
+            .rotate_thread_token(thread_id)
+            .await?;
+        Ok(self.config(endpoint))
+    }
+}
+
 pub(super) struct EnsureSessionContext<'a> {
     pub(super) app: &'a tauri::AppHandle,
     pub(super) pool: &'a SqlitePool,
     pub(super) owner: &'a Arc<ThreadRuntimeOwner>,
     pub(super) new_driver: Option<Box<dyn ProviderDriver>>,
+    /// Its `internal_mcp` is set only when this send was issued a token; a process that starts
+    /// without one rotates the endpoint token through the `internal_mcp` launch.
     pub(super) configuration: ProviderInstanceConfig,
+    /// Set when the provider reaches the thread's internal MCP endpoint.
+    pub(super) internal_mcp: Option<InternalMcpLaunch>,
     pub(super) workspace: &'a AuthorizedWorkingFolder,
     pub(super) thread_id: &'a ChatThreadId,
     pub(super) existing: Option<&'a ThreadRuntimeData>,
     pub(super) continuation_group_id: &'a ContinuationGroupId,
     pub(super) request: &'a SendChatTurnCommand,
     pub(super) authorization: Option<&'a AgentRunBinding>,
+    /// Instructions the provider places at system level when the session opens.
+    pub(super) developer_instructions: Option<&'a str>,
+    /// Whether a resumed native session already received `developer_instructions`.
+    pub(super) developer_instructions_delivered: bool,
 }
 
 pub(super) async fn ensure_session_with_executable_recovery(
@@ -51,26 +107,31 @@ pub(super) async fn ensure_session_with_executable_recovery(
         owner,
         new_driver,
         configuration,
+        internal_mcp,
         workspace,
         thread_id,
         existing,
         continuation_group_id,
         request,
         authorization,
+        developer_instructions,
+        developer_instructions_delivered,
     } = context;
-    let internal_mcp = configuration.internal_mcp.clone();
     let initial = ensure_session(EnsureSessionContext {
         app,
         pool,
         owner,
         new_driver,
         configuration,
+        internal_mcp,
         workspace,
         thread_id,
         existing,
         continuation_group_id,
         request,
         authorization,
+        developer_instructions,
+        developer_instructions_delivered,
     })
     .await;
     let error = match initial {
@@ -92,19 +153,23 @@ pub(super) async fn ensure_session_with_executable_recovery(
         crate::chat::settings_commands::read_provider(app, &request.provider_instance_id)?;
     let mut repaired_configuration =
         crate::chat::settings::approved_runtime(app, &repaired_provider.configuration)?;
-    repaired_configuration.internal_mcp = internal_mcp;
+    // The repaired launch takes a rotated token in `ensure_session`.
+    repaired_configuration.internal_mcp = None;
     let retry = ensure_session(EnsureSessionContext {
         app,
         pool,
         owner,
         new_driver: None,
         configuration: repaired_configuration,
+        internal_mcp,
         workspace,
         thread_id,
         existing,
         continuation_group_id,
         request,
         authorization,
+        developer_instructions,
+        developer_instructions_delivered,
     })
     .await;
     if retry
@@ -129,12 +194,15 @@ pub(super) async fn ensure_session(
         owner,
         new_driver,
         configuration,
+        internal_mcp,
         workspace,
         thread_id,
         existing,
         continuation_group_id,
         request,
         authorization,
+        developer_instructions,
+        developer_instructions_delivered,
     } = context;
     let snapshot = owner.snapshot()?;
     if reuse_existing_session(snapshot.session_id.is_some(), snapshot.session_state)? {
@@ -159,7 +227,15 @@ pub(super) async fn ensure_session(
     }
     let driver = match new_driver {
         Some(driver) => driver,
-        None => ProviderDriverRegistry.create_driver(configuration)?,
+        None => {
+            let mut configuration = configuration;
+            if let Some(launch) = internal_mcp
+                && configuration.internal_mcp.is_none()
+            {
+                configuration.internal_mcp = Some(launch.rotated_config(app, thread_id).await?);
+            }
+            ProviderDriverRegistry.create_driver(configuration)?
+        }
     };
     validate_modes(&driver.capabilities(), request.modes)?;
     let verified = VerifiedWorkspaceContext {
@@ -186,27 +262,96 @@ pub(super) async fn ensure_session(
         native_workspace_authorized,
         checkpoint_enabled,
     ));
+    match session_open_request(SessionOpenRequestInput {
+        thread_id,
+        workspace: verified,
+        request,
+        existing,
+        continuation_group_id,
+        developer_instructions,
+        developer_instructions_delivered,
+    })? {
+        SessionOpenRequest::Resume(resume) => {
+            owner
+                .resume_session(
+                    driver,
+                    resume,
+                    sink,
+                    operation_context("resume-session", PROVIDER_START_TIMEOUT),
+                )
+                .await
+        }
+        SessionOpenRequest::Start(start) => {
+            owner
+                .start_session(
+                    driver,
+                    start,
+                    sink,
+                    operation_context("start-session", PROVIDER_START_TIMEOUT),
+                )
+                .await
+        }
+    }
+}
+
+/// Inputs of the provider request that opens a session for a thread.
+pub(super) struct SessionOpenRequestInput<'a> {
+    pub(super) thread_id: &'a ChatThreadId,
+    pub(super) workspace: VerifiedWorkspaceContext,
+    pub(super) request: &'a SendChatTurnCommand,
+    pub(super) existing: Option<&'a ThreadRuntimeData>,
+    pub(super) continuation_group_id: &'a ContinuationGroupId,
+    pub(super) developer_instructions: Option<&'a str>,
+    /// Whether a resumed native session already received `developer_instructions`.
+    pub(super) developer_instructions_delivered: bool,
+}
+
+/// The provider request that opens a session, a resume or a fresh start.
+#[derive(Debug)]
+pub(super) enum SessionOpenRequest {
+    Start(StartSessionRequest),
+    Resume(ResumeSessionRequest),
+}
+
+/// Builds the request that opens a session for a thread.
+///
+/// A thread with native continuation data resumes it; a thread without a provider thread
+/// starts fresh. Both requests carry the run's instructions, so a resumed session gets the
+/// same system-level instructions as a fresh one.
+///
+/// # Errors
+///
+/// Returns `ResumeNotFound` when the thread names a provider thread but its resume cursor is
+/// missing.
+pub(super) fn session_open_request(
+    input: SessionOpenRequestInput<'_>,
+) -> ChatResult<SessionOpenRequest> {
+    let SessionOpenRequestInput {
+        thread_id,
+        workspace,
+        request,
+        existing,
+        continuation_group_id,
+        developer_instructions,
+        developer_instructions_delivered,
+    } = input;
+    let developer_instructions = developer_instructions.map(str::to_string);
     if let Some(existing) = existing {
         if let (Some(provider_thread_id), Some(resume_cursor)) = (
             existing.provider_thread_id.clone(),
             existing.resume_cursor.clone(),
         ) {
-            return owner
-                .resume_session(
-                    driver,
-                    ResumeSessionRequest {
-                        thread_id: thread_id.clone(),
-                        workspace: verified,
-                        provider_instance_id: request.provider_instance_id.clone(),
-                        provider_thread_id,
-                        continuation_group_id: continuation_group_id.clone(),
-                        resume_cursor,
-                        modes: request.modes,
-                    },
-                    sink,
-                    operation_context("resume-session", PROVIDER_START_TIMEOUT),
-                )
-                .await;
+            return Ok(SessionOpenRequest::Resume(ResumeSessionRequest {
+                thread_id: thread_id.clone(),
+                workspace,
+                provider_instance_id: request.provider_instance_id.clone(),
+                provider_thread_id,
+                continuation_group_id: continuation_group_id.clone(),
+                resume_cursor,
+                modes: request.modes,
+                developer_instructions,
+                developer_instructions_delivered,
+            }));
         }
         if existing.provider_thread_id.is_some() {
             return Err(ChatError::new(
@@ -216,21 +361,15 @@ pub(super) async fn ensure_session(
             ));
         }
     }
-    owner
-        .start_session(
-            driver,
-            StartSessionRequest {
-                thread_id: thread_id.clone(),
-                workspace: verified,
-                provider_instance_id: request.provider_instance_id.clone(),
-                modes: request.modes,
-                model_id: request.model_id.clone(),
-                model_options: request.model_options.clone(),
-            },
-            sink,
-            operation_context("start-session", PROVIDER_START_TIMEOUT),
-        )
-        .await
+    Ok(SessionOpenRequest::Start(StartSessionRequest {
+        thread_id: thread_id.clone(),
+        workspace,
+        provider_instance_id: request.provider_instance_id.clone(),
+        modes: request.modes,
+        model_id: request.model_id.clone(),
+        model_options: request.model_options.clone(),
+        developer_instructions,
+    }))
 }
 
 pub(super) fn reuse_existing_session(
@@ -267,7 +406,11 @@ struct DurableChatEventSink {
     organizational: bool,
     native_workspace_authorized: bool,
     checkpoint_enabled: bool,
-    ingestor: Mutex<ChatEventIngestor>,
+    ingestor: Arc<Mutex<ChatEventIngestor>>,
+    /// Flushes held text deltas on a short interval; stopped when the sink is dropped.
+    idle_flush: tauri::async_runtime::JoinHandle<()>,
+    /// The last passing live authorization check, which later text deltas may reuse.
+    live_check: std::sync::Mutex<LiveAuthorizationCache>,
 }
 
 impl DurableChatEventSink {
@@ -280,9 +423,19 @@ impl DurableChatEventSink {
         native_workspace_authorized: bool,
         checkpoint_enabled: bool,
     ) -> Self {
+        let secrets = app
+            .state::<crate::chat::secrets::ChatSecretRegistry>()
+            .inner()
+            .clone();
+        let ingestor = Arc::new(Mutex::new(
+            ChatEventIngestor::new(pool.clone(), emitter).with_secret_redactor(Arc::new(secrets)),
+        ));
+        let idle_flush = tauri::async_runtime::spawn(run_idle_flush(Arc::downgrade(&ingestor)));
         Self {
             app,
-            ingestor: Mutex::new(ChatEventIngestor::new(pool.clone(), emitter)),
+            ingestor,
+            idle_flush,
+            live_check: std::sync::Mutex::new(LiveAuthorizationCache::default()),
             pool,
             workspace,
             organizational: authorization.is_some(),
@@ -290,16 +443,58 @@ impl DurableChatEventSink {
             checkpoint_enabled,
         }
     }
+
+    /// Checks the live authority of an organizational run for `event`, reusing a recent passing
+    /// check for a text delta of the same turn while no authority change happened on this
+    /// device. A failed check or a settled turn forgets the pass.
+    async fn check_live_authorization(&self, event: &CanonicalRuntimeEvent) -> ChatResult<()> {
+        let epoch = current_authority_epoch(&self.app);
+        let started_at = Instant::now();
+        let turn_id = event.turn_id.as_ref();
+        if self
+            .lock_live_check()
+            .may_reuse(epoch, turn_id, &event.event, started_at)
+        {
+            return Ok(());
+        }
+        let checked = require_live_authorization(&self.pool, &event.thread_id, turn_id).await;
+        let mut cache = self.lock_live_check();
+        if checked.is_ok() && !settles_turn(&event.event) {
+            cache.record_pass(epoch, turn_id, started_at);
+        } else {
+            cache.clear();
+        }
+        checked
+    }
+
+    fn lock_live_check(&self) -> std::sync::MutexGuard<'_, LiveAuthorizationCache> {
+        // The cache holds no invariant a panic could break, so a poisoned lock is still usable.
+        self.live_check
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+fn settles_turn(event: &CanonicalEvent) -> bool {
+    matches!(
+        event,
+        CanonicalEvent::TurnCompleted(_)
+            | CanonicalEvent::TurnAborted(_)
+            | CanonicalEvent::SessionExited(_)
+    )
+}
+
+impl Drop for DurableChatEventSink {
+    fn drop(&mut self) {
+        self.idle_flush.abort();
+    }
 }
 
 impl ProviderEventSink for DurableChatEventSink {
     fn emit<'a>(&'a self, mut event: CanonicalRuntimeEvent) -> DriverFuture<'a, ()> {
         Box::pin(async move {
             if self.organizational {
-                if let Err(error) =
-                    require_live_authorization(&self.pool, &event.thread_id, event.turn_id.as_ref())
-                        .await
-                {
+                if let Err(error) = self.check_live_authorization(&event).await {
                     self.app
                         .state::<crate::chat::internal_mcp::InternalMcpRegistry>()
                         .revoke_run_scope(&event.thread_id)
@@ -369,6 +564,18 @@ impl ProviderEventSink for DurableChatEventSink {
             }
             let stopped_thread = matches!(&event.event, CanonicalEvent::SessionExited(_))
                 .then(|| event.thread_id.clone());
+            let completed_organizational_turn = (self.organizational
+                && matches!(&event.event, CanonicalEvent::TurnCompleted(_)))
+            .then(|| event.turn_id.clone())
+            .flatten();
+            let opened_request = match &event.event {
+                CanonicalEvent::RequestOpened(opened) if self.organizational => Some((
+                    event.thread_id.clone(),
+                    opened.request_id.as_str().to_string(),
+                )),
+                _ => None,
+            };
+            let provider_activity = crate::chat::settings::ProviderActivity::of(&event);
             let ingestion: ChatResult<()> = async {
                 let diagnostic_expires_at =
                     crate::chat::diagnostics_commands::attach_opt_in_diagnostic(
@@ -385,6 +592,37 @@ impl ProviderEventSink for DurableChatEventSink {
                     .await
             }
             .await;
+            if let Some(activity) = provider_activity.filter(|_| ingestion.is_ok()) {
+                if let Ok(observed_at) = now_timestamp() {
+                    crate::chat::settings::record_provider_activity(
+                        &self.app,
+                        activity,
+                        observed_at,
+                    );
+                }
+            }
+            if let Some((thread_id, request_id)) = opened_request.filter(|_| ingestion.is_ok()) {
+                // A request a live remembered approval matches is answered for the person once
+                // it is persisted; anything else leaves it waiting for them.
+                super::remembered_approvals::spawn_remembered_resolution(
+                    &self.app, &self.pool, thread_id, request_id,
+                );
+            }
+            let settled_thread = settled_turn
+                .as_ref()
+                .map(|(thread_id, _)| thread_id)
+                .or(stopped_thread.as_ref());
+            if let Some(thread_id) =
+                settled_thread.filter(|_| self.organizational && ingestion.is_ok())
+            {
+                crate::chat::organization::deliver_delegation_outcomes_of_thread(
+                    &self.app, &self.pool, thread_id,
+                );
+                crate::chat::organization::resume_answered_work_of_thread(
+                    &self.app, &self.pool, thread_id,
+                );
+                crate::chat::secrets::spawn_sweep(&self.app, &self.pool);
+            }
             if let Some((thread_id, turn_id)) = settled_turn {
                 self.app
                     .state::<crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry>()
@@ -394,6 +632,14 @@ impl ProviderEventSink for DurableChatEventSink {
                 self.app
                     .state::<crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry>()
                     .finish_thread(&thread_id);
+            }
+            if let Some(turn_id) = completed_organizational_turn.filter(|_| ingestion.is_ok()) {
+                // The ingested completion settled the assignment, so replies queued behind the
+                // turn can continue it now.
+                crate::chat::organization::continue_queued_replies_after_turn(&self.app, &turn_id);
+                // Push requests the turn asked push now when a standing approval or a full
+                // access turn lets them, through the checks a person's confirmation runs.
+                crate::chat::organization::push_standing_requests_after_turn(&self.app, &turn_id);
             }
             ingestion
         })
@@ -460,8 +706,7 @@ pub(super) async fn require_live_authorization(
     let active = sqlx::query(
         "SELECT run.id, run.assignment_id, run.project_id, run.working_folder_id,
                 run.execution_environment_id, run.scratch_generation_id,
-                run.teammate_policy_revision_id, run.authorization_revision_id,
-                run.authorization_scope_digest, run.run_ordinal
+                run.authorization_revision_id, run.authorization_scope_digest, run.run_ordinal
          FROM chat_agent_runs run
          JOIN chat_assignment_authorization_revisions authorization
            ON authorization.id = run.authorization_revision_id
@@ -471,25 +716,17 @@ pub(super) async fn require_live_authorization(
          JOIN projects project ON project.id = run.project_id AND project.status != 'archived'
          JOIN chat_conversation_memberships membership
            ON membership.conversation_id = authorization.destination_conversation_id
-          AND membership.participant_id = assignment.teammate_id
+          AND membership.participant_id = assignment.agent_id
           AND membership.removed_at IS NULL
-         JOIN chat_teammate_channel_memberships channel_access
+         JOIN chat_agent_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
-          AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.agent_id = membership.participant_id
           AND channel_access.removed_at IS NULL
-         JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         JOIN chat_access_profile_effective_revisions profile_revision
-           ON profile_revision.access_profile_id = profile.id
          WHERE run.provider_thread_id = ?
            AND (? IS NULL OR run.provider_turn_id = ?)
            AND run.state IN ('starting', 'working', 'waiting')
            AND authorization.decision_state = 'allowed'
            AND authorization.revoked_at IS NULL
-           AND CASE
-                 WHEN channel_access.participate_inherits_profile = 1
-                   THEN profile_revision.default_participate
-                 ELSE channel_access.participate AND profile_revision.default_participate
-               END = 1
          ORDER BY run.created_at DESC, run.id DESC
          LIMIT 1",
     )
@@ -516,12 +753,6 @@ pub(super) async fn require_live_authorization(
         project_id: active
             .try_get("project_id")
             .map_err(|_| live_authorization_error())?,
-        teammate_policy_revision_id: ChatTeammatePolicyRevisionId::new(
-            active
-                .try_get::<String, _>("teammate_policy_revision_id")
-                .map_err(|_| live_authorization_error())?,
-        )
-        .map_err(|_| live_authorization_error())?,
         authorization_revision_id: ChatAuthorizationRevisionId::new(
             active
                 .try_get::<String, _>("authorization_revision_id")

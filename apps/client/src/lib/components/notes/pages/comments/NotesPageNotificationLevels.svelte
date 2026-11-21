@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getNotesEditor } from "$lib/components/notes/editor-context";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     NOTES_PAGE_NOTIFICATION_LEVELS,
@@ -22,7 +23,7 @@
   const notes = getNotesEditor();
   const { t } = getLocalization();
 
-  let errorMessage = $state<string | null>(null);
+  let errorMessage = $state<NotesFailure | null>(null);
   let pending = $state(false);
 
   const current = $derived<NotesPageNotificationLevel>(notes.pageNotificationLevel ?? "all");
@@ -50,7 +51,7 @@
     try {
       await notes.setPageNotificationLevel(level);
     } catch (error) {
-      errorMessage = t("notes.pageNotificationsFailed", error instanceof Error ? error.message : String(error));
+      errorMessage = notesFailure(error, t("notes.pageNotificationsFailed"));
     } finally {
       pending = false;
     }
@@ -79,5 +80,5 @@
   </button>
 {/each}
 {#if errorMessage}
-  <Notice class="px-2 py-1 text-panel-detail" message={errorMessage} />
+  <Notice class="px-2 py-1 text-panel-detail" message={errorMessage.message} copy={errorMessage.detail} />
 {/if}

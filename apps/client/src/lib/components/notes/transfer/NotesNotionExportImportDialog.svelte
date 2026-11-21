@@ -8,6 +8,7 @@
   import type { NotesNotionExportImportResult } from "$lib/notes/types";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import NotesImportDestinationRow from "./NotesImportDestinationRow.svelte";
   import NotesRoundTripDiagnostics from "$lib/components/notes/NotesRoundTripDiagnostics.svelte";
   import NotesTransferFieldRow from "./NotesTransferFieldRow.svelte";
@@ -41,7 +42,7 @@
   let importHtml = $state(true);
   let importCsv = $state(true);
   let importing = $state(false);
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let result = $state<NotesNotionExportImportResult | null>(null);
 
   const canImport = $derived(
@@ -121,7 +122,7 @@
         projectId,
       });
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.notionExportImportFailed"));
     } finally {
       importing = false;
     }
@@ -247,7 +248,7 @@
         </div>
 
         {#if error}
-          <Notice class="text-[0.8rem]" message={t("notes.notionExportImportFailed", error)} copy={error} />
+          <Notice class="text-[0.8rem]" message={error.message} copy={error.detail} />
         {/if}
 
         {#if result}

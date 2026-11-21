@@ -1,4 +1,5 @@
-import type { ChatTerminalOutputChunk } from "$lib/chat/contracts";
+import type { ChatChannelId, ChatTerminalOutputChunk, ProjectWorkingFolderId } from "$lib/chat/contracts";
+import { chatErrorMessage } from "$lib/chat/error-presentation";
 import { safeExternalUrl } from "$lib/chat/timeline/markdown";
 
 export interface TerminalOutputState {
@@ -10,6 +11,21 @@ export type TerminalOutputDecision =
   | { kind: "accept"; state: TerminalOutputState; bytes: Uint8Array }
   | { kind: "duplicate"; state: TerminalOutputState }
   | { kind: "gap"; state: TerminalOutputState; expectedSequence: number };
+
+/**
+ * Returns the output state a view starts from before writing a snapshot's scrollback. Bounded replay drops its
+ * oldest chunks, so the first retained chunk sets the expected sequence instead of sequence one.
+ *
+ * @param generation The terminal generation the snapshot describes.
+ * @param scrollback The snapshot's replay chunks in order.
+ */
+export function replayStartState(
+  generation: number,
+  scrollback: readonly ChatTerminalOutputChunk[],
+): TerminalOutputState {
+  const first = scrollback.find((chunk) => chunk.generation === generation);
+  return { generation, lastSequence: first ? Math.max(0, first.sequence - 1) : 0 };
+}
 
 export function applyTerminalOutput(
   state: TerminalOutputState,
@@ -117,15 +133,29 @@ export function boundTerminalContext(text: string, byteLimit: number): {
 
 export type TerminalPanelPlacement = "inspector" | "bottom";
 
+/**
+ * Names the scope that owns a set of terminals: one channel in one working folder.
+ *
+ * @param channelId - Channel whose panels show the terminals.
+ * @param workingFolderId - Folder the terminals start in.
+ * @returns A key that differs for every channel and folder pair, or null when either is missing.
+ */
+export function terminalScopeKey(
+  channelId: ChatChannelId | null,
+  workingFolderId: ProjectWorkingFolderId | null,
+): string | null {
+  return channelId && workingFolderId ? `${channelId}\n${workingFolderId}` : null;
+}
+
 /** Keeps terminal ownership and selection independent between workspace panels. */
 export class TerminalPanelRegistry {
   readonly #placementByTerminal = new Map<string, TerminalPanelPlacement>();
-  readonly #selectionByPanelThread = new Map<string, string>();
+  readonly #selectionByPanelScope = new Map<string, string>();
 
   /**
    * Claims unassigned terminals for a panel and returns only that panel's terminals.
    *
-   * @param terminals - Terminals available for the current thread and workspace.
+   * @param terminals - Terminals available for the current channel and working folder.
    * @param placement - Panel requesting its terminal collection.
    * @returns Terminals owned by the requesting panel.
    */
@@ -155,43 +185,36 @@ export class TerminalPanelRegistry {
     this.#placementByTerminal.delete(terminalId);
   }
 
-  /** Returns the selected terminal for one panel and thread. */
-  selected(threadId: string, placement: TerminalPanelPlacement): string | null {
-    return this.#selectionByPanelThread.get(this.#selectionKey(threadId, placement)) ?? null;
+  /** Returns the selected terminal for one panel in one channel and working folder. */
+  selected(scopeKey: string, placement: TerminalPanelPlacement): string | null {
+    return this.#selectionByPanelScope.get(this.#selectionKey(scopeKey, placement)) ?? null;
   }
 
-  /** Updates the selected terminal for one panel and thread. */
+  /** Updates the selected terminal for one panel in one channel and working folder. */
   select(
-    threadId: string,
+    scopeKey: string,
     placement: TerminalPanelPlacement,
     terminalId: string | null,
   ): void {
-    const key = this.#selectionKey(threadId, placement);
-    if (terminalId) this.#selectionByPanelThread.set(key, terminalId);
-    else this.#selectionByPanelThread.delete(key);
+    const key = this.#selectionKey(scopeKey, placement);
+    if (terminalId) this.#selectionByPanelScope.set(key, terminalId);
+    else this.#selectionByPanelScope.delete(key);
   }
 
-  #selectionKey(threadId: string, placement: TerminalPanelPlacement): string {
-    return `${placement}:${threadId}`;
+  #selectionKey(scopeKey: string, placement: TerminalPanelPlacement): string {
+    return `${placement}:${scopeKey}`;
   }
 }
 
 /**
- * Converts an unknown terminal API rejection into a useful user-facing message.
+ * Converts an unknown terminal API rejection into a localized message.
  *
  * @param reason - The rejected value from the terminal API boundary.
- * @param fallback - Localized text used when the rejection has no readable message.
- * @returns The validated error message.
+ * @param fallback - Localized text naming the terminal action that failed.
+ * @returns The localized error message.
  */
 export function terminalErrorMessage(reason: unknown, fallback: string): string {
-  if (reason instanceof Error) return reason.message;
-  if (typeof reason === "string") return reason;
-  if (typeof reason !== "object" || reason === null || Array.isArray(reason)) return fallback;
-  const record = reason as Record<string, unknown>;
-  if (typeof record.message !== "string" || record.message.length === 0) return fallback;
-  return typeof record.field === "string" && record.field.length > 0
-    ? `${record.field}: ${record.message}`
-    : record.message;
+  return chatErrorMessage(reason, fallback);
 }
 
 function decodeBase64(value: string): Uint8Array {

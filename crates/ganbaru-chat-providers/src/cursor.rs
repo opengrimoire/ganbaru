@@ -1,5 +1,6 @@
 //! Cursor Agent provider over Agent Client Protocol version 1.
 
+mod confinement;
 mod driver;
 mod executable;
 mod interactions;
@@ -10,6 +11,12 @@ mod session;
 mod transport;
 
 #[cfg(test)]
+pub(crate) mod replay;
+
+#[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub(crate) use driver::AcpProviderFlavor;
 pub use driver::CursorProviderDriver;
+pub(crate) use protocol::GROK_COMPATIBILITY;

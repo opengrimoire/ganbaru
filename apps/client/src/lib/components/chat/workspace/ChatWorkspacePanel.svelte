@@ -9,7 +9,7 @@
   const terminalPanels = new TerminalPanelRegistry();
   const terminalLoadLocks = new Map<string, Promise<void>>();
 
-  /** Serializes terminal discovery and creation within one thread and workspace. */
+  /** Serializes terminal discovery and creation within one channel and working folder. */
   async function withTerminalLoadLock<T>(scopeKey: string, operation: () => Promise<T>): Promise<T> {
     const previous = terminalLoadLocks.get(scopeKey) ?? Promise.resolve();
     let release: () => void = () => undefined;
@@ -38,11 +38,11 @@
   import SquareTerminal from "@lucide/svelte/icons/square-terminal";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
-  import type { ChatInspectorTab, ChatTerminalRead, ReviewDiffSource } from "$lib/chat/contracts";
+  import { defaultReviewSource, type ReviewSourceAssignment } from "$lib/chat/review/model";
+  import type { ChatInspectorTab, ChatTerminalRead, ChatWorkAssignmentId, ReviewDiffSource } from "$lib/chat/contracts";
   import {
     CHAT_WORKSPACE_PANEL_TAB_NAME_MAX_LENGTH,
     closeInspectorTab,
-    inspectorSessionKey,
     normalizeWorkspacePanelTabName,
     openInspectorTab,
     reconcileWorkspacePanelTabOrder,
@@ -50,11 +50,15 @@
     terminalWorkspacePanelTabKey,
     workspacePanelKinds,
     workspacePanelTerminalId,
-    type ChatInspectorThreadState,
+    type ChatInspectorPanelState,
     type ChatWorkspacePanelTabKey,
   } from "$lib/chat/workspace/inspector-model";
   import { WorkspacePanelTabController } from "$lib/chat/workspace/panel-tabs.svelte";
-  import { terminalErrorMessage } from "$lib/chat/workspace/terminal-model";
+  import { terminalErrorMessage, terminalScopeKey as scopeKeyFor } from "$lib/chat/workspace/terminal-model";
+  import {
+    channelPanelWorkingFolders,
+    resolveChannelPanelWorkingFolder,
+  } from "$lib/chat/workspace/working-folder-selection";
   import {
     CHAT_OPEN_WORKSPACE_PANEL_EVENT,
     isChatWorkspaceRequest,
@@ -68,6 +72,7 @@
   } from "$lib/utils/select-popover-position";
   import { safeViewportRect } from "$lib/utils/keep-in-viewport";
   import { formatNumber } from "$lib/i18n/formatters";
+  import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
@@ -80,6 +85,7 @@
   import ChatSourceControlPanel from "./ChatSourceControlPanel.svelte";
   import ChatTerminalView from "./ChatTerminalView.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import { menuDigitIndex } from "$lib/keyboard-shortcuts";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
@@ -107,7 +113,7 @@
     maxHeight: 0,
     placement: "below",
   };
-  let panelState = $state<ChatInspectorThreadState>(placementSession().read(null));
+  let panelState = $state<ChatInspectorPanelState>(placementSession().read(null));
   let terminals: ChatTerminalRead[] = $state([]);
   let selectedTerminalId: string | null = $state(null);
   let terminalsLoading = $state(false);
@@ -125,9 +131,26 @@
   let reviewOpenRequest = 0;
   let destroyed = false;
   let isTerminalSplit = $state(false);
-  const threadId = $derived(chat.selectedThreadId ?? chat.draftThreadId);
-  const workingFolderId = $derived(chat.selectedWorkingFolderId);
-  const sessionKey = $derived(inspectorSessionKey(threadId, workingFolderId));
+  /**
+   * The panel belongs to the selected channel, or to the reply thread a workspace tab shows on its own, so its tabs,
+   * chosen folder, and terminals follow that scope. Folders and terminal authority always come from the channel.
+   */
+  const sessionKey = $derived(chat.panelScope);
+  const channelId = $derived(chat.selectedChannelId);
+  const replyThreadTabId = $derived(chat.replyThreadTabId);
+  const folderChoices = $derived(channelPanelWorkingFolders(chat.workingFolders, chat.selectedChannel?.projectId ?? null));
+  const folderOptions = $derived(folderChoices.map((entry) => ({
+    value: entry.workingFolder.id,
+    label: entry.workingFolder.displayName,
+  })));
+  const workingFolderId = $derived(resolveChannelPanelWorkingFolder(
+    folderChoices,
+    panelState.workingFolderId,
+    chat.selectedWorkingFolderId,
+  ));
+  /** The chat's execution environment applies only while the panel targets the chat's own folder. */
+  const followsChatFolder = $derived(workingFolderId !== null && workingFolderId === chat.selectedWorkingFolderId);
+  const executionEnvironmentId = $derived(followsChatFolder ? chat.selectedExecutionEnvironmentId : null);
   const selectedTerminal = $derived(terminals.find((terminal) => terminal.id === selectedTerminalId) ?? null);
   /** True when the terminal tab has no terminal to show after loading, so its failure fills the tab. */
   const terminalLoadFailed = $derived(panelState.tab === "terminal" && !terminalsLoading && !(isTerminalSplit && terminals.length > 1) && !selectedTerminal);
@@ -196,14 +219,22 @@
     };
   });
 
+  function replyAssignment(): ReviewSourceAssignment | null {
+    const assignment = chat.openReplyThreadId ? chat.replyThread?.assignment : null;
+    return assignment ? { id: assignment.id, state: assignment.state } : null;
+  }
+
   function openReview(detail: ChatOpenReviewDetail | null): void {
     if (!detail) {
+      const defaultSource = defaultReviewSource(chat.selectedThreadId, replyAssignment());
+      if (defaultSource.kind === "assignment") {
+        void openAssignmentReview(defaultSource.assignmentId);
+        return;
+      }
       reviewOpenRequest += 1;
       openPanel("review");
       update({
-        reviewSource: chat.selectedThreadId
-          ? { kind: "checkpoint", range: "turn", turnId: null }
-          : { kind: "working_tree", mode: "all" },
+        reviewSource: defaultSource,
         selectedFile: null,
         reviewThreadId: null,
         reviewWorkingFolderId: null,
@@ -228,6 +259,17 @@
       reviewWorkingFolderId: null,
       reviewExecutionEnvironmentId: null,
     });
+  }
+
+  /** Opens an assignment review in the working folder its execution used, which the request resolves. */
+  async function openAssignmentReview(assignmentId: ChatWorkAssignmentId): Promise<void> {
+    const request = ++reviewOpenRequest;
+    try {
+      const detail = await chat.assignmentReviewDetail(assignmentId);
+      if (request === reviewOpenRequest && !destroyed) openReview(detail);
+    } catch (reason: unknown) {
+      if (request === reviewOpenRequest && !destroyed) error = message(reason);
+    }
   }
 
   function openFile(detail: ChatOpenFileDetail): void {
@@ -286,10 +328,11 @@
 
   $effect(() => {
     const terminalOpen = panelState.openTabs.includes("terminal");
-    const thread = threadId;
+    const channel = channelId;
+    const thread = replyThreadTabId;
     const workspace = workingFolderId;
-    const nextKey = `${thread ?? ""}:${workspace ?? ""}`;
-    if (!terminalOpen || !thread || !workspace) {
+    const nextKey = scopeKeyFor(sessionKey, workspace);
+    if (!terminalOpen || !channel || !workspace || !nextKey) {
       terminalScopeKey = "";
       terminals = [];
       selectedTerminalId = null;
@@ -301,10 +344,20 @@
     }
     if (terminalScopeKey === nextKey && (terminalsLoading || terminals.length > 0 || error)) return;
     terminalScopeKey = nextKey;
-    void loadTerminals(thread, workspace, nextKey);
+    void loadTerminals(channel, thread, workspace, nextKey);
   });
 
-  function update(updateValue: Partial<ChatInspectorThreadState>): void {
+  /** Points this panel's Files, Source control, and new terminals at another folder of the channel's project. */
+  function chooseWorkingFolder(folderId: string): void {
+    if (folderId === workingFolderId) return;
+    update({
+      workingFolderId: folderId,
+      fileBrowserPath: "",
+      filePreviewPath: null,
+    });
+  }
+
+  function update(updateValue: Partial<ChatInspectorPanelState>): void {
     const key = sessionKey;
     if (!key) return;
     panelState = placementSession().update(key, updateValue);
@@ -315,14 +368,16 @@
     if (terminalLayoutSaveTimer !== null) window.clearTimeout(terminalLayoutSaveTimer);
     terminalLayoutSaveTimer = window.setTimeout(() => {
       terminalLayoutSaveTimer = null;
-      const thread = threadId;
+      const channel = channelId;
       const workspace = workingFolderId;
-      if (!thread || !workspace || chat.selectedThreadId !== thread || terminals.length === 0) return;
+      // The saved layout belongs to the channel's own panels; a reply thread tab keeps its layout in memory only.
+      if (!channel || !workspace || replyThreadTabId !== null || terminalsLoading || terminals.length === 0) return;
+      if (terminalScopeKey !== scopeKeyFor(sessionKey, workspace)) return;
       const terminalNames = terminals.map((terminal) => workspacePanelTabLabel(terminalWorkspacePanelTabKey(terminal.id)));
       const selectedIndex = selectedTerminalId === null
         ? -1
         : terminals.findIndex((terminal) => terminal.id === selectedTerminalId);
-      void chatApi.saveChatTerminalPanelLayout(thread, workspace, {
+      void chatApi.saveChatTerminalPanelLayout(channel, workspace, {
         placement,
         terminalNames,
         selectedIndex: selectedIndex >= 0 ? selectedIndex : null,
@@ -411,7 +466,8 @@
   }
 
   async function loadTerminals(
-    thread: string,
+    channel: string,
+    thread: string | null,
     workspace: string,
     scopeKey: string,
   ): Promise<void> {
@@ -421,19 +477,20 @@
     error = null;
     try {
       const loaded = await withTerminalLoadLock(scopeKey, async () => {
-        await chatApi.reserveChatDraftThread(thread, workspace);
-        const [available, layout] = await Promise.all([
-          chatApi.listChatTerminals(thread, workspace),
-          chatApi.readChatTerminalLayout(thread, workspace),
+        const [available, groups] = await Promise.all([
+          chatApi.listChatTerminals(channel, workspace, thread),
+          thread === null
+            ? chatApi.readChatTerminalLayout(channel, workspace).then((layout) => layout.groups)
+            : Promise.resolve([]),
         ]);
         const owned = terminalPanels.claimAvailable(available, placement);
-        if (owned.length > 0) return { terminals: owned, layout };
-        const snapshot = await createTerminal(thread, workspace);
-        return { terminals: [snapshot.terminal], layout };
+        if (owned.length > 0) return { terminals: owned, groups };
+        const snapshot = await createTerminal(channel, thread, workspace);
+        return { terminals: [snapshot.terminal], groups };
       });
       if (destroyed || terminalScopeKey !== scopeKey) return;
       terminals = loaded.terminals;
-      const savedPanel = loaded.layout.groups.find((group) => group.placement === placement);
+      const savedPanel = loaded.groups.find((group) => group.placement === placement);
       if (savedPanel) {
         isTerminalSplit = savedPanel.splitSizes.length > 1;
         const tabNames = { ...panelState.tabNames };
@@ -451,7 +508,7 @@
         tabNames[terminalWorkspacePanelTabKey(firstTerminal.id)] = placeholderName;
         update({ tabNames });
       }
-      const remembered = terminalPanels.selected(thread, placement);
+      const remembered = terminalPanels.selected(scopeKey, placement);
       const savedSelection = savedPanel?.selectedIndex === null || savedPanel?.selectedIndex === undefined
         ? null
         : loaded.terminals[savedPanel.selectedIndex]?.id ?? null;
@@ -466,13 +523,14 @@
   }
 
   async function createTerminal(
-    thread: string,
+    channel: string,
+    thread: string | null,
     workspace: string,
   ): ReturnType<typeof chatApi.createChatTerminal> {
-    await chatApi.reserveChatDraftThread(thread, workspace);
     const snapshot = await chatApi.createChatTerminal({
       terminalId: crypto.randomUUID(),
-      threadId: thread,
+      channelId: channel,
+      replyThreadId: thread,
       workingFolderId: workspace,
       columns: 80,
       rows: 24,
@@ -482,12 +540,13 @@
   }
 
   async function addTerminal(): Promise<void> {
-    const thread = threadId;
+    const channel = channelId;
+    const scope = sessionKey;
     const workspace = workingFolderId;
-    if (!thread || !workspace) return;
+    if (!channel || !workspace) return;
     panelPickerOpen = false;
-    const snapshot = await createTerminal(thread, workspace);
-    if (destroyed || terminalScopeKey !== `${thread}:${workspace}`) return;
+    const snapshot = await createTerminal(channel, replyThreadTabId, workspace);
+    if (destroyed || terminalScopeKey !== scopeKeyFor(scope, workspace)) return;
     const previousOrder = orderedTabKeys;
     terminals = [...terminals, snapshot.terminal];
     update({
@@ -502,12 +561,12 @@
   }
 
   async function retryTerminalLoad(): Promise<void> {
-    const thread = threadId;
+    const channel = channelId;
     const workspace = workingFolderId;
-    if (!thread || !workspace) throw new Error("Terminal retry needs a thread and a working folder");
-    const scopeKey = `${thread}:${workspace}`;
+    const scopeKey = scopeKeyFor(sessionKey, workspace);
+    if (!channel || !workspace || !scopeKey) throw new Error("Terminal retry needs a channel and a working folder");
     terminalScopeKey = scopeKey;
-    await loadTerminals(thread, workspace, scopeKey);
+    await loadTerminals(channel, replyThreadTabId, workspace, scopeKey);
     if (error) throw new Error(error);
   }
 
@@ -521,7 +580,8 @@
 
   function selectTerminal(terminalId: string | null): void {
     selectedTerminalId = terminalId;
-    if (threadId) terminalPanels.select(threadId, placement, terminalId);
+    const scopeKey = scopeKeyFor(sessionKey, workingFolderId);
+    if (scopeKey) terminalPanels.select(scopeKey, placement, terminalId);
     scheduleTerminalLayoutSave();
   }
 
@@ -535,15 +595,20 @@
   }
 
   async function closeTerminal(terminal: ChatTerminalRead): Promise<void> {
-    const thread = threadId;
+    const channel = channelId;
     const workspace = workingFolderId;
-    if (!thread || !workspace) return;
-    const scopeKey = `${thread}:${workspace}`;
-    let result = await chatApi.closeChatTerminal(terminal.id, thread, workspace, false);
+    const scopeKey = scopeKeyFor(sessionKey, workspace);
+    if (!channel || !workspace || !scopeKey) return;
+    let result = await chatApi.closeChatTerminal(terminal.id, channel, workspace, false);
     if (destroyed || terminalScopeKey !== scopeKey) return;
     if (result.confirmationRequired) {
-      if (!window.confirm(t("chat.inspector.confirmCloseTerminal"))) return;
-      result = await chatApi.closeChatTerminal(terminal.id, thread, workspace, true);
+      const confirmed = await requestConfirmation({
+        message: t("chat.inspector.confirmCloseTerminal"),
+        confirmLabel: t("chat.inspector.closeTerminal"),
+        danger: true,
+      });
+      if (!confirmed || destroyed || terminalScopeKey !== scopeKey) return;
+      result = await chatApi.closeChatTerminal(terminal.id, channel, workspace, true);
       if (destroyed || terminalScopeKey !== scopeKey) return;
     }
     if (!result.closed) return;
@@ -646,7 +711,7 @@
   function message(reason: unknown): string {
     return terminalErrorMessage(
       reason,
-      t("common.viewLoadFailed", t("chat.inspector.terminal")),
+      t("chatErrors.actions.terminalAction"),
     );
   }
 
@@ -674,15 +739,15 @@
       triggerRect: rect(triggerRect),
       boundaryRect: safeViewportRect(),
       contentHeight: panelPickerContentHeight() ?? 300,
-      contentWidth: panelPicker?.scrollWidth ?? FLOATING_WIDTH.md,
-      horizontalAlign: triggerRect.left + FLOATING_WIDTH.md <= window.innerWidth - 8 ? "start" : "end",
+      contentWidth: panelPicker?.scrollWidth ?? FLOATING_WIDTH.sm,
+      horizontalAlign: triggerRect.left + FLOATING_WIDTH.sm <= window.innerWidth - 8 ? "start" : "end",
     });
     panelPickerReady = true;
   }
 
   function panelPickerStyle(): string {
     if (!panelPickerReady) return "visibility:hidden;top:0;left:0;";
-    const width = Math.min(FLOATING_WIDTH.md, panelPickerGeometry.maxWidth);
+    const width = Math.min(FLOATING_WIDTH.sm, panelPickerGeometry.maxWidth);
     return `visibility:visible;top:${panelPickerGeometry.top}px;left:${panelPickerGeometry.left}px;width:${width}px;max-height:${panelPickerGeometry.maxHeight}px;`;
   }
 
@@ -711,8 +776,16 @@
       queueMicrotask(() => panelPickerTrigger?.focus());
       return;
     }
-    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
     const buttons = [...(event.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>("button")];
+    const digitIndex = menuDigitIndex(event);
+    if (digitIndex !== null) {
+      const button = buttons[digitIndex];
+      if (!button) return;
+      event.preventDefault();
+      button.click();
+      return;
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
     if (buttons.length === 0) return;
     event.preventDefault();
     const currentIndex = buttons.indexOf(document.activeElement as HTMLButtonElement);
@@ -817,16 +890,18 @@
         onkeydown={handlePanelPickerKeydown}
       >
         <div bind:this={panelPickerList} class="surface-floating-body min-h-0 flex-1 overflow-y-auto" use:scrollEdgeFadeAction>
-          <p class="menu-label">{t("chat.inspector.addPanel")}</p>
-          <button type="button" class="menu-item" role="menuitem" onclick={openOrAddTerminal}>
-            <SquareTerminal size={15} />
-            <span><strong>{t("chat.inspector.terminal")}</strong><small>{t("chat.inspector.terminalDescription")}</small></span>
+          <button type="button" class="menu-item" role="menuitem" aria-keyshortcuts="1" onclick={openOrAddTerminal}>
+            <SquareTerminal />
+            <span class="min-w-0 truncate">{t("chat.inspector.terminal")}</span>
+            <span class="shrink-0 text-panel-detail text-muted-foreground">{t("common.pressKey", "1")}</span>
           </button>
-          {#each panelTabs as tab (tab.id)}
+          {#each panelTabs as tab, index (tab.id)}
             {@const Icon = tab.icon}
-            <button type="button" class="menu-item" role="menuitem" onclick={() => openPanel(tab.id)}>
-              <Icon size={15} />
-              <span><strong>{t(`chat.inspector.${tab.label}`)}</strong><small>{t(`chat.inspector.${tab.label}Description`)}</small></span>
+            {@const key = index < 8 ? String(index + 2) : null}
+            <button type="button" class="menu-item" role="menuitem" aria-keyshortcuts={key ?? undefined} onclick={() => openPanel(tab.id)}>
+              <Icon />
+              <span class="min-w-0 truncate">{t(`chat.inspector.${tab.label}`)}</span>
+              {#if key}<span class="shrink-0 text-panel-detail text-muted-foreground">{t("common.pressKey", key)}</span>{/if}
             </button>
           {/each}
         </div>
@@ -902,6 +977,8 @@
       <div class="retained-workspace-panel" class:hidden={panelState.tab !== "files"}>
         <ChatFilesPanel
           active={visible && panelState.tab === "files"}
+          folderId={workingFolderId}
+          folderEnvironmentId={executionEnvironmentId}
           directoryPath={panelState.fileBrowserPath}
           selectedPath={panelState.filePreviewPath}
           treeVisible={panelState.fileTreeVisible}
@@ -947,15 +1024,21 @@
     {:else if panelState.tab === "plan"}
       <ChatPlanPanel />
     {:else if panelState.tab === "sourceControl"}
-      <ChatSourceControlPanel />
+      <ChatSourceControlPanel
+        folderId={workingFolderId}
+        folderEnvironmentId={executionEnvironmentId}
+        environmentSwitchable={followsChatFolder}
+        {folderOptions}
+        onFolderChange={chooseWorkingFolder}
+      />
     {:else if panelState.tab === "browser"}
-      <ChatBrowserPanel />
+      <ChatBrowserPanel {channelId} {workingFolderId} />
     {/if}
   </div>
 </section>
 
 <style>
-  .panel-picker :global(svg.lucide), .tab-rename-panel :global(svg.lucide) { stroke-width: var(--icon-stroke-width-compact) !important; }
+  .tab-rename-panel :global(svg.lucide) { stroke-width: var(--icon-stroke-width-compact) !important; }
   .workspace-panel { display: flex; height: 100%; min-height: 0; flex-direction: column; background: var(--cal-bg); }
   .retained-workspace-panel { height: 100%; min-height: 0; }
   .panel-tabbar { --workspace-panel-tab-width: 9.5rem; position: relative; display: flex; min-height: 2.65rem; flex: 0 0 auto; align-items: center; gap: 0.2rem; padding-inline: 0.45rem; }
@@ -989,11 +1072,6 @@
   .terminal-split > section { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
   .terminal-split > section > header { min-height: 1.65rem; flex: 0 0 auto; overflow: hidden; border-bottom: 1px solid var(--border); padding: 0.3rem 0.45rem; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   .panel-picker { position: fixed; z-index: 80; }
-  .panel-picker button { align-items: flex-start; gap: 0.65rem; padding-block: 0.45rem; }
-  .panel-picker button > :global(svg) { margin-top: 0.1rem; flex: 0 0 auto; }
-  .panel-picker span { display: grid; min-width: 0; gap: 0.1rem; }
-  .panel-picker strong { font-weight: 500; }
-  .panel-picker small { color: var(--muted-foreground); font-size: var(--panel-detail-font-size); line-height: 1.3; }
   .tab-rename-panel { position: fixed; z-index: 90; overflow-y: auto; padding: 0.6rem; }
   .tab-rename-panel label { display: block; margin-bottom: 0.4rem; font-weight: 500; }
   .tab-rename-actions { display: flex; align-items: center; gap: 0.25rem; margin-top: 0.55rem; }

@@ -18,37 +18,37 @@ const MAX_DIRECTORY_PAGE_SIZE: u32 = 50;
 const MAX_PROMOTION_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_PAGE_REVISION_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SIZE_ENTRIES: u64 = 10_000;
-const MAX_SIZE_BYTES: u64 = 1024 * 1024 * 1024;
+pub(super) const MAX_SIZE_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[tauri::command]
 pub async fn chat_list_scratch_scopes(
     app: tauri::AppHandle,
     db_url: String,
-    teammate_id: Option<ChatParticipantId>,
+    agent_id: Option<ChatParticipantId>,
     reply_thread_id: Option<ChatReplyThreadId>,
 ) -> ChatResult<Vec<ChatScratchScopeRead>> {
     let pool = chat_pool(app.clone(), db_url).await?;
     require_local_owner(&pool).await?;
     let rows = sqlx::query(
-        "SELECT scope.id, scope.reply_thread_id, scope.teammate_id,
-                teammate.display_name AS teammate_name,
+        "SELECT scope.id, scope.reply_thread_id, scope.agent_id,
+                agent.display_name AS agent_name,
                 channel.id AS channel_id, channel.name AS channel_name,
                 project.id AS project_id, project.name AS project_name,
                 project_group.id AS group_id, project_group.name AS group_name,
                 scope.lifecycle_state, scope.revision, scope.created_at, scope.updated_at
          FROM chat_scratch_scopes scope
-         JOIN chat_participants teammate ON teammate.id = scope.teammate_id
+         JOIN chat_participants agent ON agent.id = scope.agent_id
          JOIN chat_reply_threads thread ON thread.id = scope.reply_thread_id
          JOIN chat_channels channel ON channel.conversation_id = thread.conversation_id
          JOIN projects project ON project.id = channel.project_id
          LEFT JOIN project_groups project_group ON project_group.id = project.group_id
          WHERE scope.removed_at IS NULL
-           AND (? IS NULL OR scope.teammate_id = ?)
+           AND (? IS NULL OR scope.agent_id = ?)
            AND (? IS NULL OR scope.reply_thread_id = ?)
          ORDER BY scope.updated_at DESC, scope.id",
     )
-    .bind(teammate_id.as_ref().map(ChatParticipantId::as_str))
-    .bind(teammate_id.as_ref().map(ChatParticipantId::as_str))
+    .bind(agent_id.as_ref().map(ChatParticipantId::as_str))
+    .bind(agent_id.as_ref().map(ChatParticipantId::as_str))
     .bind(reply_thread_id.as_ref().map(ChatReplyThreadId::as_str))
     .bind(reply_thread_id.as_ref().map(ChatReplyThreadId::as_str))
     .fetch_all(&pool)
@@ -62,8 +62,8 @@ pub async fn chat_list_scratch_scopes(
             generations: read_scope_generations(&app, &pool, &scope_id).await?,
             id: scope_id,
             reply_thread_id: parse_id(row.try_get("reply_thread_id").map_err(persistence_error)?)?,
-            teammate_id: parse_id(row.try_get("teammate_id").map_err(persistence_error)?)?,
-            teammate_name: row.try_get("teammate_name").map_err(persistence_error)?,
+            agent_id: parse_id(row.try_get("agent_id").map_err(persistence_error)?)?,
+            agent_name: row.try_get("agent_name").map_err(persistence_error)?,
             channel_id: parse_id(row.try_get("channel_id").map_err(persistence_error)?)?,
             channel_name: row.try_get("channel_name").map_err(persistence_error)?,
             project_id: row.try_get("project_id").map_err(persistence_error)?,

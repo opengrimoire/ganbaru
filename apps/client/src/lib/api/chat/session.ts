@@ -1,7 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
 import { withProviderStartTrust } from "$lib/api/working-folder-trust";
+import { encodeBase64 } from "$lib/utils/base64";
+import { hasTimelineReadObservers, reportTimelineSinceRead } from "$lib/chat/timeline/read-observer";
 import type {
+  ChatActivityDetailRead,
+  ChatActivityId,
   ChatDraftRead,
   ChatAttachmentRead,
   ChatInteractionStateRead,
@@ -13,6 +17,7 @@ import type {
   ChatThreadId,
   ChatTurnId,
   ChatThreadShellRead,
+  ChatTimelineDeltaRead,
   ChatTimelinePageRead,
   ProjectWorkingFolderId,
   ProviderInstanceId,
@@ -38,6 +43,8 @@ import {
   parseChatError,
   parseChatThreadShell,
   parseChatThreadShells,
+  parseChatActivityDetail,
+  parseChatTimelineDelta,
   parseChatTimelinePage,
 } from "$lib/chat/validation";
 
@@ -71,6 +78,35 @@ export async function readChatTimelinePage(
     threadId,
     cursor,
     limit,
+  }));
+}
+
+/** Reads the visible timeline rows and turns that changed after a change clock value. */
+export async function readChatTimelineSince(
+  threadId: ChatThreadId,
+  afterChange: number,
+  limit = 100,
+): Promise<ChatTimelineDeltaRead> {
+  const payload = await invoke<unknown>("chat_read_timeline_since", {
+    dbUrl: await ensureDbUrl(),
+    threadId,
+    afterChange,
+    limit,
+  });
+  const delta = parseChatTimelineDelta(payload);
+  if (hasTimelineReadObservers()) reportTimelineSinceRead(payload, delta.items.length);
+  return delta;
+}
+
+/** Reads the whole detail of one activity, which timeline reads carry only as a preview. */
+export async function readChatActivityDetail(
+  threadId: ChatThreadId,
+  activityId: ChatActivityId,
+): Promise<ChatActivityDetailRead> {
+  return parseChatActivityDetail(await invoke<unknown>("chat_read_activity_detail", {
+    dbUrl: await ensureDbUrl(),
+    threadId,
+    activityId,
   }));
 }
 
@@ -121,11 +157,11 @@ export async function importChatImage(
   workingFolderId: ProjectWorkingFolderId,
   attachmentId: string,
   displayName: string,
-  bytes: number[],
+  bytes: Uint8Array,
 ): Promise<ChatAttachmentRead> {
   return parseChatAttachmentRead(await invoke<unknown>("chat_import_image", {
     dbUrl: await ensureDbUrl(),
-    request: { workingFolderId, attachmentId, displayName, bytes },
+    request: { workingFolderId, attachmentId, displayName, base64: encodeBase64(bytes) },
   }));
 }
 

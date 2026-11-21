@@ -5,8 +5,8 @@
 //! `sidebar-order.ts`, `calendar/types.ts`, and the feature stores).
 
 use ganbaru_chat_contracts::config::{
-    CHAT_SEND_KEY_VALUES, MAX_IDLE_SESSION_TIMEOUT_SECONDS, MAX_TERMINAL_SCROLLBACK_LINES,
-    MIN_IDLE_SESSION_TIMEOUT_SECONDS, MIN_TERMINAL_SCROLLBACK_LINES,
+    CHAT_SEND_KEY_VALUES, CHAT_TIMELINE_DENSITY_VALUES, MAX_IDLE_SESSION_TIMEOUT_SECONDS,
+    MAX_TERMINAL_SCROLLBACK_LINES, MIN_IDLE_SESSION_TIMEOUT_SECONDS, MIN_TERMINAL_SCROLLBACK_LINES,
 };
 use ganbaru_sync::domains::preferences::ProfileImage;
 use serde_json::Value;
@@ -338,6 +338,10 @@ pub(crate) const REGISTRY: &[PreferenceSpec] = &[
     portable("chat.behavior.showReasoningSummaries", BOOL),
     portable("chat.behavior.automaticallyFoldSettledWork", BOOL),
     portable(
+        "chat.behavior.timelineDensity",
+        ValueRule::Choice(CHAT_TIMELINE_DENSITY_VALUES),
+    ),
+    portable(
         "chat.behavior.terminalScrollbackLines",
         CHAT_TERMINAL_SCROLLBACK_LINES,
     ),
@@ -346,6 +350,11 @@ pub(crate) const REGISTRY: &[PreferenceSpec] = &[
         CHAT_IDLE_SESSION_TIMEOUT_SECONDS,
     ),
     device("chat.behavior.confirmMultilineTerminalPaste", BOOL),
+    portable("chat.behavior.notifyWaitingForYou", BOOL),
+    portable("chat.behavior.notifyReviewReady", BOOL),
+    portable("chat.behavior.notifyFailures", BOOL),
+    portable("chat.behavior.announceBackgroundWork", BOOL),
+    device("chat.behavior.notificationIncludeContent", BOOL),
     portable("music.review.autoplay", BOOL),
     portable("music.sources.localName", LABEL),
     portable("music.sources.youtubeName", LABEL),
@@ -477,6 +486,7 @@ mod tests {
             "theme.quickToggleDarkId",
             "notes.coverPicker.askEveryTime",
             "music.sources.youtubeName",
+            "chat.behavior.timelineDensity",
         ];
         let device = [
             "preferences.fontScale",
@@ -487,6 +497,7 @@ mod tests {
             "chatSidebar.showArchivedInPickers",
             "updates.autoNotifications",
             "chat.behavior.confirmMultilineTerminalPaste",
+            "chat.behavior.notificationIncludeContent",
         ];
         for key in portable {
             assert!(portable_row(key).is_some(), "{key}");
@@ -494,8 +505,8 @@ mod tests {
         for key in device {
             assert!(device_spec(key).is_some(), "{key}");
         }
-        assert_eq!(specs(Scope::Portable).count(), 55);
-        assert_eq!(specs(Scope::Device).count(), 23);
+        assert_eq!(specs(Scope::Portable).count(), 60);
+        assert_eq!(specs(Scope::Device).count(), 24);
     }
 
     #[test]
@@ -619,7 +630,9 @@ mod tests {
 
     #[test]
     fn preferences_chat_behavior_keys_match_the_contract_fields() {
-        use ganbaru_chat_contracts::config::{ChatBehaviorPreferences, ChatSendKey};
+        use ganbaru_chat_contracts::config::{
+            ChatBehaviorPreferences, ChatSendKey, ChatTimelineDensity,
+        };
         let defaults = serde_json::to_value(ChatBehaviorPreferences::default()).unwrap();
         let fields = defaults.as_object().unwrap();
         for (field, value) in fields {
@@ -634,7 +647,13 @@ mod tests {
         let device_fields = specs(Scope::Device)
             .filter_map(|spec| spec.path.strip_prefix("chat.behavior."))
             .collect::<Vec<_>>();
-        assert_eq!(device_fields, ["confirmMultilineTerminalPaste"]);
+        assert_eq!(
+            device_fields,
+            [
+                "confirmMultilineTerminalPaste",
+                "notificationIncludeContent"
+            ]
+        );
 
         let send_key = chat_behavior_spec("sendKey");
         for key in [ChatSendKey::Enter, ChatSendKey::ModEnter] {
@@ -642,6 +661,17 @@ mod tests {
         }
         for refused in [json!("modEnter"), json!(""), json!(1), json!(null)] {
             assert!(!send_key.rule.accepts(&refused), "{refused}");
+        }
+
+        let density = chat_behavior_spec("timelineDensity");
+        for value in [
+            ChatTimelineDensity::Comfortable,
+            ChatTimelineDensity::Compact,
+        ] {
+            assert!(density.rule.accepts(&serde_json::to_value(value).unwrap()));
+        }
+        for refused in [json!("Compact"), json!("dense"), json!(""), json!(null)] {
+            assert!(!density.rule.accepts(&refused), "{refused}");
         }
     }
 
@@ -674,6 +704,11 @@ mod tests {
             "showReasoningSummaries",
             "automaticallyFoldSettledWork",
             "confirmMultilineTerminalPaste",
+            "notifyWaitingForYou",
+            "notifyReviewReady",
+            "notifyFailures",
+            "announceBackgroundWork",
+            "notificationIncludeContent",
         ] {
             let rule = chat_behavior_spec(field).rule;
             assert!(

@@ -3,9 +3,9 @@ use sqlx::{AssertSqlSafe, SqlitePool};
 
 /// A queued access revocation job for the fixture authorization.
 const REVOCATION_JOB: &str = "INSERT INTO chat_access_revocation_jobs
-    (id, teammate_id, conversation_id, authorization_revision_id, reason,
+    (id, agent_id, conversation_id, authorization_revision_id, reason,
      available_at, created_at, updated_at)
-VALUES ('revocation-1', 'participant-teammate', 'conversation-general', 'authorization-1',
+VALUES ('revocation-1', 'participant-agent', 'conversation-general', 'authorization-1',
         'Access was reduced', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z',
         '2026-10-23T00:00:00.000Z');";
 
@@ -47,37 +47,40 @@ const NON_CASCADING_FOREIGN_KEYS: [(&str, &str); 3] = [
 ];
 
 /// Triggers that stand down while the sync engine applies remote rows.
-const GATED_TRIGGERS: [&str; 15] = [
+const GATED_TRIGGERS: [&str; 17] = [
     "chat_reply_threads_root_item_insert",
     "chat_communication_message_current_revision_update",
-    "chat_teammate_folder_grant_identity_insert",
+    "chat_agent_channel_membership_push_approvals_update",
     "chat_channels_default_name_insert",
     "chat_channels_default_protected_update",
-    "chat_teammate_create_access_state",
+    "chat_agent_channel_membership_push_approvals_delete",
     "chat_conversation_create_audience_state",
-    "chat_access_profile_audience_publish",
     "chat_generic_membership_audience_insert",
     "chat_generic_membership_audience_update",
     "chat_generic_membership_audience_delete",
-    "chat_teammate_channel_membership_audience_insert",
-    "chat_teammate_channel_membership_audience_update",
-    "chat_teammate_channel_membership_audience_delete",
+    "chat_agent_channel_membership_audience_insert",
+    "chat_agent_channel_membership_audience_update",
+    "chat_agent_channel_membership_audience_delete",
     "chat_communication_search_insert",
+    "chat_agent_channel_membership_remembered_approvals_delete",
+    "chat_agent_channel_membership_remembered_approvals_update",
+    "chat_participant_remembered_approvals_archive",
 ];
 
 const APPLY_GATE: &str = "(SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0";
 
 /// Chat tables that replicate; every other Chat table is device-local.
-const REPLICATED_CHAT_TABLES: [&str; 29] = [
+const REPLICATED_CHAT_TABLES: [&str; 30] = [
     "chat_participants",
-    "chat_teammates",
-    "chat_teammate_policy_revisions",
-    "chat_access_profiles",
-    "chat_access_profile_revisions",
+    "chat_agent_app_settings",
+    "chat_project_agent_settings",
+    "chat_agents",
+    "chat_agent_policy_revisions",
     "chat_conversations",
     "chat_conversation_memberships",
-    "chat_teammate_channel_memberships",
-    "chat_teammate_working_folder_grants",
+    "chat_agent_channel_memberships",
+    "chat_push_approvals",
+    "chat_remembered_approvals",
     "chat_channels",
     "chat_reply_threads",
     "chat_conversation_items",
@@ -173,7 +176,7 @@ fn chat_local_tables_cascade_from_organizational_rows_and_gated_triggers_stand_d
             );
         }
         let removal_columns: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pragma_table_info('chat_teammate_channel_memberships')
+            "SELECT count(*) FROM pragma_table_info('chat_agent_channel_memberships')
              WHERE name = 'removed_at'",
         )
         .fetch_one(&pool)
@@ -321,22 +324,21 @@ fn derived_state_triggers_run_for_commands_and_stand_down_while_sync_applies() {
         assert_eq!(
             count_where(
                 &pool,
-                "chat_teammate_access_state",
-                "teammate_id = 'participant-teammate'"
+                "chat_conversation_audience_state",
+                "conversation_id = 'conversation-general'"
             )
             .await,
             1,
-            "a teammate created by a command gets its access state"
+            "a conversation created by a command gets its audience state"
         );
 
         set_applying(&pool, true).await;
         sqlx::raw_sql(
-            "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('participant-synced', 'ai_teammate', 'Synced',
-                     '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z');
-             INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
-             VALUES ('participant-synced', 'Arrived by sync',
-                     '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z');",
+            "INSERT INTO chat_conversations
+                (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+             VALUES ('conversation-synced', 'project-chat', 'direct_message',
+                     '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z',
+                     '2026-10-24T00:00:00.000Z');",
         )
         .execute(&pool)
         .await
@@ -344,8 +346,8 @@ fn derived_state_triggers_run_for_commands_and_stand_down_while_sync_applies() {
         assert_eq!(
             count_where(
                 &pool,
-                "chat_teammate_access_state",
-                "teammate_id = 'participant-synced'"
+                "chat_conversation_audience_state",
+                "conversation_id = 'conversation-synced'"
             )
             .await,
             0,
@@ -354,12 +356,11 @@ fn derived_state_triggers_run_for_commands_and_stand_down_while_sync_applies() {
         set_applying(&pool, false).await;
 
         sqlx::raw_sql(
-            "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('participant-local', 'ai_teammate', 'Local',
-                     '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z');
-             INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
-             VALUES ('participant-local', 'Made here',
-                     '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z');",
+            "INSERT INTO chat_conversations
+                (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+             VALUES ('conversation-local', 'project-chat', 'direct_message',
+                     '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z',
+                     '2026-10-24T00:00:00.000Z');",
         )
         .execute(&pool)
         .await
@@ -367,8 +368,8 @@ fn derived_state_triggers_run_for_commands_and_stand_down_while_sync_applies() {
         assert_eq!(
             count_where(
                 &pool,
-                "chat_teammate_access_state",
-                "teammate_id = 'participant-local'"
+                "chat_conversation_audience_state",
+                "conversation_id = 'conversation-local'"
             )
             .await,
             1
@@ -429,5 +430,116 @@ fn replicated_chat_deletes_never_stop_on_a_device_local_foreign_key() {
             blocking_foreign_key_edges(&pool).await,
             Vec::<String>::new()
         );
+    });
+}
+
+#[test]
+fn secret_requests_hold_no_value_and_follow_their_run() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let insert = |id: &str, state: &str, label: &str| {
+            sqlx::query(
+                "INSERT INTO chat_secret_requests
+                    (id, run_id, assignment_id, label, purpose, state, created_at, expires_at)
+                 VALUES (?, 'run-1', 'assignment-1', ?, 'Call the staging API', ?,
+                         '2026-10-23T00:00:00.000Z', '2026-10-23T00:30:00.000Z')",
+            )
+            .bind(id.to_owned())
+            .bind(label.to_owned())
+            .bind(state.to_owned())
+            .execute(&pool)
+        };
+        insert("request-1", "pending", "API key").await.unwrap();
+        assert!(insert("request-2", "revealed", "API key").await.is_err());
+        assert!(insert("request-3", "pending", "   ").await.is_err());
+        assert!(
+            insert("request-4", "pending", &"k".repeat(121))
+                .await
+                .is_err()
+        );
+
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('chat_secret_requests')")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(
+            columns
+                .iter()
+                .all(|column| !column.contains("value") && !column.contains("secret")),
+            "{columns:?}"
+        );
+
+        sqlx::query("DELETE FROM chat_agent_runs WHERE id = 'run-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count_where(&pool, "chat_secret_requests", "1 = 1").await, 0);
+        assert_eq!(foreign_key_violations(&pool).await, 0);
+    });
+}
+
+#[test]
+fn context_packages_record_channel_notes() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        sqlx::raw_sql(
+            "INSERT INTO chat_assignment_context_packages
+                (id, assignment_id, revision, triggering_message_item_id, serialized_text,
+                 serialized_bytes, sha256, created_at)
+             VALUES ('context-1', 'assignment-1', 1, 'item-root', '', 0,
+                     'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+                     '2026-10-23T00:00:00.000Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let excluded: i64 = sqlx::query_scalar(
+            "SELECT excluded_channel_note_count FROM chat_assignment_context_packages
+             WHERE id = 'context-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(excluded, 0);
+        let insert_source = |kind: &str, id: &str, ordinal: i64| {
+            sqlx::query(
+                "INSERT INTO chat_assignment_context_sources
+                    (context_package_id, source_kind, source_id, content_sha256, ordinal)
+                 VALUES ('context-1', ?, ?, ?, ?)",
+            )
+            .bind(kind.to_owned())
+            .bind(id.to_owned())
+            .bind("a".repeat(64))
+            .bind(ordinal)
+            .execute(&pool)
+        };
+        insert_source("channel_note", "note-1", 0).await.unwrap();
+        assert!(insert_source("note", "note-2", 1).await.is_err());
+
+        let kept: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT source_kind, source_id, ordinal FROM chat_assignment_context_sources",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            kept,
+            [("channel_note".to_string(), "note-1".to_string(), 0)]
+        );
+        assert!(insert_source("channel_note", "note-1", 1).await.is_err());
+        assert!(insert_source("trigger", "item-root", 0).await.is_err());
+        sqlx::query("DELETE FROM chat_assignment_context_packages WHERE id = 'context-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            count_where(&pool, "chat_assignment_context_sources", "1 = 1").await,
+            0,
+            "sources follow their package"
+        );
+        assert_eq!(foreign_key_violations(&pool).await, 0);
     });
 }

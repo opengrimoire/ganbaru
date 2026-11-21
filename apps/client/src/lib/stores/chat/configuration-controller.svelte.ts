@@ -5,7 +5,6 @@ import type {
   ChatProjectPrimaryWorkingFolderRead,
   ChatSettingsRead,
   CreateProjectWorkingFolderRequest,
-  ModelId,
   ProjectWorkingFolderId,
   ProjectWorkingFolderRead,
   ProviderInstanceConfig,
@@ -17,6 +16,7 @@ import type {
   RemoveProviderResult,
 } from "$lib/chat/contracts";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
+import { STALE_PLAN_LIMITS_MS } from "$lib/chat/usage/provider-readiness";
 import { announceConfigSaved, configKeyChanged, onConfigChangedElsewhere } from "$lib/vault/config";
 
 /**
@@ -44,6 +44,8 @@ export class ChatConfigurationController {
   private settingsRequest = 0;
   private providerDiscoveryPromise: Promise<ChatSettingsRead> | null = null;
   private workingFolderRefreshPromise: Promise<void> | null = null;
+  /** When a view last asked each provider for its plan limits, so repeated asks wait out the stale age. */
+  private readonly limitsRequestedAt = new Map<ProviderInstanceId, number>();
   private readonly stopBehaviorRefresh: () => void;
 
   constructor(private readonly options: ChatConfigurationControllerOptions) {
@@ -69,6 +71,7 @@ export class ChatConfigurationController {
     this.workingFolders = [];
     this.providerDiscoveryPromise = null;
     this.workingFolderRefreshPromise = null;
+    this.limitsRequestedAt.clear();
     this.providerDiscoveryLoading = false;
     this.options.onSettingsChanged();
   }
@@ -161,6 +164,26 @@ export class ChatConfigurationController {
     return result;
   }
 
+  /**
+   * Probes an enabled provider whose plan limits are missing or out of date, so a view that shows them, such as an
+   * agent card, fills in without a visit to Settings. Each provider is asked at most once per stale age, because a
+   * provider without a plan never reports limits. Failures are logged since the limits are advisory.
+   */
+  refreshStaleProviderLimits(provider: ProviderInstanceRead, nowMs: number = Date.now()): void {
+    if (!localExecutionAvailable || !provider.configuration.enabled) return;
+    // A Claude turn reports window statuses without usage numbers, so only a read of the numbers counts as fresh.
+    const usageReadAt = provider.usageLimits?.usageReadAt ?? null;
+    const readAtMs = usageReadAt === null ? Number.NaN : Date.parse(usageReadAt);
+    if (nowMs - readAtMs < STALE_PLAN_LIMITS_MS) return;
+    const instanceId = provider.configuration.instanceId;
+    const requestedAtMs = this.limitsRequestedAt.get(instanceId);
+    if (requestedAtMs !== undefined && nowMs - requestedAtMs < STALE_PLAN_LIMITS_MS) return;
+    this.limitsRequestedAt.set(instanceId, nowMs);
+    void this.probeProvider(instanceId).catch((error: unknown) => {
+      console.error("Chat could not read a provider's plan limits", error);
+    });
+  }
+
   async refreshAllProviders(): Promise<ProviderRefreshResult> {
     const result = await chatApi.refreshAllChatProviders();
     await this.refreshSettings();
@@ -180,15 +203,6 @@ export class ChatConfigurationController {
 
   async refreshModels(instanceId: ProviderInstanceId): Promise<void> {
     await chatApi.refreshChatProviderModels(instanceId);
-    await this.refreshSettings();
-  }
-
-  async updateModels(
-    instanceId: ProviderInstanceId,
-    visible: ModelId[],
-    favorites: ModelId[],
-  ): Promise<void> {
-    await chatApi.updateChatProviderModels(instanceId, visible, favorites);
     await this.refreshSettings();
   }
 

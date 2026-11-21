@@ -75,7 +75,7 @@ describe("shared inline creation", () => {
     document.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
     await tick();
     await tick();
-    expect(document.querySelector('[role="alert"]')?.textContent).toContain("Write failed");
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("The item could not be added.");
     const input = document.querySelector<HTMLInputElement>("input")!;
     expect(input.value).toBe("Keep me");
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));

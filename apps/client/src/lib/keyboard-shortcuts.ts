@@ -90,3 +90,28 @@ export function appNavigationShortcut(
   if (key === "w") return { type: "close-tab" };
   return null;
 }
+
+/**
+ * Zero-based row a bare digit key picks in a numbered menu: 1 to 9 pick the first nine rows and 0 the tenth. The
+ * physical key counts too, so layouts that type digits with Shift still work; any other modifier, or a key in an
+ * active composition, picks nothing.
+ */
+export function menuDigitIndex(
+  event: KeyboardModifierState & Pick<KeyboardEvent, "key" | "code" | "isComposing">,
+): number | null {
+  if (event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return null;
+  const digit = /^[0-9]$/.test(event.key) ? event.key : /^(?:Digit|Numpad)([0-9])$/.exec(event.code)?.[1];
+  if (digit === undefined) return null;
+  return digit === "0" ? 9 : Number(digit) - 1;
+}
+
+/**
+ * Whether a key is the new item shortcut, the platform modifier with N, which runs a surface's primary create action.
+ * A key in an active composition never matches.
+ */
+export function isNewItemShortcut(
+  event: KeyboardModifierState & Pick<KeyboardEvent, "key" | "isComposing">,
+  platform: string = currentPlatform(),
+): boolean {
+  return !event.isComposing && event.key.toLowerCase() === "n" && hasOnlyShortcutModifier(event, {}, platform);
+}

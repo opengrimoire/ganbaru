@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import {
   applyNotesPageTemplate,
   createNotesPageTemplateFromPage,
@@ -22,10 +23,6 @@ interface NotesPageTemplatesControllerContext {
   requestPageLoadFocus: () => void;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /** Own Notes page-template loading and lifecycle mutations. */
 export function createNotesPageTemplatesController(
   context: NotesPageTemplatesControllerContext,
@@ -45,7 +42,7 @@ export function createNotesPageTemplatesController(
       templates = [...next];
     } catch (caught) {
       if (currentRequestId !== requestId) return;
-      error = errorMessage(caught);
+      error = notesErrorDetail(caught);
       throw caught;
     } finally {
       if (currentRequestId === requestId) loading = false;

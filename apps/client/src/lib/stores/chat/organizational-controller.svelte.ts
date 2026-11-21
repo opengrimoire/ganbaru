@@ -2,16 +2,19 @@ import * as chatApi from "$lib/api/chat";
 import type {
   ChatChannelId,
   ChatChannelRead,
-  ChatExecutionTarget,
+  ChatFollowupRouting,
   ChatMessageReference,
+  ChatRecurrenceSpec,
   ChatReplyThreadId,
   ChatScheduledMessageDispatchRead,
   ChatScheduledMessageId,
   ChatScheduledMessageRead,
   PostChatMessageResult,
+  UpdateScheduledChatMessageRequest,
   UtcTimestamp,
   VersionedJson,
 } from "$lib/chat/contracts";
+import { withWorkingFolderTrust } from "$lib/api/working-folder-trust";
 import { cloneData } from "$lib/utils/clone";
 
 export interface ChatOrganizationalDraft {
@@ -19,10 +22,23 @@ export interface ChatOrganizationalDraft {
   richContent: VersionedJson;
   attachmentIds: string[];
   references: ChatMessageReference[];
-  executionTarget: ChatExecutionTarget | null;
   selectionStart: number;
   selectionEnd: number;
   scheduledFor: UtcTimestamp | null;
+  /** Repeat rule of the scheduled delivery; `null` sends it once. */
+  recurrence: ChatRecurrenceSpec | null;
+}
+
+/** Options a post carries beyond its draft. */
+export interface ChatOrganizationalPostOptions {
+  alsoSendToChannel?: boolean;
+  /** How a reply reaches active work in its thread. */
+  followupRouting?: ChatFollowupRouting;
+  /**
+   * Runs once the post is written to the vault, before the channel and thread are read again, so the composer can
+   * clear at once instead of after those reads.
+   */
+  onWritten?: (result: PostChatMessageResult) => void;
 }
 
 export interface ChatOrganizationalControllerOptions {
@@ -40,13 +56,25 @@ export class ChatOrganizationalController {
   drafts = $state<Record<string, ChatOrganizationalDraft>>({});
   scrollPositions = $state<Record<string, number>>({});
   scheduledMessagesVersion = $state(0);
+  /** The last scheduled messages read for each destination, so a composer opens with its summary instead of adding it later. */
+  scheduledMessagesByDestination = $state<Record<string, ChatScheduledMessageRead[]>>({});
+  /** Bumped when channel notes or note proposal states may have changed, so open note views reread. */
+  channelNotesVersion = $state(0);
+  /** Bumped when channel, project, or app agent settings may have changed, so open settings views reread. */
+  agentSettingsVersion = $state(0);
+  /** Bumped when push request states may have changed, including pushes that ran without a person, so open cards reread. */
+  pushRequestsVersion = $state(0);
 
   constructor(private readonly options: ChatOrganizationalControllerOptions) {}
 
   reset(): void {
     this.drafts = {};
     this.scrollPositions = {};
+    this.scheduledMessagesByDestination = {};
     this.scheduledMessagesVersion += 1;
+    this.channelNotesVersion += 1;
+    this.agentSettingsVersion += 1;
+    this.pushRequestsVersion += 1;
   }
 
   draft(destination: string): ChatOrganizationalDraft {
@@ -63,7 +91,7 @@ export class ChatOrganizationalController {
 
   async post(
     destination: string,
-    options: { alsoSendToChannel?: boolean } = {},
+    options: ChatOrganizationalPostOptions = {},
   ): Promise<PostChatMessageResult> {
     const channel = this.requiredChannel("posting");
     const draft = this.requiredDraft(destination, "posting");
@@ -76,10 +104,11 @@ export class ChatOrganizationalController {
       richContent: draft.richContent,
       attachmentIds: [...draft.attachmentIds],
       references: cloneData(draft.references),
-      executionTarget: draft.executionTarget ? cloneData(draft.executionTarget) : null,
       alsoSendToChannel: options.alsoSendToChannel ?? false,
+      ...(options.followupRouting ? { followupRouting: options.followupRouting } : {}),
     });
     this.setDraft(destination, emptyOrganizationalDraft());
+    options.onWritten?.(result);
     await this.options.loadChannelMessages(channel.id, true);
     if ((replyThreadId || result.assignment) && result.replyThreadId) {
       await this.options.openReplyThread(result.replyThreadId);
@@ -106,24 +135,77 @@ export class ChatOrganizationalController {
         richContent: draft.richContent,
         attachmentIds: [...draft.attachmentIds],
         references: cloneData(draft.references),
-        executionTarget: draft.executionTarget ? cloneData(draft.executionTarget) : null,
         alsoSendToChannel: options.alsoSendToChannel ?? false,
       },
+      recurrence: draft.recurrence ? cloneData(draft.recurrence) : null,
     });
     this.setDraft(destination, emptyOrganizationalDraft());
     this.scheduledMessagesVersion += 1;
     return scheduled;
   }
 
-  listScheduled(destination: string): Promise<ChatScheduledMessageRead[]> {
+  /**
+   * Reads a destination's scheduled messages and remembers them as its summary.
+   *
+   * @param destination - The channel or reply thread destination.
+   * @returns The scheduled messages; a failed read rejects and records an empty summary only when none is known.
+   */
+  async listScheduled(destination: string): Promise<ChatScheduledMessageRead[]> {
     const channel = this.options.selectedChannel();
-    if (!channel) return Promise.resolve([]);
-    return chatApi.listScheduledChatMessages(channel.id, destinationReplyThreadId(destination));
+    if (!channel) return [];
+    try {
+      const messages = await chatApi.listScheduledChatMessages(channel.id, destinationReplyThreadId(destination));
+      this.rememberScheduled(destination, messages);
+      return messages;
+    } catch (error: unknown) {
+      if (!(destination in this.scheduledMessagesByDestination)) this.rememberScheduled(destination, []);
+      throw error;
+    }
+  }
+
+  /** Records the scheduled messages a destination shows in its summary. */
+  rememberScheduled(destination: string, messages: ChatScheduledMessageRead[]): void {
+    this.scheduledMessagesByDestination = { ...this.scheduledMessagesByDestination, [destination]: messages };
   }
 
   async cancelScheduled(id: ChatScheduledMessageId): Promise<void> {
     await chatApi.cancelScheduledChatMessage(id);
     this.scheduledMessagesVersion += 1;
+  }
+
+  /** Schedules the message a person confirmed from an agent's schedule proposal. */
+  async confirmScheduleProposal(
+    request: import("$lib/chat/contracts").ConfirmScheduleProposalRequest,
+  ): Promise<ChatScheduledMessageRead> {
+    const scheduled = await chatApi.confirmChatScheduleProposal(request);
+    this.scheduledMessagesVersion += 1;
+    return scheduled;
+  }
+
+  /**
+   * Pushes the commit of an agent's push request in `workingFolderId`, asking for a trust decision
+   * about the folder's Git configuration when this device has none, then rereads the open thread so
+   * the confirming reply shows.
+   */
+  async confirmPushRequest(
+    request: import("$lib/chat/contracts").ConfirmPushRequestRequest,
+    workingFolderId: string,
+  ): Promise<PostChatMessageResult> {
+    const result = await withWorkingFolderTrust(workingFolderId, () => chatApi.confirmChatPushRequest(request));
+    const channelId = this.options.selectedChannelId();
+    if (channelId) await this.options.loadChannelMessages(channelId, true);
+    const replyThreadId = this.options.openReplyThreadId();
+    if (replyThreadId && replyThreadId === result.replyThreadId) {
+      await this.options.loadReplyThread(replyThreadId, true);
+    }
+    return result;
+  }
+
+  /** Replaces the content, time, and repeat rule of a scheduled message in place. */
+  async updateScheduled(request: UpdateScheduledChatMessageRequest): Promise<ChatScheduledMessageRead> {
+    const scheduled = await chatApi.updateScheduledChatMessage(request);
+    this.scheduledMessagesVersion += 1;
+    return scheduled;
   }
 
   async retryScheduled(id: ChatScheduledMessageId): Promise<ChatScheduledMessageRead> {
@@ -203,9 +285,9 @@ function emptyOrganizationalDraft(): ChatOrganizationalDraft {
     richContent: { schemaVersion: 1, value: { type: "document", children: [] } },
     attachmentIds: [],
     references: [],
-    executionTarget: null,
     selectionStart: 0,
     selectionEnd: 0,
     scheduledFor: null,
+    recurrence: null,
   };
 }

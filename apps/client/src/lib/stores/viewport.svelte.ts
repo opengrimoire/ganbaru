@@ -179,8 +179,9 @@ function applyKeyboardShift(keyboardTop: number, safeTop: number): void {
  * follows it: `--keyboard-inset` is how far the keyboard reaches above the bottom safe area, the page shrinks by
  * `--page-keyboard-inset` when it holds focus once the keyboard covers the bottom chrome, a lifted modal surface takes `--keyboard-surface-height` as its
  * `--visual-viewport-height`, and a shifted one moves up by its `--keyboard-shift`. Everything behind that surface
- * keeps its size. On Android the keyboard height comes from the shell alone, which reports it on every frame of the
- * keyboard slide.
+ * keeps its size. `--visual-viewport-full-height` ignores the keyboard, so a sheet can paint the space under it and
+ * stay solid when the keyboard hides before the shell reports it. On Android the keyboard height comes from the shell
+ * alone, which reports it on every frame of the keyboard slide.
  */
 function refreshViewport(): void {
   const next = readViewport();
@@ -213,6 +214,7 @@ function refreshViewport(): void {
   const root = document.documentElement;
   root.style.setProperty("--visual-viewport-width", `${next.width}px`);
   root.style.setProperty("--visual-viewport-height", `${keyboardSurface ? next.height : surfaceHeight}px`);
+  root.style.setProperty("--visual-viewport-full-height", `${next.height}px`);
   root.style.setProperty("--visual-viewport-offset-top", `${next.offsetTop}px`);
   root.style.setProperty("--visual-viewport-offset-left", `${next.offsetLeft}px`);
   root.style.setProperty("--keyboard-inset", `${nextKeyboardInset}px`);

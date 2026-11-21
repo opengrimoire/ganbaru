@@ -27,8 +27,6 @@ fn configuration_with(
         "launchArguments": arguments,
         "environment": environment.iter().copied().collect::<std::collections::BTreeMap<_, _>>(),
         "credentialReferences": {},
-        "visibleModelIds": [],
-        "favoriteModelIds": [],
         "providerConfig": { "schemaVersion": 1, "value": provider_config }
     }))
     .expect("test provider configuration")
@@ -159,9 +157,6 @@ fn endpoint_and_path_settings_need_review_and_cosmetic_settings_do_not() {
         &[],
         json!({
             "shadowHomePath": "/tmp/home",
-            "allowCustomModels": true,
-            "customModelIds": ["m"],
-            "customModelLabels": { "m": "M" },
             "refreshMcpBeforeTurn": true
         }),
     );

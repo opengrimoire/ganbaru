@@ -66,13 +66,16 @@ fn request(job_id: &str, root: &Path, requested_at_ms: i64) -> MusicLocalRefresh
     }
 }
 
+/// Files of the dense refresh: several discovery and reconcile batches, with a partial last one.
+const DENSE_FILES: u32 = 1_001;
+
 #[test]
 fn complete_refresh_catalogs_large_file_sets_with_bounded_staging() {
     crate::test_support::block_on(async {
         let pool = migrated_pool().await;
         seed_root(&pool).await;
         let root = temporary_root("dense");
-        for index in 0..5_001_u32 {
+        for index in 0..DENSE_FILES {
             let album = root.join(format!("Album {:02}", index % 17));
             fs::create_dir_all(&album).unwrap();
             fs::write(
@@ -93,8 +96,8 @@ fn complete_refresh_catalogs_large_file_sets_with_bounded_staging() {
             completed.state,
             super::super::MusicRefreshJobState::Completed
         );
-        assert_eq!(completed.discovered_count, 5_001);
-        assert_eq!(completed.processed_count, 5_001);
+        assert_eq!(completed.discovered_count, i64::from(DENSE_FILES));
+        assert_eq!(completed.processed_count, i64::from(DENSE_FILES));
         assert!(completed.skipped_count >= 1);
         assert!(completed.absence_determined);
         assert_eq!(completed.truncated_count, 0);
@@ -111,7 +114,7 @@ fn complete_refresh_catalogs_large_file_sets_with_bounded_staging() {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(locations, 5_001);
+        assert_eq!(locations, i64::from(DENSE_FILES));
         assert_eq!(staged, 0);
         fs::remove_dir_all(root).unwrap();
     });

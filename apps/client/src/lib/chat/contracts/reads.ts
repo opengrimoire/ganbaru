@@ -1,11 +1,14 @@
 import type {
   ChatActivityId,
+  ChatAgentRunId,
+  ChatErrorCode,
   ChatExecutionEnvironmentId,
   ChatScratchGenerationId,
   ChatThreadId,
   ChatThreadState,
   ChatTurnId,
   ChatTurnState,
+  ChatWorkAssignmentId,
   ProjectWorkingFolderId,
   ContinuationGroupId,
   ModelId,
@@ -92,17 +95,38 @@ export interface ChatProjectShellRead {
   archivedThreadCount: number;
 }
 
+/**
+ * Projections a change notification can name. `unknown` stands for a key this build does not
+ * recognize, which readers treat as a change to everything.
+ */
+export const CHAT_PROJECTION_KEYS = [
+  "thread",
+  "turns",
+  "messages",
+  "activities",
+  "plans",
+  "pending_requests",
+  "organizational",
+  "unknown",
+] as const;
+export type ChatProjectionKey = (typeof CHAT_PROJECTION_KEYS)[number];
+
 export interface ChatChangeNotification {
   threadId: ChatThreadId;
+  /** The newest event sequence the notification covers. */
   sequence: number;
+  /** The first event sequence the notification covers; equal to `sequence` for one event. */
+  sinceSequence: number;
   revision: number;
-  changedProjectionKeys: string[];
+  changedProjectionKeys: ChatProjectionKey[];
 }
 
 export interface ChatTimelineItemRead {
   activityId: ChatActivityId;
   turnId: ChatTurnId | null;
   sequenceAnchor: number;
+  /** The thread change clock value of the row's last write. */
+  changeSequence: number;
   kind: string;
   data: VersionedJson;
   sourceThreadId?: ChatThreadId;
@@ -114,6 +138,8 @@ export interface ChatTimelineTurnRead {
   startedAt: UtcTimestamp | null;
   completedAt: UtcTimestamp | null;
   stopReason: string | null;
+  /** Code of the error that failed the turn, when it failed with a stored structured error; `stopReason` keeps the diagnostic text. */
+  errorCode: ChatErrorCode | null;
   modelId: ModelId | null;
   modelOptions: ModelOptionSelection[];
   modes: TurnModeSnapshot;
@@ -128,4 +154,83 @@ export interface ChatTimelinePageRead {
   previousCursor: string | null;
   nextCursor: string | null;
   threadRevision: number;
+  /** The thread change clock the rows were read at. */
+  changeCursor: number;
+}
+
+/** Timeline rows that changed after a change clock value. */
+export interface ChatTimelineDeltaRead {
+  threadId: ChatThreadId;
+  items: ChatTimelineItemRead[];
+  turns: ChatTimelineTurnRead[];
+  /** Rows deleted or hidden by an invalidated turn and not visible again. */
+  removedItemIds: ChatActivityId[];
+  changeCursor: number;
+  /** More changes follow `changeCursor` than one read returns. */
+  hasMore: boolean;
+  /** The reader must reload the timeline because older removals were pruned. */
+  resetRequired: boolean;
+  threadRevision: number;
+}
+
+/**
+ * The live execution of one work assignment, read by a phone from the linked desktop that runs it. Rows carry only what
+ * the read-only timeline shows, with long text shortened.
+ */
+export interface ChatLiveExecutionRead {
+  assignmentId: ChatWorkAssignmentId;
+  /** The newest run, once a run started; the agent posts the run projects into the thread name it. */
+  runId: ChatAgentRunId | null;
+  /** The thread the newest run writes, once a run started. */
+  threadId: ChatThreadId | null;
+  /** The turn of the newest run, once a run started. */
+  turnId: ChatTurnId | null;
+  providerFamilyId: ProviderFamilyId | null;
+  modelId: ModelId | null;
+  /** Rows of the run's turn written after the cursor, ordered by change. */
+  items: ChatTimelineItemRead[];
+  turns: ChatTimelineTurnRead[];
+  /** Rows of the run's turn deleted or hidden after the cursor. */
+  removedItemIds: ChatActivityId[];
+  changeCursor: number;
+  /** More changes follow `changeCursor` than one read returns. */
+  hasMore: boolean;
+  /** The cursor no longer applies, so the reader reads again from the start. */
+  resetRequired: boolean;
+  /** The run ended or the work left its active states, so no further changes follow. */
+  settled: boolean;
+}
+
+/** What a phone can show of the live execution of work a linked desktop runs. */
+export type ChatLiveFollowRead =
+  | { kind: "page"; read: ChatLiveExecutionRead }
+  /** The executing desktop cannot be reached now, so the synced work row stands in and the read is tried again. */
+  | { kind: "unreachable" }
+  /** No other device serves this execution, so the synced work row stands in. */
+  | { kind: "notServed" };
+
+/** Decisions a phone may send for an approval a linked desktop holds open; session grants stay on the desktop. */
+export const CHAT_REMOTE_APPROVAL_DECISIONS = ["allow_once", "deny", "cancel"] as const;
+
+/** A decision a phone may send for an approval a linked desktop holds open. */
+export type ChatRemoteApprovalDecision = (typeof CHAT_REMOTE_APPROVAL_DECISIONS)[number];
+
+/** What became of an approval answer sent to the linked desktop that runs the work. */
+export type ChatRemoteApprovalOutcome =
+  /** The desktop resolved the approval with the answer. */
+  | { kind: "resolved" }
+  /** The approval is no longer open there: it was answered elsewhere, withdrawn, or the run moved on. */
+  | { kind: "stale" }
+  /** The desktop refused the answer, such as a decision the request no longer offers, so it is answered there. */
+  | { kind: "refused" }
+  /** No other device runs this work now. */
+  | { kind: "notServed" }
+  /** The desktop could not be reached or could not take the answer now. */
+  | { kind: "unreachable" };
+
+/** The whole detail of one activity, read when its disclosure opens. */
+export interface ChatActivityDetailRead {
+  activityId: ChatActivityId;
+  detail: string | null;
+  updatedAt: UtcTimestamp;
 }

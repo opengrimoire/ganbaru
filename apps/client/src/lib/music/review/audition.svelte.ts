@@ -3,6 +3,8 @@ import {
   getMusicPlayer,
   type MusicReviewPlaybackCheckpoint,
 } from "$lib/stores/music-player.svelte";
+import { musicErrorMessage } from "$lib/music/user-errors";
+import { translate } from "$lib/i18n/translator.svelte";
 
 export const MUSIC_CONTEXT_BOUNDARY_EVENT = "ganbaru-music-context-boundary";
 
@@ -48,7 +50,7 @@ export class MusicReviewAuditionController {
         this.returnPlayback = checkpoint;
       } catch (error) {
         if (generation === this.operationGeneration) {
-          this.error = error instanceof Error ? error.message : String(error);
+          this.error = musicErrorMessage(error, translate("music.errors.playerFailed"));
           this.clearOwnership();
         }
         return false;
@@ -65,7 +67,7 @@ export class MusicReviewAuditionController {
       if (retainedPosition > 0) await this.player.seekToMs(retainedPosition);
       return true;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.playerFailed"));
       return false;
     }
   }
@@ -79,7 +81,7 @@ export class MusicReviewAuditionController {
     if (!checkpoint) return;
     const task = this.player.restoreAfterReview(checkpoint)
       .catch((error: unknown) => {
-        this.error = error instanceof Error ? error.message : String(error);
+        this.error = musicErrorMessage(error, translate("music.errors.playerFailed"));
       })
       .finally(() => {
         if (this.restoreTask === task) this.restoreTask = null;

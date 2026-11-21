@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import { createNotesPage } from "$lib/api/notes";
 import type { NotesLoadedPage, NotesPageCreate } from "$lib/notes/types";
 
@@ -17,10 +18,6 @@ const MAX_CREATED_PAGE_PREVIEWS = 32;
 interface NotesPageCreationContext {
   reconcile: (loaded: NotesLoadedPage) => Promise<void>;
   afterPersisted?: (pageId: string) => Promise<void>;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Coordinate optimistic page creation and gate mutations until persistence succeeds. */
@@ -76,7 +73,7 @@ export function createNotesPageCreationController(context: NotesPageCreationCont
       .catch((error: unknown) => {
         pending = {
           ...pending,
-          [request.id]: { request, status: "failed", error: errorMessage(error) },
+          [request.id]: { request, status: "failed", error: notesErrorDetail(error) },
         };
       })
       .finally(() => {

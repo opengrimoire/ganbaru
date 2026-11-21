@@ -6,7 +6,7 @@ import {
   workspacePanelRenameGeometry,
   workspacePanelTabInsertionIndex,
   workspacePanelTabShift,
-  type ChatInspectorThreadState,
+  type ChatInspectorPanelState,
   type ChatWorkspacePanelRenameGeometry,
   type ChatWorkspacePanelTabKey,
 } from "./inspector-model";
@@ -17,7 +17,7 @@ export interface WorkspacePanelTabControllerOptions {
   label: (key: ChatWorkspacePanelTabKey) => string;
   defaultLabel: (key: ChatWorkspacePanelTabKey) => string;
   activate: (key: ChatWorkspacePanelTabKey) => void;
-  update: (update: Partial<ChatInspectorThreadState>) => void;
+  update: (update: Partial<ChatInspectorPanelState>) => void;
   closePicker: () => void;
 }
 

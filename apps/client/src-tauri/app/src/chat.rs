@@ -1,6 +1,8 @@
 //! Chat command adapters. Desktop hosts native provider execution and workspace integrations;
 //! mobile exposes provider-free channels, coordination, and preferences.
 
+pub mod attachment_commands;
+pub(crate) mod authority_epoch;
 pub mod channels;
 #[cfg(desktop)]
 pub mod checkpoint_commands;
@@ -33,12 +35,18 @@ pub mod interaction_commands;
 pub mod internal_mcp;
 #[cfg(desktop)]
 mod internal_mcp_tools;
+pub(crate) mod live_execution;
 pub mod organization;
 #[cfg(desktop)]
 pub mod preview;
 pub mod provenance;
 #[cfg(desktop)]
 pub mod provider_files;
+#[cfg(desktop)]
+pub(crate) mod provider_status;
+#[cfg(desktop)]
+pub mod provider_updates;
+pub mod quiet_periods;
 #[cfg(desktop)]
 pub mod restore_commands;
 #[cfg(desktop)]
@@ -47,6 +55,8 @@ pub mod review;
 pub(crate) mod revocation;
 #[cfg(desktop)]
 pub(crate) mod scratch;
+#[cfg(desktop)]
+pub mod secrets;
 #[cfg(desktop)]
 pub(crate) mod send;
 #[cfg(desktop)]
@@ -61,13 +71,13 @@ pub(crate) mod sync;
 #[cfg(desktop)]
 pub mod terminal;
 #[cfg(desktop)]
-pub mod terminal_access;
 #[cfg(desktop)]
 pub mod terminal_commands;
 #[cfg(desktop)]
 pub mod threads;
 #[cfg(desktop)]
 pub(crate) mod turns;
+pub mod usage_summaries;
 #[cfg(desktop)]
 pub mod workspace;
 // Mobile registers provider-free settings under the same command path as desktop.

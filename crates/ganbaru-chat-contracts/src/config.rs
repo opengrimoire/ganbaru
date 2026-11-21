@@ -19,13 +19,14 @@ use std::collections::{BTreeMap, BTreeSet};
 const MAX_PROVIDERS: usize = 64;
 const MAX_ARGUMENTS: usize = 64;
 const MAX_ENVIRONMENT_ROWS: usize = 64;
-const MAX_MODELS_PER_SET: usize = 512;
 const MAX_REMEMBERED_SELECTIONS: usize = 256;
 const MAX_LABEL_BYTES: usize = 160;
 const MAX_ARGUMENT_BYTES: usize = 4_096;
 const MAX_ENVIRONMENT_VALUE_BYTES: usize = 16_384;
 const MIN_INSPECTOR_WIDTH_PX: u32 = 240;
 const MAX_INSPECTOR_WIDTH_PX: u32 = 960;
+const MIN_REPLY_THREAD_WIDTH_PX: u32 = 280;
+const MAX_REPLY_THREAD_WIDTH_PX: u32 = 800;
 /// Smallest terminal scrollback the Chat behavior accepts.
 pub const MIN_TERMINAL_SCROLLBACK_LINES: u32 = 1_000;
 /// Largest terminal scrollback the Chat behavior accepts.
@@ -36,9 +37,15 @@ pub const MIN_IDLE_SESSION_TIMEOUT_SECONDS: u32 = 60;
 pub const MAX_IDLE_SESSION_TIMEOUT_SECONDS: u32 = 7_200;
 /// Every serialized [`ChatSendKey`] value.
 pub const CHAT_SEND_KEY_VALUES: &[&str] = &["enter", "mod_enter"];
+/// Every serialized [`ChatTimelineDensity`] value.
+pub const CHAT_TIMELINE_DENSITY_VALUES: &[&str] = &["comfortable", "compact"];
 
 fn default_inspector_width_px() -> u32 {
     520
+}
+
+fn default_reply_thread_width_px() -> u32 {
+    440
 }
 
 fn default_terminal_scrollback_lines() -> u32 {
@@ -46,7 +53,7 @@ fn default_terminal_scrollback_lines() -> u32 {
 }
 
 fn default_idle_session_timeout_seconds() -> u32 {
-    900
+    1_800
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -55,6 +62,15 @@ pub enum ChatSendKey {
     #[default]
     Enter,
     ModEnter,
+}
+
+/// How much vertical space the Chat timeline and channel feed give each row.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatTimelineDensity {
+    #[default]
+    Comfortable,
+    Compact,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -68,8 +84,6 @@ pub struct ChatPortableProviderConfig {
     pub launch_arguments: Vec<String>,
     pub environment: BTreeMap<String, String>,
     pub credential_references: BTreeMap<String, CredentialReferenceId>,
-    pub visible_model_ids: Vec<ModelId>,
-    pub favorite_model_ids: Vec<ModelId>,
     pub provider_config: VersionedJson,
     #[serde(flatten)]
     pub unknown_fields: BTreeMap<String, Value>,
@@ -99,13 +113,19 @@ where
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatPanelPreferences {
+    /// Width of the column workspace inspector, in CSS pixels.
     pub inspector_width_px: u32,
+    /// Width of the reply thread column beside the channel feed, in CSS pixels. A stored entry without it
+    /// reads the default width.
+    #[serde(default = "default_reply_thread_width_px")]
+    pub reply_thread_width_px: u32,
 }
 
 impl Default for ChatPanelPreferences {
     fn default() -> Self {
         Self {
             inspector_width_px: default_inspector_width_px(),
+            reply_thread_width_px: default_reply_thread_width_px(),
         }
     }
 }
@@ -119,10 +139,21 @@ pub struct ChatBehaviorPreferences {
     pub restore_last_selected_thread: bool,
     pub show_reasoning_summaries: bool,
     pub automatically_fold_settled_work: bool,
+    pub timeline_density: ChatTimelineDensity,
     pub terminal_scrollback_lines: u32,
     pub idle_session_timeout_seconds: u32,
     /// Stored per device, so a linked device cannot remove this safety prompt.
     pub confirm_multiline_terminal_paste: bool,
+    /// Sends a system notification when work waits for an answer or an approval.
+    pub notify_waiting_for_you: bool,
+    /// Sends a system notification when work is ready for review.
+    pub notify_review_ready: bool,
+    /// Sends a system notification when work fails.
+    pub notify_failures: bool,
+    /// Announces attention changes of reply threads that are not selected to screen readers.
+    pub announce_background_work: bool,
+    /// Stored per device, because what a lock screen may show depends on the device.
+    pub notification_include_content: bool,
 }
 
 impl Default for ChatBehaviorPreferences {
@@ -132,9 +163,15 @@ impl Default for ChatBehaviorPreferences {
             restore_last_selected_thread: true,
             show_reasoning_summaries: true,
             automatically_fold_settled_work: true,
+            timeline_density: ChatTimelineDensity::default(),
             terminal_scrollback_lines: default_terminal_scrollback_lines(),
             idle_session_timeout_seconds: default_idle_session_timeout_seconds(),
             confirm_multiline_terminal_paste: true,
+            notify_waiting_for_you: true,
+            notify_review_ready: true,
+            notify_failures: true,
+            announce_background_work: true,
+            notification_include_content: false,
         }
     }
 }
@@ -222,6 +259,12 @@ impl ChatDeviceConfig {
             MIN_INSPECTOR_WIDTH_PX,
             MAX_INSPECTOR_WIDTH_PX,
             "chat.panels.inspectorWidthPx",
+        )?;
+        validate_range(
+            self.panels.reply_thread_width_px,
+            MIN_REPLY_THREAD_WIDTH_PX,
+            MAX_REPLY_THREAD_WIDTH_PX,
+            "chat.panels.replyThreadWidthPx",
         )
     }
 
@@ -304,14 +347,6 @@ fn validate_provider(provider: &ChatPortableProviderConfig, index: usize) -> Cha
                 "credential environment names must be valid and have one source",
             ));
         }
-    }
-    if provider.visible_model_ids.len() > MAX_MODELS_PER_SET
-        || provider.favorite_model_ids.len() > MAX_MODELS_PER_SET
-    {
-        return Err(ChatError::validation(
-            format!("chat.providers[{index}].visibleModelIds"),
-            format!("model preference sets support at most {MAX_MODELS_PER_SET} entries"),
-        ));
     }
     if ["executable", "providerHome", "canonicalPath", "lastProbe"]
         .iter()

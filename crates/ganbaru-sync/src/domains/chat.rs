@@ -1,17 +1,15 @@
 //! Chat adapter: the value checks that mirror the Chat identity and policy table checks, and the
 //! priorities of their coupled groups.
 //!
-//! A teammate's current policy and an access profile's current revision are coupled with a copy
-//! of the revision's restrictiveness. Concurrent edits keep the more restrictive one: asking
-//! for approval outranks approving for the user, which outranks full access, which outranks a
-//! custom mode that defers to the provider, and a lower maximum folder capability outranks a
-//! higher one. An edit made after
-//! seeing the other still wins by causality.
+//! Agent access at the vault, project, and channel scopes keeps the narrower level among
+//! concurrent edits: talk only outranks read only, which outranks ask before commands, which
+//! outranks own the folder, and an explicit level outranks inheriting. An edit made after seeing
+//! the other still wins by causality.
 //!
-//! Conversation memberships, AI channel memberships, and working folder grants keep the narrower
-//! access among concurrent edits: removal and revocation first, then the stricter approval
-//! override, folder capability, and channel capabilities. A channel archive outranks a
-//! concurrent unarchive, and a message deletion outranks a concurrent restore.
+//! Conversation memberships and AI channel memberships keep the narrower access among concurrent
+//! edits: removal first, then demotion. A push approval revocation outranks a concurrent
+//! approval, a channel archive outranks a concurrent unarchive, and a message deletion outranks
+//! a concurrent restore.
 //!
 //! Timeline values mirror their table checks too, including the byte bounds that keep one
 //! message revision within an operation. A revision's attachments carry their working folder,
@@ -23,35 +21,52 @@
 //! outranks the other active states.
 
 use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_ORDER_KEY_BYTES};
-use ganbaru_sync_contracts::builtin_profiles::{BUILTIN_ACCESS_PROFILES, builtin_profile_key};
-use ganbaru_sync_contracts::{Field, GroupId, GroupValue, OrderKey, RowKey, TableId, Value};
+use ganbaru_sync_contracts::chat_agents::is_named_agent_key;
+use ganbaru_sync_contracts::chat_provider_status::{
+    is_canonical_catalog, is_canonical_limits, provider_status_key,
+};
+use ganbaru_sync_contracts::chat_push_approvals::{
+    MAX_PUSH_APPROVAL_BRANCH_BYTES, MAX_PUSH_APPROVAL_URL_BYTES,
+};
+use ganbaru_sync_contracts::chat_recurrence;
+use ganbaru_sync_contracts::chat_remembered_approvals::{
+    SUBJECT_KINDS, subject_key_is_well_formed,
+};
+use ganbaru_sync_contracts::chat_usage::agent_usage_key;
+use ganbaru_sync_contracts::{Cause, Field, GroupId, GroupValue, OrderKey, RowKey, TableId, Value};
 use ganbaru_working_folders::UtcTimestamp;
 
 use crate::adapter::{AdapterError, DomainAdapter, OfferedRows, Presentation};
 use crate::assets::AssetRef;
 use crate::codec;
+use crate::domains::distractions::is_usage_date;
 use crate::manifest::OwnedTable;
 use crate::manifest::vault::chat::{
-    ADAPTER, ASSIGNMENTS_TABLE, ATTACHMENT_REFERENCES, ATTACHMENTS_CLASS,
-    CHANNEL_MEMBERSHIPS_TABLE, CHANNEL_TARGETS_TABLE, CHANNELS_TABLE, CONVERSATION_CURSORS_TABLE,
-    CONVERSATIONS_TABLE, ENVIRONMENT_TARGETS_TABLE, FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE,
-    INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE, MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE,
-    PARTICIPANTS_TABLE, PATH_TARGETS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE,
-    PROFILES_TABLE, REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
-    SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
-    TEAMMATES_TABLE, assignment_group, channel_group, channel_membership_group, conversation_group,
-    folder_grant_group, input_group, item_group, membership_group, message_group,
-    participant_group, policy_revision_group, profile_group, profile_revision_group,
-    read_cursor_group, reply_thread_group, scheduled_group, semantic_update_group, teammate_group,
-    timeline_group,
+    ADAPTER, AGENT_USAGE_DAILY_TABLE, AGENTS_TABLE, APP_SETTINGS_TABLE, ASSIGNMENTS_TABLE,
+    ATTACHMENT_REFERENCES, ATTACHMENTS_CLASS, CHANNEL_MEMBERSHIPS_TABLE, CHANNEL_NOTES_TABLE,
+    CHANNEL_TARGETS_TABLE, CHANNELS_TABLE, CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE,
+    ENVIRONMENT_TARGETS_TABLE, FOLDER_TARGETS_TABLE, INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE,
+    MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE, PARTICIPANTS_TABLE, PATH_TARGETS_TABLE,
+    POLICY_REVISIONS_TABLE, PROJECT_SETTINGS_TABLE, PROVIDER_STATUS_TABLE, PUSH_APPROVALS_TABLE,
+    RECURRENCES_TABLE, REFERENCES_TABLE, REMEMBERED_APPROVALS_TABLE, REPLY_CURSORS_TABLE,
+    REPLY_THREADS_TABLE, REVISIONS_TABLE, SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES,
+    SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE, agent_group, agent_usage_group, app_settings_group,
+    assignment_group, channel_group, channel_membership_group, channel_note_group,
+    conversation_group, input_group, item_group, membership_group, message_group,
+    participant_group, policy_revision_group, project_settings_group, provider_status_group,
+    push_approval_group, read_cursor_group, recurrence_group, remembered_approval_group,
+    reply_thread_group, scheduled_group, semantic_update_group, timeline_group,
 };
 
 /// Characters of a display name after trimming.
 pub const MAX_DISPLAY_NAME_CHARS: usize = 160;
-/// Characters of a teammate role after trimming.
-pub const MAX_ROLE_CHARS: usize = 1000;
-/// Characters of teammate instructions.
-pub const MAX_INSTRUCTIONS_CHARS: usize = 65_536;
+/// Characters of the agent instructions one scope holds.
+pub const MAX_INSTRUCTIONS_CHARS: usize = 16_384;
+/// Characters of the instructions a work assignment fixes: the three scopes with their
+/// separators.
+pub const MAX_RESOLVED_INSTRUCTIONS_CHARS: usize = 3 * MAX_INSTRUCTIONS_CHARS + 1024;
+/// Characters of the model label a work assignment records.
+pub const MAX_MODEL_LABEL_CHARS: usize = 256;
 /// Characters of a provider instance id.
 pub const MAX_PROVIDER_INSTANCE_CHARS: usize = 1024;
 /// Characters of a stored JSON object: an avatar, a model selection, or provider options.
@@ -60,52 +75,30 @@ pub const MAX_JSON_CHARS: usize = 16_384;
 pub const MAX_ENUM_CHARS: usize = 32;
 
 /// Participant kinds.
-pub const PARTICIPANT_KINDS: [&str; 3] = ["local_user", "ai_teammate", "human"];
+pub const PARTICIPANT_KINDS: [&str; 3] = ["local_user", "ai_agent", "human"];
 /// Participant kind of the local user.
 const LOCAL_USER_KIND: &str = "local_user";
 /// The key the baseline seeds for the local user, the only one the kind may hold.
 pub const LOCAL_OWNER_PARTICIPANT_KEY: &str = "participant:local-owner";
-/// Teammate safety modes, least restrictive first. Custom defers to the
-/// provider's own configuration, which can grant anything, so it ranks lowest.
-pub const SAFETY_MODES: [&str; 4] = [
-    "custom",
-    "full_access",
-    "approve_for_me",
-    "ask_for_approval",
-];
-/// Reasoning effort levels.
-pub const EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhigh"];
-/// Response speeds.
-pub const SPEEDS: [&str; 2] = ["standard", "fast"];
+/// Agent access levels, widest first: own the folder, ask before commands, read only, and talk
+/// only.
+pub const AGENT_ACCESS_LEVELS: [&str; 4] = ["own", "ask", "read", "talk"];
 /// Interaction modes.
 pub const INTERACTION_MODES: [&str; 1] = ["build"];
-/// Built-in access profile keys.
-pub const BUILTIN_PROFILE_KEYS: [&str; BUILTIN_ACCESS_PROFILES.len()] = {
-    let mut keys = [""; BUILTIN_ACCESS_PROFILES.len()];
-    let mut index = 0;
-    while index < keys.len() {
-        keys[index] = BUILTIN_ACCESS_PROFILES[index].1;
-        index += 1;
-    }
-    keys
-};
-/// History boundaries of an access profile revision.
-pub const HISTORY_BOUNDARIES: [&str; 2] = ["entire", "from_grant"];
-/// Maximum folder capabilities, least restrictive first.
-pub const FOLDER_CAPABILITIES: [&str; 5] = ["publish", "execute", "edit", "read", "none"];
 /// Characters of a channel name.
 pub const MAX_CHANNEL_NAME_CHARS: usize = 80;
 /// Characters of a channel topic.
 pub const MAX_CHANNEL_TOPIC_CHARS: usize = 250;
+/// Characters of a channel note body after trimming.
+pub use ganbaru_sync_contracts::chat_channel_notes::MAX_CHANNEL_NOTE_CHARS;
 /// Conversation kinds.
 pub const CONVERSATION_KINDS: [&str; 3] = ["channel", "direct_message", "task_discussion"];
 /// Conversation membership roles, least restrictive first.
 pub const MEMBERSHIP_ROLES: [&str; 2] = ["owner", "member"];
-/// Runtime approval overrides, least restrictive first. Provider custom defers to the
-/// provider's own configuration, mirroring the custom safety mode.
-pub const APPROVAL_POLICIES: [&str; 4] = ["provider_custom", "unattended", "auto_approve", "ask"];
 /// Characters of a Chat row id the timeline tables hold, as the tables check it.
 pub const MAX_ID_CHARS: usize = 1024;
+/// Bytes of a Chat participant id, the Chat organizational identifier limit.
+pub const MAX_PARTICIPANT_ID_BYTES: usize = 128;
 /// Characters of an execution environment id.
 pub const MAX_ENVIRONMENT_ID_CHARS: usize = 2048;
 /// Characters of a mention label or its plain text projection.
@@ -179,18 +172,39 @@ pub const ASSIGNMENT_STATES: [&str; 8] = [
     "failed",
     "cancelled",
 ];
-/// Settled work assignment states.
-pub const SETTLED_ASSIGNMENT_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
+/// The only assignment state a review outcome may accompany.
+pub const REVIEWED_ASSIGNMENT_STATE: &str = "completed";
+/// Outcomes of a review of ready-for-review work.
+pub const ASSIGNMENT_REVIEW_OUTCOMES: [&str; 2] = ["accepted", "changes_requested"];
 /// How a message reached an assignment.
 pub const ROUTING_KINDS: [&str; 4] = ["trigger", "steer", "queued_continuation", "follow_up"];
 /// Delivery states of an assignment input.
 pub const DELIVERY_STATES: [&str; 4] = ["pending", "delivered", "failed", "ignored"];
+/// Delivery state of an input that reached a run, the only one that names a delivered revision.
+pub const DELIVERED_STATE: &str = "delivered";
 /// Kinds of semantic work updates.
-pub const SEMANTIC_UPDATE_KINDS: [&str; 7] = [
-    "plan", "replan", "question", "approval", "failure", "result", "review",
+pub const SEMANTIC_UPDATE_KINDS: [&str; 10] = [
+    "plan",
+    "replan",
+    "question",
+    "approval",
+    "failure",
+    "result",
+    "review",
+    "delegation",
+    "schedule_proposal",
+    "note_proposal",
 ];
-/// Rank of no approval override, the least restrictive.
-const INHERITED_APPROVAL_RANK: u8 = 1;
+/// Deepest delegation: an agent's own assignment is depth 0, and its children and
+/// grandchildren are depths 1 and 2.
+pub const MAX_DELEGATION_DEPTH: i64 = 2;
+/// Characters of a delegated assignment's objective.
+pub const MAX_DELEGATION_OBJECTIVE_CHARS: usize = 4000;
+/// Characters of a delegated assignment's expected result.
+pub const MAX_DELEGATION_EXPECTED_RESULT_CHARS: usize = 2000;
+/// Folder capabilities a delegation ceiling may name: a folder the child may not use at all is
+/// left out of the ceiling instead.
+pub const DELEGATION_CEILING_CAPABILITIES: [&str; 4] = ["publish", "execute", "edit", "read"];
 
 fn text(field: &Field) -> Result<&str, AdapterError> {
     match field {
@@ -265,6 +279,17 @@ fn bounded(field: &Field, min: usize, max: usize, what: &'static str) -> Result<
     }
 }
 
+/// Checks a Chat participant id held outside a row key: nonempty, at most
+/// [`MAX_PARTICIPANT_ID_BYTES`], and free of control characters, as Chat validates its ids.
+fn participant_id(field: &Field, what: &'static str) -> Result<(), AdapterError> {
+    let id = text(field)?;
+    if !id.is_empty() && id.len() <= MAX_PARTICIPANT_ID_BYTES && !id.chars().any(char::is_control) {
+        Ok(())
+    } else {
+        Err(AdapterError(what))
+    }
+}
+
 fn schema_version(field: &Field) -> Result<(), AdapterError> {
     if integer(field)? >= 1 {
         Ok(())
@@ -292,18 +317,31 @@ fn flag(field: &Field) -> Result<(), AdapterError> {
     }
 }
 
-/// A current revision pointer and its copied restrictiveness: both null, or a revision id with
-/// a value from `allowed`.
-fn current_pair(
-    id: &Field,
-    copied: &Field,
-    allowed: &[&str],
-    what: &'static str,
+/// Refuses every deletion of a participant, its agent row, or a policy revision but the removal
+/// of an agent a person named. A person deletes the participant itself, and its agent row and
+/// policy revisions leave only through that deletion, which every one of them names as its
+/// cause; the agent row's cause is its own participant.
+fn validate_agent_tombstone(
+    table: TableId,
+    key: &str,
+    cause: Option<&Cause>,
 ) -> Result<(), AdapterError> {
-    match (optional_text(id)?, copied) {
-        (None, Field::Null) => Ok(()),
-        (Some(_), copied) => one_of(copied, allowed, what),
-        (None, _) => Err(AdapterError(what)),
+    let named_agent_cause = cause.is_some_and(|cause| {
+        cause.table == PARTICIPANTS_TABLE && is_named_agent_key(cause.row.as_str())
+    });
+    let allowed = if table == PARTICIPANTS_TABLE {
+        cause.is_none() && is_named_agent_key(key)
+    } else if table == AGENTS_TABLE {
+        named_agent_cause && cause.is_some_and(|cause| cause.row.as_str() == key)
+    } else if table == POLICY_REVISIONS_TABLE {
+        named_agent_cause
+    } else {
+        true
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(AdapterError("chat agent deletion"))
     }
 }
 
@@ -331,32 +369,66 @@ fn validate_participant(group: GroupId, fields: &[Field]) -> Result<(), AdapterE
             schema_version(avatar_version)?;
             json_object(avatar, "chat participant avatar")
         }
-        (participant_group::LIFECYCLE, [archived_at]) => optional_timestamp(archived_at),
+        (participant_group::LIFECYCLE, [archived_at, hidden_at]) => {
+            optional_timestamp(archived_at)?;
+            optional_timestamp(hidden_at)?;
+            if matches!(archived_at, Field::Null) && !matches!(hidden_at, Field::Null) {
+                return Err(AdapterError("chat participant hidden while on"));
+            }
+            Ok(())
+        }
         (participant_group::UPDATED, [at]) => timestamp(at),
         _ => Err(AdapterError("chat participant value")),
     }
 }
 
-fn validate_teammate(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+fn validate_agent(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
-        (teammate_group::CREATED | teammate_group::UPDATED, [at]) => timestamp(at),
-        (teammate_group::PROFILE, [role, instructions]) => {
-            trimmed(role, MAX_ROLE_CHARS, "chat teammate role")?;
-            bounded(
-                instructions,
-                0,
-                MAX_INSTRUCTIONS_CHARS,
-                "chat teammate instructions",
-            )
+        (agent_group::CREATED, [family, created_at]) => {
+            trimmed(
+                family,
+                MAX_PROVIDER_INSTANCE_CHARS,
+                "chat agent provider family",
+            )?;
+            timestamp(created_at)
         }
-        (teammate_group::POLICY, [id, safety]) => {
-            current_pair(id, safety, &SAFETY_MODES, "chat teammate current policy")
+        (agent_group::POLICY, [_revision]) => Ok(()),
+        (agent_group::UPDATED, [at]) => timestamp(at),
+        _ => Err(AdapterError("chat agent value")),
+    }
+}
+
+/// An agent access level, or null where the scope inherits.
+fn agent_access(field: &Field, inherits: bool) -> Result<(), AdapterError> {
+    match field {
+        Field::Null if inherits => Ok(()),
+        field => one_of(field, &AGENT_ACCESS_LEVELS, "chat agent access"),
+    }
+}
+
+fn instructions(field: &Field, what: &'static str) -> Result<(), AdapterError> {
+    bounded(field, 0, MAX_INSTRUCTIONS_CHARS, what)
+}
+
+fn validate_app_settings(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (app_settings_group::ACCESS, [access]) => agent_access(access, false),
+        (app_settings_group::INSTRUCTIONS, [text]) => {
+            instructions(text, "chat vault agent instructions")
         }
-        (teammate_group::HOME, [device]) => match optional_text(device)? {
-            Some("") => Err(AdapterError("chat teammate home device")),
-            _ => Ok(()),
-        },
-        _ => Err(AdapterError("chat teammate value")),
+        (app_settings_group::UPDATED, [at]) => timestamp(at),
+        _ => Err(AdapterError("chat vault agent settings value")),
+    }
+}
+
+fn validate_project_settings(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (project_settings_group::ACCESS, [access]) => agent_access(access, true),
+        (project_settings_group::INSTRUCTIONS, [text]) => {
+            instructions(text, "chat project agent instructions")
+        }
+        (project_settings_group::CREATED | project_settings_group::UPDATED, [at]) => timestamp(at),
+        _ => Err(AdapterError("chat project agent settings value")),
     }
 }
 
@@ -365,105 +437,23 @@ fn validate_policy_revision(group: GroupId, fields: &[Field]) -> Result<(), Adap
         (
             policy_revision_group::CREATED,
             [
-                _teammate,
-                provider,
+                _agent,
                 model_version,
                 model,
-                effort,
-                speed,
                 options_version,
                 options,
                 mode,
                 created_at,
-                safety,
             ],
         ) => {
-            bounded(
-                provider,
-                1,
-                MAX_PROVIDER_INSTANCE_CHARS,
-                "chat policy provider instance",
-            )?;
             schema_version(model_version)?;
             json_object(model, "chat policy model selection")?;
-            optional_one_of(effort, &EFFORTS, "chat policy effort")?;
-            optional_one_of(speed, &SPEEDS, "chat policy speed")?;
             schema_version(options_version)?;
             json_object(options, "chat policy provider options")?;
             one_of(mode, &INTERACTION_MODES, "chat policy interaction mode")?;
-            timestamp(created_at)?;
-            one_of(safety, &SAFETY_MODES, "chat policy safety mode")
+            timestamp(created_at)
         }
         _ => Err(AdapterError("chat policy revision value")),
-    }
-}
-
-fn validate_profile(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
-    match (group, fields) {
-        (profile_group::CREATED, [builtin, created_at]) => {
-            optional_one_of(builtin, &BUILTIN_PROFILE_KEYS, "chat built-in profile key")?;
-            timestamp(created_at)
-        }
-        (profile_group::NAME, [name]) => {
-            trimmed(name, MAX_DISPLAY_NAME_CHARS, "chat access profile name")
-        }
-        (profile_group::CURRENT, [id, capability]) => current_pair(
-            id,
-            capability,
-            &FOLDER_CAPABILITIES,
-            "chat access profile current revision",
-        ),
-        (profile_group::LIFECYCLE, [archived_at]) => optional_timestamp(archived_at),
-        (profile_group::UPDATED, [at]) => timestamp(at),
-        _ => Err(AdapterError("chat access profile value")),
-    }
-}
-
-/// Refuses a built-in key on any row but the one seeded with it, and a seeded row without its
-/// own key. Custom profiles carry no key.
-fn validate_profile_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
-    let claimed = groups
-        .iter()
-        .find(|value| value.group == profile_group::CREATED)
-        .and_then(|value| value.value.fields().first())
-        .and_then(|builtin| match builtin {
-            Field::Text(key) => Some(key.as_str()),
-            _ => None,
-        });
-    if claimed != builtin_profile_key(row.as_str()) {
-        return Err(AdapterError("chat built-in profile identity"));
-    }
-    Ok(())
-}
-
-fn validate_profile_revision(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
-    match (group, fields) {
-        (
-            profile_revision_group::CREATED,
-            [
-                _profile,
-                read_history,
-                participate,
-                boundary,
-                capability,
-                created_at,
-            ],
-        ) => {
-            flag(read_history)?;
-            flag(participate)?;
-            one_of(
-                boundary,
-                &HISTORY_BOUNDARIES,
-                "chat profile history boundary",
-            )?;
-            one_of(
-                capability,
-                &FOLDER_CAPABILITIES,
-                "chat profile folder capability",
-            )?;
-            timestamp(created_at)
-        }
-        _ => Err(AdapterError("chat access profile revision value")),
     }
 }
 
@@ -491,80 +481,87 @@ fn validate_membership(group: GroupId, fields: &[Field]) -> Result<(), AdapterEr
     }
 }
 
-/// A history boundary and its order key: `entire` with none, or `from_grant` with a non-empty
-/// key.
-fn history_pair(boundary: &Field, order_key: &Field) -> Result<(), AdapterError> {
-    one_of(boundary, &HISTORY_BOUNDARIES, "chat history boundary")?;
-    match (text(boundary)?, order_key) {
-        ("entire", Field::Null) => Ok(()),
-        ("from_grant", key @ Field::Text(_)) => bounded(
-            key,
-            1,
-            MAX_ORDER_KEY_BYTES,
-            "chat history boundary order key",
-        ),
-        _ => Err(AdapterError("chat history boundary order key")),
-    }
-}
-
 fn validate_channel_membership(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
         (channel_membership_group::IDENTITY, [_, _]) | (channel_membership_group::EXISTS, []) => {
             Ok(())
         }
-        (
-            channel_membership_group::ACCESS,
-            [
-                _profile,
-                read_history,
-                read_history_inherits,
-                participate,
-                participate_inherits,
-                boundary,
-                boundary_inherits,
-                history_from,
-                approval,
-                scratch_approval,
-                removed_at,
-            ],
-        ) => {
-            for value in [
-                read_history,
-                read_history_inherits,
-                participate,
-                participate_inherits,
-                boundary_inherits,
-            ] {
-                flag(value)?;
-            }
-            history_pair(boundary, history_from)?;
-            optional_one_of(approval, &APPROVAL_POLICIES, "chat approval policy")?;
-            optional_one_of(scratch_approval, &APPROVAL_POLICIES, "chat approval policy")?;
-            optional_timestamp(removed_at)
-        }
+        (channel_membership_group::PRESENCE, [removed_at]) => optional_timestamp(removed_at),
         (channel_membership_group::CREATED | channel_membership_group::UPDATED, [at]) => {
             timestamp(at)
         }
+        (channel_membership_group::MODEL, [version, data]) => channel_model(version, data),
         _ => Err(AdapterError("chat channel membership value")),
     }
 }
 
-fn validate_folder_grant(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+fn validate_push_approval(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
-        (folder_grant_group::IDENTITY, [_, _, _]) | (folder_grant_group::EXISTS, []) => Ok(()),
-        (folder_grant_group::GRANT, [capability, inherits, is_default, approval, revoked_at]) => {
-            one_of(
-                capability,
-                &FOLDER_CAPABILITIES,
-                "chat folder grant capability",
+        (
+            push_approval_group::IDENTITY,
+            [_conversation, _agent, _folder, push_url, destination_branch],
+        ) => {
+            git_word(
+                push_url,
+                MAX_PUSH_APPROVAL_URL_BYTES,
+                "chat push approval URL",
             )?;
-            flag(inherits)?;
-            flag(is_default)?;
-            optional_one_of(approval, &APPROVAL_POLICIES, "chat approval policy")?;
+            git_word(
+                destination_branch,
+                MAX_PUSH_APPROVAL_BRANCH_BYTES,
+                "chat push approval branch",
+            )
+        }
+        (push_approval_group::APPROVAL, [_approver, approved_at, revoked_at]) => {
+            timestamp(approved_at)?;
             optional_timestamp(revoked_at)
         }
-        (folder_grant_group::CREATED, [_project, created_at]) => timestamp(created_at),
-        _ => Err(AdapterError("chat folder grant value")),
+        (push_approval_group::EXISTS, []) => Ok(()),
+        _ => Err(AdapterError("chat push approval value")),
+    }
+}
+
+/// Checks a remembered approval's shape only. Devices derive subject keys with stricter rules,
+/// so a well formed key no device would derive never matches a request.
+fn validate_remembered_approval(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (remembered_approval_group::IDENTITY, [_conversation, _agent, kind, key]) => {
+            one_of(kind, &SUBJECT_KINDS, "chat remembered approval kind")?;
+            if subject_key_is_well_formed(text(key)?) {
+                Ok(())
+            } else {
+                Err(AdapterError("chat remembered approval subject"))
+            }
+        }
+        (
+            remembered_approval_group::APPROVAL,
+            [_approver, approved_at, revoked_at, granted_access],
+        ) => {
+            timestamp(approved_at)?;
+            optional_timestamp(revoked_at)?;
+            one_of(
+                granted_access,
+                &AGENT_ACCESS_LEVELS,
+                "chat remembered approval access",
+            )
+        }
+        (remembered_approval_group::EXISTS, []) => Ok(()),
+        _ => Err(AdapterError("chat remembered approval value")),
+    }
+}
+
+/// Text of 1 to `max` bytes without whitespace or control characters, as a push URL or Git
+/// branch name is.
+fn git_word(field: &Field, max: usize, what: &'static str) -> Result<(), AdapterError> {
+    let value = text(field)?;
+    if (1..=max).contains(&value.len())
+        && !value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        Ok(())
+    } else {
+        Err(AdapterError(what))
     }
 }
 
@@ -580,10 +577,111 @@ fn validate_channel(group: GroupId, fields: &[Field]) -> Result<(), AdapterError
         }
         (channel_group::LIFECYCLE, [archived_at]) => optional_timestamp(archived_at),
         (channel_group::UPDATED, [at]) => timestamp(at),
+        (channel_group::AGENT_ACCESS, [access]) => agent_access(access, true),
+        (channel_group::AGENT_INSTRUCTIONS, [text]) => {
+            instructions(text, "chat channel agent instructions")
+        }
         _ => Err(AdapterError("chat channel value")),
     }
 }
 
+fn validate_channel_note(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (channel_note_group::CREATED, [_channel, created_at]) => timestamp(created_at),
+        (channel_note_group::PROVENANCE, [_source_item, _proposed_by]) => Ok(()),
+        (channel_note_group::BODY, [body, _edited_by]) => {
+            trimmed(body, MAX_CHANNEL_NOTE_CHARS, "chat channel note body")
+        }
+        (channel_note_group::LIFECYCLE, [deleted_at]) => optional_timestamp(deleted_at),
+        (channel_note_group::UPDATED, [at]) => timestamp(at),
+        _ => Err(AdapterError("chat channel note value")),
+    }
+}
+
+/// The bucket of a daily agent usage row names a calendar date; the counts are bounded by the
+/// manifest.
+fn validate_agent_usage(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (agent_usage_group::BUCKET, [_device, _agent, Field::Text(date)]) => {
+            if is_usage_date(date) {
+                Ok(())
+            } else {
+                Err(AdapterError("chat agent usage date"))
+            }
+        }
+        (
+            agent_usage_group::TOKENS | agent_usage_group::WORKING | agent_usage_group::RUNS,
+            [_count],
+        ) => Ok(()),
+        _ => Err(AdapterError("chat agent usage value")),
+    }
+}
+
+/// A daily agent usage row that carries its bucket is keyed by that bucket, so one device
+/// writes one row per agent and day.
+fn validate_agent_usage_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
+    let Some(bucket) = groups
+        .iter()
+        .find(|value| value.group == agent_usage_group::BUCKET)
+    else {
+        return Ok(());
+    };
+    let [Field::Text(device), Field::Text(agent), Field::Text(date)] = bucket.value.fields() else {
+        return Err(AdapterError("chat agent usage bucket"));
+    };
+    match agent_usage_key(device, agent, date) {
+        Ok(expected) if expected == *row => Ok(()),
+        _ => Err(AdapterError("chat agent usage key")),
+    }
+}
+
+/// A provider status row holds its canonical catalog and limits payloads, with limits and their
+/// observation time set together.
+fn validate_provider_status(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (provider_status_group::IDENTITY, [_device, _family]) => Ok(()),
+        (provider_status_group::STATUS, [available, changed_at]) => {
+            flag(available)?;
+            timestamp(changed_at)
+        }
+        (provider_status_group::CATALOG, [data, changed_at]) => {
+            timestamp(changed_at)?;
+            if is_canonical_catalog(text(data)?) {
+                Ok(())
+            } else {
+                Err(AdapterError("chat provider status catalog"))
+            }
+        }
+        (provider_status_group::LIMITS, [Field::Null, Field::Null]) => Ok(()),
+        (provider_status_group::LIMITS, [data @ Field::Text(_), observed_at]) => {
+            timestamp(observed_at)?;
+            if is_canonical_limits(text(data)?) {
+                Ok(())
+            } else {
+                Err(AdapterError("chat provider status limits"))
+            }
+        }
+        _ => Err(AdapterError("chat provider status value")),
+    }
+}
+
+/// A provider status row that carries its identity is keyed by it, so one device writes one
+/// row per provider family.
+fn validate_provider_status_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
+    let Some(identity) = groups
+        .iter()
+        .find(|value| value.group == provider_status_group::IDENTITY)
+    else {
+        return Ok(());
+    };
+    let [Field::Text(device), Field::Text(family)] = identity.value.fields() else {
+        return Err(AdapterError("chat provider status identity"));
+    };
+    match provider_status_key(device, family) {
+        Ok(expected) if expected == *row => Ok(()),
+        _ => Err(AdapterError("chat provider status key")),
+    }
+}
 /// Text of at most `max` UTF-8 bytes.
 fn within_bytes(field: &Field, max: usize, what: &'static str) -> Result<(), AdapterError> {
     if text(field)?.len() <= max {
@@ -648,10 +746,10 @@ fn validate_reply_thread(group: GroupId, fields: &[Field]) -> Result<(), Adapter
 
 fn validate_item(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
-        (item_group::CREATED, [_conversation, _thread, kind, _order_key, created_at]) => {
-            one_of(kind, &ITEM_KINDS, "chat item kind")?;
-            timestamp(created_at)
+        (item_group::CREATED, [_conversation, _thread, kind]) => {
+            one_of(kind, &ITEM_KINDS, "chat item kind")
         }
+        (item_group::PLACEMENT, [_order_key, created_at]) => timestamp(created_at),
         _ => Err(AdapterError("chat item value")),
     }
 }
@@ -864,11 +962,8 @@ fn validate_target(table: TableId, group: GroupId, fields: &[Field]) -> Result<(
             MAX_ENVIRONMENT_ID_CHARS,
             "chat environment reference",
         ),
-        (timeline_group::CREATED, [_target])
-            if table == PARTICIPANT_TARGETS_TABLE || table == FOLDER_TARGETS_TABLE =>
-        {
-            Ok(())
-        }
+        (timeline_group::CREATED, [_participant]) if table == PARTICIPANT_TARGETS_TABLE => Ok(()),
+        (timeline_group::CREATED, [_folder]) if table == FOLDER_TARGETS_TABLE => Ok(()),
         (timeline_group::CREATED, [_folder, kind, path]) if table == PATH_TARGETS_TABLE => {
             one_of(kind, &PATH_KINDS, "chat workspace path kind")?;
             relative_path(path)
@@ -915,6 +1010,10 @@ fn presented_markdown(table: TableId, values: &[(GroupId, Value)]) -> Option<Str
     match table {
         REVISIONS_TABLE => match group_value(timeline_group::CREATED)?.get(1)? {
             Field::Text(markdown) => Some(markdown.clone()),
+            _ => None,
+        },
+        CHANNEL_NOTES_TABLE => match group_value(channel_note_group::BODY)?.first()? {
+            Field::Text(body) => Some(body.clone()),
             _ => None,
         },
         SCHEDULED_TABLE => {
@@ -975,6 +1074,85 @@ fn validate_scheduled(group: GroupId, fields: &[Field]) -> Result<(), AdapterErr
         }
         (scheduled_group::UPDATED, [at]) => timestamp(at),
         _ => Err(AdapterError("chat scheduled message value")),
+    }
+}
+
+/// A recurrence rule: an interval rule names only its interval, and a fixed-time rule only its
+/// local minute and a non-empty weekday mask, each within the shared bounds. The zone is checked
+/// for length only: whether it resolves depends on the device's zone database, so only the
+/// executing device decides that, at dispatch.
+fn recurrence_rule(
+    kind: &Field,
+    interval: &Field,
+    local_minute: &Field,
+    weekdays: &Field,
+    time_zone: &Field,
+    quiet_policy: &Field,
+) -> Result<(), AdapterError> {
+    one_of(kind, &chat_recurrence::RULE_KINDS, "chat recurrence kind")?;
+    let set = |field: &Field| !matches!(field, Field::Null);
+    let interval_rule = text(kind)? == chat_recurrence::INTERVAL_RULE;
+    if set(interval) != interval_rule
+        || set(local_minute) == interval_rule
+        || set(weekdays) == interval_rule
+    {
+        return Err(AdapterError("chat recurrence shape"));
+    }
+    let within = |field: &Field, min: i64, max: i64| match field {
+        Field::Null => Ok(()),
+        field if (min..=max).contains(&integer(field)?) => Ok(()),
+        _ => Err(AdapterError("chat recurrence bound")),
+    };
+    within(
+        interval,
+        i64::from(chat_recurrence::MIN_INTERVAL_MINUTES),
+        i64::from(chat_recurrence::MAX_INTERVAL_MINUTES),
+    )?;
+    within(
+        local_minute,
+        0,
+        i64::from(chat_recurrence::LAST_LOCAL_MINUTE),
+    )?;
+    within(weekdays, 1, i64::from(chat_recurrence::ALL_WEEKDAYS_MASK))?;
+    trimmed(
+        time_zone,
+        chat_recurrence::MAX_TIME_ZONE_CHARS,
+        "chat recurrence time zone",
+    )?;
+    one_of(
+        quiet_policy,
+        &chat_recurrence::QUIET_POLICIES,
+        "chat recurrence quiet policy",
+    )
+}
+
+fn validate_recurrence(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (recurrence_group::IDENTITY, [_]) | (recurrence_group::EXISTS, []) => Ok(()),
+        (recurrence_group::CREATED | recurrence_group::UPDATED, [at]) => timestamp(at),
+        (
+            recurrence_group::RULE,
+            [
+                kind,
+                interval,
+                local_minute,
+                weekdays,
+                time_zone,
+                quiet_policy,
+            ],
+        ) => recurrence_rule(
+            kind,
+            interval,
+            local_minute,
+            weekdays,
+            time_zone,
+            quiet_policy,
+        ),
+        (recurrence_group::PROGRESS, [next_at, fired]) => {
+            timestamp(next_at)?;
+            at_least(fired, 0, "chat recurrence fired count").map(|_| ())
+        }
+        _ => Err(AdapterError("chat scheduled recurrence value")),
     }
 }
 
@@ -1053,18 +1231,167 @@ fn scheduled_references(bytes: &[u8]) -> Result<(), AdapterError> {
 
 fn validate_assignment(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
-        (assignment_group::CREATED, [_thread, _teammate, _trigger, device, created_at]) => {
+        (
+            assignment_group::CREATED,
+            [
+                _thread,
+                _agent,
+                _trigger,
+                device,
+                created_at,
+                model_version,
+                model,
+                instructions,
+            ],
+        ) => {
             executing_device(device)?;
-            timestamp(created_at)
+            timestamp(created_at)?;
+            schema_version(model_version)?;
+            json_object(model, "chat assignment model selection")?;
+            bounded(
+                instructions,
+                0,
+                MAX_RESOLVED_INSTRUCTIONS_CHARS,
+                "chat assignment instructions",
+            )
         }
+        (assignment_group::MODEL_LABEL, [Field::Null]) => Ok(()),
+        (assignment_group::MODEL_LABEL, [label]) => bounded(
+            label,
+            1,
+            MAX_MODEL_LABEL_CHARS,
+            "chat assignment model label",
+        ),
         (assignment_group::PREVIOUS, [_previous]) => Ok(()),
-        (assignment_group::STATE, [state, reason, settled_at]) => {
+        (assignment_group::STATE, [state, reason, settled_at, outcome, reviewed_at, reviewer]) => {
             one_of(state, &ASSIGNMENT_STATES, "chat assignment state")?;
             optional_bounded(reason, MAX_REASON_CHARS, "chat assignment state reason")?;
-            optional_timestamp(settled_at)
+            optional_timestamp(settled_at)?;
+            assignment_review(state, outcome, reviewed_at, reviewer)
         }
         (assignment_group::UPDATED, [at]) => timestamp(at),
+        (
+            assignment_group::DELEGATION,
+            [parent, depth, objective, expected_result, folder_ceiling],
+        ) => assignment_delegation(parent, depth, objective, expected_result, folder_ceiling),
         _ => Err(AdapterError("chat assignment value")),
+    }
+}
+
+/// An agent's own assignment has depth 0 and no delegation fields. A delegated child has a
+/// depth of 1 to [`MAX_DELEGATION_DEPTH`], its parent, a non-blank objective and expected
+/// result, and the folder ceiling resolved when it was delegated, so no later widening of the
+/// parent can widen the child. Depth against the parent's depth is checked by the table, which
+/// sees the parent row.
+fn assignment_delegation(
+    parent: &Field,
+    depth: &Field,
+    objective: &Field,
+    expected_result: &Field,
+    folder_ceiling: &Field,
+) -> Result<(), AdapterError> {
+    let depth = integer(depth)?;
+    let fields = [parent, objective, expected_result, folder_ceiling];
+    let set = fields
+        .iter()
+        .filter(|field| !matches!(field, Field::Null))
+        .count();
+    match set {
+        0 if depth == 0 => Ok(()),
+        _ if set < fields.len() => Err(AdapterError("chat assignment delegation is incomplete")),
+        _ if !(1..=MAX_DELEGATION_DEPTH).contains(&depth) => {
+            Err(AdapterError("chat assignment delegation depth"))
+        }
+        _ => {
+            trimmed(
+                objective,
+                MAX_DELEGATION_OBJECTIVE_CHARS,
+                "chat assignment delegation objective",
+            )?;
+            trimmed(
+                expected_result,
+                MAX_DELEGATION_EXPECTED_RESULT_CHARS,
+                "chat assignment delegation expected result",
+            )?;
+            delegation_folder_ceiling(folder_ceiling)
+        }
+    }
+}
+
+/// A channel's model for an agent is its schema version and selection together, or neither
+/// when the agent runs with its default model.
+fn channel_model(version: &Field, data: &Field) -> Result<(), AdapterError> {
+    match (version, data) {
+        (Field::Null, Field::Null) => Ok(()),
+        (Field::Null, _) | (_, Field::Null) => {
+            Err(AdapterError("chat channel model is incomplete"))
+        }
+        _ => {
+            schema_version(version)?;
+            json_object(data, "chat channel model")
+        }
+    }
+}
+
+/// One folder of a delegation ceiling.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CeilingFolder {
+    working_folder_id: String,
+    capability: String,
+}
+
+/// A JSON array within [`MAX_JSON_CHARS`] of folders, each named once with a capability from
+/// [`DELEGATION_CEILING_CAPABILITIES`]. An empty array delegates work without folder access.
+fn delegation_folder_ceiling(field: &Field) -> Result<(), AdapterError> {
+    const WHAT: &str = "chat assignment delegation folder ceiling";
+    let json = text(field)?;
+    if json.chars().count() > MAX_JSON_CHARS {
+        return Err(AdapterError(WHAT));
+    }
+    let folders =
+        serde_json::from_str::<Vec<CeilingFolder>>(json).map_err(|_| AdapterError(WHAT))?;
+    let mut seen = std::collections::BTreeSet::new();
+    for folder in &folders {
+        let id = folder.working_folder_id.as_str();
+        let valid_id = !id.trim().is_empty()
+            && id.chars().count() <= MAX_ID_CHARS
+            && !id.chars().any(char::is_control);
+        if !valid_id
+            || !DELEGATION_CEILING_CAPABILITIES.contains(&folder.capability.as_str())
+            || !seen.insert(id)
+        {
+            return Err(AdapterError(WHAT));
+        }
+    }
+    Ok(())
+}
+
+/// A review is all three fields or none, and only on completed work: the review judges a
+/// completion, so a review beside any other state would describe work that did not finish.
+fn assignment_review(
+    state: &Field,
+    outcome: &Field,
+    reviewed_at: &Field,
+    reviewer: &Field,
+) -> Result<(), AdapterError> {
+    match (outcome, reviewed_at, reviewer) {
+        (Field::Null, Field::Null, Field::Null) => Ok(()),
+        (Field::Null, _, _) | (_, Field::Null, _) | (_, _, Field::Null) => {
+            Err(AdapterError("chat assignment review is incomplete"))
+        }
+        _ if text(state)? != REVIEWED_ASSIGNMENT_STATE => {
+            Err(AdapterError("chat assignment review needs completed work"))
+        }
+        _ => {
+            one_of(
+                outcome,
+                &ASSIGNMENT_REVIEW_OUTCOMES,
+                "chat assignment review outcome",
+            )?;
+            timestamp(reviewed_at)?;
+            participant_id(reviewer, "chat assignment reviewer")
+        }
     }
 }
 
@@ -1072,13 +1399,22 @@ fn validate_input(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> 
     match (group, fields) {
         (input_group::IDENTITY, [_]) | (input_group::EXISTS, []) => Ok(()),
         (input_group::CREATED, [created_at]) => timestamp(created_at),
-        (input_group::ROUTING, [_assignment, ordinal, kind]) => {
-            at_least(ordinal, 1, "chat assignment input ordinal")?;
+        (input_group::ROUTING, [_assignment, kind]) => {
             one_of(kind, &ROUTING_KINDS, "chat assignment input routing")
         }
-        (input_group::DELIVERY, [state, delivered_at]) => {
+        (input_group::HOLD, [held]) => flag(held),
+        (input_group::ORDER, [ordinal]) => {
+            at_least(ordinal, 1, "chat assignment input ordinal").map(|_| ())
+        }
+        (input_group::DELIVERY, [state, delivered_at, delivered_revision]) => {
             one_of(state, &DELIVERY_STATES, "chat assignment input delivery")?;
-            optional_timestamp(delivered_at)
+            optional_timestamp(delivered_at)?;
+            if !matches!(delivered_revision, Field::Null) && text(state)? != DELIVERED_STATE {
+                return Err(AdapterError(
+                    "chat assignment input revision needs a delivered input",
+                ));
+            }
+            Ok(())
         }
         _ => Err(AdapterError("chat assignment input value")),
     }
@@ -1102,48 +1438,57 @@ fn validate_semantic_update(group: GroupId, fields: &[Field]) -> Result<(), Adap
     }
 }
 
-/// A settled assignment outranks a concurrent active one, so a cancel, failure, or completion is
-/// never undone by progress a device reported before seeing it; a review request outranks the
-/// other active states.
+/// Assignment states by merge priority, the most restrictive ending first.
+const ASSIGNMENT_STATE_PRIORITIES: [(&str, u8); 4] = [
+    ("cancelled", 5),
+    ("failed", 4),
+    ("completed", 3),
+    ("ready_for_review", 2),
+];
+/// Priority of the active states other than a review request.
+const ACTIVE_ASSIGNMENT_PRIORITY: u8 = 1;
+
+/// The most restrictive ending wins: a cancel outranks a failure, which outranks a completion, so
+/// a concurrent cancel beats an accept and carries no review, and a failure is never hidden by a
+/// completion recorded elsewhere. Every ending outranks progress a device reported before seeing
+/// it, and a review request outranks the other active states.
 fn assignment_priority(fields: &[Field]) -> u8 {
-    match fields.first() {
-        Some(Field::Text(state)) if SETTLED_ASSIGNMENT_STATES.contains(&state.as_str()) => 3,
-        Some(Field::Text(state)) if state == "ready_for_review" => 2,
-        _ => 1,
-    }
+    let Some(Field::Text(state)) = fields.first() else {
+        return ACTIVE_ASSIGNMENT_PRIORITY;
+    };
+    ASSIGNMENT_STATE_PRIORITIES
+        .iter()
+        .find(|(candidate, _)| candidate == state)
+        .map_or(ACTIVE_ASSIGNMENT_PRIORITY, |(_, priority)| *priority)
+}
+
+/// Input delivery states by merge priority, the furthest along first.
+const INPUT_DELIVERY_PRIORITIES: [(&str, u8); 4] = [
+    ("delivered", 4),
+    ("failed", 3),
+    ("ignored", 2),
+    ("pending", 1),
+];
+
+/// What happened to an input outranks a wish about it: a delivery beats a concurrent cancel,
+/// since the run already read the message, and every ending beats pending. No writer returns an
+/// input to pending, so the ladder only moves forward.
+fn input_delivery_priority(fields: &[Field]) -> u8 {
+    let Some(Field::Text(state)) = fields.first() else {
+        return 0;
+    };
+    INPUT_DELIVERY_PRIORITIES
+        .iter()
+        .find(|(candidate, _)| candidate == state)
+        .map_or(0, |(_, priority)| *priority)
 }
 
 /// Priority of an ended row: a removal or revocation outranks every live value.
 const ENDED: u8 = u8::MAX;
 
-/// Rank of an approval override, 1 for the least restrictive.
-///
-/// No override inherits: a folder grant's or scratch override falls back to the channel
-/// override and a channel override to the teammate's default, which an explicit override can
-/// only narrow (the runtime keeps the narrower of the default and the override). The default
-/// can be unattended or defer to the provider, so inheriting ranks lowest, below the explicit
-/// policies in [`APPROVAL_POLICIES`] order. A folder or scratch override replaces the channel
-/// override instead of narrowing it, so when the channel override is stricter than a concurrent
-/// explicit folder or scratch override, inheriting was the stricter intent; a static rank cannot
-/// see the channel row, and the loser's value is not available to Chat after the merge.
-fn approval_rank(field: Option<&Field>) -> u8 {
-    match field {
-        None | Some(Field::Null) => INHERITED_APPROVAL_RANK,
-        field => INHERITED_APPROVAL_RANK + restrictiveness(field, &APPROVAL_POLICIES),
-    }
-}
-
-/// Number of approval override ranks.
-const APPROVAL_RANKS: u8 = INHERITED_APPROVAL_RANK + APPROVAL_POLICIES.len() as u8;
-
 /// Whether the field at `index` is set, which marks a removal or revocation.
 fn ended(fields: &[Field], index: usize) -> bool {
     !matches!(fields.get(index), None | Some(Field::Null))
-}
-
-/// Whether the inherit flag at `index` is set, so the value beside it comes from the profile.
-fn inherits(fields: &[Field], index: usize) -> bool {
-    matches!(fields.get(index), Some(Field::Integer(1)))
 }
 
 /// A membership removal wins, then demotion to member over promotion to owner.
@@ -1155,47 +1500,20 @@ fn membership_priority(fields: &[Field]) -> u8 {
     }
 }
 
-/// A channel removal wins, then the value that clears more of history reading, participation,
-/// and full history, then the stricter channel approval override, then the stricter scratch
-/// approval override.
-///
-/// A capability counts as cleared only when it is set explicitly: an inherited one follows the
-/// profile, which may grant it, and an explicit grant is still capped by the profile, so only
-/// an explicit clear narrows. The access profile itself carries no rank, since its
-/// restrictiveness lives in its revision, so the Chat materialize hook settles concurrent
-/// versions onto the narrowest profile and the strictest resolved parts.
+/// A removal from a channel wins over a concurrent re-add.
 fn channel_membership_priority(fields: &[Field]) -> u8 {
-    if ended(fields, 10) {
-        return ENDED;
-    }
-    let cleared = [
-        !inherits(fields, 2) && matches!(fields.get(1), Some(Field::Integer(0))),
-        !inherits(fields, 4) && matches!(fields.get(3), Some(Field::Integer(0))),
-        !inherits(fields, 6)
-            && matches!(fields.get(5), Some(Field::Text(text)) if text == "from_grant"),
-    ]
-    .into_iter()
-    .filter(|cleared| *cleared)
-    .count();
-    let cleared = u8::try_from(cleared).unwrap_or(0);
-    let approvals =
-        (approval_rank(fields.get(8)) - 1) * APPROVAL_RANKS + (approval_rank(fields.get(9)) - 1);
-    1 + cleared * APPROVAL_RANKS * APPROVAL_RANKS + approvals
+    if ended(fields, 0) { ENDED } else { 1 }
 }
 
-/// A revocation wins, then the lower folder capability, then the stricter approval override.
-/// An inherited capability follows the profile's maximum, which may be publishing, so it ranks
-/// as the least restrictive capability.
-fn folder_grant_priority(fields: &[Field]) -> u8 {
-    if ended(fields, 4) {
-        return ENDED;
-    }
-    let capability = if inherits(fields, 1) {
-        1
-    } else {
-        restrictiveness(fields.first(), &FOLDER_CAPABILITIES).max(1)
-    };
-    1 + (capability - 1) * APPROVAL_RANKS + (approval_rank(fields.get(3)) - 1)
+/// The narrower access level wins among concurrent edits of one scope. An inherited level ranks
+/// lowest: the scope it inherits from can be as wide as Own the folder.
+fn agent_access_priority(fields: &[Field]) -> u8 {
+    restrictiveness(fields.first(), &AGENT_ACCESS_LEVELS)
+}
+
+/// A revocation wins over a concurrent approval, for push and remembered approvals alike.
+fn push_approval_priority(fields: &[Field]) -> u8 {
+    if ended(fields, 2) { ENDED } else { 1 }
 }
 
 /// An archive wins over a concurrent unarchive.
@@ -1282,29 +1600,44 @@ impl DomainAdapter for ChatAdapter {
         Ok(Vec::new())
     }
 
-    /// The more restrictive current policy or profile revision wins among concurrent edits.
+    /// The narrower access wins among concurrent edits.
     fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8 {
-        let copied = value.fields().get(1);
-        if table == TEAMMATES_TABLE && group == teammate_group::POLICY {
-            restrictiveness(copied, &SAFETY_MODES)
-        } else if table == PROFILES_TABLE && group == profile_group::CURRENT {
-            restrictiveness(copied, &FOLDER_CAPABILITIES)
+        if (table == APP_SETTINGS_TABLE && group == app_settings_group::ACCESS)
+            || (table == PROJECT_SETTINGS_TABLE && group == project_settings_group::ACCESS)
+            || (table == CHANNELS_TABLE && group == channel_group::AGENT_ACCESS)
+        {
+            agent_access_priority(value.fields())
         } else if table == MEMBERSHIPS_TABLE && group == membership_group::MEMBERSHIP {
             membership_priority(value.fields())
-        } else if table == CHANNEL_MEMBERSHIPS_TABLE && group == channel_membership_group::ACCESS {
+        } else if table == CHANNEL_MEMBERSHIPS_TABLE && group == channel_membership_group::PRESENCE
+        {
             channel_membership_priority(value.fields())
-        } else if table == FOLDER_GRANTS_TABLE && group == folder_grant_group::GRANT {
-            folder_grant_priority(value.fields())
+        } else if (table == PUSH_APPROVALS_TABLE && group == push_approval_group::APPROVAL)
+            || (table == REMEMBERED_APPROVALS_TABLE && group == remembered_approval_group::APPROVAL)
+        {
+            push_approval_priority(value.fields())
         } else if (table == CHANNELS_TABLE && group == channel_group::LIFECYCLE)
             || (table == CONVERSATIONS_TABLE && group == conversation_group::LIFECYCLE)
             || (table == MESSAGES_TABLE && group == message_group::LIFECYCLE)
+            || (table == CHANNEL_NOTES_TABLE && group == channel_note_group::LIFECYCLE)
         {
             lifecycle_priority(value.fields())
         } else if table == ASSIGNMENTS_TABLE && group == assignment_group::STATE {
             assignment_priority(value.fields())
+        } else if table == INPUTS_TABLE && group == input_group::DELIVERY {
+            input_delivery_priority(value.fields())
         } else {
             0
         }
+    }
+
+    fn validate_tombstone(
+        &self,
+        table: TableId,
+        key: &str,
+        cause: Option<&Cause>,
+    ) -> Result<(), AdapterError> {
+        validate_agent_tombstone(table, key, cause)
     }
 
     fn validate_row(
@@ -1315,8 +1648,10 @@ impl DomainAdapter for ChatAdapter {
     ) -> Result<(), AdapterError> {
         if table == PARTICIPANTS_TABLE {
             validate_participant_row(row, groups)
-        } else if table == PROFILES_TABLE {
-            validate_profile_row(row, groups)
+        } else if table == AGENT_USAGE_DAILY_TABLE {
+            validate_agent_usage_row(row, groups)
+        } else if table == PROVIDER_STATUS_TABLE {
+            validate_provider_status_row(row, groups)
         } else {
             Ok(())
         }
@@ -1326,24 +1661,28 @@ impl DomainAdapter for ChatAdapter {
         let fields = value.fields();
         if table == PARTICIPANTS_TABLE {
             validate_participant(group, fields)
-        } else if table == TEAMMATES_TABLE {
-            validate_teammate(group, fields)
+        } else if table == AGENTS_TABLE {
+            validate_agent(group, fields)
         } else if table == POLICY_REVISIONS_TABLE {
             validate_policy_revision(group, fields)
-        } else if table == PROFILES_TABLE {
-            validate_profile(group, fields)
-        } else if table == PROFILE_REVISIONS_TABLE {
-            validate_profile_revision(group, fields)
+        } else if table == APP_SETTINGS_TABLE {
+            validate_app_settings(group, fields)
+        } else if table == PROJECT_SETTINGS_TABLE {
+            validate_project_settings(group, fields)
         } else if table == CONVERSATIONS_TABLE {
             validate_conversation(group, fields)
         } else if table == MEMBERSHIPS_TABLE {
             validate_membership(group, fields)
         } else if table == CHANNEL_MEMBERSHIPS_TABLE {
             validate_channel_membership(group, fields)
-        } else if table == FOLDER_GRANTS_TABLE {
-            validate_folder_grant(group, fields)
+        } else if table == PUSH_APPROVALS_TABLE {
+            validate_push_approval(group, fields)
+        } else if table == REMEMBERED_APPROVALS_TABLE {
+            validate_remembered_approval(group, fields)
         } else if table == CHANNELS_TABLE {
             validate_channel(group, fields)
+        } else if table == CHANNEL_NOTES_TABLE {
+            validate_channel_note(group, fields)
         } else if table == REPLY_THREADS_TABLE {
             validate_reply_thread(group, fields)
         } else if table == ITEMS_TABLE {
@@ -1366,12 +1705,18 @@ impl DomainAdapter for ChatAdapter {
             validate_read_cursor(group, fields)
         } else if table == SCHEDULED_TABLE {
             validate_scheduled(group, fields)
+        } else if table == RECURRENCES_TABLE {
+            validate_recurrence(group, fields)
         } else if table == ASSIGNMENTS_TABLE {
             validate_assignment(group, fields)
         } else if table == INPUTS_TABLE {
             validate_input(group, fields)
         } else if table == SEMANTIC_UPDATES_TABLE {
             validate_semantic_update(group, fields)
+        } else if table == AGENT_USAGE_DAILY_TABLE {
+            validate_agent_usage(group, fields)
+        } else if table == PROVIDER_STATUS_TABLE {
+            validate_provider_status(group, fields)
         } else {
             Ok(())
         }
@@ -1417,10 +1762,10 @@ impl DomainAdapter for ChatAdapter {
             .collect()
     }
 
-    /// A participant presents its display name, a teammate its role, and a channel its name with
-    /// its topic as the preview. A message revision and a scheduled message present their
-    /// Markdown as the preview, unchanged so it can be copied back. Other rows present nothing:
-    /// a message's text lives in its revisions, outside the row's values.
+    /// A participant presents its display name, an agent its provider, and a channel its name with
+    /// its topic as the preview. A message revision, a scheduled message, and a channel note
+    /// present their text as the preview, unchanged so it can be copied back. Other rows present
+    /// nothing: a message's text lives in its revisions, outside the row's values.
     fn presentation(&self, table: TableId, values: &[(GroupId, Value)]) -> Presentation {
         if let Some(markdown) = presented_markdown(table, values) {
             return Presentation {
@@ -1430,7 +1775,7 @@ impl DomainAdapter for ChatAdapter {
         }
         let profile_group = match table {
             PARTICIPANTS_TABLE => participant_group::PROFILE,
-            TEAMMATES_TABLE => teammate_group::PROFILE,
+            AGENTS_TABLE => agent_group::CREATED,
             CHANNELS_TABLE => channel_group::DETAILS,
             _ => return Presentation::default(),
         };
@@ -1494,849 +1839,4 @@ fn group_fields(values: &[(GroupId, Value)], group: GroupId) -> Option<&[Field]>
 }
 
 #[cfg(test)]
-mod tests {
-    use ganbaru_sync_contracts::{Change, ChangeAction};
-
-    use super::*;
-    use crate::codec::OwnedRow;
-    use crate::{Engine, validate};
-
-    const AT: &str = "2026-10-24T10:51:41.000Z";
-
-    fn value(fields: Vec<Field>) -> Value {
-        Value::new(fields).unwrap()
-    }
-
-    fn t(text: &str) -> Field {
-        Field::Text(text.to_owned())
-    }
-
-    fn policy(safety: Option<&str>) -> Value {
-        match safety {
-            Some(safety) => value(vec![t("policy-1"), t(safety)]),
-            None => value(vec![Field::Null, Field::Null]),
-        }
-    }
-
-    fn current(capability: Option<&str>) -> Value {
-        match capability {
-            Some(capability) => value(vec![t("revision-1"), t(capability)]),
-            None => value(vec![Field::Null, Field::Null]),
-        }
-    }
-
-    fn policy_revision(model: &str, safety: &str) -> Value {
-        value(vec![
-            t("teammate-1"),
-            t("codex"),
-            Field::Integer(1),
-            t(model),
-            t("high"),
-            Field::Null,
-            Field::Integer(1),
-            t("{}"),
-            t("build"),
-            t(AT),
-            t(safety),
-        ])
-    }
-
-    #[test]
-    fn chat_priorities_prefer_the_more_restrictive_revision() {
-        let adapter = ChatAdapter;
-        let safety =
-            |mode| adapter.priority(TEAMMATES_TABLE, teammate_group::POLICY, &policy(mode));
-        assert!(safety(Some("ask_for_approval")) > safety(Some("approve_for_me")));
-        assert!(safety(Some("approve_for_me")) > safety(Some("full_access")));
-        assert!(safety(Some("full_access")) > safety(Some("custom")));
-        assert!(safety(Some("custom")) > safety(None));
-
-        let capability =
-            |level| adapter.priority(PROFILES_TABLE, profile_group::CURRENT, &current(level));
-        assert!(capability(Some("none")) > capability(Some("read")));
-        assert!(capability(Some("read")) > capability(Some("edit")));
-        assert!(capability(Some("edit")) > capability(Some("execute")));
-        assert!(capability(Some("execute")) > capability(Some("publish")));
-        assert!(capability(Some("publish")) > capability(None));
-
-        let name = value(vec![t("Profile")]);
-        assert_eq!(
-            adapter.priority(PROFILES_TABLE, profile_group::NAME, &name),
-            0
-        );
-    }
-
-    #[test]
-    fn chat_validation_mirrors_the_table_checks() {
-        let adapter = ChatAdapter;
-        let check = |table, group, fields| adapter.validate(table, group, &value(fields));
-
-        assert!(
-            check(
-                PARTICIPANTS_TABLE,
-                participant_group::CREATED,
-                vec![t("ai_teammate"), t(AT)]
-            )
-            .is_ok()
-        );
-        assert!(
-            check(
-                PARTICIPANTS_TABLE,
-                participant_group::CREATED,
-                vec![t("robot"), t(AT)]
-            )
-            .is_err()
-        );
-        let avatar = |json: &str| {
-            check(
-                PARTICIPANTS_TABLE,
-                participant_group::PROFILE,
-                vec![t(" Ada "), Field::Integer(1), t(json)],
-            )
-        };
-        assert!(avatar("{\"kind\":\"initials\"}").is_ok());
-        assert!(avatar("[]").is_err());
-        assert!(avatar("{").is_err());
-        let oversized = format!("{{\"k\":\"{}\"}}", "a".repeat(MAX_JSON_CHARS));
-        assert!(avatar(&oversized).is_err());
-        assert!(
-            check(
-                PARTICIPANTS_TABLE,
-                participant_group::PROFILE,
-                vec![t("   "), Field::Integer(1), t("{}")],
-            )
-            .is_err()
-        );
-
-        assert!(
-            adapter
-                .validate(TEAMMATES_TABLE, teammate_group::POLICY, &policy(None))
-                .is_ok()
-        );
-        assert!(
-            check(
-                TEAMMATES_TABLE,
-                teammate_group::POLICY,
-                vec![Field::Null, t("custom")]
-            )
-            .is_err()
-        );
-        assert!(
-            check(
-                TEAMMATES_TABLE,
-                teammate_group::POLICY,
-                vec![t("policy-1"), Field::Null]
-            )
-            .is_err()
-        );
-        assert!(
-            check(
-                TEAMMATES_TABLE,
-                teammate_group::POLICY,
-                vec![t("policy-1"), t("reckless")]
-            )
-            .is_err()
-        );
-        assert!(check(TEAMMATES_TABLE, teammate_group::HOME, vec![Field::Null]).is_ok());
-        assert!(check(TEAMMATES_TABLE, teammate_group::HOME, vec![t("")]).is_err());
-        let instructions = "a".repeat(MAX_INSTRUCTIONS_CHARS + 1);
-        assert!(
-            check(
-                TEAMMATES_TABLE,
-                teammate_group::PROFILE,
-                vec![t("Reviewer"), t(&instructions)]
-            )
-            .is_err()
-        );
-
-        let revision = |model, safety| {
-            adapter.validate(
-                POLICY_REVISIONS_TABLE,
-                policy_revision_group::CREATED,
-                &policy_revision(model, safety),
-            )
-        };
-        assert!(revision("{\"model\":\"gpt\"}", "custom").is_ok());
-        assert!(revision("\"gpt\"", "custom").is_err());
-        assert!(revision("{}", "reckless").is_err());
-
-        assert!(
-            check(
-                PROFILES_TABLE,
-                profile_group::CREATED,
-                vec![t("read_only"), t(AT)]
-            )
-            .is_ok()
-        );
-        assert!(
-            check(
-                PROFILES_TABLE,
-                profile_group::CREATED,
-                vec![Field::Null, t(AT)]
-            )
-            .is_ok()
-        );
-        assert!(
-            check(
-                PROFILES_TABLE,
-                profile_group::CREATED,
-                vec![t("root"), t(AT)]
-            )
-            .is_err()
-        );
-        assert!(
-            adapter
-                .validate(
-                    PROFILES_TABLE,
-                    profile_group::CURRENT,
-                    &current(Some("edit"))
-                )
-                .is_ok()
-        );
-
-        let profile_revision = |flag_value, capability| {
-            check(
-                PROFILE_REVISIONS_TABLE,
-                profile_revision_group::CREATED,
-                vec![
-                    t("profile-1"),
-                    Field::Integer(flag_value),
-                    Field::Integer(0),
-                    t("from_grant"),
-                    t(capability),
-                    t(AT),
-                ],
-            )
-        };
-        assert!(profile_revision(1, "execute").is_ok());
-        assert!(profile_revision(2, "execute").is_err());
-        assert!(profile_revision(1, "admin").is_err());
-    }
-
-    fn optional(text: Option<&str>) -> Field {
-        text.map_or(Field::Null, t)
-    }
-
-    fn membership(role: &str, removed: bool) -> Value {
-        value(vec![t(role), optional(removed.then_some(AT))])
-    }
-
-    /// An AI channel membership access value with each capability set or cleared.
-    fn channel_access(
-        read_history: bool,
-        participate: bool,
-        from_grant: bool,
-        approval: Option<&str>,
-        scratch_approval: Option<&str>,
-        removed: bool,
-    ) -> Value {
-        value(vec![
-            t("profile-1"),
-            Field::Integer(i64::from(read_history)),
-            Field::Integer(0),
-            Field::Integer(i64::from(participate)),
-            Field::Integer(0),
-            t(if from_grant { "from_grant" } else { "entire" }),
-            Field::Integer(0),
-            if from_grant { t("c001") } else { Field::Null },
-            optional(approval),
-            optional(scratch_approval),
-            optional(removed.then_some(AT)),
-        ])
-    }
-
-    fn grant(capability: &str, approval: Option<&str>, revoked: bool) -> Value {
-        value(vec![
-            t(capability),
-            Field::Integer(0),
-            Field::Integer(1),
-            optional(approval),
-            optional(revoked.then_some(AT)),
-        ])
-    }
-
-    #[test]
-    fn chat_membership_priorities_prefer_removal_then_demotion() {
-        let adapter = ChatAdapter;
-        let priority = |value: &Value| {
-            adapter.priority(MEMBERSHIPS_TABLE, membership_group::MEMBERSHIP, value)
-        };
-        assert!(priority(&membership("owner", true)) > priority(&membership("member", false)));
-        assert_eq!(
-            priority(&membership("owner", true)),
-            priority(&membership("member", true))
-        );
-        assert!(priority(&membership("member", false)) > priority(&membership("owner", false)));
-        assert_eq!(
-            adapter.priority(
-                MEMBERSHIPS_TABLE,
-                membership_group::CREATED,
-                &value(vec![t(AT)])
-            ),
-            0
-        );
-    }
-
-    #[test]
-    fn chat_channel_membership_priorities_prefer_removal_then_fewer_capabilities_then_stricter_approval()
-     {
-        let adapter = ChatAdapter;
-        let priority = |value: &Value| {
-            adapter.priority(
-                CHANNEL_MEMBERSHIPS_TABLE,
-                channel_membership_group::ACCESS,
-                value,
-            )
-        };
-        let open = channel_access(true, true, false, Some("provider_custom"), None, false);
-        let removed = channel_access(true, true, false, Some("provider_custom"), None, true);
-        let strictest_live = channel_access(false, false, true, Some("ask"), Some("ask"), false);
-        assert!(priority(&removed) > priority(&strictest_live));
-        assert!(priority(&open) >= 1);
-        assert!(priority(&strictest_live) < u8::MAX);
-
-        // Clearing more capabilities wins over any approval override.
-        let cleared = [
-            channel_access(true, true, false, Some("ask"), Some("ask"), false),
-            channel_access(false, true, false, None, None, false),
-            channel_access(true, false, false, None, None, false),
-        ];
-        assert!(priority(&cleared[1]) > priority(&cleared[0]));
-        assert!(priority(&cleared[2]) > priority(&cleared[0]));
-        let more_cleared = [
-            channel_access(true, true, false, Some("ask"), Some("ask"), false),
-            channel_access(false, true, false, Some("ask"), Some("ask"), false),
-            channel_access(false, false, false, Some("ask"), Some("ask"), false),
-            channel_access(false, false, true, Some("ask"), Some("ask"), false),
-        ];
-        for (looser, stricter) in more_cleared.iter().zip(&more_cleared[1..]) {
-            assert!(priority(stricter) > priority(looser));
-        }
-        assert!(
-            priority(&channel_access(false, false, true, None, None, false))
-                > priority(&channel_access(
-                    false,
-                    false,
-                    false,
-                    Some("ask"),
-                    Some("ask"),
-                    false
-                ))
-        );
-
-        // With equal capabilities, the stricter approval override wins, and no override, which
-        // inherits the teammate default, is the least strict.
-        let approvals = [
-            None,
-            Some("provider_custom"),
-            Some("unattended"),
-            Some("auto_approve"),
-            Some("ask"),
-        ];
-        for pair in approvals.windows(2) {
-            let looser = channel_access(true, true, false, pair[0], Some("ask"), false);
-            let stricter = channel_access(true, true, false, pair[1], None, false);
-            assert!(priority(&stricter) > priority(&looser), "{pair:?}");
-            let looser = channel_access(true, true, false, None, pair[0], false);
-            let stricter = channel_access(true, true, false, None, pair[1], false);
-            assert!(priority(&stricter) > priority(&looser), "scratch {pair:?}");
-        }
-    }
-
-    #[test]
-    fn chat_channel_membership_inherited_capabilities_rank_as_granted() {
-        let adapter = ChatAdapter;
-        let priority = |value: &Value| {
-            adapter.priority(
-                CHANNEL_MEMBERSHIPS_TABLE,
-                channel_membership_group::ACCESS,
-                value,
-            )
-        };
-        let explicit = channel_access(false, false, true, None, None, false);
-        let granted = channel_access(true, true, false, None, None, false);
-        for inherit in [2, 4, 6] {
-            let mut fields = explicit.fields().to_vec();
-            fields[inherit] = Field::Integer(1);
-            let inherited = value(fields);
-            assert!(priority(&explicit) > priority(&inherited), "{inherit}");
-            assert!(priority(&inherited) > priority(&granted), "{inherit}");
-        }
-        let mut fields = explicit.fields().to_vec();
-        for inherit in [2, 4, 6] {
-            fields[inherit] = Field::Integer(1);
-        }
-        assert_eq!(priority(&value(fields)), priority(&granted));
-    }
-
-    #[test]
-    fn chat_folder_grant_priorities_prefer_revocation_then_lower_capability_then_stricter_approval()
-    {
-        let adapter = ChatAdapter;
-        let priority =
-            |value: &Value| adapter.priority(FOLDER_GRANTS_TABLE, folder_grant_group::GRANT, value);
-        assert!(
-            priority(&grant("publish", None, true)) > priority(&grant("none", Some("ask"), false))
-        );
-        for pair in FOLDER_CAPABILITIES.windows(2) {
-            assert!(
-                priority(&grant(pair[1], Some("provider_custom"), false))
-                    > priority(&grant(pair[0], Some("ask"), false)),
-                "{pair:?}"
-            );
-        }
-        let approvals = [
-            None,
-            Some("provider_custom"),
-            Some("unattended"),
-            Some("auto_approve"),
-            Some("ask"),
-        ];
-        for pair in approvals.windows(2) {
-            assert!(
-                priority(&grant("edit", pair[1], false)) > priority(&grant("edit", pair[0], false)),
-                "{pair:?}"
-            );
-        }
-        assert!(priority(&grant("none", Some("ask"), false)) < u8::MAX);
-
-        // An inherited capability follows the profile's maximum, so it ranks as publishing.
-        let mut inherited = grant("none", Some("ask"), false).fields().to_vec();
-        inherited[1] = Field::Integer(1);
-        assert_eq!(
-            priority(&value(inherited)),
-            priority(&grant("publish", Some("ask"), false))
-        );
-    }
-
-    #[test]
-    fn chat_channel_and_conversation_archive_outranks_unarchive() {
-        let adapter = ChatAdapter;
-        for (table, group) in [
-            (CHANNELS_TABLE, channel_group::LIFECYCLE),
-            (CONVERSATIONS_TABLE, conversation_group::LIFECYCLE),
-        ] {
-            let priority = |archived: Option<&str>| {
-                adapter.priority(table, group, &value(vec![optional(archived)]))
-            };
-            assert!(priority(Some(AT)) > priority(None));
-        }
-        assert_eq!(
-            adapter.priority(
-                CHANNELS_TABLE,
-                channel_group::DETAILS,
-                &value(vec![t("general"), t("")])
-            ),
-            0
-        );
-    }
-
-    #[test]
-    fn chat_conversation_access_validation_mirrors_the_table_checks() {
-        let adapter = ChatAdapter;
-        let check = |table, group, fields| adapter.validate(table, group, &value(fields));
-
-        assert!(
-            check(
-                CONVERSATIONS_TABLE,
-                conversation_group::CREATED,
-                vec![t("project-1"), t("channel"), t(AT)]
-            )
-            .is_ok()
-        );
-        assert!(
-            check(
-                CONVERSATIONS_TABLE,
-                conversation_group::CREATED,
-                vec![t("project-1"), t("thread"), t(AT)]
-            )
-            .is_err()
-        );
-        assert!(
-            adapter
-                .validate(
-                    MEMBERSHIPS_TABLE,
-                    membership_group::MEMBERSHIP,
-                    &membership("member", true)
-                )
-                .is_ok()
-        );
-        assert!(
-            adapter
-                .validate(
-                    MEMBERSHIPS_TABLE,
-                    membership_group::MEMBERSHIP,
-                    &membership("admin", false)
-                )
-                .is_err()
-        );
-
-        let access = |boundary: &str, history_from: Field, approval: &str| {
-            let mut fields = channel_access(true, true, false, None, None, false)
-                .fields()
-                .to_vec();
-            fields[5] = t(boundary);
-            fields[7] = history_from;
-            fields[8] = t(approval);
-            check(
-                CHANNEL_MEMBERSHIPS_TABLE,
-                channel_membership_group::ACCESS,
-                fields,
-            )
-        };
-        assert!(access("entire", Field::Null, "ask").is_ok());
-        assert!(access("from_grant", t("c001"), "unattended").is_ok());
-        assert!(access("from_grant", Field::Null, "ask").is_err());
-        assert!(access("from_grant", t(""), "ask").is_err());
-        assert!(access("from_grant", Field::Integer(1), "ask").is_err());
-        assert!(access("entire", t("c001"), "ask").is_err());
-        assert!(access("entire", Field::Null, "always").is_err());
-
-        assert!(
-            adapter
-                .validate(
-                    FOLDER_GRANTS_TABLE,
-                    folder_grant_group::GRANT,
-                    &grant("execute", Some("auto_approve"), true)
-                )
-                .is_ok()
-        );
-        assert!(
-            adapter
-                .validate(
-                    FOLDER_GRANTS_TABLE,
-                    folder_grant_group::GRANT,
-                    &grant("admin", None, false)
-                )
-                .is_err()
-        );
-
-        let details = |name: &str, topic: &str| {
-            check(
-                CHANNELS_TABLE,
-                channel_group::DETAILS,
-                vec![t(name), t(topic)],
-            )
-        };
-        assert!(details("general", "").is_ok());
-        assert!(details("", "").is_err());
-        assert!(details(&"n".repeat(MAX_CHANNEL_NAME_CHARS + 1), "").is_err());
-        assert!(details("general", &"t".repeat(MAX_CHANNEL_TOPIC_CHARS + 1)).is_err());
-    }
-
-    #[test]
-    fn chat_channel_reference_ranges_need_ordered_well_formed_keys() {
-        let adapter = ChatAdapter;
-        let range = |lower: (&str, &str), high: (&str, &str)| {
-            adapter.validate(
-                CHANNEL_TARGETS_TABLE,
-                timeline_group::CREATED,
-                &value(vec![
-                    t("reference-1"),
-                    t("channel-1"),
-                    t("channel-2"),
-                    t(lower.0),
-                    t(lower.1),
-                    t(high.0),
-                    t(high.1),
-                    t("revision-1"),
-                ]),
-            )
-        };
-        assert!(range(("a0", ""), ("a0", "item-1")).is_ok());
-        assert!(range(("a0", "item-1"), ("a0", "item-1")).is_ok());
-        assert!(range(("a0", "item-1"), ("a1", "")).is_ok());
-        assert!(range(("a1", ""), ("a0", "item-1")).is_err());
-        assert!(range(("a0", "item-2"), ("a0", "item-1")).is_err());
-        assert!(range(("!", ""), ("a0", "item-1")).is_err());
-        assert!(range(("a0", ""), ("a", "item-1")).is_err());
-
-        let empty = adapter.validate(
-            CHANNEL_TARGETS_TABLE,
-            timeline_group::CREATED,
-            &value(vec![
-                t("reference-1"),
-                t("channel-1"),
-                t("channel-2"),
-                Field::Null,
-                Field::Null,
-                Field::Null,
-                Field::Null,
-                Field::Null,
-            ]),
-        );
-        assert!(empty.is_ok());
-    }
-
-    fn attachment_row(kind: &str, mime: &str, size: i64) -> OwnedRow {
-        OwnedRow::flat(vec![
-            t("attachment-1"),
-            t("working-folder:project-1"),
-            t(kind),
-            t("screen.png"),
-            t(mime),
-            Field::Integer(size),
-            t(&"a".repeat(64)),
-        ])
-    }
-
-    fn attachments_value(rows: &[OwnedRow]) -> Value {
-        value(vec![Field::Blob(
-            codec::encode(&ATTACHMENT_REFERENCES, rows).unwrap(),
-        )])
-    }
-
-    #[test]
-    fn chat_attachments_round_trip_and_mirror_the_reference_checks() {
-        let adapter = ChatAdapter;
-        let rows = vec![
-            attachment_row("image", "image/png", 8),
-            attachment_row("text_snippet", "text/plain", 0),
-        ];
-        let encoded = codec::encode(&ATTACHMENT_REFERENCES, &rows).unwrap();
-        assert_eq!(
-            codec::decode(&ATTACHMENT_REFERENCES, &encoded).unwrap(),
-            rows
-        );
-
-        let check = |rows: &[OwnedRow]| {
-            adapter.validate(
-                REVISIONS_TABLE,
-                timeline_group::ATTACHMENTS,
-                &attachments_value(rows),
-            )
-        };
-        assert_eq!(check(&rows), Ok(()));
-        assert_eq!(check(&[]), Ok(()));
-        let limit = i64::from(MAX_ATTACHMENT_BYTES);
-        assert_eq!(
-            check(&[attachment_row("image", "image/gif", limit)]),
-            Ok(())
-        );
-        let oversized = attachment_row("image", "image/png", limit + 1);
-        assert!(codec::encode(&ATTACHMENT_REFERENCES, &[oversized]).is_err());
-        assert!(check(&[attachment_row("image", "image/png", 0)]).is_err());
-        assert!(check(&[attachment_row("text_snippet", "image/png", 8)]).is_err());
-        assert!(check(&[attachment_row("image", "application/pdf", 8)]).is_err());
-
-        let mut upper_digest = attachment_row("image", "image/png", 8);
-        upper_digest.fields[6] = t(&"A".repeat(64));
-        assert!(check(&[upper_digest]).is_err());
-        let mut long_id = attachment_row("image", "image/png", 8);
-        long_id.fields[0] = t(&"x".repeat(MAX_ATTACHMENT_ID_CHARS + 1));
-        assert!(codec::encode(&ATTACHMENT_REFERENCES, &[long_id]).is_err());
-        let too_many = vec![attachment_row("image", "image/png", 8); MAX_MESSAGE_ATTACHMENTS + 1];
-        assert!(codec::encode(&ATTACHMENT_REFERENCES, &too_many).is_err());
-    }
-
-    #[test]
-    fn chat_attachment_asset_refs_skip_empty_snippets() {
-        let adapter = ChatAdapter;
-        assert_eq!(
-            adapter.asset_groups(REVISIONS_TABLE),
-            &[timeline_group::ATTACHMENTS]
-        );
-        let refs = adapter
-            .asset_refs(
-                REVISIONS_TABLE,
-                timeline_group::ATTACHMENTS,
-                &attachments_value(&[
-                    attachment_row("image", "image/png", 8),
-                    attachment_row("text_snippet", "text/plain", 0),
-                ]),
-            )
-            .unwrap();
-        assert_eq!(refs.len(), 1, "an empty text snippet has no file");
-        assert_eq!(refs[0].class().name, "chat/attachments");
-        assert_eq!(refs[0].content_type(), "image/png");
-        assert_eq!(refs[0].byte_size(), 8);
-        assert_eq!(refs[0].file_name(), format!("{}.png", "a".repeat(64)));
-        assert!(
-            adapter
-                .asset_refs(
-                    REVISIONS_TABLE,
-                    timeline_group::CREATED,
-                    &value(vec![t("body")])
-                )
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    /// A create of access profile `id` carrying `builtin_key`.
-    fn profile_create(id: &str, builtin_key: Option<&str>) -> Change {
-        let group = |group, fields| GroupValue::new(PROFILES_TABLE, group, value(fields));
-        Change {
-            table: PROFILES_TABLE,
-            row: RowKey::new(id).unwrap(),
-            action: ChangeAction::Create,
-            groups: vec![
-                group(profile_group::CREATED, vec![optional(builtin_key), t(AT)]),
-                group(profile_group::NAME, vec![t("Claim")]),
-                group(profile_group::CURRENT, vec![Field::Null, Field::Null]),
-                group(profile_group::LIFECYCLE, vec![Field::Null]),
-                group(profile_group::UPDATED, vec![t(AT)]),
-            ],
-            replaced_by: None,
-            cause: None,
-        }
-    }
-
-    #[test]
-    fn custom_profile_claiming_builtin_key_is_held_invalid() {
-        let engine = Engine::vault();
-        for id in ["access-profile:aaa", "access-profile:zzz"] {
-            for key in BUILTIN_PROFILE_KEYS {
-                assert_eq!(
-                    validate::change(&engine, &profile_create(id, Some(key))),
-                    Err("chat built-in profile identity"),
-                    "{id} {key}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn seeded_id_with_wrong_key_is_held_invalid() {
-        let engine = Engine::vault();
-        for key in [Some("edit_files"), None] {
-            assert_eq!(
-                validate::change(&engine, &profile_create("access-profile:read-only", key)),
-                Err("chat built-in profile identity"),
-                "{key:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn custom_profile_with_null_key_stays_valid() {
-        let engine = Engine::vault();
-        assert_eq!(
-            validate::change(&engine, &profile_create("access-profile:reviewers", None)),
-            Ok(())
-        );
-    }
-
-    /// Text the stored-row readers refuse, each long enough for the table length check.
-    const NOT_UTC_TIMESTAMPS: [&str; 5] = [
-        "not a timestamp at all, honestly",
-        "2026-10-24t10:51:41.000Z",
-        "2026-10-24 10:51:41.000Z",
-        "2026-10-24T10:51:41.000+02:00",
-        "2026-10-24T10:51:60.000Z",
-    ];
-
-    #[test]
-    fn chat_timestamps_must_be_rfc3339_utc() {
-        let engine = Engine::vault();
-        let adapter = ChatAdapter;
-        for bad in NOT_UTC_TIMESTAMPS {
-            let mut forged = profile_create("access-profile:reviewers", None);
-            forged.groups[0] = GroupValue::new(
-                PROFILES_TABLE,
-                profile_group::CREATED,
-                value(vec![Field::Null, t(bad)]),
-            );
-            assert!(validate::change(&engine, &forged).is_err(), "created {bad}");
-
-            for (table, group) in [
-                (PROFILES_TABLE, profile_group::UPDATED),
-                (PROFILES_TABLE, profile_group::LIFECYCLE),
-                (CHANNELS_TABLE, channel_group::UPDATED),
-                (CHANNELS_TABLE, channel_group::LIFECYCLE),
-                (CONVERSATIONS_TABLE, conversation_group::ACTIVITY),
-                (MESSAGES_TABLE, message_group::LIFECYCLE),
-                (CONVERSATION_CURSORS_TABLE, read_cursor_group::UPDATED),
-                (SCHEDULED_TABLE, scheduled_group::UPDATED),
-                (ASSIGNMENTS_TABLE, assignment_group::UPDATED),
-            ] {
-                assert!(
-                    adapter
-                        .validate(table, group, &value(vec![t(bad)]))
-                        .is_err(),
-                    "{table:?} {group:?} {bad}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn chat_timestamps_accept_the_forms_honest_writers_store() {
-        let engine = Engine::vault();
-        let adapter = ChatAdapter;
-        for good in [AT, "2026-10-24T10:51:41Z", "2026-10-24T10:51:41.000+00:00"] {
-            let mut honest = profile_create("access-profile:reviewers", None);
-            honest.groups[0] = GroupValue::new(
-                PROFILES_TABLE,
-                profile_group::CREATED,
-                value(vec![Field::Null, t(good)]),
-            );
-            assert_eq!(validate::change(&engine, &honest), Ok(()), "created {good}");
-            assert!(
-                adapter
-                    .validate(
-                        MESSAGES_TABLE,
-                        message_group::LIFECYCLE,
-                        &value(vec![t(good)])
-                    )
-                    .is_ok(),
-                "{good}"
-            );
-        }
-        assert!(
-            adapter
-                .validate(
-                    MESSAGES_TABLE,
-                    message_group::LIFECYCLE,
-                    &value(vec![Field::Null])
-                )
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn recovered_chat_rows_present_their_names() {
-        let adapter = ChatAdapter;
-        let channel = adapter.presentation(
-            CHANNELS_TABLE,
-            &[(
-                channel_group::DETAILS,
-                value(vec![t("design"), t("Mockups\n and  reviews")]),
-            )],
-        );
-        assert_eq!(channel.title, "design");
-        assert_eq!(channel.preview, "Mockups and reviews");
-        let teammate = adapter.presentation(
-            TEAMMATES_TABLE,
-            &[(
-                teammate_group::PROFILE,
-                value(vec![t("Reviewer"), t("Check every diff")]),
-            )],
-        );
-        assert_eq!(
-            teammate,
-            Presentation {
-                title: "Reviewer".to_string(),
-                preview: String::new(),
-            }
-        );
-        let participant = adapter.presentation(
-            PARTICIPANTS_TABLE,
-            &[(
-                participant_group::PROFILE,
-                value(vec![t("Ana"), Field::Integer(1), t("{}")]),
-            )],
-        );
-        assert_eq!(participant.title, "Ana");
-        assert_eq!(
-            adapter.presentation(
-                MESSAGES_TABLE,
-                &[(
-                    message_group::CONTENT,
-                    value(vec![t("revision-1"), Field::Null])
-                )],
-            ),
-            Presentation::default()
-        );
-    }
-}
+mod tests;

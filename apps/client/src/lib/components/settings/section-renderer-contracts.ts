@@ -1,6 +1,6 @@
 import type {
   ChatProviderSetupTarget,
-  ChatSettingsSubsection,
+  AgentsSettingsSubsection,
   DistractionsLimitEditorTarget,
   DistractionsSettingsTab,
   NotesTransferOperation,
@@ -14,14 +14,11 @@ export interface SettingsSectionRendererProps {
   readonly activeSection: SectionId;
   readonly initialDistractionsTab?: DistractionsSettingsTab;
   readonly initialContactsTab?: ContactsSettingsTab;
-  readonly activeChatSubsection: ChatSettingsSubsection;
-  readonly initialChatTeammateId?: string;
-  readonly initialChatChannelId?: string;
-  readonly initialChatCreateTeammate?: boolean;
+  readonly activeAgentsSubsection: AgentsSettingsSubsection;
   readonly onOpenDistractionsLimitEditor: (target: DistractionsLimitEditorTarget) => void;
   readonly onOpenNotesTransferPanel: (operation: NotesTransferOperation) => void;
   readonly onOpenChatProviderSetup: (target: ChatProviderSetupTarget) => void;
-  readonly onChatSubsectionChange: (subsection: ChatSettingsSubsection) => void;
+  readonly onAgentsSubsectionChange: (subsection: AgentsSettingsSubsection) => void;
   readonly onRequestNavigation: (navigate: () => void) => void;
   readonly onDraftStateChange: (draft: SettingsDraftKind | null) => void;
 }

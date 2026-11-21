@@ -16,14 +16,30 @@
   import Plus from "@lucide/svelte/icons/plus";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
-  import type { BrowserTabBounds, BrowserTabRead } from "$lib/chat/contracts";
+  import type {
+    BrowserTabBounds,
+    BrowserTabRead,
+    ChatChannelId,
+    ProjectWorkingFolderId,
+  } from "$lib/chat/contracts";
   import { urlReach } from "$lib/chat/workspace/loopback";
+  import { requestConfirmation, type ConfirmationRequest } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import { LocalizedError } from "$lib/i18n/user-errors";
   import { useChat } from "$lib/stores/chat.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   type ViewportPreset = "responsive" | "mobile" | "tablet" | "desktop";
 
+  interface Props {
+    /** Channel whose terminals announce preview servers. */
+    channelId: ChatChannelId | null;
+    /** Working folder the panel targets. */
+    workingFolderId: ProjectWorkingFolderId | null;
+  }
+
+  const { channelId, workingFolderId }: Props = $props();
   const { t } = getLocalization();
   const chat = useChat();
   let viewport: HTMLDivElement | undefined = $state();
@@ -43,6 +59,7 @@
   let preset: ViewportPreset = $state("responsive");
   let resizeObserver: ResizeObserver | null = null;
   let resizeFrame: number | null = null;
+  let destroyed = false;
   const threadId = $derived(chat.selectedThreadId ?? chat.draftThreadId);
   const currentOrigin = $derived(externalOrigin(browserTab));
   const modelAllowed = $derived(currentOrigin !== null && modelOrigins.includes(currentOrigin));
@@ -156,7 +173,27 @@
     void loadStoredBrowserTab(selectedThreadId);
   });
 
+  /**
+   * Asks in the shared dialog with the native preview hidden, because the preview webview draws above the app and
+   * would cover the dialog. The preview shows again afterwards when the same tab is still selected.
+   */
+  async function confirmWithPreviewHidden(request: ConfirmationRequest): Promise<boolean> {
+    const hiddenThread = browserTab?.visible ? threadId : null;
+    const hiddenTab = browserTab?.visible ? tabId : null;
+    if (hiddenThread && hiddenTab) await chatApi.setBrowserTabVisible(hiddenThread, hiddenTab, false).catch(() => undefined);
+    try {
+      return await requestConfirmation(request);
+    } finally {
+      if (hiddenThread && hiddenTab && !destroyed && threadId === hiddenThread && tabId === hiddenTab && browserTab?.visible) {
+        await chatApi.setBrowserTabVisible(hiddenThread, hiddenTab, true)
+          .then((shown) => { if (threadId === hiddenThread && tabId === hiddenTab) browserTab = shown; })
+          .catch(() => undefined);
+      }
+    }
+  }
+
   onDestroy(() => {
+    destroyed = true;
     resizeObserver?.disconnect();
     if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
     if (threadId && tabId && browserTab?.visible) {
@@ -169,12 +206,7 @@
   });
 
   function message(reason: unknown): string {
-    if (reason instanceof Error) return reason.message;
-    if (typeof reason === "object" && reason !== null && "message" in reason) {
-      const value = (reason as { message?: unknown }).message;
-      if (typeof value === "string") return value;
-    }
-    return t("chat.browser.unavailable");
+    return chatErrorMessage(reason, t("chat.browser.unavailable"));
   }
 
   async function loadStoredBrowserTab(selectedThreadId: string | null): Promise<void> {
@@ -250,9 +282,13 @@
   async function navigate(): Promise<void> {
     if (!threadId || !tabId || !url.trim() || loading) return;
     const destination = normalizedUrl(url);
-    const externalConfirmed = !isExternal(destination)
-      || window.confirm(t("chat.browser.confirmExternal", destination));
-    if (!externalConfirmed) return;
+    const selectedThread = threadId;
+    const selectedTab = tabId;
+    const externalConfirmed = !isExternal(destination) || await confirmWithPreviewHidden({
+      message: t("chat.browser.confirmExternal", destination),
+      confirmLabel: t("chat.browser.confirmExternalAllow"),
+    });
+    if (!externalConfirmed || threadId !== selectedThread || tabId !== selectedTab || loading) return;
     loading = true;
     error = null;
     try {
@@ -334,7 +370,7 @@
   }
 
   function currentBounds(): BrowserTabBounds {
-    if (!viewport) throw new Error(t("chat.browser.unavailable"));
+    if (!viewport) throw new LocalizedError(t("chat.browser.unavailable"));
     const container = viewport.getBoundingClientRect();
     const target = presetSize(container.width, container.height, preset);
     return {
@@ -401,7 +437,13 @@
     if (!threadId || !tabId || !browserTab?.visible || loading) return;
     const selectedThread = threadId;
     const selectedTab = tabId;
-    if (!recording && !window.confirm(t("chat.browser.recordingConfirm"))) return;
+    if (!recording) {
+      const confirmed = await confirmWithPreviewHidden({
+        message: t("chat.browser.recordingConfirm"),
+        confirmLabel: t("chat.browser.recordingStart"),
+      });
+      if (!confirmed || threadId !== selectedThread || tabId !== selectedTab || !browserTab?.visible || loading) return;
+    }
     loading = true;
     error = null;
     try {
@@ -433,11 +475,11 @@
   }
 
   async function discoverServers(): Promise<void> {
-    if (!threadId || loading) return;
+    if (!channelId || !workingFolderId || loading) return;
     loading = true;
     error = null;
     try {
-      discoveredServers = await chatApi.discoverPreviewServers(threadId);
+      discoveredServers = await chatApi.discoverPreviewServers(channelId, workingFolderId);
       if (discoveredServers.length === 0) artifactStatus = t("chat.browser.noServers");
     } catch (reason) {
       error = message(reason);
@@ -462,7 +504,7 @@
     <button type="button" class="chat-icon-button" disabled={!browserTab?.visible} aria-label={t("chat.browser.forward")} title={t("chat.browser.forward")} onclick={() => { const selectedThread = threadId; const selectedTab = tabId; if (selectedThread && selectedTab) void control(() => chatApi.browserForward(selectedThread, selectedTab)); }}><ArrowRight size={14} /></button>
     <button type="button" class="chat-icon-button" disabled={!browserTab?.visible} aria-label={t("chat.browser.refresh")} title={t("chat.browser.refresh")} onclick={() => { const selectedThread = threadId; const selectedTab = tabId; if (selectedThread && selectedTab) void control(() => chatApi.refreshBrowserTab(selectedThread, selectedTab)); }}><RefreshCw size={14} /></button>
     <input class="field" bind:value={url} autocomplete="url" spellcheck="false" aria-label={t("chat.browser.url")} placeholder={t("chat.browser.urlPlaceholder")} />
-    <button type="button" class="chat-icon-button" disabled={!threadId || loading} aria-label={t("chat.browser.discoverServers")} title={t("chat.browser.discoverServers")} onclick={() => void discoverServers()}><Search size={14} /></button>
+    <button type="button" class="chat-icon-button" disabled={!channelId || !workingFolderId || loading} aria-label={t("chat.browser.discoverServers")} title={t("chat.browser.discoverServers")} onclick={() => void discoverServers()}><Search size={14} /></button>
     <button type="submit" class="chat-icon-button" disabled={!url.trim() || loading} aria-label={t("chat.browser.open")} title={t("chat.browser.open")}><ExternalLink size={14} /></button>
   </form>
   {#if discoveredServers.length > 0}

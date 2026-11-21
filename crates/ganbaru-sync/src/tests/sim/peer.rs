@@ -23,6 +23,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Mutex, PoisonError};
 
 use ganbaru_sync_contracts::{
     AdminKeyPair, DeviceRole, Entry, Envelope, LateResolution, LateRow, ProposalRejection, Remove,
@@ -1612,7 +1613,7 @@ async fn run(seed: u64) -> BTreeMap<&'static str, u64> {
     peers.tally
 }
 
-/// Scenarios every shard of the default seed count must run at least once.
+/// Scenarios the shards of the default seed count must run at least once between them.
 const EXPECTED: &[&str] = &[
     "exchange between members",
     "partition",
@@ -1632,6 +1633,10 @@ const EXPECTED: &[&str] = &[
     "late change discarded",
 ];
 
+/// Shards of the default seed count that finished, and the scenarios they ran together.
+static FINISHED: Mutex<(BTreeSet<u64>, BTreeMap<&'static str, u64>)> =
+    Mutex::new((BTreeSet::new(), BTreeMap::new()));
+
 fn run_shard(shard: u64) {
     block_on(async {
         let mut tally: BTreeMap<&'static str, u64> = BTreeMap::new();
@@ -1642,11 +1647,22 @@ fn run_shard(shard: u64) {
             }
             runs += 1;
         }
-        if number(SEED_VARIABLE).is_none() && runs >= DEFAULT_SEEDS / SHARDS {
+        if number(SEED_VARIABLE).is_some() || runs < DEFAULT_SEEDS / SHARDS {
+            return;
+        }
+        // The shard that finishes last checks the scenarios of every shard, so a run of only
+        // some shards checks nothing.
+        let mut finished = FINISHED.lock().unwrap_or_else(PoisonError::into_inner);
+        let (shards, combined) = &mut *finished;
+        shards.insert(shard);
+        for (scenario, count) in tally {
+            *combined.entry(scenario).or_default() += count;
+        }
+        if shards.len() == SHARDS as usize {
             for scenario in EXPECTED {
                 assert!(
-                    tally.contains_key(scenario),
-                    "shard {shard} never ran scenario {scenario}: {tally:?}"
+                    combined.contains_key(scenario),
+                    "the shards never ran scenario {scenario}: {combined:?}"
                 );
             }
         }

@@ -6,7 +6,6 @@ import {
   integrationCompany,
   modelCompany,
   modelCompanyForIdentity,
-  shouldShowModelId,
   type ModelCompanyId,
 } from "./model-company";
 
@@ -19,7 +18,6 @@ function model(id: string, displayName = id): ProviderModel {
     availability: "available",
     capabilities: [],
     options: [],
-    custom: false,
   };
 }
 
@@ -30,6 +28,13 @@ describe("Chat model companies", () => {
     expect(integrationCompany("grok").name).toBe("xAI");
     expect(integrationCompany("cursor").name).toBe("Cursor");
     expect(integrationCompany("opencode").name).toBe("OpenCode");
+  });
+
+  it("groups unrecognized generic ACP agent models under the protocol", () => {
+    expect(integrationCompany("acp").name).toBe("ACP");
+    expect(modelCompany("acp", model("agent-small")).id).toBe("acp");
+    expect(modelCompany("acp", model("claude-sonnet-4-5")).id).toBe("anthropic");
+    expect(modelCompanyForIdentity("acp", null).id).toBe("acp");
   });
 
   it("infers companies from stored model identities without a catalog row", () => {
@@ -45,20 +50,14 @@ describe("Chat model companies", () => {
     expect(modelCompany("cursor", model("composer-2")).name).toBe("Cursor");
   });
 
-  it("hides exact IDs that only repeat the formatted display name", () => {
-    expect(shouldShowModelId(model("gpt-5.6-sol", "GPT-5.6-Sol"))).toBe(false);
-    expect(shouldShowModelId(model("claude_4_5_sonnet", "Claude 4.5 Sonnet"))).toBe(false);
-  });
-
-  it("hides provider-managed aliases and keeps distinct custom model IDs", () => {
-    expect(shouldShowModelId(model("anthropic/claude-sonnet-4-5", "Claude Sonnet 4.5"))).toBe(false);
-    expect(shouldShowModelId(model("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5"))).toBe(false);
-    expect(shouldShowModelId(model("default", "Claude Opus 4.8"))).toBe(false);
-    expect(shouldShowModelId({ ...model("team-model-id", "Team model"), custom: true })).toBe(true);
-  });
-
-  it("formats provider display names without identifier-style hyphens", () => {
-    expect(formatModelDisplayName("GPT-5.6-Sol")).toBe("GPT 5.6 Sol");
+  it("formats provider display names without hyphens and with an OpenAI line before its version", () => {
+    expect(formatModelDisplayName("GPT-5.6-Sol")).toBe("Sol 5.6");
+    expect(formatModelDisplayName("GPT-6-Luna")).toBe("Luna 6");
+    expect(formatModelDisplayName("GPT-5 mini")).toBe("mini 5");
+    expect(formatModelDisplayName("GPT-5")).toBe("GPT 5");
+    expect(formatModelDisplayName("5.6 Sol")).toBe("Sol 5.6");
+    expect(formatModelDisplayName("GPT Image 1")).toBe("GPT Image 1");
+    expect(formatModelDisplayName("gpt-oss-120b")).toBe("gpt oss 120b");
     expect(formatModelDisplayName("Claude-Sonnet-4.5")).toBe("Claude Sonnet 4.5");
   });
 
@@ -69,7 +68,9 @@ describe("Chat model companies", () => {
       model("gpt-5.5", "GPT-5.5"),
       model("gpt-5.6-luna", "GPT-5.6-Luna"),
       model("gpt-5.6-sol", "GPT-5.6-Sol"),
+      model("gpt-5.6-astra", "GPT-5.6-Astra"),
     ])).toEqual([
+      "gpt-5.6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -83,8 +84,10 @@ describe("Chat model companies", () => {
       model("haiku", "Haiku 4.5"),
       model("sonnet", "Sonnet 5"),
       model("opus-old", "Opus 4.7"),
-      model("default", "Opus 4.8"),
-    ])).toEqual(["default", "opus-old", "sonnet", "haiku"]);
+      model("opus", "Opus 4.8"),
+      model("fable", "Fable 5.2"),
+    ])).toEqual(["fable", "opus", "opus-old", "sonnet", "haiku"]);
+    expect(modelCompany("cursor", model("claude-fable-5-thinking-high", "Fable 5 Thinking High")).id).toBe("anthropic");
   });
 
   it("keeps Grok Build ahead of general and retired coding families", () => {

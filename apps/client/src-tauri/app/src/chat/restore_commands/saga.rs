@@ -1,4 +1,6 @@
 use super::*;
+use ganbaru_chat::runtime::ThreadRuntimeOwner;
+use ganbaru_chat_contracts::models::ChatProjectionKey;
 use ganbaru_chat_contracts::models::ProviderSessionState;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,42 +117,9 @@ pub(super) async fn execute_restore(
             true,
         ));
     }
-    let refreshed = owner.snapshot()?;
-    let target_turn_id = target_turn_id(pool, &request.thread_id, target.turn_count).await?;
-    let provider_cursor = match target_turn_id.as_ref() {
-        Some(turn_id) => stored_provider_rollback_cursor(pool, &request.thread_id, turn_id).await?,
-        None => None,
-    };
-    let provider_history_action = if refreshed
-        .capabilities
-        .supports(ProviderCapability::NativeRollback)
-        && refreshed.session_id.is_some()
-        && refreshed.session_state == ProviderSessionState::Ready
-        && provider_cursor.is_some()
-    {
-        failure_phase = RestoreFailurePhase::ProviderRollback;
-        owner
-            .rollback(
-                RollbackRequest {
-                    command: request.command.clone(),
-                    session_id: refreshed
-                        .session_id
-                        .clone()
-                        .ok_or_else(restore_worker_error)?,
-                    checkpoint_id: Some(target.id.clone()),
-                    provider_cursor,
-                    target_turn_id,
-                },
-                operation_context("restore-provider-rollback", Duration::from_secs(30)),
-            )
-            .await?;
-        "rolled_back"
-    } else {
-        "fork_required"
-    };
-    if provider_history_action == "fork_required" {
-        failure_phase = RestoreFailurePhase::WorkspaceRestore;
-    }
+    let alignment =
+        align_provider_history(&owner, pool, request, &target, &mut failure_phase).await?;
+    let provider_history_action = alignment.action;
     let restore_folder = authorized.clone();
     let current_for_restore = current.clone();
     let target_for_restore = target.clone();
@@ -177,7 +146,7 @@ pub(super) async fn execute_restore(
             true,
         ));
     }
-    if provider_history_action == "fork_required" && refreshed.session_id.is_some() {
+    if provider_history_action == "fork_required" && alignment.had_session {
         let _ = owner
             .stop_session(
                 true,
@@ -235,6 +204,13 @@ pub(super) async fn execute_restore(
         }
     };
     mark_preview_state(pool, &preview.id, "completed", now).await?;
+    crate::chat::ingestion::notify_rows_changed(
+        app,
+        pool,
+        &request.thread_id,
+        &[ChatProjectionKey::Thread, ChatProjectionKey::Turns],
+    )
+    .await;
     let thread_revision: i64 = sqlx::query_scalar("SELECT revision FROM chat_threads WHERE id = ?")
         .bind(request.thread_id.as_str())
         .fetch_one(pool)
@@ -263,3 +239,64 @@ pub(super) async fn execute_restore(
     }
     execution
 }
+
+/// How a restore reconciled the provider's native history with the kept turns.
+pub(super) struct ProviderHistoryAlignment {
+    /// `rolled_back` when the provider rewound its own thread, otherwise `fork_required`.
+    pub(super) action: &'static str,
+    /// Whether a provider session was attached when the restore reached the provider.
+    pub(super) had_session: bool,
+}
+
+/// Rewinds the provider's native thread to the last turn the checkpoint keeps when the session
+/// supports native rollback and that turn stored a provider cursor; otherwise the restore forks
+/// the provider conversation. Updates `failure_phase` before each step that changes state.
+pub(super) async fn align_provider_history(
+    owner: &ThreadRuntimeOwner,
+    pool: &SqlitePool,
+    request: &ExecuteChatRestoreRequest,
+    target: &StoredCheckpoint,
+    failure_phase: &mut RestoreFailurePhase,
+) -> ChatResult<ProviderHistoryAlignment> {
+    let refreshed = owner.snapshot()?;
+    let had_session = refreshed.session_id.is_some();
+    let target_turn_id = target_turn_id(pool, &request.thread_id, target.turn_count).await?;
+    let provider_cursor = match target_turn_id.as_ref() {
+        Some(turn_id) => stored_provider_rollback_cursor(pool, &request.thread_id, turn_id).await?,
+        None => None,
+    };
+    let rollback_session = refreshed.session_id.filter(|_| {
+        refreshed
+            .capabilities
+            .supports(ProviderCapability::NativeRollback)
+            && refreshed.session_state == ProviderSessionState::Ready
+            && provider_cursor.is_some()
+    });
+    let Some(session_id) = rollback_session else {
+        *failure_phase = RestoreFailurePhase::WorkspaceRestore;
+        return Ok(ProviderHistoryAlignment {
+            action: "fork_required",
+            had_session,
+        });
+    };
+    *failure_phase = RestoreFailurePhase::ProviderRollback;
+    owner
+        .rollback(
+            RollbackRequest {
+                command: request.command.clone(),
+                session_id,
+                checkpoint_id: Some(target.id.clone()),
+                provider_cursor,
+                target_turn_id,
+            },
+            operation_context("restore-provider-rollback", Duration::from_secs(30)),
+        )
+        .await?;
+    Ok(ProviderHistoryAlignment {
+        action: "rolled_back",
+        had_session,
+    })
+}
+
+#[cfg(test)]
+mod tests;

@@ -1,11 +1,12 @@
 //! Typed Codex app-server request builders and response decoders.
 
-use super::organizational::{ORGANIZATIONAL_PERMISSION_PROFILE, organizational_safety};
+use super::organizational::{CodexOrganizationalAccess, organizational_safety};
 use super::transport::CodexRpcFailure;
 use crate::models::{
-    ChatError, ChatResult, InteractionMode, ModelAvailability, ModelChoiceOption, ModelId,
-    ModelOptionDefinition, ModelOptionSelection, ModelOptionValue, ProviderCapability,
-    ProviderModel, SafetyMode, SendTurnRequest, TurnModeSnapshot,
+    ChatError, ChatResult, InteractionMode, MAX_DEVELOPER_INSTRUCTIONS_BYTES, ModelAvailability,
+    ModelChoiceOption, ModelId, ModelOptionDefinition, ModelOptionSelection, ModelOptionValue,
+    ProviderAccountPlan, ProviderCapability, ProviderModel, SafetyMode, SendTurnRequest,
+    TurnModeSnapshot,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -14,12 +15,59 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The oldest Codex app server that has every method Ganbaru sends, including `thread/revert`
+/// and `thread/turns/list`, which replaced `thread/rollback`.
+pub const MINIMUM_CODEX_VERSION: &str = "0.156.0";
+/// Codex app servers from the minimum to the version the vendored schema and the Codex replay
+/// scenarios were taken from, below the first major line Ganbaru has no runtime for.
+pub const CODEX_COMPATIBILITY: crate::registry::ProviderCompatibilityRange =
+    crate::registry::ProviderCompatibilityRange {
+        minimum: MINIMUM_CODEX_VERSION,
+        maximum_tested: "0.167.1",
+        ceiling_exclusive: Some("1.0.0"),
+    };
+
+/// Every client request and notification method Ganbaru sends to Codex. The protocol coverage
+/// test checks each entry against the vendored schema and every method literal the driver sends
+/// against this list.
+#[cfg(test)]
+pub(super) const CODEX_CLIENT_REQUEST_METHODS: &[&str] = &[
+    "initialize",
+    "initialized",
+    "account/read",
+    "account/rateLimits/read",
+    "config/read",
+    "config/mcpServer/reload",
+    "mcpServerStatus/list",
+    "model/list",
+    "permissionProfile/list",
+    "review/start",
+    "thread/start",
+    "thread/resume",
+    "thread/read",
+    "thread/turns/list",
+    "thread/revert",
+    "thread/fork",
+    "thread/name/set",
+    "thread/archive",
+    "thread/delete",
+    "thread/unsubscribe",
+    "thread/compact/start",
+    "thread/goal/get",
+    "thread/goal/set",
+    "thread/goal/clear",
+    "turn/start",
+    "turn/steer",
+    "turn/interrupt",
+];
+
 const MAX_PROMPT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
-const MAX_DEVELOPER_INSTRUCTIONS_BYTES: usize = 64 * 1024;
 const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_MODEL_OPTIONS: usize = 32;
 const STANDARD_SERVICE_TIER: &str = "standard";
+/// The `ReasoningSummary` value each turn requests, so reasoning models stream full summaries.
+const REASONING_SUMMARY: &str = "detailed";
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,9 +140,23 @@ pub struct CodexAccount {
     #[serde(rename = "type")]
     pub account_type: String,
     pub email: Option<String>,
-    // Deserialized to validate the provider's advertised account wire shape.
-    #[allow(dead_code)]
     pub plan_type: Option<String>,
+}
+
+impl CodexAccount {
+    /// The account's plan: an API key account bills per use, and a ChatGPT account names its
+    /// plan, where every named plan but `free` is paid and `unknown` tells nothing.
+    pub fn plan(&self) -> Option<ProviderAccountPlan> {
+        if self.account_type.eq_ignore_ascii_case("apikey") {
+            return Some(ProviderAccountPlan::ApiKey);
+        }
+        match self.plan_type.as_deref().map(str::trim)? {
+            "" => None,
+            plan if plan.eq_ignore_ascii_case("unknown") => None,
+            plan if plan.eq_ignore_ascii_case("free") => Some(ProviderAccountPlan::Free),
+            _ => Some(ProviderAccountPlan::Subscription),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -314,7 +376,7 @@ pub fn thread_open_params(
     modes: TurnModeSnapshot,
     model_id: Option<&ModelId>,
     developer_instructions: Option<&str>,
-    organizational: bool,
+    organizational: Option<CodexOrganizationalAccess>,
 ) -> ChatResult<Value> {
     validate_optional_text(
         developer_instructions,
@@ -325,7 +387,7 @@ pub fn thread_open_params(
         "cwd".to_string(),
         Value::String(workspace.to_string_lossy().into_owned()),
     )]);
-    if organizational {
+    if let Some(access) = organizational {
         let safety = organizational_safety(modes.safety_mode)?;
         params.insert(
             "approvalPolicy".to_string(),
@@ -337,7 +399,7 @@ pub fn thread_open_params(
         );
         params.insert(
             "permissions".to_string(),
-            Value::String(ORGANIZATIONAL_PERMISSION_PROFILE.to_string()),
+            Value::String(access.permission_profile().to_string()),
         );
         params.insert(
             "runtimeWorkspaceRoots".to_string(),
@@ -402,13 +464,20 @@ pub fn preset_network_access(mode: SafetyMode) -> Option<bool> {
     safety_settings(mode).map(|settings| settings.turn_sandbox_type == "dangerFullAccess")
 }
 
+/// The `turn/start` parameters for `request`.
+///
+/// `instructions_at_open` reports that the live thread received these same developer
+/// instructions through `thread/start` or `thread/resume`. The collaboration settings then omit
+/// them, so the per-turn copy is only the fallback for a thread opened without them or with
+/// different ones.
 pub fn turn_start_params(
     provider_thread_id: &str,
     workspace: &Path,
     fallback_model: &str,
     request: &SendTurnRequest,
     custom_safety: Option<&CodexCustomSafetySettings>,
-    organizational: bool,
+    organizational: Option<CodexOrganizationalAccess>,
+    instructions_at_open: bool,
 ) -> ChatResult<Value> {
     if request.prompt.len() > MAX_PROMPT_BYTES || request.prompt.contains('\0') {
         return Err(ChatError::validation(
@@ -495,7 +564,7 @@ pub fn turn_start_params(
             Value::String(request.turn_id.as_str().to_string()),
         ),
     ]);
-    if organizational {
+    if let Some(access) = organizational {
         let safety = organizational_safety(request.modes.safety_mode)?;
         params.insert(
             "approvalPolicy".to_string(),
@@ -507,7 +576,7 @@ pub fn turn_start_params(
         );
         params.insert(
             "permissions".to_string(),
-            Value::String(ORGANIZATIONAL_PERMISSION_PROFILE.to_string()),
+            Value::String(access.permission_profile().to_string()),
         );
         params.insert(
             "runtimeWorkspaceRoots".to_string(),
@@ -569,6 +638,12 @@ pub fn turn_start_params(
     if let Some(service_tier) = service_tier.filter(|tier| tier != STANDARD_SERVICE_TIER) {
         params.insert("serviceTier".to_string(), Value::String(service_tier));
     }
+    // The Codex model list has no per-model summary field, and every Codex model advertises
+    // reasoning summaries, so each turn asks for the detailed stream.
+    params.insert(
+        "summary".to_string(),
+        Value::String(REASONING_SUMMARY.to_string()),
+    );
     let collaboration_model = request
         .model_id
         .as_ref()
@@ -582,7 +657,11 @@ pub fn turn_start_params(
     if let Some(effort) = effort {
         collaboration_settings.insert("reasoning_effort".to_string(), Value::String(effort));
     }
-    if let Some(instructions) = request.developer_instructions.as_ref() {
+    if let Some(instructions) = request
+        .developer_instructions
+        .as_ref()
+        .filter(|_| !instructions_at_open)
+    {
         collaboration_settings.insert(
             "developer_instructions".to_string(),
             Value::String(instructions.clone()),
@@ -697,24 +776,6 @@ pub fn provider_model(model: CodexModel) -> ChatResult<ProviderModel> {
         },
         capabilities,
         options,
-        custom: false,
-    })
-}
-
-pub fn custom_provider_model(
-    model_id: &str,
-    display_name: Option<&str>,
-) -> ChatResult<ProviderModel> {
-    validate_model_id(model_id)?;
-    Ok(ProviderModel {
-        id: ModelId::new(model_id.to_string()).map_err(identifier_error)?,
-        display_name: display_name.unwrap_or(model_id).to_string(),
-        description: Some("Custom Codex model ID".to_string()),
-        context_limit: None,
-        availability: ModelAvailability::Unknown,
-        capabilities: Vec::new(),
-        options: Vec::new(),
-        custom: true,
     })
 }
 

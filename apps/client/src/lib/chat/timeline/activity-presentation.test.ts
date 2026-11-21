@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TimelineActivityRow } from "./model";
+import type { JsonValue } from "../contracts/common";
 import {
   activityFilePath,
   commandActivityPresentation,
@@ -8,6 +9,7 @@ import {
   fileChangePresentation,
   summarizeActivityKinds,
   transientActivitySummary,
+  webActivityPresentation,
 } from "./activity-presentation";
 
 function activity(overrides: Partial<TimelineActivityRow> = {}): TimelineActivityRow {
@@ -20,7 +22,9 @@ function activity(overrides: Partial<TimelineActivityRow> = {}): TimelineActivit
     activityKind: "command_execution",
     status: "completed",
     title: "/usr/bin/bash -lc 'printf 4'",
-    detail: "4\n",
+    detailPreview: "4\n",
+    detailBytes: 2,
+    detailTruncated: false,
     metadata: {
       schemaVersion: 1,
       value: { cwd: "/workspace", exitCode: 0, durationMs: 18 },
@@ -35,6 +39,7 @@ describe("command activity presentation", () => {
       command: "/usr/bin/bash -lc 'printf 4'",
       cwd: "/workspace",
       output: "4",
+      outputTruncated: false,
       exitCode: 0,
       durationMs: 18,
       running: false,
@@ -42,9 +47,16 @@ describe("command activity presentation", () => {
   });
 
   it("represents an active command without fabricating output", () => {
-    expect(commandActivityPresentation(activity({ status: "active", detail: null }))).toMatchObject({
+    expect(commandActivityPresentation(activity({ status: "active", detailPreview: null, detailBytes: 0 }))).toMatchObject({
       output: null,
       running: true,
+    });
+  });
+
+  it("marks output that is a shortened preview of a longer command output", () => {
+    expect(commandActivityPresentation(activity({ detailPreview: "tail\n", detailBytes: 9_000, detailTruncated: true }))).toMatchObject({
+      output: "tail",
+      outputTruncated: true,
     });
   });
 });
@@ -195,15 +207,74 @@ describe("activity summaries", () => {
   it("shows only provider-designated reasoning summaries as bounded live status", () => {
     expect(transientActivitySummary(activity({
       activityKind: "reasoning_summary",
-      detail: "Inspecting the current timeline\n\nRefining the attachment preview",
+      detailPreview: "Inspecting the current timeline\n\nRefining the attachment preview",
     }))).toBe("Refining the attachment preview");
     expect(transientActivitySummary(activity({
       activityKind: "reasoning_text",
-      detail: "Private provider reasoning",
+      detailPreview: "Private provider reasoning",
     }))).toBeNull();
     expect(transientActivitySummary(activity({
       activityKind: "reasoning_summary",
-      detail: "x".repeat(200),
+      detailPreview: "x".repeat(200),
     }))).toHaveLength(160);
+  });
+});
+
+describe("web activity presentation", () => {
+  function web(value: { [key: string]: JsonValue }, title = "rust release"): TimelineActivityRow {
+    return activity({ activityKind: "web_search", title, detailPreview: null, detailBytes: 0, metadata: { schemaVersion: 1, value } });
+  }
+
+  it("lists the web links a search returned and drops links a browser cannot open", () => {
+    const search = web({
+      toolName: "WebSearch",
+      toolInput: { query: "rust release" },
+      webResult: {
+        links: [
+          { url: "https://www.rust-lang.org/learn", title: "Learn Rust" },
+          { url: "javascript:alert(1)", title: "Script" },
+          { url: "not a url" },
+          { url: "http://example.org/a" },
+        ],
+      },
+    });
+    expect(webActivityPresentation(search)).toEqual({
+      kind: "search",
+      query: "rust release",
+      links: [
+        { url: "https://www.rust-lang.org/learn", title: "Learn Rust", host: "rust-lang.org" },
+        { url: "http://example.org/a", title: null, host: "example.org" },
+      ],
+    });
+    expect(summarizeActivityKinds([search])).toEqual([{ kind: "web_searches", count: 1 }]);
+  });
+
+  it("names a fetched page by its host before and after the result arrives", () => {
+    const pending = web({ toolName: "WebFetch", toolInput: { url: "https://docs.python.org/3/" } }, "https://docs.python.org/3/");
+    expect(webActivityPresentation(pending)).toEqual({
+      kind: "fetch",
+      link: { url: "https://docs.python.org/3/", title: null, host: "docs.python.org" },
+      statusCode: null,
+    });
+    const failed = web({
+      toolName: "WebFetch",
+      toolInput: { url: "https://example.org/missing" },
+      webResult: { url: "https://example.org/missing", code: 404, bytes: 12 },
+    });
+    expect(webActivityPresentation(failed)).toMatchObject({ kind: "fetch", statusCode: 404 });
+    expect(summarizeActivityKinds([pending, failed])).toEqual([{ kind: "web_fetches", count: 2 }]);
+  });
+
+  it("tells a search without a result apart from one that found no pages", () => {
+    const denied = web({ toolName: "WebSearch", toolInput: { query: "rust release" } });
+    expect(webActivityPresentation({ ...denied, status: "failed" })).toEqual({ kind: "search", query: "rust release", links: null });
+    const empty = web({ toolName: "WebSearch", toolInput: { query: "rust release" }, webResult: { links: [] } });
+    expect(webActivityPresentation(empty)).toEqual({ kind: "search", query: "rust release", links: [] });
+  });
+
+  it("leaves web activities without a known web tool to the generic presentation", () => {
+    expect(webActivityPresentation(web({ query: "rust release" }))).toBeNull();
+    expect(webActivityPresentation(activity())).toBeNull();
+    expect(summarizeActivityKinds([web({})])).toEqual([{ kind: "web_searches", count: 1 }]);
   });
 });

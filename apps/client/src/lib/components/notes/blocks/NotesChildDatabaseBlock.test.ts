@@ -410,7 +410,7 @@ describe("Notes database property editor selection", () => {
     vi.mocked(updateNotesDataSourceSchema).mockRejectedValue(new Error("Cannot create property"));
     await open();
     await addHeaderProperty("Estimate");
-    await vi.waitFor(() => expect(document.querySelector('[data-collection-property-draft] [role="alert"]')?.textContent).toContain("Cannot create property"));
+    await vi.waitFor(() => expect(document.querySelector('[data-collection-property-draft] [role="alert"]')?.textContent).toContain("The property could not be saved."));
     expect(document.querySelector<HTMLInputElement>('[data-collection-property-draft] input[aria-label="Property name"]')?.value).toBe("Estimate");
     expect(updateNotesDataSourceSchema).toHaveBeenCalledOnce();
     expect(document.querySelector('[role="columnheader"] button[aria-label="Estimate"]')).toBeNull();
@@ -442,7 +442,7 @@ describe("Notes database property editor selection", () => {
     name.dispatchEvent(new Event("input", { bubbles: true }));
     name.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"][aria-label="Priority"] [role="alert"]')?.textContent)
-      .toBe("Could not rename property: A property with that name already exists."));
+      .toBe("A property with that name already exists."));
     expect(name.value).toBe("name");
     expect(updateNotesDataSourceSchema).not.toHaveBeenCalled();
     expect(document.querySelector('[role="columnheader"] button[aria-label="Priority"]')).not.toBeNull();

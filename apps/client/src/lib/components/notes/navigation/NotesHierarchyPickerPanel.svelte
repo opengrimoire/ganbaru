@@ -22,6 +22,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import {
     notesArchivedParentPageIds,
     notesHierarchyArchivedChildren,
@@ -121,7 +122,7 @@
   let search = $state("");
   let isCreatingFolder = $state(false);
   let folderDraft = $state("");
-  let folderCreationError = $state<string | null>(null);
+  let folderCreationError = $state<NotesFailure | null>(null);
   let folderInput = $state<HTMLInputElement | null>(null);
   let activeNodeKey = $state<string | null>(null);
   let activeNodeAnchor = $state<HTMLElement | null>(null);
@@ -134,8 +135,8 @@
   let scrollElement = $state<HTMLElement | undefined>();
   let views = $state<NotesDatabaseView[]>([]);
   let isLoadingViews = $state(false);
-  let viewError = $state<string | null>(null);
-  let navigationError = $state<string | null>(null);
+  let viewError = $state<NotesFailure | null>(null);
+  let navigationError = $state<NotesFailure | null>(null);
   let viewRetryCount = $state(0);
   let childMeasuredItemCount = $state<number | null>(null);
   let mobileParent = $state<NotesHierarchyParent>(untrack(() => parent));
@@ -278,7 +279,7 @@
       await notes.unarchivePage(pageId);
       await onPageSelected();
     } catch (error: unknown) {
-      navigationError = error instanceof Error ? error.message : String(error);
+      navigationError = notesFailure(error, t("notes.archivedNoteRestoreFailed"));
     }
   }
 
@@ -398,10 +399,10 @@
           ...(node.kind === "view" ? { viewId: node.view.id } : {}),
         });
         if (opened) await onPageSelected();
-        else navigationError = t("notes.databaseUnavailable");
+        else navigationError = { message: t("notes.databaseUnavailable"), detail: undefined };
       }
     } catch (error: unknown) {
-      navigationError = error instanceof Error ? error.message : String(error);
+      navigationError = notesFailure(error, t("notes.pageOpenFailed"));
     }
   }
 
@@ -476,7 +477,7 @@
       isCreatingFolder = false;
       folderDraft = "";
     } catch (error) {
-      folderCreationError = error instanceof Error ? error.message : String(error);
+      folderCreationError = notesFailure(error, t("notes.folderActionFailed"));
     }
   }
 
@@ -498,7 +499,7 @@
     void untrack(() => notesDatabaseSession.load(resource, () => listNotesDatabaseViews(database.id))).then((loaded) => {
       if (!cancelled) views = loaded;
     }).catch((error: unknown) => {
-      if (!cancelled) viewError = error instanceof Error ? error.message : String(error);
+      if (!cancelled) viewError = notesFailure(error, t("notes.databaseViewsLoadFailed"));
     }).finally(() => { if (!cancelled) isLoadingViews = false; });
     return () => { cancelled = true; };
   });
@@ -645,11 +646,11 @@
   <div class="relative flex min-h-0 flex-auto flex-col">
     <div bind:this={scrollElement} use:scrollEdgeFadeAction class={cn("hide-scrollbar min-h-0 flex-auto overflow-y-auto", mobileLayout ? "overscroll-contain px-2 py-2" : "surface-floating-body")}>
       {#if navigationError || viewError}
-        <Notice class="px-3 py-2" message={navigationError ?? viewError ?? ""} onRetry={viewError ? () => { viewRetryCount += 1; } : undefined} />
+        <Notice class="px-3 py-2" message={(navigationError ?? viewError)?.message ?? ""} copy={(navigationError ?? viewError)?.detail} onRetry={viewError ? () => { viewRetryCount += 1; } : undefined} />
       {:else if isLoadingViews || (notes.loading && projectPages.length === 0 && projectFolders.length === 0)}
         <Loading layout="rows" rows={3} label={t("notes.loading")} />
       {:else if notes.loadError}
-        <Notice class="px-3 py-2" message={t("notes.loadFailed", notes.loadError)} copy={notes.loadError} onRetry={() => notes.load()} />
+        <Notice class="px-3 py-2" message={t("notes.loadFailed")} copy={notes.loadError} onRetry={() => notes.load()} />
       {:else if rowCount === 0}
         {@render ArchiveErrorNotice()}
         <div class="px-3 py-2 text-popover-foreground/60">
@@ -816,7 +817,7 @@
       </div>
     {/if}
     {#if folderCreationError}
-      <Notice class="px-1 pt-1 text-panel-detail" message={t("notes.folderActionFailed", folderCreationError)} copy={folderCreationError} />
+      <Notice class="px-1 pt-1 text-panel-detail" message={folderCreationError.message} copy={folderCreationError.detail} />
     {/if}
   </div>
   {/if}
@@ -850,7 +851,7 @@
 
 {#snippet ArchiveErrorNotice()}
   {#if notes.showArchivedInPickers && notes.pickerArchiveError}
-    <Notice class="px-3 py-2" message={t("notes.archivedNotesLoadFailed", notes.pickerArchiveError)} copy={notes.pickerArchiveError} onRetry={() => notes.reloadPickerArchivedPages()} />
+    <Notice class="px-3 py-2" message={t("notes.archivedNotesLoadFailed")} copy={notes.pickerArchiveError} onRetry={() => notes.reloadPickerArchivedPages()} />
   {/if}
 {/snippet}
 

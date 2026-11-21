@@ -15,8 +15,8 @@ export interface ChatReferencePickerPosition {
 const PREFERRED_MAX_HEIGHT_REM = 22;
 
 /**
- * Portal the reference picker to the composer's floating root and keep it against the composer, above it when below
- * lacks room, while the composer, the viewport, or the content changes size or scrolls.
+ * Portal the reference picker to the composer's floating root and keep it against the composer, above it unless above
+ * is tighter than below, while the composer, the viewport, or the content changes size or scrolls.
  *
  * @param node The picker element.
  * @param initial The composer and the picker's scrolling list.
@@ -47,6 +47,7 @@ export function chatReferencePickerPosition(node: HTMLElement, initial: ChatRefe
       viewportWidth: viewport?.width ?? window.innerWidth,
       viewportHeight: viewport?.height ?? window.innerHeight,
       preferredWidth: rect.width,
+      preferredSide: "above",
       preferredMaxHeight: PREFERRED_MAX_HEIGHT_REM * rem,
       contentHeight: scrollArea ? scrollArea.scrollHeight + verticalBorderWidth(node) : undefined,
     });

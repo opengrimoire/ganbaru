@@ -8,7 +8,9 @@ export type WorkspaceTabItem =
   | { type: "project-view"; id: string }
   | { type: "notes-page"; id: string }
   | { type: "notes-folder"; id: string }
-  | { type: "chat-channel"; id: string };
+  | { type: "chat-channel"; id: string }
+  /** One Chat reply thread shown on its own, with the channel it belongs to. */
+  | { type: "chat-reply-thread"; id: string; channelId: string };
 
 export type WorkspaceTabItemType = WorkspaceTabItem["type"];
 
@@ -82,7 +84,7 @@ const ITEM_TYPES_BY_KIND: Readonly<Record<View, readonly WorkspaceTabItemType[]>
   calendar: [],
   projects: ["project-view"],
   notes: ["notes-page", "notes-folder"],
-  chat: ["chat-channel"],
+  chat: ["chat-channel", "chat-reply-thread"],
 };
 const LEVELS: readonly WorkspaceTabLevel[] = ["kind", "project", "item"];
 
@@ -93,16 +95,41 @@ export function kindLocation(kind: View): WorkspaceTabLocation {
 
 export function sameTabItem(a: WorkspaceTabItem | null, b: WorkspaceTabItem | null): boolean {
   if (!a || !b) return a === b;
-  return a.type === b.type && a.id === b.id;
+  if (a.type !== b.type || a.id !== b.id) return false;
+  return a.type !== "chat-reply-thread" || (b.type === "chat-reply-thread" && a.channelId === b.channelId);
 }
 
 export function sameTabLocation(a: WorkspaceTabLocation, b: WorkspaceTabLocation): boolean {
   return a.kind === b.kind && a.projectId === b.projectId && sameTabItem(a.item, b.item);
 }
 
-/** Return whether a location stays inside the scope a tab's level and lock define. */
+/**
+ * Return whether a location keeps its tab on its item without a lock. A reply thread tab shows one thread and never
+ * follows navigation, so another place opens in another tab and the tab never shows a lock.
+ */
+export function locationKeepsItem(location: WorkspaceTabLocation): boolean {
+  return location.item?.type === "chat-reply-thread";
+}
+
+/**
+ * Return where a new tab opens from what a view shows now. A reply thread belongs to the tab that was opened for it, so
+ * a new tab opens at the thread's channel instead of becoming a second copy of that thread tab.
+ */
+export function newTabLocation(location: WorkspaceTabLocation): WorkspaceTabLocation {
+  const item = location.item;
+  if (item?.type !== "chat-reply-thread") return location;
+  return { ...location, item: { type: "chat-channel", id: item.channelId } };
+}
+
+/** Whether a tab at this level and location can be locked: it shows a project or item and is not already kept on it. */
+function lockable(level: WorkspaceTabLevel, location: WorkspaceTabLocation): boolean {
+  return level !== "kind" && !locationKeepsItem(location);
+}
+
+/** Return whether a location stays inside the scope a tab's level, lock, and item define. */
 export function isWithinTabScope(tab: WorkspaceTab, location: WorkspaceTabLocation): boolean {
   if (tab.location.kind !== location.kind) return false;
+  if (locationKeepsItem(tab.location)) return sameTabItem(tab.location.item, location.item);
   if (!tab.locked || tab.level === "kind") return true;
   if (tab.level === "project") return tab.location.projectId === location.projectId;
   return sameTabItem(tab.location.item, location.item);
@@ -120,8 +147,12 @@ export function tabMatchesTarget(
   return sameTabItem(tab.location.item, location.item);
 }
 
-/** Lower a level its location cannot support: items need an item and projects need a project. */
+/**
+ * Lower a level its location cannot support: items need an item and projects need a project. A location that keeps
+ * its tab on its item is always shown at the item level.
+ */
 export function supportedTabLevel(level: WorkspaceTabLevel, location: WorkspaceTabLocation): WorkspaceTabLevel {
+  if (locationKeepsItem(location)) return "item";
   if (level === "item" && location.item) return "item";
   if (level !== "kind" && location.projectId) return "project";
   return "kind";
@@ -129,9 +160,11 @@ export function supportedTabLevel(level: WorkspaceTabLevel, location: WorkspaceT
 
 /**
  * Return the level a tab keeps once locked, or null when it shows nothing to lock to. A kind tab narrows to
- * its project, or to its item when it has no project, so locking always pins what the tab shows now.
+ * its project, or to its item when it has no project, so locking always pins what the tab shows now. A tab its
+ * location already keeps on its item has nothing to lock.
  */
 export function workspaceTabLockLevel(tab: Pick<WorkspaceTab, "level" | "location">): WorkspaceTabLevel | null {
+  if (locationKeepsItem(tab.location)) return null;
   if (tab.level !== "kind") return tab.level;
   if (tab.location.projectId) return "project";
   return tab.location.item ? "item" : null;
@@ -146,7 +179,7 @@ export function createWorkspaceTab(
   return {
     id,
     level,
-    locked: level !== "kind" && options.locked === true,
+    locked: lockable(level, location) && options.locked === true,
     location,
     title: options.title ?? null,
     projectTitle: options.projectTitle ?? null,
@@ -267,7 +300,7 @@ export function updateWorkspaceTab(
   const current = state.tabs[index];
   const merged = { ...current, ...patch };
   const level = supportedTabLevel(merged.level, merged.location);
-  const next = { ...merged, level, locked: level !== "kind" && merged.locked };
+  const next = { ...merged, level, locked: lockable(level, merged.location) && merged.locked };
   if (
     next.level === current.level
     && next.locked === current.locked
@@ -541,7 +574,10 @@ function parseTabItem(value: unknown, kind: View): WorkspaceTabItem | null | und
   if (!isRecord(value)) return undefined;
   const id = boundedId(value.id);
   const type = ITEM_TYPES_BY_KIND[kind].find((candidate) => candidate === value.type);
-  return id && type ? { type, id } : undefined;
+  if (!id || !type) return undefined;
+  if (type !== "chat-reply-thread") return { type, id };
+  const channelId = boundedId(value.channelId);
+  return channelId ? { type, id, channelId } : undefined;
 }
 
 /** Validate an untrusted location, rejecting items that do not belong to its kind. */
@@ -589,7 +625,7 @@ function parseClosedTab(value: unknown, availableKinds: readonly View[]): Closed
   const supported = supportedTabLevel(level, location);
   return {
     level: supported,
-    locked: supported !== "kind" && value.locked === true,
+    locked: lockable(supported, location) && value.locked === true,
     location,
     title: parseTitle(value.title),
     projectTitle: parseTitle(value.projectTitle),

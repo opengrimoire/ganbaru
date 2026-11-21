@@ -1,20 +1,35 @@
 //! Chat coordination across replicas: work assignments, their inputs and semantic updates, and
 //! scheduled messages with their owned references arrive whole, a crash while sealing or
 //! applying them leaves nothing partial, rerouting an input updates its row in place, a no-op
-//! write captures nothing, concurrent creates of one derived assignment merge, and a settle on
-//! any device outranks progress the executing device reports concurrently.
+//! write captures nothing, concurrent creates of one derived assignment merge, a settle on any
+//! device outranks progress the executing device reports concurrently, a review travels
+//! whole with the completion it judges while a concurrent cancel outranks it, a delivery of an
+//! input outranks a concurrent cancel of it, every assignment carries the model and
+//! instructions frozen at its create and concurrent creates keep one whole pair, the model
+//! label is a register a later write fills, a concurrent narrowing of the channel's agent
+//! access cancels a child delegated against the old authority, and a cancel of a repeating
+//! scheduled message ends its series over any progress the executing device records
+//! concurrently.
 
 use super::*;
 use crate::manifest::vault::chat::{
-    ASSIGNMENT_INPUT_KEY_PREFIX, INPUTS_TABLE, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
+    ASSIGNMENT_INPUT_KEY_PREFIX, INPUTS_TABLE, RECURRENCE_KEY_PREFIX, SCHEDULED_TABLE,
+    SEMANTIC_UPDATES_TABLE,
 };
+use crate::tests::replica::pair;
 
-const ASSIGNMENT: &str = "assignment:review";
+pub(super) const ASSIGNMENT: &str = "assignment:review";
 const FOLLOW_UP: &str = "assignment:follow-up";
-const MENTION: &str = "item:mention";
+pub(super) const MENTION: &str = "item:mention";
 const UPDATE: &str = "item:update";
 const SCHEDULED: &str = "scheduled:reminder";
 const EXECUTOR: &str = "device-0";
+
+/// The model the creating device resolves and freezes into every assignment it starts.
+const FROZEN_MODEL: &str = "model-frozen";
+
+/// The joined instructions the creating device freezes into every assignment it starts.
+const FROZEN_INSTRUCTIONS: &str = "Keep replies short.\n\nRun the tests first.";
 
 /// Seeds of the cancel against progress scenario.
 const PROGRESS_SEEDS: u64 = 8;
@@ -35,29 +50,38 @@ fn input_id(message: &str) -> String {
     key(ASSIGNMENT_INPUT_KEY_PREFIX, &[message])
 }
 
-/// SQL creating the assignment `id` of [`TEAMMATE`] triggered by [`MENTION`] in the reply
+/// SQL creating the assignment `id` of [`AGENT`] triggered by [`MENTION`] in the reply
 /// thread under [`ROOT`], executed by [`EXECUTOR`].
 fn assignment_sql(id: &str, previous: Option<&str>) -> String {
     assignment_on_sql(id, previous, EXECUTOR)
 }
 
-/// SQL creating the assignment `id` of [`TEAMMATE`] triggered by [`MENTION`] in the reply
-/// thread under [`ROOT`], executed by `executor`.
+/// SQL creating the assignment `id` of [`AGENT`] triggered by [`MENTION`] in the reply
+/// thread under [`ROOT`], executed by `executor`, with the frozen [`FROZEN_MODEL`] and
+/// [`FROZEN_INSTRUCTIONS`].
 fn assignment_on_sql(id: &str, previous: Option<&str>, executor: &str) -> String {
     format!(
         "INSERT INTO chat_work_assignments
-            (id, reply_thread_id, teammate_id, triggering_message_item_id, executing_device_id,
+            (id, reply_thread_id, agent_id, triggering_message_item_id, executing_device_id,
+             model_selection_schema_version, model_selection_data, instructions,
              previous_assignment_id, state, created_at, updated_at)
-         VALUES ({id}, {thread}, {teammate}, {mention}, {executor}, {previous}, 'queued',
-                 {created}, {created});",
+         VALUES ({id}, {thread}, {agent}, {mention}, {executor}, 1, {model}, {instructions},
+                 {previous}, 'queued', {created}, {created});",
         id = quoted(id),
         thread = quoted(&thread()),
-        teammate = quoted(TEAMMATE),
+        agent = quoted(AGENT),
         mention = quoted(MENTION),
         executor = quoted(executor),
+        model = quoted(&model_data(FROZEN_MODEL)),
+        instructions = quoted(FROZEN_INSTRUCTIONS),
         previous = optional(previous),
         created = quoted(CREATED),
     )
+}
+
+/// The model selection naming `model`.
+fn model_data(model: &str) -> String {
+    format!("{{\"providerManagedModel\":false,\"modelId\":\"{model}\",\"modelOptions\":[]}}")
 }
 
 /// SQL routing `message` to `assignment` as input `ordinal` of `kind`.
@@ -76,7 +100,7 @@ fn input_sql(message: &str, assignment: &str, ordinal: i64, kind: &str) -> Strin
 
 /// SQL posting the thread, the mention, the assignment with its trigger input, and a plan
 /// update.
-fn coordination_sql() -> String {
+pub(super) fn coordination_sql() -> String {
     format!(
         "{}{}{}{}{}
          INSERT INTO chat_conversation_items
@@ -196,6 +220,18 @@ fn chat_coordination_rows_round_trip_with_their_derived_keys() {
                 "{EXECUTOR} queued {} trigger plan",
                 input_id(MENTION)
             ))
+        );
+        assert_eq!(
+            reader
+                .scalar_text(
+                    "SELECT model_selection_schema_version || ' '
+                            || json_extract(model_selection_data, '$.modelId') || ' '
+                            || instructions || ' ' || coalesce(model_label, '-')
+                     FROM chat_work_assignments",
+                )
+                .await,
+            Some(format!("1 {FROZEN_MODEL} {FROZEN_INSTRUCTIONS} -")),
+            "the frozen model and instructions travel with the assignment"
         );
         assert_eq!(
             reader
@@ -477,6 +513,798 @@ fn chat_simulated_cancel_against_active_progress_keeps_the_cancel() {
                     "seed {seed} replica {}",
                     replica.index
                 );
+            }
+        }
+    });
+}
+
+/// Reviewer of the Accept in the review scenarios.
+const ACCEPTING_REVIEWER: &str = "participant:accepting";
+
+/// Reviewer of the follow-up completion in the review scenarios.
+const REQUESTING_REVIEWER: &str = "participant:requesting";
+
+/// Most pairwise pulls between the concurrent reviews and the final convergence.
+const REVIEW_PULLS: usize = 6;
+
+/// SQL completing [`ASSIGNMENT`] with the review `outcome` by `reviewer` at `at`.
+fn review_sql(outcome: &str, reviewer: &str, at: &str) -> String {
+    format!(
+        "UPDATE chat_work_assignments
+         SET state = 'completed', settled_at = {at}, review_outcome = {outcome},
+             reviewed_at = {at}, reviewed_by_participant_id = {reviewer},
+             revision = revision + 1, updated_at = {at}
+         WHERE id = {assignment};",
+        at = quoted(at),
+        outcome = quoted(outcome),
+        reviewer = quoted(reviewer),
+        assignment = quoted(ASSIGNMENT),
+    )
+}
+
+/// [`ASSIGNMENT`]'s state, review outcome, and reviewer, `-` for no review, and whether the
+/// review has a time.
+async fn assignment_review(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT state || ' ' || coalesce(review_outcome, '-') || ' '
+                || coalesce(reviewed_by_participant_id, '-') || ' ' || (reviewed_at IS NOT NULL)
+             FROM chat_work_assignments WHERE id = 'assignment:review'",
+        )
+        .await
+        .expect("the assignment arrived")
+}
+
+/// Brings the replicas to one ready-for-review [`ASSIGNMENT`].
+async fn reviewed_replicas() -> Vec<Replica> {
+    let mut replicas = conversation_replicas(3).await;
+    replicas[0].exec(&coordination_sql()).await;
+    replicas[0]
+        .exec(&state_sql("ready_for_review", &at(1, 0)))
+        .await;
+    converge(&mut replicas).await;
+    replicas
+}
+
+/// Pulls between random pairs of replicas, each source sealing first, so the concurrent writes
+/// arrive in a seed-dependent order before the final convergence.
+async fn pull_at_random(replicas: &mut [Replica], rng: &mut Rng) {
+    for _ in 0..rng.below(REVIEW_PULLS + 1) {
+        let target = rng.below(replicas.len());
+        let source = (target + 1 + rng.below(replicas.len() - 1)) % replicas.len();
+        replicas[source].seal_rotating().await.unwrap();
+        let (to, from) = pair(replicas, target, source);
+        to.pull(from).await;
+    }
+}
+
+/// One device accepts reviewed work while another cancels it; whatever the exchange order,
+/// every device ends cancelled with no review, since a cancel is the more restrictive ending.
+#[test]
+fn chat_simulated_accept_against_cancel_keeps_the_cancel() {
+    block_on(async {
+        for seed in 0..PROGRESS_SEEDS {
+            let mut rng = Rng(seed ^ 0xacce);
+            let mut replicas = reviewed_replicas().await;
+            replicas[1]
+                .exec(&review_sql(
+                    "accepted",
+                    ACCEPTING_REVIEWER,
+                    &at(2, rng.below(60)),
+                ))
+                .await;
+            replicas[2]
+                .exec(&state_sql("cancelled", &at(2, rng.below(60))))
+                .await;
+            pull_at_random(&mut replicas, &mut rng).await;
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            for replica in &mut replicas {
+                assert_eq!(
+                    assignment_review(replica).await,
+                    "cancelled - - 0",
+                    "seed {seed} replica {}",
+                    replica.index
+                );
+            }
+        }
+    });
+}
+
+/// One device accepts reviewed work while another completes it by requesting changes and
+/// creating the follow-up; every device ends completed with one whole review, its outcome
+/// beside its own reviewer, and the follow-up exists either way.
+#[test]
+fn chat_simulated_accept_against_follow_up_completion_converges_completed() {
+    block_on(async {
+        for seed in 0..PROGRESS_SEEDS {
+            let mut rng = Rng(seed ^ 0xf011);
+            let mut replicas = reviewed_replicas().await;
+            replicas[1]
+                .exec(&review_sql(
+                    "accepted",
+                    ACCEPTING_REVIEWER,
+                    &at(2, rng.below(60)),
+                ))
+                .await;
+            replicas[2]
+                .exec(&format!(
+                    "{}{}",
+                    review_sql(
+                        "changes_requested",
+                        REQUESTING_REVIEWER,
+                        &at(2, rng.below(60))
+                    ),
+                    assignment_sql(FOLLOW_UP, Some(ASSIGNMENT)),
+                ))
+                .await;
+            pull_at_random(&mut replicas, &mut rng).await;
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            let winner = assignment_review(&mut replicas[0]).await;
+            assert!(
+                [
+                    format!("completed accepted {ACCEPTING_REVIEWER} 1"),
+                    format!("completed changes_requested {REQUESTING_REVIEWER} 1"),
+                ]
+                .contains(&winner),
+                "seed {seed}: {winner}"
+            );
+            for replica in &mut replicas {
+                assert_eq!(assignment_review(replica).await, winner, "seed {seed}");
+                let follow_up = replica
+                    .scalar_text(
+                        "SELECT previous_assignment_id FROM chat_work_assignments
+                         WHERE id = 'assignment:follow-up'",
+                    )
+                    .await;
+                assert_eq!(follow_up.as_deref(), Some(ASSIGNMENT), "seed {seed}");
+            }
+        }
+    });
+}
+
+/// The child [`ASSIGNMENT`] delegates in the delegation scenario.
+const CHILD: &str = "assignment:delegated";
+
+/// Seeds of the delegation against a narrowed channel access scenario.
+const DELEGATION_SEEDS: u64 = 8;
+
+/// State reason of a child cancelled because its parent's authority narrowed.
+const PARENT_AUTHORITY_REVOKED: &str = "parent_authority_revoked";
+
+/// SQL delegating [`CHILD`] from [`ASSIGNMENT`] with an `edit` ceiling on [`FOLDER`].
+fn delegated_sql() -> String {
+    format!(
+        "INSERT INTO chat_work_assignments
+            (id, reply_thread_id, agent_id, triggering_message_item_id, executing_device_id,
+             model_selection_schema_version, model_selection_data, instructions,
+             state, parent_assignment_id, delegation_depth, delegation_objective,
+             delegation_expected_result, delegation_folder_ceiling, created_at, updated_at)
+         VALUES ({child}, {thread}, {agent}, {mention}, {executor}, 1, {model}, {instructions},
+                 'queued', {parent}, 1,
+                 'Read the failing tests', 'The causes', {ceiling}, {created}, {created});",
+        child = quoted(CHILD),
+        thread = quoted(&thread()),
+        agent = quoted(AGENT),
+        mention = quoted(MENTION),
+        executor = quoted(EXECUTOR),
+        model = quoted(&model_data(FROZEN_MODEL)),
+        instructions = quoted(FROZEN_INSTRUCTIONS),
+        parent = quoted(ASSIGNMENT),
+        ceiling = quoted(&format!(
+            r#"[{{"workingFolderId":"{FOLDER}","capability":"edit"}}]"#
+        )),
+        created = quoted(CREATED),
+    )
+}
+
+/// SQL moving [`CHILD`] to `state` with `reason`, settling it when the state is final.
+fn child_state_sql(state: &str, reason: Option<&str>, updated_at: &str) -> String {
+    let settled = matches!(state, "completed" | "failed" | "cancelled");
+    format!(
+        "UPDATE chat_work_assignments
+         SET state = {state}, state_reason = {reason}, settled_at = {settled_at},
+             revision = revision + 1, updated_at = {updated_at}
+         WHERE id = {child};",
+        state = quoted(state),
+        reason = optional(reason),
+        settled_at = if settled {
+            quoted(updated_at)
+        } else {
+            "NULL".to_owned()
+        },
+        updated_at = quoted(updated_at),
+        child = quoted(CHILD),
+    )
+}
+
+/// Whether `replica` holds [`CHILD`] and the channel access narrowed to `read`, so it would
+/// refuse to run the child.
+async fn sees_narrowed_parent(replica: &mut Replica) -> bool {
+    replica
+        .scalar_text(
+            "SELECT channel.agent_access FROM chat_channels channel
+             WHERE EXISTS (SELECT 1 FROM chat_work_assignments WHERE id = 'assignment:delegated')",
+        )
+        .await
+        .is_some_and(|capability| capability == "read")
+}
+
+/// [`CHILD`]'s state, reason, and delegation fields.
+async fn child_summary(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT state || ' ' || coalesce(state_reason, '-') || ' ' || parent_assignment_id
+                    || ' ' || delegation_depth || ' ' || delegation_folder_ceiling
+             FROM chat_work_assignments WHERE id = 'assignment:delegated'",
+        )
+        .await
+        .expect("the delegated assignment arrived")
+}
+
+/// One device delegates a child while the channel lets the agent `ask`, and another narrows the
+/// channel's agent access to `read`. The executing device reports progress until it sees the
+/// narrowing, and any device that holds both rows cancels the child with
+/// `parent_authority_revoked`; whatever the exchange order, every device ends with the narrowed
+/// access and the cancelled child, so a concurrent narrowing always wins over a child created
+/// against the old authority.
+#[test]
+fn chat_simulated_delegation_against_narrowed_channel_access_cancels_the_child() {
+    block_on(async {
+        for seed in 0..DELEGATION_SEEDS {
+            let mut rng = Rng(seed ^ 0xde1e);
+            let mut replicas = scoped_replicas(3).await;
+            replicas[0].exec(&coordination_sql()).await;
+            converge(&mut replicas).await;
+
+            replicas[0].exec(&delegated_sql()).await;
+            replicas[1]
+                .exec(&access_sql(Scope::Channel, Some("read"), &at(0, 30)))
+                .await;
+            for round in 0..PROGRESS_ROUNDS {
+                pull_at_random(&mut replicas, &mut rng).await;
+                let updated_at = at(round + 1, rng.below(60));
+                if sees_narrowed_parent(&mut replicas[0]).await {
+                    if !child_settled(&mut replicas[0]).await {
+                        replicas[0]
+                            .exec(&child_state_sql(
+                                "cancelled",
+                                Some(PARENT_AUTHORITY_REVOKED),
+                                &updated_at,
+                            ))
+                            .await;
+                    }
+                } else if !child_settled(&mut replicas[0]).await {
+                    replicas[0]
+                        .exec(&child_state_sql("working", None, &updated_at))
+                        .await;
+                }
+                let detector = 1 + rng.below(replicas.len() - 1);
+                if sees_narrowed_parent(&mut replicas[detector]).await
+                    && !child_settled(&mut replicas[detector]).await
+                {
+                    replicas[detector]
+                        .exec(&child_state_sql(
+                            "cancelled",
+                            Some(PARENT_AUTHORITY_REVOKED),
+                            &updated_at,
+                        ))
+                        .await;
+                }
+            }
+            converge(&mut replicas).await;
+            if !child_settled(&mut replicas[2]).await {
+                replicas[2]
+                    .exec(&child_state_sql(
+                        "cancelled",
+                        Some(PARENT_AUTHORITY_REVOKED),
+                        &at(PROGRESS_ROUNDS + 1, 0),
+                    ))
+                    .await;
+                converge(&mut replicas).await;
+            }
+            assert_converged(&mut replicas).await;
+            let expected = format!(
+                "cancelled {PARENT_AUTHORITY_REVOKED} {ASSIGNMENT} 1 \
+                 [{{\"workingFolderId\":\"{FOLDER}\",\"capability\":\"edit\"}}]"
+            );
+            for replica in &mut replicas {
+                assert_eq!(
+                    child_summary(replica).await,
+                    expected,
+                    "seed {seed} replica {}",
+                    replica.index
+                );
+                assert_eq!(
+                    replica
+                        .scalar_text("SELECT agent_access FROM chat_channels")
+                        .await
+                        .as_deref(),
+                    Some("read"),
+                    "seed {seed} replica {}",
+                    replica.index
+                );
+            }
+        }
+    });
+}
+
+/// Reply queued on [`ASSIGNMENT`] in the delivery scenarios.
+const QUEUED_REPLY: &str = "item:queued-reply";
+
+/// SQL delivering [`QUEUED_REPLY`] at `at`, naming the revision the run received.
+fn delivery_sql(at: &str) -> String {
+    format!(
+        "UPDATE chat_work_assignment_inputs
+         SET delivery_state = 'delivered', delivered_at = {at},
+             delivered_revision_id = {revision}
+         WHERE id = {input} AND delivery_state = 'pending';",
+        at = quoted(at),
+        revision = quoted(&format!("{QUEUED_REPLY}:0")),
+        input = quoted(&input_id(QUEUED_REPLY)),
+    )
+}
+
+/// SQL cancelling [`QUEUED_REPLY`] while it is pending.
+fn input_cancel_sql() -> String {
+    format!(
+        "UPDATE chat_work_assignment_inputs SET delivery_state = 'ignored'
+         WHERE id = {input} AND delivery_state = 'pending';",
+        input = quoted(&input_id(QUEUED_REPLY)),
+    )
+}
+
+/// [`QUEUED_REPLY`]'s delivery state, delivery time, and delivered revision.
+async fn queued_reply_delivery(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT delivery_state || ' ' || coalesce(delivered_at, '-') || ' '
+                    || coalesce(delivered_revision_id, '-')
+             FROM chat_work_assignment_inputs WHERE message_item_id = 'item:queued-reply'",
+        )
+        .await
+        .expect("the input arrived")
+}
+
+/// The executing device delivers a queued reply while another device cancels it; whatever the
+/// exchange order, every device shows it delivered with the revision the run received, since
+/// the run already read it.
+#[test]
+fn chat_simulated_delivery_against_input_cancel_keeps_the_delivery() {
+    block_on(async {
+        for seed in 0..PROGRESS_SEEDS {
+            let mut rng = Rng(seed ^ 0xde11);
+            let mut replicas = conversation_replicas(3).await;
+            replicas[0]
+                .exec(&format!(
+                    "{}{}{}",
+                    coordination_sql(),
+                    message_sql(
+                        QUEUED_REPLY,
+                        Some(&thread()),
+                        "c003",
+                        "Then update the docs"
+                    ),
+                    input_sql(QUEUED_REPLY, ASSIGNMENT, 2, "queued_continuation"),
+                ))
+                .await;
+            converge(&mut replicas).await;
+            let delivered_at = at(2, rng.below(60));
+            replicas[0].exec(&delivery_sql(&delivered_at)).await;
+            replicas[1 + rng.below(2)].exec(&input_cancel_sql()).await;
+            pull_at_random(&mut replicas, &mut rng).await;
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            for replica in &mut replicas {
+                assert_eq!(
+                    queued_reply_delivery(replica).await,
+                    format!("delivered {delivered_at} {QUEUED_REPLY}:0"),
+                    "seed {seed} replica {}",
+                    replica.index
+                );
+            }
+        }
+    });
+}
+
+/// The executing device delivers a queued reply and places it after the run's output while
+/// another device edits it and a third cancels it; whatever the exchange order, every device
+/// reads the reply at the placement the delivery wrote, with the posting time on its message
+/// and the edit's revision as its content.
+#[test]
+fn chat_simulated_delivery_placement_replays_over_a_concurrent_edit_and_cancel() {
+    block_on(async {
+        for seed in 0..PROGRESS_SEEDS {
+            let mut rng = Rng(seed ^ 0x91ace);
+            let mut replicas = conversation_replicas(3).await;
+            replicas[0]
+                .exec(&format!(
+                    "{}{}{}",
+                    coordination_sql(),
+                    message_sql(
+                        QUEUED_REPLY,
+                        Some(&thread()),
+                        "c003",
+                        "Then update the docs"
+                    ),
+                    input_sql(QUEUED_REPLY, ASSIGNMENT, 2, "queued_continuation"),
+                ))
+                .await;
+            converge(&mut replicas).await;
+            let delivered_at = at(2, rng.below(60));
+            replicas[0]
+                .exec(&format!(
+                    "INSERT INTO chat_conversation_items
+                        (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
+                     VALUES ('item:run-output', {conversation}, {thread}, 'work_update', 'c004',
+                             {created});
+                     {delivery}
+                     UPDATE chat_conversation_items SET order_key = 'c005', created_at = {at}
+                     WHERE id = {reply};",
+                    conversation = quoted(CONVERSATION),
+                    thread = quoted(&thread()),
+                    created = quoted(CREATED),
+                    delivery = delivery_sql(&delivered_at),
+                    at = quoted(&delivered_at),
+                    reply = quoted(QUEUED_REPLY),
+                ))
+                .await;
+            replicas[1]
+                .exec(&edit_sql(
+                    QUEUED_REPLY,
+                    &format!("{QUEUED_REPLY}:1"),
+                    "Then update the docs and the changelog",
+                    &at(1, 0),
+                ))
+                .await;
+            replicas[2].exec(&input_cancel_sql()).await;
+            pull_at_random(&mut replicas, &mut rng).await;
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            for replica in &mut replicas {
+                let placement = replica
+                    .scalar_text(
+                        "SELECT item.order_key || ' ' || item.created_at || ' '
+                                || message.created_at || ' ' || message.current_revision_id
+                         FROM chat_conversation_items item
+                         JOIN chat_communication_messages message ON message.item_id = item.id
+                         WHERE item.id = 'item:queued-reply'",
+                    )
+                    .await
+                    .expect("the reply arrived");
+                assert_eq!(
+                    placement,
+                    format!("c005 {delivered_at} {CREATED} {QUEUED_REPLY}:1"),
+                    "seed {seed} replica {}",
+                    replica.index
+                );
+            }
+        }
+    });
+}
+
+/// Whether [`CHILD`] is settled on `replica`; false while it has not arrived.
+async fn child_settled(replica: &mut Replica) -> bool {
+    replica
+        .scalar_text(
+            "SELECT state FROM chat_work_assignments
+             WHERE id = 'assignment:delegated' AND settled_at IS NOT NULL",
+        )
+        .await
+        .is_some()
+}
+
+/// SQL creating [`ASSIGNMENT`] on `executor` with the frozen model `model` and `instructions`.
+fn frozen_assignment_sql(executor: &str, model: &str, instructions: &str) -> String {
+    format!(
+        "INSERT INTO chat_work_assignments
+            (id, reply_thread_id, agent_id, triggering_message_item_id, executing_device_id,
+             model_selection_schema_version, model_selection_data, instructions, state,
+             created_at, updated_at)
+         VALUES ({id}, {thread}, {agent}, {mention}, {executor}, 1, {data}, {instructions},
+                 'queued', {created}, {created});",
+        id = quoted(ASSIGNMENT),
+        thread = quoted(&thread()),
+        agent = quoted(AGENT),
+        mention = quoted(MENTION),
+        executor = quoted(executor),
+        data = quoted(&model_data(model)),
+        instructions = quoted(instructions),
+        created = quoted(CREATED),
+    )
+}
+
+/// SQL posting the reply thread and [`MENTION`] without an assignment.
+fn mention_sql() -> String {
+    format!(
+        "{}{}{}",
+        message_sql(ROOT, None, "c001", "Root"),
+        thread_sql(),
+        message_sql(MENTION, Some(&thread()), "c001", "@Reviewer please check"),
+    )
+}
+
+/// [`ASSIGNMENT`]'s executing device, model schema version, model id, and instructions.
+async fn frozen_start(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT executing_device_id || ' ' || model_selection_schema_version || ' '
+                    || json_extract(model_selection_data, '$.modelId') || ' ' || instructions
+             FROM chat_work_assignments",
+        )
+        .await
+        .expect("the assignment arrived")
+}
+
+/// Two devices Start one mention concurrently, each resolving a different model and
+/// instructions; the created group is fixed with the request, so every device keeps the whole
+/// model and instructions of one of the creates, beside that create's executing device.
+#[test]
+fn chat_concurrent_starts_keep_one_whole_frozen_model_and_instructions() {
+    block_on(async {
+        let mut replicas = conversation_replicas(3).await;
+        replicas[0].exec(&mention_sql()).await;
+        converge(&mut replicas).await;
+
+        for (index, executor, model, instructions) in [
+            (0, "device-0", "model-a", "Vault rules A"),
+            (1, "device-1", "model-b", "Vault rules B"),
+        ] {
+            replicas[index]
+                .exec(&frozen_assignment_sql(executor, model, instructions))
+                .await;
+        }
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+
+        let mut created = Vec::new();
+        for replica in &mut replicas {
+            created.push(frozen_start(replica).await);
+        }
+        assert!(
+            [
+                "device-0 1 model-a Vault rules A",
+                "device-1 1 model-b Vault rules B"
+            ]
+            .contains(&created[0].as_str()),
+            "the model and instructions stay with their own create: {}",
+            created[0]
+        );
+        assert!(
+            created.iter().all(|row| *row == created[0]),
+            "every device agrees on the frozen start: {created:?}"
+        );
+    });
+}
+
+/// SQL recording `label` as the model that ran [`ASSIGNMENT`].
+fn model_label_sql(label: &str, updated_at: &str) -> String {
+    format!(
+        "UPDATE chat_work_assignments SET model_label = {label}, updated_at = {updated_at}
+         WHERE id = {assignment};",
+        label = quoted(label),
+        updated_at = quoted(updated_at),
+        assignment = quoted(ASSIGNMENT),
+    )
+}
+
+/// [`ASSIGNMENT`]'s model label, or `-` while none is recorded.
+async fn model_label(replica: &mut Replica) -> String {
+    replica
+        .scalar_text("SELECT coalesce(model_label, '-') FROM chat_work_assignments")
+        .await
+        .expect("the assignment arrived")
+}
+
+/// The executing device fills the model label after the assignment arrived everywhere, a later
+/// label replaces it on every device, and concurrent labels converge on the later write while
+/// the frozen model and instructions stay as created.
+#[test]
+fn chat_model_label_is_a_register_a_later_write_fills() {
+    block_on(async {
+        let mut replicas = conversation_replicas(3).await;
+        replicas[0].exec(&coordination_sql()).await;
+        converge(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(model_label(replica).await, "-", "replica {}", replica.index);
+        }
+
+        replicas[0]
+            .exec(&model_label_sql("Model Frozen", &at(1, 0)))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                model_label(replica).await,
+                "Model Frozen",
+                "replica {}",
+                replica.index
+            );
+        }
+
+        replicas[1]
+            .exec(&model_label_sql("Model Frozen Early", &at(2, 0)))
+            .await;
+        replicas[2].now_ms += LATER_MS;
+        replicas[2]
+            .exec(&model_label_sql("Model Frozen Late", &at(2, 1)))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                model_label(replica).await,
+                "Model Frozen Late",
+                "replica {}",
+                replica.index
+            );
+            assert_eq!(
+                frozen_start(replica).await,
+                format!("{EXECUTOR} 1 {FROZEN_MODEL} {FROZEN_INSTRUCTIONS}"),
+                "replica {}",
+                replica.index
+            );
+        }
+    });
+}
+
+/// Seeds of the cancel against recurrence progress scenario.
+const RECURRENCE_SEEDS: u64 = 8;
+
+/// Rounds of one cancel against recurrence progress scenario.
+const RECURRENCE_ROUNDS: usize = 5;
+
+/// SQL repeating [`SCHEDULED`] every two hours, deferred through quiet periods.
+fn recurrence_sql() -> String {
+    format!(
+        "INSERT INTO chat_scheduled_message_recurrences
+            (id, scheduled_message_id, rule_kind, interval_minutes, time_zone, quiet_policy,
+             next_occurrence_at, fired_count, created_at, updated_at)
+         VALUES ({id}, {scheduled}, 'interval', 120, 'America/Mexico_City', 'defer', {due}, 0,
+                 {created}, {created});",
+        id = quoted(&key(RECURRENCE_KEY_PREFIX, &[SCHEDULED])),
+        scheduled = quoted(SCHEDULED),
+        due = quoted(&at(30, 0)),
+        created = quoted(CREATED),
+    )
+}
+
+/// SQL recording that [`SCHEDULED`] posted `fired` occurrences, the next one due at `next`.
+fn advance_sql(fired: usize, next: &str, updated_at: &str) -> String {
+    format!(
+        "UPDATE chat_scheduled_message_recurrences
+         SET next_occurrence_at = {next}, fired_count = {fired}, updated_at = {updated_at}
+         WHERE scheduled_message_id = {scheduled};",
+        next = quoted(next),
+        updated_at = quoted(updated_at),
+        scheduled = quoted(SCHEDULED),
+    )
+}
+
+/// [`SCHEDULED`]'s recurrence as `rule fired_count`, or `None` once it is gone.
+async fn recurrence_progress(replica: &mut Replica) -> Option<String> {
+    replica
+        .scalar_text(
+            "SELECT recurrence.rule_kind || ' ' || recurrence.fired_count
+             FROM chat_scheduled_message_recurrences recurrence
+             JOIN chat_scheduled_messages message
+               ON message.id = recurrence.scheduled_message_id",
+        )
+        .await
+}
+
+#[test]
+fn chat_scheduled_recurrences_round_trip_and_leave_with_their_message() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        replicas[0]
+            .exec(&format!("{}{}", scheduled_sql(), recurrence_sql()))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        assert_eq!(
+            replicas[1]
+                .scalar_text(
+                    "SELECT id || ' ' || interval_minutes || ' ' || time_zone || ' '
+                            || quiet_policy || ' ' || next_occurrence_at
+                     FROM chat_scheduled_message_recurrences",
+                )
+                .await,
+            Some(format!(
+                "{} 120 America/Mexico_City defer {}",
+                key(RECURRENCE_KEY_PREFIX, &[SCHEDULED]),
+                at(30, 0)
+            ))
+        );
+
+        replicas[0]
+            .exec(&advance_sql(1, &at(150, 0), &at(31, 0)))
+            .await;
+        converge(&mut replicas).await;
+        assert_eq!(
+            recurrence_progress(&mut replicas[1]).await.as_deref(),
+            Some("interval 1")
+        );
+
+        replicas[1]
+            .exec("DELETE FROM chat_scheduled_messages WHERE id = 'scheduled:reminder'")
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        assert_eq!(
+            replicas[0]
+                .count("SELECT count(*) FROM chat_scheduled_message_recurrences")
+                .await,
+            0,
+            "a cancel removes the series with its message"
+        );
+    });
+}
+
+/// The executing device advances a series while the other devices cancel it at random; a
+/// cancel anywhere ends the series on every device whatever the exchange order, and without
+/// one every device shows the executing device's last advance.
+#[test]
+fn chat_simulated_cancel_against_recurrence_progress_keeps_the_cancel() {
+    block_on(async {
+        for seed in 0..RECURRENCE_SEEDS {
+            let mut rng = Rng(seed ^ 0x5e71);
+            let mut replicas = conversation_replicas(3).await;
+            replicas[0]
+                .exec(&format!("{}{}", scheduled_sql(), recurrence_sql()))
+                .await;
+            converge(&mut replicas).await;
+            let mut cancelled = false;
+            let mut fired = 0;
+            for round in 0..RECURRENCE_ROUNDS {
+                let executor_has_series = recurrence_progress(&mut replicas[0]).await.is_some();
+                if executor_has_series && rng.chance(80) {
+                    fired += 1;
+                    replicas[0]
+                        .exec(&advance_sql(
+                            fired,
+                            &at(30 + 120 * fired, 0),
+                            &at(round + 1, rng.below(60)),
+                        ))
+                        .await;
+                }
+                for replica in replicas.iter_mut().skip(1) {
+                    if recurrence_progress(replica).await.is_some() && rng.chance(15) {
+                        replica
+                            .exec(
+                                "DELETE FROM chat_scheduled_messages
+                                 WHERE id = 'scheduled:reminder'",
+                            )
+                            .await;
+                        cancelled = true;
+                    }
+                }
+                if rng.chance(50) {
+                    converge(&mut replicas).await;
+                }
+            }
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            let expected = (!cancelled).then(|| format!("interval {fired}"));
+            for replica in &mut replicas {
+                assert_eq!(
+                    recurrence_progress(replica).await,
+                    expected,
+                    "seed {seed} replica {}",
+                    replica.index
+                );
+                if cancelled {
+                    assert_eq!(
+                        replica
+                            .count("SELECT count(*) FROM chat_scheduled_message_recurrences")
+                            .await,
+                        0,
+                        "seed {seed} replica {}",
+                        replica.index
+                    );
+                }
             }
         }
     });

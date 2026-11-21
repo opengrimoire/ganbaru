@@ -417,7 +417,7 @@ describe("Notes table property actions", () => {
     pointer(window, "pointerup", 360);
     await vi.waitFor(() => expect(updateNotesDataSourceTableView).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(headerOrder()).toEqual(["title", "status", "done"]));
-    expect(document.body.textContent).toContain("Disk is full");
+    expect(document.body.textContent).toContain("The change could not be saved.");
   });
 
   it("drags no column while editing is locked", async () => {
@@ -653,7 +653,7 @@ describe("Notes table width handoff", () => {
     expect(width()).toContain("240px");
     await vi.waitFor(() => {
       expect(width()).toContain("240px");
-      expect(document.querySelector('[role="alert"]')?.textContent).toContain("Cannot save width");
+      expect(document.querySelector('[role="alert"]')?.textContent).toContain("The change could not be saved.");
     });
   });
 });
@@ -863,7 +863,7 @@ describe("immediate Notes table creation", () => {
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     expect(updateNotesDataSourceRowProperty).not.toHaveBeenCalled();
     reject(new Error("Create failed"));
-    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toContain("Create failed"));
+    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toContain("This row could not be saved."));
     expect(titleInput().value).toBe("Keep this title");
     document.querySelector<HTMLButtonElement>('[role="alert"] [data-notice-retry]')!.click();
     await vi.waitFor(() => expect(updateNotesDataSourceRowProperty).toHaveBeenCalledWith("source", expect.any(String), {
@@ -918,7 +918,7 @@ describe("Notes table property drafts", () => {
     onPropertyAction.mockRejectedValueOnce(new Error("Disk full"));
     action(await propertyMenu("Status"), "Insert left").click();
     const draft = await fillDraft("Owner", "people");
-    await vi.waitFor(() => expect(draft.querySelector('[role="alert"]')?.textContent).toBe("Disk full"));
+    await vi.waitFor(() => expect(draft.querySelector('[role="alert"]')?.textContent).toBe("The property could not be saved."));
     expect(draft.isConnected).toBe(true);
     expect(document.querySelector('[role="dialog"][aria-label="Status"]')).toBeNull();
     draft.querySelector<HTMLButtonElement>('[data-property-type="people"]')!.click();
@@ -953,7 +953,7 @@ describe("Notes table property drafts", () => {
     onPropertyAction.mockRejectedValueOnce(new Error("Disk full"));
     action(await propertyMenu("Status"), "Delete property").click();
     await vi.waitFor(() => expect(onPropertyAction).toHaveBeenCalledExactlyOnceWith({ type: "delete", propertyId: "status" }));
-    await vi.waitFor(() => expect(document.body.textContent).toContain("Disk full"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("The change could not be saved."));
   });
 
   it("discards the draft on Escape without creating a property", async () => {

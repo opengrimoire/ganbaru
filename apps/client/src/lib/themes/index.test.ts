@@ -461,10 +461,10 @@ describe("validateThemeJson current schema", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(
-        result.errors.some((e) => e.includes("calendarDefaults.mode")),
+        result.issues.some((e) => e.code === "one_of" && e.path === "calendarDefaults.mode"),
       ).toBe(true);
       expect(
-        result.errors.some((e) => e.includes("calendarDefaults.customBasis")),
+        result.issues.some((e) => e.code === "hex_color" && e.path === "calendarDefaults.customBasis"),
       ).toBe(true);
     }
   });
@@ -480,7 +480,7 @@ describe("validateThemeJson current schema", () => {
     const result = validateThemeJson(input);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.errors.some((e) => e.includes("sources"))).toBe(true);
+      expect(result.issues).toContainEqual({ code: "required", path: "sources" });
     }
   });
 });
@@ -491,11 +491,37 @@ describe("validateThemeJson rejection cases", () => {
     expect(validateThemeJson("not an object").ok).toBe(false);
     expect(validateThemeJson(42).ok).toBe(false);
     expect(validateThemeJson([]).ok).toBe(false);
+    expect(validateThemeJson(null)).toEqual({ ok: false, issues: [{ code: "not_object", path: "" }] });
+  });
+
+  it("reports an unsupported schema version as the only issue", () => {
+    expect(validateThemeJson({ ...buildV1Input(), schemaVersion: 2 })).toEqual({
+      ok: false,
+      issues: [{ code: "schema_version", path: "schemaVersion", expected: 1 }],
+    });
   });
 
   it("rejects an id that collides with a built-in", () => {
     const result = validateThemeJson(buildV1Input({ id: "light" }));
     expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.issues).toEqual([{ code: "built_in_id", path: "id" }]);
+  });
+
+  it("names the token, index, and limit of each problem", () => {
+    const input = buildV1Input({ displayName: "x".repeat(61), iconLabel: "dim" });
+    (input.appTokens as Record<string, unknown>)["--primary"] = "blue";
+    (input.eventPalette as unknown[])[2] = 7;
+    (input.appIsolated as unknown[]).push(3);
+    const result = validateThemeJson(input);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.issues).toEqual(expect.arrayContaining([
+      { code: "max_length", path: "displayName", limit: 60 },
+      { code: "hex_color", path: "eventPalette[2]" },
+      { code: "hex_color", path: "appTokens.--primary" },
+      { code: "one_of", path: "iconLabel", allowed: ["light", "dark"] },
+    ]));
+    expect(result.issues.some((issue) => issue.code === "string" && issue.path.startsWith("appIsolated["))).toBe(true);
   });
 });
 

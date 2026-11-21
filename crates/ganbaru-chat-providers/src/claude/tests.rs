@@ -20,7 +20,15 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 mod approvals;
+mod init_gate;
+mod instructions;
+mod limits;
+mod live_options;
+mod organizational;
+mod streams;
 mod transport;
+mod turns;
+mod usage;
 
 static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 
@@ -135,6 +143,13 @@ fn compact_boundary_is_a_thread_level_activity() {
     assert_eq!(item.kind, CanonicalItemKind::ContextCompaction);
 }
 
+/// An empty user settings allowlist for organizational launches.
+pub(super) fn no_user_settings() -> &'static serde_json::Map<String, Value> {
+    static EMPTY: std::sync::LazyLock<serde_json::Map<String, Value>> =
+        std::sync::LazyLock::new(serde_json::Map::new);
+    &EMPTY
+}
+
 pub(super) fn modes(
     safety_mode: SafetyMode,
     interaction_mode: InteractionMode,
@@ -157,21 +172,15 @@ pub(super) fn configuration(home: &Path) -> ProviderInstanceConfig {
         "launchArguments": [],
         "environment": {},
         "credentialReferences": {},
-        "visibleModelIds": [],
-        "favoriteModelIds": [],
         "providerConfig": {
             "schemaVersion": 1,
-            "value": {
-                "allowCustomModels": false,
-                "customModelIds": [],
-                "customModelLabels": {}
-            }
+            "value": {}
         }
     }))
     .unwrap()
 }
 
-fn route_state() -> ClaudeRouteState {
+pub(super) fn route_state() -> ClaudeRouteState {
     ClaudeRouteState::new(
         modes(SafetyMode::AskForApproval, InteractionMode::Build),
         None,
@@ -253,8 +262,9 @@ fn native_model_metadata_resolves_names_and_supported_effort_levels() {
     }]))
     .unwrap();
 
-    let models = provider_models(models, &[], &BTreeMap::new()).unwrap();
+    let models = provider_models(models).unwrap();
 
+    assert_eq!(models[0].id.as_str(), "claude-opus-4-8");
     assert_eq!(models[0].display_name, "Opus 4.8");
     assert_eq!(models[1].display_name, "Sonnet 5");
     assert_eq!(models[2].display_name, "Haiku 4.5");
@@ -287,50 +297,24 @@ fn native_model_metadata_resolves_names_and_supported_effort_levels() {
 }
 
 #[test]
-fn custom_model_names_do_not_infer_fast_mode_support() {
-    let models = provider_models(
-        Vec::new(),
-        &["claude-opus-9".to_string()],
-        &BTreeMap::from([(
-            "claude-opus-9".to_string(),
-            "Default (研究用 Opus 9)".to_string(),
-        )]),
-    )
-    .unwrap();
-
-    assert_eq!(models.len(), 1);
-    assert_eq!(models[0].display_name, "Default (研究用 Opus 9)");
-    assert!(models[0].options.iter().all(|definition| {
-        !matches!(
-            definition,
-            ModelOptionDefinition::Boolean { key, .. } if key == "fastMode"
-        )
-    }));
-}
-
-#[test]
 fn native_model_routes_keep_distinct_capabilities_despite_matching_labels() {
     let input: Vec<ClaudeModel> = serde_json::from_value(json!([{
-        "value": "default",
-        "displayName": "Opus 9",
-        "supportsFastMode": true
-    }, {
         "value": "opus",
         "displayName": "Opus 9",
-        "supportsFastMode": false
+        "supportsFastMode": true
     }, {
         "value": "claude-opus-9",
         "displayName": "Opus 9"
     }]))
     .unwrap();
-    let models = provider_models(input, &[], &BTreeMap::new()).unwrap();
+    let models = provider_models(input).unwrap();
 
     assert_eq!(
         models
             .iter()
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>(),
-        ["default", "opus", "claude-opus-9"]
+        ["opus", "claude-opus-9"]
     );
     let fast_modes = models
         .iter()
@@ -340,7 +324,50 @@ fn native_model_routes_keep_distinct_capabilities_despite_matching_labels() {
             })
         })
         .collect::<Vec<_>>();
-    assert_eq!(fast_modes, [true, false, false]);
+    assert_eq!(fast_modes, [true, false]);
+}
+
+#[test]
+fn the_default_route_is_listed_only_as_the_model_it_runs() {
+    let input = |resolved: &str| -> Vec<ClaudeModel> {
+        serde_json::from_value(json!([{
+            "value": "default",
+            "resolvedModel": resolved,
+            "displayName": "Default (recommended)",
+            "description": "Opus 9 · Best for everyday, complex tasks",
+            "supportsEffort": true,
+            "supportedEffortLevels": ["low", "high"]
+        }, {
+            "value": "opus",
+            "resolvedModel": "claude-opus-9",
+            "displayName": "Opus 9"
+        }]))
+        .unwrap()
+    };
+    let ids = |models: Vec<ProviderModel>| {
+        models
+            .into_iter()
+            .map(|model| (model.id.as_str().to_string(), model.display_name))
+            .collect::<Vec<_>>()
+    };
+
+    let shared = provider_models(input("claude-opus-9")).unwrap();
+    assert_eq!(ids(shared), [("opus".to_string(), "Opus 9".to_string())]);
+
+    for long_context in ["claude-opus-9[1m]", "claude-opus-10[1m]"] {
+        let models = provider_models(input(long_context)).unwrap();
+        assert_eq!(ids(models), [("opus".to_string(), "Opus 9".to_string())]);
+    }
+
+    let distinct = provider_models(input("claude-opus-10")).unwrap();
+    assert_eq!(distinct[0].options.len(), 1);
+    assert_eq!(
+        ids(distinct),
+        [
+            ("claude-opus-10".to_string(), "Opus 10".to_string()),
+            ("opus".to_string(), "Opus 9".to_string()),
+        ]
+    );
 }
 
 #[test]
@@ -389,6 +416,10 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             fast_mode: Some(true),
             modes: modes(SafetyMode::FullAccess, InteractionMode::Build),
             project_configuration: ProjectConfigurationAccess::Trusted,
+            internal_mcp: None,
+            organizational: None,
+            system_prompt: None,
+            cli_version: None,
         },
     )
     .unwrap();
@@ -426,6 +457,10 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             fast_mode: None,
             modes: modes(SafetyMode::Custom, InteractionMode::Build),
             project_configuration: ProjectConfigurationAccess::Trusted,
+            internal_mcp: None,
+            organizational: None,
+            system_prompt: None,
+            cli_version: None,
         },
     )
     .unwrap();
@@ -447,6 +482,10 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             fast_mode: None,
             modes: modes(SafetyMode::AskForApproval, InteractionMode::Plan),
             project_configuration: ProjectConfigurationAccess::Trusted,
+            internal_mcp: None,
+            organizational: None,
+            system_prompt: None,
+            cli_version: None,
         },
     )
     .unwrap();
@@ -482,6 +521,10 @@ fn claude_launch_arguments_restrict_project_setting_sources() {
                 fast_mode: Some(false),
                 modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
                 project_configuration,
+                internal_mcp: None,
+                organizational: None,
+                system_prompt: None,
+                cli_version: None,
             },
         )
         .unwrap()
@@ -540,6 +583,10 @@ fn protected_transport_arguments_cannot_be_overridden() {
                 fast_mode: None,
                 modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
                 project_configuration: ProjectConfigurationAccess::Trusted,
+                internal_mcp: None,
+                organizational: None,
+                system_prompt: None,
+                cli_version: None,
             },
         )
         .unwrap_err();
@@ -560,6 +607,26 @@ fn continuation_group_changes_with_claude_config_directory() {
         .continuation_group()
         .unwrap();
     assert_ne!(first_group, second_group);
+}
+
+#[cfg(unix)]
+#[test]
+fn direct_continuation_group_keeps_its_v1_digest() {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::ffi::OsStrExt;
+
+    let home = TestDirectory::new("home-v1");
+    let home = resolve_claude_home(&configuration(home.path())).unwrap();
+    let mut digest = Sha256::new();
+    digest.update(b"ganbaru-chat-claude-config-v1\0");
+    digest.update(home.config_directory.as_os_str().as_bytes());
+    assert_eq!(
+        home.continuation_group_with_authority(false)
+            .unwrap()
+            .as_str(),
+        format!("claude-config-{:x}", digest.finalize()),
+        "direct threads keep resuming across the organizational lockdown"
+    );
 }
 
 #[test]
@@ -729,6 +796,219 @@ fn tool_input_completion_waits_for_the_correlated_tool_result() {
 }
 
 #[test]
+fn web_search_completes_with_its_links_instead_of_command_output() {
+    let normalizer = ClaudeEventNormalizer::new(
+        ProviderInstanceId::new("claude-instance-1".to_string()).unwrap(),
+        ChatThreadId::new("thread-1".to_string()).unwrap(),
+        ProviderSessionId::new("session-1".to_string()).unwrap(),
+    );
+    let mut state = route_state();
+    state.active_chat_turn_id = Some(ChatTurnId::new("turn-1".to_string()).unwrap());
+    let mut normalize = |message: Value| normalizer.normalize_message(&mut state, message).unwrap();
+    let started = normalize(json!({
+        "type": "assistant",
+        "message": {
+            "id": "msg-1",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "tool-search",
+                "name": "WebSearch",
+                "input": { "query": "rust release", "mode": "standard" }
+            }]
+        }
+    }));
+    let completed = normalize(json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "tool-search",
+                "content": "Web search results for query: \"rust release\"\n\nLinks: [...]"
+            }]
+        },
+        "tool_use_result": {
+            "query": "rust release",
+            "results": [
+                { "tool_use_id": "srvtoolu_1", "content": [{ "title": "Rust 1.94.0", "url": "https://blog.rust-lang.org/2026/03/05/Rust-1.94.0" }] },
+                "The latest release is 1.94.0."
+            ],
+            "searchCount": 1
+        }
+    }));
+
+    let item = |events: &[CanonicalRuntimeEvent]| {
+        events
+            .iter()
+            .find_map(|event| match &event.event {
+                CanonicalEvent::ItemStarted(item) | CanonicalEvent::ItemCompleted(item)
+                    if item.item_id == "tool-search" =>
+                {
+                    Some(item.clone())
+                }
+                _ => None,
+            })
+            .expect("search item")
+    };
+    let started = item(&started);
+    assert_eq!(started.kind, CanonicalItemKind::WebSearch);
+    assert_eq!(started.title.as_deref(), Some("rust release"));
+    assert!(
+        !completed
+            .iter()
+            .any(|event| matches!(event.event, CanonicalEvent::ContentDelta(_)))
+    );
+    let completed = item(&completed);
+    assert_eq!(completed.status, ActivityStatus::Completed);
+    assert_eq!(
+        completed.safe_metadata.map(|metadata| metadata.value),
+        Some(json!({
+            "blockType": "tool_use",
+            "toolName": "WebSearch",
+            "toolInput": { "query": "rust release" },
+            "webResult": {
+                "links": [{ "url": "https://blog.rust-lang.org/2026/03/05/Rust-1.94.0", "title": "Rust 1.94.0" }]
+            },
+        }))
+    );
+}
+
+#[test]
+fn denied_web_fetch_keeps_the_reason_as_output() {
+    let normalizer = ClaudeEventNormalizer::new(
+        ProviderInstanceId::new("claude-instance-1".to_string()).unwrap(),
+        ChatThreadId::new("thread-1".to_string()).unwrap(),
+        ProviderSessionId::new("session-1".to_string()).unwrap(),
+    );
+    let mut state = route_state();
+    state.active_chat_turn_id = Some(ChatTurnId::new("turn-1".to_string()).unwrap());
+    let mut normalize = |message: Value| normalizer.normalize_message(&mut state, message).unwrap();
+    normalize(json!({
+        "type": "assistant",
+        "message": {
+            "id": "msg-1",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "tool-fetch",
+                "name": "WebFetch",
+                "input": { "url": "https://example.org", "prompt": "summarize" }
+            }]
+        }
+    }));
+    let completed = normalize(json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "tool-fetch",
+                "is_error": true,
+                "content": "The person declined this request."
+            }]
+        },
+        "tool_use_result": "Error: The person declined this request."
+    }));
+
+    assert!(completed.iter().any(|event| matches!(
+        &event.event,
+        CanonicalEvent::ContentDelta(delta) if delta.delta == "The person declined this request."
+    )));
+    let item = completed
+        .iter()
+        .find_map(|event| match &event.event {
+            CanonicalEvent::ItemCompleted(item) => Some(item.clone()),
+            _ => None,
+        })
+        .expect("fetch completion");
+    assert_eq!(item.status, ActivityStatus::Failed);
+    assert!(item.safe_metadata.is_none());
+}
+
+#[test]
+fn streamed_tool_input_is_not_output_and_the_assistant_frame_names_the_command() {
+    let normalizer = ClaudeEventNormalizer::new(
+        ProviderInstanceId::new("claude-instance-1".to_string()).unwrap(),
+        ChatThreadId::new("thread-1".to_string()).unwrap(),
+        ProviderSessionId::new("session-1".to_string()).unwrap(),
+    );
+    let mut state = route_state();
+    state.active_chat_turn_id = Some(ChatTurnId::new("turn-1".to_string()).unwrap());
+    let mut normalize = |message: Value| normalizer.normalize_message(&mut state, message).unwrap();
+    normalize(json!({
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": { "type": "tool_use", "id": "tool-bash", "name": "Bash", "input": {} }
+        }
+    }));
+    let streamed_input = normalize(json!({
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": { "type": "input_json_delta", "partial_json": "{\"command\": \"echo 4\"" }
+        }
+    }));
+    normalize(json!({
+        "type": "stream_event",
+        "event": { "type": "content_block_stop", "index": 1 }
+    }));
+    let assistant = normalize(json!({
+        "type": "assistant",
+        "message": {
+            "id": "msg-1",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "tool-bash",
+                "name": "Bash",
+                "input": { "command": "echo 4", "description": "Print four", "timeout": 5 }
+            }]
+        }
+    }));
+    let result = normalize(json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{ "type": "tool_result", "tool_use_id": "tool-bash", "content": "4" }]
+        }
+    }));
+
+    assert!(streamed_input.is_empty());
+    let update = assistant
+        .iter()
+        .find_map(|event| match &event.event {
+            CanonicalEvent::ItemStarted(item) if item.item_id == "tool-bash" => Some(item),
+            _ => None,
+        })
+        .expect("tool update");
+    assert_eq!(update.kind, CanonicalItemKind::CommandExecution);
+    assert_eq!(update.title.as_deref(), Some("echo 4"));
+    assert_eq!(
+        update
+            .safe_metadata
+            .as_ref()
+            .map(|metadata| &metadata.value),
+        Some(&json!({
+            "blockType": "tool_use",
+            "toolName": "Bash",
+            "toolInput": { "command": "echo 4", "description": "Print four" },
+        }))
+    );
+    let output = result
+        .iter()
+        .filter_map(|event| match &event.event {
+            CanonicalEvent::ContentDelta(delta) => Some(delta.delta.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(output, ["4"]);
+}
+
+#[test]
 fn resume_not_found_classifier_requires_session_specific_evidence() {
     assert!(diagnostic_confirms_resume_not_found(
         "Claude session 1111 was not found"
@@ -770,4 +1050,364 @@ fn separate_sessions_never_share_event_or_fallback_item_ids() {
         assert!(session_items.iter().all(|item| !item_ids.contains(item)));
         item_ids.extend(session_items);
     }
+}
+
+#[test]
+fn environment_forwards_proxy_and_ca_variables() {
+    let host = BTreeMap::from([
+        ("HTTPS_PROXY", "http://proxy.example:3128"),
+        ("http_proxy", "http://proxy.example:3128"),
+        ("NO_PROXY", "localhost"),
+        ("NODE_EXTRA_CA_CERTS", "/etc/ssl/corporate.pem"),
+        ("SSL_CERT_FILE", "/etc/ssl/cert.pem"),
+        ("SHELL", "/bin/zsh"),
+        ("USER", "someone"),
+        ("TERM", "xterm-256color"),
+        ("HTTP_PROXY", "http://bad\0proxy"),
+    ]);
+    let environment = inherited_environment(|name| host.get(name).map(|value| value.to_string()));
+    for name in [
+        "HTTPS_PROXY",
+        "http_proxy",
+        "NO_PROXY",
+        "NODE_EXTRA_CA_CERTS",
+        "SSL_CERT_FILE",
+        "SHELL",
+        "USER",
+        "TERM",
+    ] {
+        assert_eq!(
+            environment.get(name).map(String::as_str),
+            host.get(name).copied(),
+            "{name}"
+        );
+    }
+    assert!(
+        !environment.contains_key("HTTP_PROXY"),
+        "a value with NUL is never forwarded"
+    );
+    assert!(
+        !environment.contains_key("https_proxy"),
+        "unset variables stay unset"
+    );
+}
+
+#[test]
+fn environment_excludes_host_session_variables() {
+    let host = BTreeMap::from([
+        ("CLAUDECODE", "1"),
+        ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+        ("CLAUDE_CODE_SSE_PORT", "4242"),
+        ("CLAUDE_CONFIG_DIR", "/elsewhere"),
+        ("ANTHROPIC_API_KEY", "secret"),
+        ("GANBARU_CHAT_MCP_TOKEN", "token"),
+        ("SSH_AUTH_SOCK", "/tmp/agent"),
+        ("TERM", "dumb"),
+    ]);
+    let environment = inherited_environment(|name| host.get(name).map(|value| value.to_string()));
+    assert_eq!(
+        environment.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["TERM"]
+    );
+}
+
+#[test]
+fn unsupported_control_subtype_gets_error_response() {
+    let request = json!({ "subtype": "elicitation", "mcp_server_name": "other" });
+    let routed = route_control_request("ctrl-9", request.as_object().unwrap()).unwrap();
+    assert!(routed.pending.is_none());
+    assert!(matches!(&routed.event, CanonicalEvent::Unknown(unknown)
+        if unknown.source_type == "claude/control/elicitation"));
+    assert_eq!(
+        routed.immediate_response,
+        Some(json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "error",
+                "request_id": "ctrl-9",
+                "error": "Unsupported control request",
+            },
+        }))
+    );
+}
+
+fn organizational_launch<'a>(
+    scope: ProviderOrganizationalScope,
+    user_settings: &'a serde_json::Map<String, Value>,
+) -> ClaudeOrganizationalLaunch<'a> {
+    ClaudeOrganizationalLaunch {
+        internal_server_name: "ganbaru-chat",
+        pre_approved_tools: &[],
+        scope,
+        commands_confined: false,
+        user_settings,
+    }
+}
+
+#[test]
+fn launch_settings_merge_into_one_object_or_none() {
+    assert_eq!(launch_settings(None, None), None);
+    assert_eq!(
+        launch_settings(Some(false), None).as_deref(),
+        Some(r#"{"fastMode":false}"#)
+    );
+    assert_eq!(
+        launch_settings(
+            None,
+            Some(organizational_launch(
+                ProviderOrganizationalScope::Conversation,
+                no_user_settings()
+            ))
+        )
+        .as_deref(),
+        Some(
+            r#"{"permissions":{"blockReadsOutsideWorkingDirectories":true,"blockWritesOutsideWorkingDirectories":true,"ask":["WebSearch","WebFetch"]}}"#
+        )
+    );
+    assert_eq!(
+        launch_settings(
+            Some(true),
+            Some(organizational_launch(
+                ProviderOrganizationalScope::Scratch,
+                no_user_settings()
+            ))
+        )
+        .as_deref(),
+        Some(
+            r#"{"fastMode":true,"useAutoModeDuringPlan":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"blockWritesOutsideWorkingDirectories":true,"ask":["WebSearch","WebFetch","Bash"]}}"#
+        )
+    );
+}
+
+#[test]
+fn agent_launch_settings_carry_user_preferences_below_ganbaru_keys() {
+    let user_settings = json!({ "language": "Spanish", "alwaysThinkingEnabled": false });
+    let user_settings = user_settings.as_object().unwrap();
+    let settings = launch_settings(
+        None,
+        Some(organizational_launch(
+            ProviderOrganizationalScope::Conversation,
+            user_settings,
+        )),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&settings).unwrap(),
+        json!({
+            "language": "Spanish",
+            "alwaysThinkingEnabled": false,
+            "permissions": {
+                "blockReadsOutsideWorkingDirectories": true,
+                "blockWritesOutsideWorkingDirectories": true,
+                "ask": ["WebSearch", "WebFetch"],
+            },
+        })
+    );
+    assert_eq!(
+        launch_settings(None, None),
+        None,
+        "direct runs read the file"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn version_cache_reuses_probe_until_metadata_changes() {
+    use super::support::cached_probe_version;
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = TestDirectory::new("version-cache");
+    let counter = directory.path().join("count");
+    let executable = directory.path().join("claude");
+    let write_script = |version: &str| {
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\necho probe >> '{}'\necho '{version} (Claude Code)'\n",
+                counter.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    };
+    let probes = || {
+        fs::read_to_string(&counter)
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
+    };
+    let resolved = ResolvedClaudeExecutable {
+        executable: executable.clone(),
+        prefix_arguments: Vec::new(),
+    };
+    let environment = BTreeMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]);
+    let probe = || {
+        crate::test_block_on(cached_probe_version(
+            &resolved,
+            directory.path(),
+            environment.clone(),
+        ))
+        .unwrap()
+    };
+
+    write_script("2.1.322");
+    assert_eq!(probe(), ClaudeVersion::new(2, 1, 322));
+    assert_eq!(probe(), ClaudeVersion::new(2, 1, 322));
+    assert_eq!(probes(), 1, "an unchanged executable is probed once");
+
+    write_script("2.1.3230");
+    assert_eq!(probe(), ClaudeVersion::new(2, 1, 3230));
+    assert_eq!(probes(), 2, "a changed executable is probed again");
+}
+
+#[test]
+fn sign_in_hint_names_only_a_custom_config_directory() {
+    let default_home = Path::new("/home/person/.claude");
+    assert_eq!(
+        authentication_hint(default_home, default_home),
+        "Claude authentication is required"
+    );
+    let custom = Path::new("/srv/claude-work");
+    assert_eq!(
+        authentication_hint(custom, default_home),
+        "Claude authentication is required; sign in with CLAUDE_CONFIG_DIR=/srv/claude-work"
+    );
+}
+
+#[test]
+fn claude_versions_admit_against_the_tested_range() {
+    assert_eq!(
+        parse_version(CLAUDE_COMPATIBILITY.minimum).unwrap(),
+        MINIMUM_CLAUDE_VERSION
+    );
+    for (version, admission) in [
+        ("2.1.169", ProviderVersionAdmission::BelowMinimum),
+        ("2.1.170", ProviderVersionAdmission::Supported),
+        ("2.1.322 (Claude Code)", ProviderVersionAdmission::Supported),
+        ("2.1.323", ProviderVersionAdmission::UntestedNewer),
+        ("2.9.0-beta.1", ProviderVersionAdmission::UntestedNewer),
+        ("3.0.0", ProviderVersionAdmission::AtOrAboveCeiling),
+    ] {
+        let parsed = parse_version(version).unwrap();
+        let result = ensure_supported_version(parsed);
+        assert_eq!(
+            result.is_ok(),
+            crate::registry::admits_sessions(admission),
+            "{version}"
+        );
+        match result {
+            Ok(admitted) => assert_eq!(admitted, admission, "{version}"),
+            Err(error) => {
+                assert_eq!(error.code, ChatErrorCode::UnsupportedVersion, "{version}");
+                assert!(error.recoverable, "{version}");
+                assert_eq!(
+                    crate::registry::refused_version(&error),
+                    Some((admission, parsed.to_string())),
+                    "{version}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn process_environment_keeps_user_settings_preferences_below_the_configured_environment() {
+    let home = TestDirectory::new("home-context-preference");
+    fs::write(
+        home.path().join("settings.json"),
+        json!({ "env": {
+            "CLAUDE_CODE_DISABLE_1M_CONTEXT": "1",
+            "ANTHROPIC_BASE_URL": "https://example.invalid",
+        } })
+        .to_string(),
+    )
+    .unwrap();
+    let resolved = resolve_claude_home(&configuration(home.path())).unwrap();
+    let preferences = super::preferences::user_preferences(&resolved.config_directory);
+    let environment = claude_process_environment(
+        &configuration(home.path()),
+        &resolved,
+        &preferences.environment,
+    )
+    .unwrap();
+    assert_eq!(
+        environment
+            .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert!(!environment.contains_key("ANTHROPIC_BASE_URL"));
+
+    let mut configured = configuration(home.path());
+    configured.environment.insert(
+        "CLAUDE_CODE_DISABLE_1M_CONTEXT".to_string(),
+        "0".to_string(),
+    );
+    let environment =
+        claude_process_environment(&configured, &resolved, &preferences.environment).unwrap();
+    assert_eq!(
+        environment
+            .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
+            .map(String::as_str),
+        Some("0")
+    );
+}
+
+#[test]
+fn host_preference_variables_are_inherited_only_with_valid_values() {
+    let host = BTreeMap::from([
+        ("MAX_THINKING_TOKENS", "8000"),
+        ("API_TIMEOUT_MS", "soon"),
+        ("ANTHROPIC_MODEL", "claude-opus-5-5"),
+    ]);
+    let environment = inherited_environment(|name| host.get(name).map(|value| value.to_string()));
+    assert_eq!(
+        environment.get("MAX_THINKING_TOKENS").map(String::as_str),
+        Some("8000")
+    );
+    assert!(!environment.contains_key("API_TIMEOUT_MS"));
+    assert!(!environment.contains_key("ANTHROPIC_MODEL"));
+}
+
+#[test]
+fn configured_environment_cannot_name_the_sandbox_variables() {
+    let home = TestDirectory::new("home-sandbox-environment");
+    let resolved = resolve_claude_home(&configuration(home.path())).unwrap();
+    for name in [
+        "CLAUDE_CODE_SHELL_PREFIX",
+        "claude_code_tmpdir",
+        ganbaru_sandbox::POLICY_FILE_VARIABLE,
+    ] {
+        let mut configured = configuration(home.path());
+        configured
+            .environment
+            .insert(name.to_string(), "/tmp/elsewhere".to_string());
+        let error =
+            claude_process_environment(&configured, &resolved, &BTreeMap::new()).unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation, "{name}");
+    }
+}
+
+#[test]
+fn account_plans_follow_the_claude_subscription() {
+    let plan = |account: Value| {
+        serde_json::from_value::<ClaudeAccount>(account)
+            .unwrap()
+            .plan()
+    };
+    for paid in ["pro", "max", "team", "enterprise"] {
+        assert_eq!(
+            plan(json!({ "subscriptionType": paid })),
+            Some(ProviderAccountPlan::Subscription),
+            "{paid}"
+        );
+    }
+    assert_eq!(
+        plan(json!({ "subscriptionType": "free" })),
+        Some(ProviderAccountPlan::Free)
+    );
+    assert_eq!(
+        plan(json!({ "email": "redacted@example.test", "subscriptionType": null })),
+        None
+    );
+    assert_eq!(plan(json!({})), None);
 }

@@ -20,7 +20,7 @@ Features should cooperate through typed, auditable transitions. Calendar owns ti
 
 ### Progressive complexity
 
-The first useful path should stay simple. Advanced recurrence, custom focus rhythms, automation, access profiles, sync, and AI controls should appear when their context requires them. Powerful behavior must not make ordinary local use harder to understand.
+The first useful path should stay simple. Advanced recurrence, custom focus rhythms, automation, agent access, sync, and AI controls should appear when their context requires them. Powerful behavior must not make ordinary local use harder to understand.
 
 ### Explicit authority
 

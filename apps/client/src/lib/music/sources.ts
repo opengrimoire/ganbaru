@@ -1,3 +1,5 @@
+import type { MusicErrorKey } from "./user-errors";
+
 export type MusicSourceKind = "local-file" | "youtube-video" | "youtube-playlist";
 
 export interface MusicSourceBase {
@@ -40,9 +42,28 @@ export interface YouTubeVideoSourceOptions {
   endMs?: number | null;
 }
 
+/** Why typed source input could not be parsed. */
+export type MusicSourceInputError =
+  | "empty"
+  | "unsupported"
+  | "not-absolute"
+  | "invalid-youtube-playlist"
+  | "invalid-youtube-video"
+  | "missing-youtube-id";
+
+/** Message for every source input error. */
+export const MUSIC_SOURCE_INPUT_ERROR_MESSAGE_KEYS: Readonly<Record<MusicSourceInputError, MusicErrorKey>> = {
+  empty: "music.errors.sourceInputEmpty",
+  unsupported: "music.errors.sourceInputUnsupported",
+  "not-absolute": "music.errors.sourceInputNotAbsolute",
+  "invalid-youtube-playlist": "music.errors.youtubePlaylistIdInvalid",
+  "invalid-youtube-video": "music.errors.youtubeVideoIdInvalid",
+  "missing-youtube-id": "music.errors.youtubeIdMissing",
+};
+
 export interface SourceParseResult {
   source: MusicSource | null;
-  error: string | null;
+  error: MusicSourceInputError | null;
 }
 
 const YOUTUBE_HOSTS = new Set([
@@ -72,7 +93,7 @@ export function youtubeVideoIdFromIdentity(identityKey: string): string | null {
 export function parseMusicSourceInput(input: string): SourceParseResult {
   const trimmed = input.trim();
   if (!trimmed) {
-    return { source: null, error: "Enter a local file path or YouTube link." };
+    return { source: null, error: "empty" };
   }
 
   const url = parseUrl(trimmed);
@@ -87,7 +108,7 @@ export function parseMusicSourceInput(input: string): SourceParseResult {
         error: null,
       };
     }
-    return { source: null, error: "Only local files and YouTube links are supported." };
+    return { source: null, error: "unsupported" };
   }
 
   if (looksLikeLocalPath(trimmed)) {
@@ -97,7 +118,7 @@ export function parseMusicSourceInput(input: string): SourceParseResult {
     };
   }
 
-  return { source: null, error: "Enter an absolute local path or a YouTube link." };
+  return { source: null, error: "not-absolute" };
 }
 
 export function formatSourceKind(kind: MusicSourceKind): string {
@@ -194,10 +215,10 @@ function parseYouTubeSource(originalInput: string, url: URL): SourceParseResult 
   const endMs = parseTimestampMs(url.searchParams.get("end") ?? url.searchParams.get("end_seconds"));
 
   if (playlistId && !PLAYLIST_ID_PATTERN.test(playlistId)) {
-    return { source: null, error: "The YouTube playlist ID is not valid." };
+    return { source: null, error: "invalid-youtube-playlist" };
   }
   if (videoId && !VIDEO_ID_PATTERN.test(videoId)) {
-    return { source: null, error: "The YouTube video ID is not valid." };
+    return { source: null, error: "invalid-youtube-video" };
   }
 
   if (playlistId) {
@@ -232,7 +253,7 @@ function parseYouTubeSource(originalInput: string, url: URL): SourceParseResult 
     };
   }
 
-  return { source: null, error: "The YouTube link does not include a video or playlist ID." };
+  return { source: null, error: "missing-youtube-id" };
 }
 
 function parseUrl(input: string): URL | null {

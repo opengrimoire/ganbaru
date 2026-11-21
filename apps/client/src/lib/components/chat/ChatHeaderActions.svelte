@@ -4,6 +4,7 @@
   import Settings2 from "@lucide/svelte/icons/settings-2";
   import SquareArrowOutUpRight from "@lucide/svelte/icons/square-arrow-out-up-right";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
@@ -40,12 +41,30 @@
   const detachTitle = $derived(
     detachBlock === "last-tab" ? t("titleBar.onlyTabInWindow") : t("chat.detach"),
   );
+  /** A reply thread already shown in a tab of its own offers neither a new tab nor a new window. */
+  const replyThreadTab = $derived(chat.replyThreadTabId !== null);
+  const canOpenReplyThreadTab = $derived(
+    !mobilePresentation && !replyThreadTab && tabs.canOpenTabs && chat.openReplyThreadId !== null && chat.selectedChannel !== null,
+  );
   let actionError = $state<string | null>(null);
 
   function detachThread(): void {
     actionError = null;
     void tabs.detach(tabs.activeTabId).catch((error: unknown) => {
-      actionError = error instanceof Error ? error.message : String(error);
+      actionError = chatErrorMessage(error);
+    });
+  }
+
+  /** Moves the open reply thread out of the channel into a workspace tab of its own, right after this one. */
+  function openReplyThreadInNewTab(): void {
+    const channel = chat.selectedChannel;
+    const replyThreadId = chat.openReplyThreadId;
+    if (!channel || !replyThreadId) return;
+    chat.closeReplyThread();
+    tabs.openLocation("item", {
+      kind: "chat",
+      projectId: channel.projectId,
+      item: { type: "chat-reply-thread", id: replyThreadId, channelId: channel.id },
     });
   }
 </script>
@@ -60,12 +79,16 @@
       <PanelRight size={actionIconSize} strokeWidth={1.75} />
     </button>
   {/if}
-  {#if localExecutionAvailable && selectedThread && detachBlock !== "unsupported"}
+  {#if canOpenReplyThreadTab}
+    <button type="button" class={iconButtonClass} aria-label={t("chat.organization.openThreadInNewTab")} title={t("chat.organization.openThreadInNewTab")} data-chat-reply-thread-new-tab onclick={openReplyThreadInNewTab}>
+      <SquareArrowOutUpRight size={actionIconSize} strokeWidth={1.75} />
+    </button>
+  {:else if localExecutionAvailable && selectedThread && !replyThreadTab && detachBlock !== "unsupported"}
     <button type="button" class={cn(iconButtonClass, detachBlock !== null && "cursor-not-allowed opacity-40")} aria-label={t("chat.detach")} aria-disabled={detachBlock !== null} title={detachTitle} onclick={() => { if (detachBlock === null) detachThread(); }}>
       <SquareArrowOutUpRight size={actionIconSize} strokeWidth={1.75} />
     </button>
   {/if}
-  {#if projectName}
+  {#if projectName && !replyThreadTab}
     <button
       type="button"
       class={cn(iconButtonClass, projectSettingsOpen && "bg-accent text-foreground")}

@@ -60,26 +60,23 @@ pub async fn read_workspace(
 /// Folder rows replicate between devices, so a candidate that does not parse is logged and
 /// skipped like a missing one, as [`list_workspaces`] leaves it out, and the next candidate is
 /// tried. `None` means no candidate is readable on this replica. Query errors stay fatal.
-pub async fn resolve_primary_workspace(
-    pool: &SqlitePool,
+pub async fn resolve_primary_workspace<'e, E>(
+    executor: E,
     project_id: &str,
-) -> ChatResult<Option<ProjectWorkingFolder>> {
-    let rows = sqlx::query(
+) -> ChatResult<Option<ProjectWorkingFolder>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let rows = sqlx::query(concat!(
         "SELECT folder.id, folder.project_id, folder.display_name, folder.kind,
                 folder.managed_relative_path, folder.sort_order, folder.repository_kind,
                 folder.repository_identity, folder.created_at, folder.updated_at,
                 folder.archived_at, folder.revision
-         FROM project_working_folders folder
-         LEFT JOIN project_primary_working_folders primary_folder
-           ON primary_folder.project_id = folder.project_id
-          AND primary_folder.working_folder_id = folder.id
-          AND folder.archived_at IS NULL
-         WHERE folder.project_id = ?
-           AND (primary_folder.project_id IS NOT NULL OR folder.kind = 'managed')
-         ORDER BY primary_folder.project_id IS NULL, folder.sort_order, folder.id",
-    )
+         ",
+        super::primary_folder::primary_folder_candidates!()
+    ))
     .bind(project_id)
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await
     .map_err(persistence_error)?;
     for row in rows {
@@ -264,8 +261,6 @@ async fn is_referenced_by_chat(
                        WHERE working_folder_id = ?1)
              OR EXISTS(SELECT 1 FROM chat_scratch_promotions
                        WHERE destination_working_folder_id = ?1)
-             OR EXISTS(SELECT 1 FROM chat_teammate_working_folder_grants
-                       WHERE working_folder_id = ?1)
              OR EXISTS(SELECT 1 FROM chat_working_folder_reference_targets
                        WHERE working_folder_id = ?1)
              OR EXISTS(SELECT 1 FROM chat_workspace_path_reference_targets

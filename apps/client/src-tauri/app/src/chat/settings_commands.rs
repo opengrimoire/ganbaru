@@ -2,52 +2,52 @@
 
 use super::credentials::{
     CredentialStore, CredentialStoreAvailability, PlatformCredentialStore, SecretValue,
-    is_provider_credential_reference, materialize_provider_environment,
-    provider_credential_reference,
+    is_provider_credential_reference, provider_credential_reference,
 };
 #[cfg(test)]
 use super::device_state::ChatProviderDeviceState;
 use super::device_state::{read_active_device_scope, update_active_device_scope};
-#[cfg(all(test, unix))]
-use super::settings::installed_provider_executables;
 pub(crate) use super::settings::read_provider;
 use super::settings::{
-    ProviderRuntimePrompt, ProviderRuntimeReviewRead, RuntimeReceipts, approval_digests,
-    approved_runtime, ask_runtime_approval, ingress_review_items, pending_portable_items,
-    require_runtime_approved_on_device, validate_runtime_prompt,
+    CHAT_PROVIDER_ACTIVITY_EVENT, apply_provider_probe, config_io_error, credential_error,
+    device_configuration, device_state_error, discover_default_providers,
+    discover_default_providers_once, duplicate_configuration_error, executable_search_directories,
+    find_duplicate, invalidate_provider_state_for_credential, mark_discovery_finished,
+    mutate_chat_config, mutate_chat_configuration, operation_context, pick_local_path,
+    portable_configuration, provider_instance_read, provider_mut, provider_not_found_error,
+    provider_runtime_changed, read_chat_config, read_settings, remember_composer_selection,
+    replacement_provider_configurations, set_working_folder_provider_preference,
+    validate_picker_title,
 };
 use super::settings::{
-    apply_provider_probe, config_io_error, credential_error, device_configuration,
-    device_state_error, discover_default_providers, discover_default_providers_once,
-    executable_search_directories, invalidate_provider_state_for_credential,
-    mark_discovery_finished, mutate_chat_config, mutate_chat_configuration, operation_context,
-    pick_local_path, portable_configuration, provider_instance_read, provider_mut,
-    provider_not_found_error, provider_runtime_changed, read_chat_config, read_settings,
-    remember_composer_selection, replacement_provider_configurations,
-    set_working_folder_provider_preference, unique_model_ids, validate_picker_title,
+    ProviderRuntimePrompt, ProviderRuntimeReviewRead, RuntimeReceipts, approval_digests,
+    approved_runtime, ask_runtime_approval, ingress_review_items, launch_configuration,
+    pending_portable_items, remove_private_home, require_runtime_approved_on_device,
+    validate_runtime_prompt,
 };
 #[cfg(test)]
 use super::settings::{
     default_provider_configuration, provider_family_is_discoverable,
     should_discover_default_provider,
 };
+#[cfg(all(test, unix))]
+use super::settings::{drop_met_install_requirements, installed_provider_executables};
 use crate::chat::configuration::{read_chat_configuration, write_chat_behavior};
 use crate::vault;
 use ganbaru_chat_contracts::config::{
     ChatBehaviorPreferences, ChatConfiguration, ChatPanelPreferences, RememberedComposerSelection,
 };
-#[cfg(test)]
-use ganbaru_chat_contracts::models::ProviderFamilyId;
 use ganbaru_chat_contracts::models::{
-    ChatErrorCode, ChatResult, ChatThreadId, CredentialReferenceId, ModelId, ProbeState,
-    ProjectWorkingFolderId, ProviderFamilyMetadataRead, ProviderInstanceConfig, ProviderInstanceId,
-    ProviderModelCatalog, ProviderProbeResult,
+    ChatErrorCode, ChatResult, ChatThreadId, CredentialReferenceId, ProbeState,
+    ProjectWorkingFolderId, ProviderFamilyId, ProviderFamilyMetadataRead, ProviderInstanceConfig,
+    ProviderInstanceId, ProviderModelCatalog, ProviderProbeResult,
 };
 use ganbaru_chat_providers::runtime_review::DevicePathKind;
 use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
+use tauri::{Emitter, Manager};
 
 #[derive(Default)]
 pub struct ChatSettingsState {
@@ -71,6 +71,13 @@ pub struct ProviderInstanceRead {
     pub last_probe: Option<ProviderProbeResult>,
     pub last_successful_probe_at: Option<ganbaru_chat_contracts::models::UtcTimestamp>,
     pub model_catalog: Option<ProviderModelCatalog>,
+    /// The newest usage limits this device observed for the instance.
+    pub usage_limits: Option<crate::chat::device_state::ProviderUsageLimitsObservation>,
+    /// When a turn last made the instance the most recently used on this device.
+    pub last_used_at: Option<ganbaru_chat_contracts::models::UtcTimestamp>,
+    /// The earlier configuration this one launches the same program and account as on this
+    /// device, filled only in the Settings read.
+    pub duplicate_of: Option<ProviderInstanceId>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -79,6 +86,10 @@ pub struct ChatSettingsRead {
     pub configuration: ChatConfiguration,
     pub provider_families: Vec<ProviderFamilyMetadataRead>,
     pub provider_instances: Vec<ProviderInstanceRead>,
+    /// The CLI programs found on this device for each family it could set up, by family; a
+    /// family appears with an empty list when its search found nothing, and is absent when
+    /// this device does not search for it.
+    pub installed_executables: BTreeMap<ProviderFamilyId, Vec<String>>,
     pub credential_store_availability: CredentialStoreAvailability,
     pub last_selected_thread_id: Option<ChatThreadId>,
 }
@@ -111,13 +122,59 @@ pub async fn chat_read_settings(app: tauri::AppHandle) -> ChatResult<ChatSetting
     read_settings(&app).await
 }
 
+/// Age after which opening Chat rereads a provider's status and plan limits; matches when the
+/// limits views call a reading out of date.
+const PROVIDER_READING_MAX_AGE: chrono::TimeDelta = chrono::TimeDelta::hours(1);
+
 #[tauri::command]
 pub async fn chat_discover_default_providers(
     app: tauri::AppHandle,
     state: tauri::State<'_, ChatSettingsState>,
 ) -> ChatResult<ChatSettingsRead> {
-    discover_default_providers_once(&app, &state).await?;
+    if discover_default_providers_once(&app, &state).await? {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move { refresh_stale_provider_readings(app).await });
+    }
     read_settings(&app).await
+}
+
+/// Probes, one at a time, each enabled provider whose usage limits this device has not read within
+/// [`PROVIDER_READING_MAX_AGE`], so plan limits and sign-in state are current without a
+/// visit to Settings. It runs once per vault and app session, beside discovery, and stops
+/// when the active vault changes. Views reread settings after each probe, so a provider's
+/// limits appear as soon as it answers instead of after the slowest provider.
+async fn refresh_stale_provider_readings(app: tauri::AppHandle) {
+    let state = app.state::<ChatSettingsState>();
+    let _guard = state.discovery_lock.lock().await;
+    let (Ok(vault_id), Ok(config), Ok(scope)) = (
+        vault::active_vault_id(&app),
+        read_chat_config(&app),
+        read_active_device_scope(&app),
+    ) else {
+        eprintln!("Chat could not read providers to refresh their status");
+        return;
+    };
+    let now = chrono::Utc::now();
+    let stale = config.providers.into_iter().filter(|provider| {
+        provider.enabled
+            && !scope
+                .provider_instances
+                .get(&provider.instance_id)
+                .is_some_and(|device| device.has_usage_limits_within(now, PROVIDER_READING_MAX_AGE))
+    });
+    for provider in stale {
+        if vault::active_vault_id(&app).ok().as_ref() != Some(&vault_id) {
+            break;
+        }
+        match chat_probe_provider(app.clone(), provider.instance_id).await {
+            Ok(_) => {
+                if app.emit(CHAT_PROVIDER_ACTIVITY_EVENT, ()).is_err() {
+                    eprintln!("Chat provider activity notification failed");
+                }
+            }
+            Err(error) => eprintln!("Chat provider status refresh failed: {error}"),
+        }
+    }
 }
 
 #[tauri::command]
@@ -179,6 +236,20 @@ pub async fn chat_save_provider(
     validate_runtime_prompt(&prompt)?;
     ProviderDriverRegistry.create_driver(request.configuration.clone())?;
     let scope = read_active_device_scope(&app).map_err(device_state_error)?;
+    let saved: Vec<ProviderInstanceConfig> = read_chat_configuration(&app)
+        .await?
+        .device
+        .providers
+        .iter()
+        .map(|portable| provider_instance_read(portable, &scope.provider_instances).configuration)
+        .collect();
+    if let Some(existing) = find_duplicate(
+        &request.configuration,
+        &saved,
+        &executable_search_directories(),
+    ) {
+        return Err(duplicate_configuration_error(existing));
+    }
     let pending = ingress_review_items(
         &request.configuration,
         scope
@@ -235,6 +306,7 @@ fn save_confirmed_provider(
         existing.approved_runtime_items = approvals.clone();
         if runtime_changed {
             existing.last_probe = None;
+            existing.usage_limits = None;
             if let Some(catalog) = existing.model_catalog.as_mut() {
                 catalog.stale = true;
             }
@@ -334,6 +406,7 @@ pub fn chat_remove_provider(
         Ok(())
     })
     .map_err(device_state_error)?;
+    remove_private_home(&app, &instance_id);
     let store = PlatformCredentialStore::default();
     let mut credential_cleanup_failed = false;
     for (name, reference) in &provider.credential_references {
@@ -378,10 +451,7 @@ pub async fn chat_test_provider(
             .runtime_receipts
             .record_confirmed_items(&request.configuration.instance_id, &pending);
     }
-    let configuration = materialize_provider_environment(
-        &request.configuration,
-        &PlatformCredentialStore::default(),
-    )?;
+    let configuration = launch_configuration(&app, &request.configuration)?;
     let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
     let probe = driver.probe(&operation_context("test-provider")).await?;
     let model_catalog = if probe.state == ProbeState::Healthy {
@@ -409,9 +479,10 @@ pub async fn chat_probe_provider(
     let original_configuration = read.configuration;
     require_runtime_approved_on_device(&app, &original_configuration)?;
     let original =
-        probe_provider_configuration(original_configuration.clone(), "probe-provider").await?;
+        probe_provider_configuration(&app, original_configuration.clone(), "probe-provider")
+            .await?;
     let selected = if original.probe.state == ProbeState::ExecutableMissing {
-        discover_replacement_provider_executable(&original_configuration)
+        discover_replacement_provider_executable(&app, &original_configuration)
             .await?
             .unwrap_or(original)
     } else {
@@ -437,11 +508,11 @@ struct ProviderProbeAttempt {
 }
 
 async fn probe_provider_configuration(
+    app: &tauri::AppHandle,
     configuration: ProviderInstanceConfig,
     operation_id: &str,
 ) -> ChatResult<ProviderProbeAttempt> {
-    let materialized =
-        materialize_provider_environment(&configuration, &PlatformCredentialStore::default())?;
+    let materialized = launch_configuration(app, &configuration)?;
     let mut driver = ProviderDriverRegistry.create_driver(materialized)?;
     let probe = driver.probe(&operation_context(operation_id)).await?;
     Ok(ProviderProbeAttempt {
@@ -452,6 +523,7 @@ async fn probe_provider_configuration(
 }
 
 async fn discover_replacement_provider_executable(
+    app: &tauri::AppHandle,
     configuration: &ProviderInstanceConfig,
 ) -> ChatResult<Option<ProviderProbeAttempt>> {
     let Some(metadata) = ProviderDriverRegistry
@@ -469,7 +541,7 @@ async fn discover_replacement_provider_executable(
     let mut fallback = None;
     for replacement in replacements {
         let Ok(attempt) =
-            probe_provider_configuration(replacement, "rediscover-provider-executable").await
+            probe_provider_configuration(app, replacement, "rediscover-provider-executable").await
         else {
             continue;
         };
@@ -511,25 +583,6 @@ pub async fn chat_refresh_provider_models(
     Ok(catalog)
 }
 
-#[tauri::command]
-pub fn chat_update_provider_models(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, ChatSettingsState>,
-    instance_id: ProviderInstanceId,
-    visible_model_ids: Vec<ModelId>,
-    favorite_model_ids: Vec<ModelId>,
-) -> ChatResult<ProviderInstanceRead> {
-    let visible = unique_model_ids(visible_model_ids);
-    let favorites = unique_model_ids(favorite_model_ids);
-    mutate_chat_config(&app, &state, |config| {
-        let provider = provider_mut(config, &instance_id)?;
-        provider.visible_model_ids = visible;
-        provider.favorite_model_ids = favorites;
-        Ok(())
-    })?;
-    read_provider(&app, &instance_id)
-}
-
 /// Stores the Chat behavior preferences. Portable fields replicate to the vault's other devices.
 #[tauri::command]
 pub async fn chat_update_behavior(
@@ -537,6 +590,7 @@ pub async fn chat_update_behavior(
     behavior: ChatBehaviorPreferences,
 ) -> ChatResult<ChatConfiguration> {
     write_chat_behavior(&app, &behavior).await?;
+    crate::chat::configuration::apply_runtime_behavior(&app, &behavior);
     read_chat_configuration(&app).await
 }
 
@@ -710,6 +764,50 @@ mod tests {
     }
 
     #[test]
+    fn provider_read_reports_the_current_driver_authority_over_a_stored_probe() {
+        let configuration: ProviderInstanceConfig = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "instanceId": "claude",
+            "familyId": "claude",
+            "label": "Claude",
+            "enabled": true,
+            "executable": "claude",
+            "providerHome": null,
+            "launchArguments": [],
+            "environment": {},
+            "credentialReferences": {},
+            "providerConfig": { "schemaVersion": 1, "value": {} }
+        }))
+        .unwrap();
+        let stale_probe: ProviderProbeResult = serde_json::from_value(serde_json::json!({
+            "instanceId": "claude",
+            "state": "healthy",
+            "version": "2.1.323",
+            "accountLabel": null,
+            "capabilities": { "entries": [] },
+            "authoritySupport": ganbaru_chat_contracts::models::ProviderAuthoritySupport::default(),
+            "checkedAt": "2026-07-23T03:18:50.240Z",
+            "detail": null
+        }))
+        .unwrap();
+        let device = ChatProviderDeviceState {
+            last_probe: Some(stale_probe.clone()),
+            ..ChatProviderDeviceState::default()
+        };
+        let devices =
+            std::collections::BTreeMap::from([(configuration.instance_id.clone(), device)]);
+
+        let read = provider_instance_read(&portable_configuration(&configuration), &devices);
+        let probe = read.last_probe.expect("stored probe stays visible");
+
+        assert!(probe.authority_support.read_only_root);
+        assert!(probe.authority_support.writable_root);
+        assert!(probe.authority_support.person_approved_commands);
+        assert_eq!(probe.version, stale_probe.version);
+        assert_eq!(probe.checked_at, stale_probe.checked_at);
+    }
+
+    #[test]
     fn successful_provider_probe_persists_its_model_catalog() {
         let probe: ProviderProbeResult = serde_json::from_value(serde_json::json!({
             "instanceId": "claude",
@@ -761,8 +859,7 @@ mod tests {
                 "contextLimit": null,
                 "availability": "available",
                 "capabilities": [],
-                "options": [],
-                "custom": false
+                "options": []
             }, {
                 "id": "gpt-old",
                 "displayName": "GPT Old",
@@ -770,8 +867,7 @@ mod tests {
                 "contextLimit": null,
                 "availability": "deprecated",
                 "capabilities": [],
-                "options": [],
-                "custom": false
+                "options": []
             }],
             "source": "provider",
             "discoveredAt": "2026-07-23T03:18:50.240Z",
@@ -900,5 +996,53 @@ mod tests {
         );
         set_mode(&shared, 0o755);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_install_guide_asks_for_a_requirement_only_while_its_program_is_missing() {
+        use ganbaru_chat_contracts::models::ProviderInstallRequirement;
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!(
+            "ganbaru-provider-requirement-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut families = ProviderDriverRegistry
+            .list_metadata()
+            .into_iter()
+            .filter(|metadata| metadata.install_guide.is_some())
+            .take(2)
+            .collect::<Vec<_>>();
+        for (metadata, program) in families.iter_mut().zip(["present-tool", "absent-tool"]) {
+            metadata.install_guide.as_mut().unwrap().requirement =
+                Some(ProviderInstallRequirement {
+                    name: "Tool".to_string(),
+                    program: program.to_string(),
+                    command: "install tool".to_string(),
+                });
+        }
+        let present = directory.join("present-tool");
+        std::fs::write(&present, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&present, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        drop_met_install_requirements(&mut families, std::slice::from_ref(&directory));
+
+        let requirements = families
+            .iter()
+            .map(|metadata| {
+                metadata
+                    .install_guide
+                    .as_ref()
+                    .unwrap()
+                    .requirement
+                    .as_ref()
+                    .map(|requirement| requirement.program.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(requirements, [None, Some("absent-tool")]);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

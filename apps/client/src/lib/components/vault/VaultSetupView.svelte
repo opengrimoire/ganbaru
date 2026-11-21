@@ -1,13 +1,6 @@
 <script lang="ts">
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
-  import Minus from "@lucide/svelte/icons/minus";
-  import Square from "@lucide/svelte/icons/square";
-  import X from "@lucide/svelte/icons/x";
   import { onMount, untrack } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
-  import WindowResizeHandles from "$lib/components/WindowResizeHandles.svelte";
-  import { isCloseWindowShortcut } from "$lib/windows/title-bar-shortcuts";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     clearPreVaultLanguagePreference,
@@ -25,7 +18,8 @@
     type VaultInfo,
   } from "$lib/vault/state";
   import { WELCOME_LINK_CLASS } from "$lib/vault/welcome-layout";
-  import { WELCOME_STEPS } from "$lib/vault/welcome-steps";
+  import { WELCOME_DATA_STEP } from "$lib/vault/welcome-steps";
+  import OnboardingWindowFrame from "./OnboardingWindowFrame.svelte";
   import VaultWelcomeContent from "./VaultWelcomeContent.svelte";
   import WelcomeDataStep from "./welcome/WelcomeDataStep.svelte";
 
@@ -37,7 +31,6 @@
     onReady: (info: VaultInfo, preparation: Promise<void>) => void | Promise<void>;
   } = $props();
 
-  const appWindow = getCurrentWindow();
   const localization = getLocalization();
   const { t } = localization;
   const fallbackDefaultPath = import.meta.env.DEV
@@ -48,9 +41,8 @@
   let defaultLocation = $state<VaultDefaultLocation | null>(null);
   let busy = $state<"default" | "change" | "import" | null>(null);
   let setupError = $state<SetupError | null>(null);
-  let isMaximized = $state(true);
-  /** A vault that failed to open at startup skips the welcome screens and lands on the data screen with the error. */
-  let step = $state(untrack(() => (initialError ? WELCOME_STEPS.length : 0)));
+  /** A vault that failed to open at startup skips the language screen and lands on the data screen with the error. */
+  let step = $state(untrack(() => (initialError ? WELCOME_DATA_STEP : 0)));
   const error = $derived(
     setupError ? formatVaultError(setupError.raw, setupError.action, t) : null,
   );
@@ -65,45 +57,9 @@
   }
 
   onMount(() => {
-    let cleanupResize: (() => void) | undefined;
-    let disposed = false;
-    function handleGlobalShortcut(event: KeyboardEvent): void {
-      if (!isCloseWindowShortcut(event)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
-      requestQuit();
-    }
-
     setupError = initialError ? { raw: initialError, action: "startup" } : null;
     void loadDefaultLocation();
-    void appWindow.isMaximized().then((value) => {
-      if (!disposed) isMaximized = value;
-    });
-    void appWindow.onResized(() => {
-      if (disposed) return;
-      void appWindow.isMaximized().then((value) => {
-        if (!disposed) isMaximized = value;
-      });
-    }).then((unlisten) => {
-      if (disposed) {
-        unlisten();
-        return;
-      }
-      cleanupResize = unlisten;
-    });
-    window.addEventListener("keydown", handleGlobalShortcut, { capture: true });
-
-    return () => {
-      disposed = true;
-      cleanupResize?.();
-      window.removeEventListener("keydown", handleGlobalShortcut, { capture: true });
-    };
   });
-
-  function requestQuit(): void {
-    void invoke("force_quit");
-  }
 
   async function loadDefaultLocation(): Promise<void> {
     try {
@@ -175,57 +131,17 @@
   </button>
 {/snippet}
 
-<main
-  class="setup-shell app-shell relative h-screen w-screen overflow-hidden bg-background text-foreground"
->
-  <div class="flex h-full min-h-0 flex-col">
-    <header
-      data-tauri-drag-region
-      class="flex h-(--titlebar-h) shrink-0 items-center justify-end bg-background text-foreground"
-    >
-      <div data-tauri-drag-region class="min-w-0 flex-1 self-stretch"></div>
-      <div class="flex h-full">
-        <button
-          type="button"
-          aria-label={t("common.minimize")}
-          onclick={() => void appWindow.minimize()}
-          class="flex h-full w-10 items-center justify-center text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <Minus size={14} strokeWidth={1.8} />
-        </button>
-        <button
-          type="button"
-          aria-label={isMaximized ? t("common.restore") : t("common.maximize")}
-          onclick={() => void appWindow.toggleMaximize()}
-          class="flex h-full w-10 items-center justify-center text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <Square size={12} strokeWidth={1.8} />
-        </button>
-        <button
-          type="button"
-          aria-label={t("window.close")}
-          onclick={requestQuit}
-          class="flex h-full w-10 items-center justify-center text-muted-foreground transition-colors hover:bg-destructive hover:text-destructive-foreground"
-        >
-          <X size={15} strokeWidth={2} />
-        </button>
-      </div>
-    </header>
-
-    <div class="min-h-0 flex-1 bg-background">
-      <VaultWelcomeContent
-        bind:step
-        data={dataStep}
-        dataPrimary={{
-          label: t("vaultSetup.useDefaultFolder"),
-          onClick: () => void chooseVault("default"),
-          busy: busy === "default",
-          disabled: busy !== null,
-        }}
-        dataBackDisabled={busy !== null}
-      />
-    </div>
-  </div>
-
-  <WindowResizeHandles disabled={isMaximized} />
-</main>
+<OnboardingWindowFrame class="setup-shell app-shell">
+  <VaultWelcomeContent
+    stage="setup"
+    bind:step
+    data={dataStep}
+    last={{
+      label: t("vaultSetup.useDefaultFolder"),
+      onClick: () => void chooseVault("default"),
+      busy: busy === "default",
+      disabled: busy !== null,
+    }}
+    lastBackDisabled={busy !== null}
+  />
+</OnboardingWindowFrame>

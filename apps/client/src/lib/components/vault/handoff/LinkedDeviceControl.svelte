@@ -81,7 +81,7 @@
       const module = await import("./VaultHandoffPanel.svelte");
       HandoffPanel = module.default;
     } catch (error) {
-      panelLoadError = error instanceof Error ? error.message : t("vaultHandoff.unknownError");
+      panelLoadError = t("vaultHandoff.unknownError");
       console.error("Failed to load linked-device controls:", error);
     } finally {
       panelLoading = false;
@@ -96,7 +96,7 @@
       const module = await import("$lib/components/mobile/MobileVaultHandoffOnboarding.svelte");
       MobileLinkingScreen = module.default;
     } catch (error) {
-      mobileLinkingLoadError = error instanceof Error ? error.message : t("vaultHandoff.unknownError");
+      mobileLinkingLoadError = t("vaultHandoff.unknownError");
       console.error("Failed to load device linking:", error);
     } finally {
       mobileLinkingLoading = false;

@@ -19,7 +19,7 @@ import {
   youtubeVideoSourceFromId,
   type MusicSource,
 } from "$lib/music/sources";
-import { youtubeErrorMessage } from "$lib/music/youtube-player";
+import { musicPlaybackErrorMessage, youtubePlaybackErrorCode, type MusicPlaybackErrorCode } from "$lib/music/playback-errors";
 import type { NativeYouTubeHost } from "$lib/music/youtube-native-host";
 import type { MusicLoadRuntime } from "./load-runtime";
 import {
@@ -107,6 +107,16 @@ export function createMusicYouTubeAdapter(
     console.error(`Unable to ${operation}.`, error);
   }
 
+  /** Shows a localized playback failure and reports its stable code to the native session. */
+  function failPlayback(code: MusicPlaybackErrorCode): void {
+    state.playerError = musicPlaybackErrorMessage(code);
+    state.snapshot = {
+      ...state.snapshot,
+      status: "error",
+      error: code,
+    };
+  }
+
   function persistVideo(request: MusicYouTubeVideoWrite): void {
     void persistYouTubeVideo(request).catch((error: unknown) => {
       reportPersistenceError("save YouTube metadata", error);
@@ -173,12 +183,7 @@ export function createMusicYouTubeAdapter(
     const failed = resolvingPlaylist;
     clearPlaylistResolution();
     reportPlaylistFailure(failed, "timed-out", "playlist-resolution-timeout");
-    state.playerError = "The YouTube playlist did not return playable videos. Check that it is public and supports embedded playback.";
-    state.snapshot = {
-      ...state.snapshot,
-      status: "error",
-      error: state.playerError,
-    };
+    failPlayback("youtube-playlist-empty");
     void context.persist();
   }
 
@@ -253,12 +258,8 @@ export function createMusicYouTubeAdapter(
       if (!context.loadRuntime.isCurrent(generation)) return;
       context.setPlaybackStarting(false);
       clearPlaylistResolution();
-      state.playerError = error instanceof Error ? error.message : String(error);
-      state.snapshot = {
-        ...state.snapshot,
-        status: "error",
-        error: state.playerError,
-      };
+      console.error("Unable to start the YouTube player.", error);
+      failPlayback("youtube-player-failed");
     }
   }
 
@@ -363,12 +364,7 @@ export function createMusicYouTubeAdapter(
           });
         }
       }
-      state.playerError = youtubeErrorMessage(message.code);
-      state.snapshot = {
-        ...state.snapshot,
-        status: "error",
-        error: state.playerError,
-      };
+      failPlayback(youtubePlaybackErrorCode(message.code));
       void context.persist();
       return;
     }

@@ -3,13 +3,40 @@
 //! The stored primary folder row and the folder rows replicate independently, so the stored folder
 //! can be missing, belong to another project, be archived, or not parse. Reads then resolve the
 //! project's managed folder, and report no folder when that row has not reached this replica
-//! either or does not parse, so settings can still choose one. Commands keep the rule that a newly chosen primary belongs to
-//! the project and is active.
+//! either or does not parse, so settings can still choose one. Commands keep the rule that a newly
+//! chosen primary belongs to the project and is active. A phone reads the primary folder to attach
+//! files in its project's channels; it does not choose one.
 
-use super::super::channels::{i64_value, persistence_error, u64_value};
-use ganbaru_chat::repository::workspaces::resolve_primary_workspace;
+#[cfg(desktop)]
+use super::super::channels::i64_value;
+use super::super::channels::{persistence_error, u64_value};
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, SqlitePool};
+
+/// Resolves the effective primary working folder id of `project_id`, skipping a folder row that
+/// does not parse in full.
+#[cfg(desktop)]
+async fn effective_primary_folder_id(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> ChatResult<Option<ProjectWorkingFolderId>> {
+    Ok(
+        ganbaru_chat::repository::workspaces::resolve_primary_workspace(pool, project_id)
+            .await?
+            .map(|folder| folder.id),
+    )
+}
+
+/// Resolves the effective primary working folder id of `project_id` by the same candidates
+/// without the native runtime, the rule a phone's attachment imports are authorized by.
+#[cfg(mobile)]
+async fn effective_primary_folder_id(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> ChatResult<Option<ProjectWorkingFolderId>> {
+    ganbaru_chat::repository::primary_folder::resolve_primary_working_folder_id(pool, project_id)
+        .await
+}
 
 /// Reads the effective primary working folder of `project_id`.
 ///
@@ -32,16 +59,17 @@ pub(super) async fn read_effective_primary_working_folder(
     .await
     .map_err(persistence_error)?
     .ok_or_else(not_found_error)?;
-    let folder = resolve_primary_workspace(pool, project_id).await?;
+    let working_folder_id = effective_primary_folder_id(pool, project_id).await?;
     Ok(ChatProjectPrimaryWorkingFolderRead {
         project_id: row.try_get("project_id").map_err(persistence_error)?,
-        working_folder_id: folder.map(|folder| folder.id),
+        working_folder_id,
         revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
     })
 }
 
 /// Stores `working_folder_id` as the primary folder of `project_id` when the stored row still has
 /// `expected_revision`, where 0 means the project has no stored row.
+#[cfg(desktop)]
 pub(super) async fn set_primary_working_folder(
     pool: &SqlitePool,
     project_id: &str,

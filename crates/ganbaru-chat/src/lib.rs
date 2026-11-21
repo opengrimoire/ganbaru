@@ -21,18 +21,21 @@ pub mod ids;
 #[cfg(feature = "native-runtime")]
 pub mod ingestion;
 pub mod project_defaults;
-#[cfg(feature = "native-runtime")]
+pub mod provider_status;
 pub mod repository;
 #[cfg(feature = "native-runtime")]
 pub mod review_engine;
 #[cfg(feature = "native-runtime")]
 pub mod runtime;
+pub mod scheduling;
 #[cfg(feature = "native-runtime")]
 pub mod source_control;
 #[cfg(feature = "native-runtime")]
 pub mod state;
 pub mod sync_effects;
 pub mod timeline;
+pub mod usage_counters;
+pub mod usage_summaries;
 #[cfg(feature = "native-runtime")]
 pub mod workspace;
 

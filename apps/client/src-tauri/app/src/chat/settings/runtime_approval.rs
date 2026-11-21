@@ -7,7 +7,6 @@
 //! supplied them.
 
 use super::device_state_error;
-use crate::chat::credentials::{PlatformCredentialStore, materialize_provider_environment};
 use crate::chat::device_state::{ChatProviderDeviceState, read_active_device_scope};
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ProviderInstanceConfig, ProviderInstanceId,
@@ -236,7 +235,7 @@ pub(crate) fn approved_runtime(
     configuration: &ProviderInstanceConfig,
 ) -> ChatResult<ProviderInstanceConfig> {
     require_runtime_approved_on_device(app, configuration)?;
-    materialize_provider_environment(configuration, &PlatformCredentialStore::default())
+    super::launch_configuration(app, configuration)
 }
 
 /// Device approval check without resolving secrets.

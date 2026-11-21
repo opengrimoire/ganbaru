@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  ChatChannelPageRead,
   ChatMessageRead,
   ChatParticipantRead,
   ChatReplyThreadPageRead,
@@ -10,11 +11,15 @@ const api = vi.hoisted(() => ({
   readReplyThreadPage: vi.fn<
     (replyThreadId: string, cursor?: string | null) => Promise<ChatReplyThreadPageRead>
   >(),
+  readChannelPage: vi.fn<
+    (channelId: string, cursor?: string | null) => Promise<ChatChannelPageRead>
+  >(),
 }));
 
 vi.mock("$lib/api/chat", async (importOriginal) => ({
   ...await importOriginal<typeof import("$lib/api/chat")>(),
   readChatReplyThreadPage: api.readReplyThreadPage,
+  readChatChannelPage: api.readChannelPage,
 }));
 
 const REPLY_THREAD_ID = "reply-thread:test";
@@ -57,6 +62,77 @@ describe("ChatCommunicationController older reply history", () => {
   });
 });
 
+
+describe("ChatCommunicationController channel history ownership", () => {
+  let selectedChannelId: string | null = null;
+
+  beforeEach(() => {
+    api.readChannelPage.mockReset();
+    selectedChannelId = null;
+  });
+
+  function controller(): ChatCommunicationController {
+    return new ChatCommunicationController({
+      selectedChannelId: () => selectedChannelId,
+      openReplyThreadId: () => null,
+    });
+  }
+
+  it("keeps the previous channel as the owner of loaded messages until the next channel's page arrives", async () => {
+    const communication = controller();
+    selectedChannelId = "channel:a";
+    api.readChannelPage.mockResolvedValueOnce(channelPage("channel:a", "a:1"));
+    await communication.loadChannel("channel:a");
+
+    selectedChannelId = "channel:b";
+    let resolvePage: (page: ChatChannelPageRead) => void = () => undefined;
+    api.readChannelPage.mockReturnValueOnce(new Promise((resolve) => { resolvePage = resolve; }));
+    const loading = communication.loadChannel("channel:b");
+
+    expect(communication.channelMessagesChannelId).toBe("channel:a");
+    expect(communication.channelLoading).toBe(true);
+
+    resolvePage(channelPage("channel:b", "b:1"));
+    await loading;
+
+    expect(communication.channelMessagesChannelId).toBe("channel:b");
+    expect(communication.channelMessages.map((entry) => entry.itemId)).toEqual(["b:1"]);
+  });
+
+  it("shows a cached channel synchronously and reports a miss without changing the loaded history", async () => {
+    const communication = controller();
+    selectedChannelId = "channel:a";
+    api.readChannelPage.mockResolvedValueOnce(channelPage("channel:a", "a:1"));
+    await communication.loadChannel("channel:a");
+    selectedChannelId = "channel:b";
+    api.readChannelPage.mockResolvedValueOnce(channelPage("channel:b", "b:1"));
+    await communication.loadChannel("channel:b");
+
+    expect(communication.showCachedChannel("channel:a")).toBe(true);
+    expect(communication.channelMessagesChannelId).toBe("channel:a");
+    expect(communication.channelMessages.map((entry) => entry.itemId)).toEqual(["a:1"]);
+
+    expect(communication.showCachedChannel("channel:missing")).toBe(false);
+    expect(communication.channelMessagesChannelId).toBe("channel:a");
+  });
+
+  it("forgets the history owner on reset", async () => {
+    const communication = controller();
+    selectedChannelId = "channel:a";
+    api.readChannelPage.mockResolvedValueOnce(channelPage("channel:a", "a:1"));
+    await communication.loadChannel("channel:a");
+
+    communication.reset();
+
+    expect(communication.channelMessagesChannelId).toBeNull();
+    expect(communication.showCachedChannel("channel:a")).toBe(false);
+  });
+});
+
+function channelPage(channelId: string, itemId: string): ChatChannelPageRead {
+  return { channelId, messages: [message(itemId, 1)], previousCursor: null, revision: 1 };
+}
+
 function replyPage(previousCursor: string | null, replyPosition: number): ChatReplyThreadPageRead {
   return {
     thread: {
@@ -65,12 +141,14 @@ function replyPage(previousCursor: string | null, replyPosition: number): ChatRe
       lastActivityAt: "2026-08-04T17:02:00.000Z",
       participants: [author],
       unread: false,
+      unseenFailure: false,
       workState: "ready_for_review",
     },
     rootMessage: message("root:test", 0),
     replies: [message(`reply:${replyPosition}`, replyPosition)],
     assignment: null,
     agentRuns: [],
+    delegatedChildren: [],
     previousCursor,
     revision: 1,
   };
@@ -91,6 +169,7 @@ function message(itemId: string, position: number): ChatMessageRead {
     references: [],
     replyThread: null,
     orderKey: `c${String(position).padStart(3, "0")}`,
+    awaitingDelivery: false,
     editedAt: null,
     createdAt: `2026-08-04T17:0${position}:00.000Z`,
   };

@@ -161,12 +161,15 @@ describe("ChatTimeline", () => {
 
     chat.timelineItems = [
       chat.timelineItems[0] as ChatTimelineItemRead,
-      activity("read", "turn-1", "dynamic_tool_call", "Read", {
-        sequence: 3,
-        status: "completed",
-        detail: null,
-        metadata: { toolInput: { file_path: "ChatTimeline.svelte" } },
-      }),
+      {
+        ...activity("read", "turn-1", "dynamic_tool_call", "Read", {
+          sequence: 3,
+          status: "completed",
+          detail: null,
+          metadata: { toolInput: { file_path: "ChatTimeline.svelte" } },
+        }),
+        changeSequence: 5,
+      },
       message("commentary", "turn-1", "assistant", "I finished checking the file", 4),
     ];
     await tick();
@@ -242,6 +245,7 @@ function message(
     activityId,
     turnId,
     sequenceAnchor: sequence,
+    changeSequence: sequence,
     kind: "message",
     data: {
       schemaVersion: 1,
@@ -274,6 +278,7 @@ function activity(
     activityId,
     turnId,
     sequenceAnchor: options.sequence ?? 2,
+    changeSequence: options.sequence ?? 2,
     kind: "activity",
     data: {
       schemaVersion: 1,
@@ -281,7 +286,9 @@ function activity(
         activityKind,
         status: options.status ?? "completed",
         title,
-        detail: options.detail === undefined ? "Passed" : options.detail,
+        detailPreview: options.detail === undefined ? "Passed" : options.detail,
+        detailBytes: new TextEncoder().encode(options.detail === undefined ? "Passed" : options.detail ?? "").byteLength,
+        detailTruncated: false,
         providerItemId: activityId,
         metadata: options.metadata ?? {},
         createdAt: timestamp,
@@ -301,6 +308,7 @@ function timelinePage(state: "active" | "completed" = "completed"): ChatTimeline
       startedAt: timestamp,
       completedAt: state === "completed" ? "2026-07-29T12:00:02.000Z" : null,
       stopReason: state === "completed" ? "end_turn" : null,
+      errorCode: null,
       modelId: "gpt-5.6-sol",
       modelOptions: [],
       modes: { safetyMode: "ask_for_approval", interactionMode: "build" },
@@ -310,5 +318,6 @@ function timelinePage(state: "active" | "completed" = "completed"): ChatTimeline
     previousCursor: null,
     nextCursor: null,
     threadRevision: 1,
+    changeCursor: 0,
   };
 }

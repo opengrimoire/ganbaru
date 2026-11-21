@@ -19,6 +19,7 @@ impl CodexProviderDriver {
             let initialize: InitializeResponse = decode_response(initialize, "initialize response")
                 .map_err(|error| error.to_chat_error("initialize"))?;
             verify_reported_home(&layout, &initialize.codex_home)?;
+            ensure_supported_user_agent(&initialize.user_agent)?;
             client
                 .notify("initialized", json!({}))
                 .await
@@ -34,6 +35,21 @@ impl CodexProviderDriver {
             } else {
                 Vec::new()
             };
+            // One limits read per probe, which already runs only at startup, on a refresh, or
+            // after a setup change; a failure leaves the device's last observation in place.
+            let usage_limits = if account.account.is_some() {
+                client
+                    .request(
+                        "account/rateLimits/read",
+                        json!({ "excludeResetCreditDetails": true }),
+                        context,
+                    )
+                    .await
+                    .ok()
+                    .and_then(|response| CodexRateLimits::status_from_read_response(&response))
+            } else {
+                None
+            };
             let authority_support = self
                 .probe_organizational_authority(&working_directory, context)
                 .await
@@ -43,6 +59,7 @@ impl CodexProviderDriver {
                 account,
                 models,
                 authority_support,
+                usage_limits,
             })
         }
         .await;
@@ -58,23 +75,55 @@ impl CodexProviderDriver {
         }
     }
 
+    /// Proves every organizational launch shape against this Codex before any support is
+    /// reported, so a version that rejects one shape reports no organizational support at all.
+    /// A device where the Codex command sandbox cannot start reports conversation support only.
     async fn probe_organizational_authority(
         &self,
         working_directory: &Path,
         context: &DriverOperationContext,
     ) -> ChatResult<ProviderAuthoritySupport> {
+        // Inherited MCP server names do not depend on the access, so one inspection serves
+        // every shape.
         let disabled_mcp_servers = self
             .organizational_mcp_server_names(
                 working_directory,
                 ProjectConfigurationAccess::Restricted,
+                CodexOrganizationalAccess::Read,
                 context,
             )
             .await?;
+        for access in [
+            CodexOrganizationalAccess::Read,
+            CodexOrganizationalAccess::Edit,
+            CodexOrganizationalAccess::Commands,
+        ] {
+            self.probe_organizational_access(
+                working_directory,
+                access,
+                &disabled_mcp_servers,
+                context,
+            )
+            .await?;
+        }
+        if !self.command_sandbox_starts().await {
+            return Ok(organizational_conversation_support());
+        }
+        Ok(organizational_authority_support())
+    }
+
+    async fn probe_organizational_access(
+        &self,
+        working_directory: &Path,
+        access: CodexOrganizationalAccess,
+        disabled_mcp_servers: &[String],
+        context: &DriverOperationContext,
+    ) -> ChatResult<()> {
         let (mut connection, layout) = self.spawn_connection(
             working_directory,
             ProjectConfigurationAccess::Restricted,
-            true,
-            &disabled_mcp_servers,
+            Some(access),
+            disabled_mcp_servers,
             false,
         )?;
         let client = connection.client();
@@ -87,6 +136,7 @@ impl CodexProviderDriver {
                 decode_response(initialize, "organizational authority initialize response")
                     .map_err(|error| error.to_chat_error("organizational authority initialize"))?;
             verify_reported_home(&layout, &initialize.codex_home)?;
+            ensure_supported_user_agent(&initialize.user_agent)?;
             client
                 .notify("initialized", json!({}))
                 .await
@@ -106,7 +156,7 @@ impl CodexProviderDriver {
                 .map_err(|error| error.to_chat_error("organizational authority config"))?;
             let config: ConfigReadResponse = decode_response(config, "config response")
                 .map_err(|error| error.to_chat_error("organizational authority config"))?;
-            verify_organizational_effective_config(config, None)?;
+            verify_organizational_effective_config(config, None, access)?;
             let profiles = client
                 .request(
                     "permissionProfile/list",
@@ -122,12 +172,13 @@ impl CodexProviderDriver {
             let profiles: PermissionProfileListResponse =
                 decode_response(profiles, "permission profile list response")
                     .map_err(|error| error.to_chat_error("organizational permission profiles"))?;
-            verify_permission_profile_list(&profiles)?;
+            verify_permission_profile_list(&profiles, access)?;
             let modes = TurnModeSnapshot {
                 safety_mode: SafetyMode::AskForApproval,
                 interaction_mode: InteractionMode::Build,
             };
-            let mut params = thread_open_params(None, working_directory, modes, None, None, true)?;
+            let mut params =
+                thread_open_params(None, working_directory, modes, None, None, Some(access))?;
             params
                 .as_object_mut()
                 .ok_or_else(|| {
@@ -144,17 +195,21 @@ impl CodexProviderDriver {
                 .map_err(|error| error.to_chat_error("organizational authority thread"))?;
             let response: ThreadOpenResponse = decode_response(response, "thread open response")
                 .map_err(|error| error.to_chat_error("organizational authority thread"))?;
-            verify_organizational_thread_open(modes.safety_mode, working_directory, &response)?;
-            Ok(organizational_authority_support())
+            verify_organizational_thread_open(
+                modes.safety_mode,
+                working_directory,
+                &response,
+                access,
+            )
         }
         .await;
         let stop_result = connection
             .stop(SESSION_GRACEFUL_STOP, SESSION_FORCE_STOP)
             .await;
         match result {
-            Ok(support) => {
+            Ok(()) => {
                 stop_result?;
-                Ok(support)
+                Ok(())
             }
             Err(error) => Err(error),
         }
@@ -202,34 +257,37 @@ impl CodexProviderDriver {
                 break;
             }
         }
-        if self.settings.allow_custom_models {
-            let mut known = models
-                .iter()
-                .map(|model| model.id.as_str().to_string())
-                .collect::<BTreeSet<_>>();
-            for custom in &self.settings.custom_model_ids {
-                if known.insert(custom.clone()) {
-                    models.push(custom_provider_model(
-                        custom,
-                        self.settings
-                            .custom_model_labels
-                            .get(custom)
-                            .map(String::as_str),
-                    )?);
-                }
-            }
-        }
         Ok(models)
     }
 
+    /// Sends one thread admin request, on the live session's connection when it can carry it,
+    /// otherwise on a short-lived connection opened in `working_directory` or, without one, in
+    /// a probe directory with restricted project configuration.
     pub(super) async fn execute_thread_request(
         &self,
-        working_directory: &Path,
+        working_directory: Option<&Path>,
         project_configuration: ProjectConfigurationAccess,
         method: &str,
         params: Value,
         context: &DriverOperationContext,
     ) -> ChatResult<Value> {
+        if let Some(client) = self.live_admin_client(working_directory, method, &params)? {
+            return client
+                .request(method, params, context)
+                .await
+                .map_err(|error| error.to_chat_error(method));
+        }
+        let probe_directory;
+        let (working_directory, project_configuration) = match working_directory {
+            Some(working_directory) => (working_directory, project_configuration),
+            None => {
+                probe_directory = crate::probe_directory::ProbeDirectory::create()?;
+                (
+                    probe_directory.as_ref(),
+                    ProjectConfigurationAccess::Restricted,
+                )
+            }
+        };
         let (mut connection, layout) =
             self.open_connection(working_directory, project_configuration)?;
         let client = connection.client();
@@ -241,6 +299,7 @@ impl CodexProviderDriver {
             let initialize: InitializeResponse = decode_response(initialize, "initialize response")
                 .map_err(|error| error.to_chat_error("initialize"))?;
             verify_reported_home(&layout, &initialize.codex_home)?;
+            ensure_supported_user_agent(&initialize.user_agent)?;
             client
                 .notify("initialized", json!({}))
                 .await
@@ -261,6 +320,42 @@ impl CodexProviderDriver {
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// The live session's client when a thread admin request can share its connection.
+    ///
+    /// A driver spawns every connection from one provider home, so the live session shares the
+    /// home a fresh connection would use. It must also be a personal session, because a fresh
+    /// admin connection is never organizational, must not have failed, and must run in the
+    /// requested workspace when the request names one. Unsubscribing the live session's own
+    /// thread stays on a fresh connection, because on the live one it would silence the session.
+    fn live_admin_client(
+        &self,
+        working_directory: Option<&Path>,
+        method: &str,
+        params: &Value,
+    ) -> ChatResult<Option<super::super::transport::CodexRpcClient>> {
+        let Some(live) = self.live.as_ref() else {
+            return Ok(None);
+        };
+        if live.organizational.is_some()
+            || working_directory.is_some_and(|directory| directory != live.workspace)
+            || live
+                .terminal_error
+                .lock()
+                .map_err(|_| driver_state_error())?
+                .is_some()
+        {
+            return Ok(None);
+        }
+        if method == "thread/unsubscribe" {
+            let route = live.route.lock().map_err(|_| driver_state_error())?;
+            if route.provider_thread_id.as_deref() == params.get("threadId").and_then(Value::as_str)
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(live.connection.client()))
     }
 
     pub(super) async fn fetch_mcp_status(
@@ -334,6 +429,7 @@ impl CodexProviderDriver {
             let initialize: InitializeResponse = decode_response(initialize, "initialize response")
                 .map_err(|error| error.to_chat_error("initialize"))?;
             verify_reported_home(&layout, &initialize.codex_home)?;
+            ensure_supported_user_agent(&initialize.user_agent)?;
             client
                 .notify("initialized", json!({}))
                 .await

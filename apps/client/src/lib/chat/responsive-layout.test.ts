@@ -5,13 +5,16 @@ import {
   chatLayoutDecision,
   chatLayoutPrimaryActions,
   chatInspectorResizeMaximum,
+  chatReplyThreadResizeMaximum,
   chatScrollBehavior,
   clampPanelSizeToWholePixel,
   fittedChatBottomPanelHeight,
   fittedChatInspectorWidth,
+  fittedChatReplyThreadWidth,
   middleTruncate,
   panelSizeWithCollapseSnap,
   panelWidthFromKey,
+  type ChatColumnResizeInput,
   type ChatLayoutVariant,
 } from "./responsive-layout";
 
@@ -260,6 +263,35 @@ describe("Chat responsive layout", () => {
       minimum: 240,
       maximum: 960,
     })).toBe(480);
+  });
+
+  it("lets the reply thread grow while the conversation keeps its narrower minimum beside it", () => {
+    const maximum = (input: Partial<ChatColumnResizeInput>) => chatReplyThreadResizeMaximum({
+      containerWidth: 1_400,
+      railVisible: true,
+      minimum: 280,
+      maximum: 800,
+      ...input,
+    });
+    expect(maximum({})).toBe(800);
+    expect(maximum({ containerWidth: 1_000 })).toBe(424);
+    expect(maximum({ containerWidth: 1_000, fontScale: 1.5 })).toBe(280);
+    expect(maximum({ railReservedWidth: 0, additionalReservedWidth: 520 })).toBe(560);
+    expect(maximum({ conversationMinimum: 440, containerWidth: 1_000 })).toBe(304);
+  });
+
+  it("fits the reply thread to a comfortable reading width inside its resize bounds", () => {
+    const fitted = (input: Partial<ChatColumnResizeInput>) => fittedChatReplyThreadWidth({
+      containerWidth: 1_400,
+      railVisible: true,
+      minimum: 280,
+      maximum: 800,
+      ...input,
+    });
+    expect(fitted({})).toBe(448);
+    expect(fitted({ containerWidth: 1_920 })).toBe(560);
+    expect(fitted({ containerWidth: 1_000 })).toBe(400);
+    expect(fitted({ containerWidth: 1_000, railVisible: false, fontScale: 1.5 })).toBe(476);
   });
 
   it("fits each outer panel to its content role and available space", () => {

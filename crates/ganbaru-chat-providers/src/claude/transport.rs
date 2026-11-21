@@ -18,7 +18,6 @@ const MAX_JSONL_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PENDING_REQUESTS: usize = 128;
 const MAX_INBOUND_MESSAGES: usize = 256;
 const MAX_OUTBOUND_MESSAGES: usize = 256;
-const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClaudeTransportFailure {
@@ -148,16 +147,60 @@ impl ClaudeJsonlClient {
     }
 }
 
+type WriterShutdown = Arc<Mutex<Option<oneshot::Sender<()>>>>;
+type ProcessSlot = Arc<Mutex<Option<ProviderProcessHandle>>>;
+
 pub struct ClaudeJsonlConnection {
     client: ClaudeJsonlClient,
     inbound: Option<mpsc::Receiver<ClaudeInboundMessage>>,
     reader_task: JoinHandle<()>,
     writer_task: JoinHandle<()>,
-    writer_shutdown: Option<oneshot::Sender<()>>,
-    process: Option<ProviderProcessHandle>,
+    writer_shutdown: WriterShutdown,
+    process: ProcessSlot,
+}
+
+/// Stops a connection's process from a task that does not own the connection.
+///
+/// The router holds one so a failed authority check ends the provider without waiting for
+/// the driver. Whichever of this handle and [`ClaudeJsonlConnection::stop`] runs first takes
+/// the process; the other finds the slot empty.
+#[derive(Clone)]
+pub struct ClaudeConnectionKill {
+    writer_shutdown: WriterShutdown,
+    process: ProcessSlot,
+}
+
+impl ClaudeConnectionKill {
+    /// Closes the writer and force stops the process without a graceful wait.
+    pub async fn kill(&self, force_deadline: Duration) -> ChatResult<()> {
+        signal_writer_shutdown(&self.writer_shutdown);
+        match take_process(&self.process) {
+            Some(mut process) => process.stop(Duration::ZERO, force_deadline).await,
+            None => Ok(()),
+        }
+    }
 }
 
 impl ClaudeJsonlConnection {
+    /// Process ID of the provider process, while the connection still owns it.
+    pub fn process_id(&self) -> Option<u32> {
+        self.process
+            .lock()
+            .ok()?
+            .as_ref()
+            .and_then(ProviderProcessHandle::process_id)
+    }
+
+    /// Watch that tells whether the resource scope's memory ceiling stopped the provider; `None`
+    /// when the provider is not scoped or was already stopped.
+    pub fn memory_limit_watch(&self) -> Option<crate::process::systemd_scope::MemoryLimitWatch> {
+        self.process
+            .lock()
+            .ok()?
+            .as_ref()
+            .and_then(ProviderProcessHandle::memory_limit_watch)
+    }
+
     pub fn from_process(mut process: ProviderProcessHandle) -> ChatResult<Self> {
         let stdout = process.take_stdout()?;
         let stdin = process.take_stdin()?;
@@ -198,13 +241,20 @@ impl ClaudeJsonlConnection {
             inbound: Some(inbound),
             reader_task,
             writer_task,
-            writer_shutdown: Some(writer_shutdown),
-            process,
+            writer_shutdown: Arc::new(Mutex::new(Some(writer_shutdown))),
+            process: Arc::new(Mutex::new(process)),
         }
     }
 
     pub fn client(&self) -> ClaudeJsonlClient {
         self.client.clone()
+    }
+
+    pub fn kill_handle(&self) -> ClaudeConnectionKill {
+        ClaudeConnectionKill {
+            writer_shutdown: Arc::clone(&self.writer_shutdown),
+            process: Arc::clone(&self.process),
+        }
     }
 
     pub fn take_inbound(&mut self) -> ChatResult<mpsc::Receiver<ClaudeInboundMessage>> {
@@ -218,7 +268,8 @@ impl ClaudeJsonlConnection {
     }
 
     pub fn diagnostic(&self) -> ChatResult<Option<String>> {
-        self.process
+        let process = self.process.lock().map_err(|_| connection_state_error())?;
+        process
             .as_ref()
             .map(|process| process.diagnostic().map(|value| value.text))
             .transpose()
@@ -229,12 +280,10 @@ impl ClaudeJsonlConnection {
         graceful_deadline: Duration,
         force_deadline: Duration,
     ) -> ChatResult<()> {
-        if let Some(shutdown) = self.writer_shutdown.take() {
-            let _ = shutdown.send(());
-        }
+        signal_writer_shutdown(&self.writer_shutdown);
         let _ = tokio::time::timeout(graceful_deadline, &mut self.writer_task).await;
-        let process_result = match self.process.as_mut() {
-            Some(process) => process.stop(graceful_deadline, force_deadline).await,
+        let process_result = match take_process(&self.process) {
+            Some(mut process) => process.stop(graceful_deadline, force_deadline).await,
             None => Ok(()),
         };
         let _ = tokio::time::timeout(force_deadline, &mut self.reader_task).await;
@@ -251,9 +300,7 @@ impl ClaudeJsonlConnection {
 
 impl Drop for ClaudeJsonlConnection {
     fn drop(&mut self) {
-        if let Some(shutdown) = self.writer_shutdown.take() {
-            let _ = shutdown.send(());
-        }
+        signal_writer_shutdown(&self.writer_shutdown);
         self.reader_task.abort();
         self.writer_task.abort();
         fail_pending(&self.client.pending, ClaudeTransportFailure::Closed);
@@ -266,24 +313,28 @@ async fn await_response(
     pending: &PendingResponses,
     context: &DriverOperationContext,
 ) -> Result<Value, ClaudeTransportFailure> {
-    loop {
-        if context.is_cancelled() {
+    if context.is_cancelled() {
+        remove_pending(pending, request_id);
+        return Err(if Instant::now() >= context.deadline {
+            ClaudeTransportFailure::Timeout
+        } else {
+            ClaudeTransportFailure::Cancelled
+        });
+    }
+    let deadline = tokio::time::Instant::from_std(context.deadline);
+    tokio::select! {
+        biased;
+        response = &mut receiver => match response {
+            Ok(result) => result,
+            Err(_) => Err(ClaudeTransportFailure::Closed),
+        },
+        () = context.cancellation.cancelled() => {
             remove_pending(pending, request_id);
-            return Err(if Instant::now() >= context.deadline {
-                ClaudeTransportFailure::Timeout
-            } else {
-                ClaudeTransportFailure::Cancelled
-            });
+            Err(ClaudeTransportFailure::Cancelled)
         }
-        let remaining = context.deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+        () = tokio::time::sleep_until(deadline) => {
             remove_pending(pending, request_id);
-            return Err(ClaudeTransportFailure::Timeout);
-        }
-        match tokio::time::timeout(remaining.min(CANCELLATION_POLL_INTERVAL), &mut receiver).await {
-            Ok(Ok(result)) => return result,
-            Ok(Err(_)) => return Err(ClaudeTransportFailure::Closed),
-            Err(_) => {}
+            Err(ClaudeTransportFailure::Timeout)
         }
     }
 }
@@ -430,7 +481,11 @@ fn route_control_response(value: &Value, pending: &PendingResponses) -> bool {
     true
 }
 
-async fn write_messages<W>(
+/// Writes queued frames until shutdown, a closed queue, or a write failure.
+///
+/// The task sleeps until a frame or the shutdown signal arrives. Shutdown wins over a
+/// queued frame, and a dropped shutdown sender counts as shutdown.
+pub(super) async fn write_messages<W>(
     mut writer: W,
     mut outbound: mpsc::Receiver<Vec<u8>>,
     mut shutdown: oneshot::Receiver<()>,
@@ -439,15 +494,13 @@ async fn write_messages<W>(
     W: AsyncWrite + Send + Unpin + 'static,
 {
     loop {
-        match shutdown.try_recv() {
-            Ok(()) | Err(oneshot::error::TryRecvError::Closed) => break,
-            Err(oneshot::error::TryRecvError::Empty) => {}
-        }
-        let message = match tokio::time::timeout(CANCELLATION_POLL_INTERVAL, outbound.recv()).await
-        {
-            Ok(Some(message)) => message,
-            Ok(None) => break,
-            Err(_) => continue,
+        let message = tokio::select! {
+            biased;
+            _ = &mut shutdown => break,
+            message = outbound.recv() => match message {
+                Some(message) => message,
+                None => break,
+            },
         };
         if writer.write_all(&message).await.is_err() || writer.flush().await.is_err() {
             break;
@@ -455,6 +508,30 @@ async fn write_messages<W>(
     }
     let _ = writer.shutdown().await;
     fail_pending(&pending, ClaudeTransportFailure::Closed);
+}
+
+fn signal_writer_shutdown(shutdown: &WriterShutdown) {
+    let sender = shutdown.lock().ok().and_then(|mut slot| slot.take());
+    if let Some(sender) = sender {
+        let _ = sender.send(());
+    }
+}
+
+/// Takes the process out of its slot so no lock is held while it stops. A poisoned slot is
+/// still emptied, because the process must stop either way.
+fn take_process(slot: &ProcessSlot) -> Option<ProviderProcessHandle> {
+    match slot.lock() {
+        Ok(mut process) => process.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
+    }
+}
+
+fn connection_state_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::Internal,
+        "Claude connection state is unavailable",
+        false,
+    )
 }
 
 fn remove_pending(pending: &PendingResponses, request_id: &str) {

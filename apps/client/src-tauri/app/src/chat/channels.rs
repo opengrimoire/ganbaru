@@ -18,6 +18,115 @@ const MAX_CHANNEL_NAME_CHARS: usize = 80;
 const MAX_CHANNEL_TOPIC_CHARS: usize = 250;
 const MAX_CHANNEL_RESULTS: u32 = 500;
 
+/// Days a failed assignment keeps asking for attention after it settled. Failures have no
+/// review outcome, so they age out instead; Retry and a successor end them sooner, and the
+/// reply thread keeps the failure in its history.
+pub(crate) const REVIEW_QUEUE_FAILURE_WINDOW_DAYS: i64 = 7;
+
+/// States of an assignment that waits for the person, in attention priority order.
+pub(crate) const PERSON_ATTENTION_STATES_SQL: &str =
+    "'waiting_for_answer', 'waiting_for_approval', 'ready_for_review', 'failed'";
+
+/// Whether the assignment aliased `assignment` still asks for attention: no later assignment
+/// continues it, and a failure settled at or after the failure window start, the one bound
+/// parameter, unless it is delegated work whose parent is still open, since that parent
+/// receives the failure as its outcome and decides what follows.
+pub(crate) const ASSIGNMENT_ATTENTION_PREDICATE_SQL: &str = "NOT EXISTS (
+        SELECT 1 FROM chat_work_assignments successor
+        WHERE successor.previous_assignment_id = assignment.id
+    )
+    AND (
+        assignment.state <> 'failed'
+        OR (
+            coalesce(assignment.settled_at, assignment.updated_at) >= ?
+            AND NOT EXISTS (
+                SELECT 1 FROM chat_work_assignments parent
+                WHERE parent.id = assignment.parent_assignment_id
+                  AND parent.state IN (
+                      'queued', 'working', 'waiting_for_answer', 'waiting_for_approval'
+                  )
+            )
+        )
+    )";
+
+/// Attention priority of the assignment aliased `assignment`: answer, approval, review,
+/// failure, working, then queued.
+pub(crate) const ASSIGNMENT_ATTENTION_PRIORITY_SQL: &str = "CASE assignment.state
+        WHEN 'waiting_for_answer' THEN 1
+        WHEN 'waiting_for_approval' THEN 2
+        WHEN 'ready_for_review' THEN 3
+        WHEN 'failed' THEN 4
+        WHEN 'working' THEN 5
+        ELSE 6
+    END";
+
+/// States of an assignment that a channel row marks with its attention state. Failures are not
+/// among them: a channel marks a failure only until it is seen, through `unseen_failure`.
+const CHANNEL_ATTENTION_STATES_SQL: &str =
+    "'queued', 'working', 'waiting_for_answer', 'waiting_for_approval', 'ready_for_review'";
+
+/// Whether the reply thread aliased `thread` ends in a failure the local person has not read in
+/// that thread: its current assignment failed, nothing continues it, delegated work's open parent
+/// is not deciding what follows, and the failure message, aliased `failure_item`, lies after the
+/// thread's read cursor. `seen_elsewhere` adds further conditions on `failure_item`, starting
+/// with `AND`, or is empty.
+pub(crate) fn unseen_thread_failure_sql(seen_elsewhere: &str) -> String {
+    format!(
+        "EXISTS (
+            SELECT 1 FROM chat_work_assignments assignment
+            JOIN chat_work_semantic_updates failure
+              ON failure.assignment_id = assignment.id AND failure.update_kind = 'failure'
+            JOIN chat_conversation_items failure_item ON failure_item.id = failure.item_id
+            WHERE assignment.reply_thread_id = thread.id
+              AND assignment.state = 'failed'
+              AND NOT EXISTS (
+                  SELECT 1 FROM chat_work_assignments successor
+                  WHERE successor.previous_assignment_id = assignment.id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM chat_work_assignments parent
+                  WHERE parent.id = assignment.parent_assignment_id
+                    AND parent.state IN (
+                        'queued', 'working', 'waiting_for_answer', 'waiting_for_approval'
+                    )
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM chat_reply_thread_read_cursors thread_cursor
+                  WHERE thread_cursor.reply_thread_id = thread.id
+                    AND thread_cursor.participant_id = '{LOCAL_PARTICIPANT_ID}'
+                    AND (thread_cursor.last_read_order_key, thread_cursor.last_read_item_id)
+                        >= (failure_item.order_key, failure_item.id)
+              )
+              {seen_elsewhere}
+        )"
+    )
+}
+
+/// The time the local person last opened the conversation aliased `channel`, or an empty string
+/// when they never did. Opening a channel stamps its read cursor even when no top-level message
+/// arrived, so replies and failures posted before then count as seen.
+fn channel_seen_at_sql() -> String {
+    format!(
+        "coalesce((
+            SELECT seen.updated_at FROM chat_conversation_read_cursors seen
+            WHERE seen.conversation_id = channel.conversation_id
+              AND seen.participant_id = '{LOCAL_PARTICIPANT_ID}'
+        ), '')"
+    )
+}
+
+/// The earliest settle time at which a failure still asks for attention at `now`, in the stored
+/// timestamp format so it compares as text.
+pub(crate) fn failure_window_start(now: DateTime<Utc>) -> String {
+    (now - chrono::Duration::days(REVIEW_QUEUE_FAILURE_WINDOW_DAYS))
+        .to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+/// The failure window start at the current time.
+pub(crate) fn current_failure_window_start() -> String {
+    failure_window_start(DateTime::<Utc>::from(SystemTime::now()))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateChatChannelCommand {
@@ -208,10 +317,12 @@ pub async fn chat_set_channel_read(
     read_channel(&pool, &channel_id).await
 }
 
-/// Advances a participant's read cursor of a conversation to its last root item.
+/// Advances a participant's read cursor of a conversation to its last root item and stamps it
+/// with `now`, the time the conversation was last seen.
 ///
-/// The cursor never moves backward and the row is not rewritten when the position does not
-/// grow, because sync merges read cursors as a maximum.
+/// The cursor never moves backward, because sync merges read cursors as a maximum. The row is
+/// rewritten only when the position grows or a reply arrived after the last stamp, so opening a
+/// quiet channel writes nothing.
 pub(crate) async fn mark_conversation_read(
     pool: &SqlitePool,
     conversation_id: &ChatConversationId,
@@ -236,11 +347,23 @@ pub(crate) async fn mark_conversation_read(
              last_read_item_id, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(conversation_id, participant_id) DO UPDATE SET
-            last_read_order_key = excluded.last_read_order_key,
-            last_read_item_id = excluded.last_read_item_id,
-            updated_at = excluded.updated_at
+            last_read_order_key = CASE
+                WHEN (excluded.last_read_order_key, excluded.last_read_item_id)
+                    > (last_read_order_key, last_read_item_id)
+                THEN excluded.last_read_order_key ELSE last_read_order_key END,
+            last_read_item_id = CASE
+                WHEN (excluded.last_read_order_key, excluded.last_read_item_id)
+                    > (last_read_order_key, last_read_item_id)
+                THEN excluded.last_read_item_id ELSE last_read_item_id END,
+            updated_at = max(updated_at, excluded.updated_at)
          WHERE (excluded.last_read_order_key, excluded.last_read_item_id)
-             > (last_read_order_key, last_read_item_id)",
+             > (last_read_order_key, last_read_item_id)
+            OR EXISTS (
+                SELECT 1 FROM chat_conversation_items reply
+                WHERE reply.conversation_id = excluded.conversation_id
+                  AND reply.reply_thread_id IS NOT NULL
+                  AND reply.created_at > chat_conversation_read_cursors.updated_at
+            )",
     )
     .bind(conversation_id.as_str())
     .bind(participant_id)
@@ -296,6 +419,7 @@ pub(crate) async fn read_channel(
     channel_id: &ChatChannelId,
 ) -> ChatResult<ChatChannelRead> {
     let row = sqlx::query(AssertSqlSafe(channel_read_query("channel.id = ?", None)))
+        .bind(current_failure_window_start())
         .bind(channel_id.as_str())
         .fetch_optional(pool)
         .await
@@ -328,7 +452,8 @@ async fn read_channels(
         &format!("{archive_clause}{project_clause}"),
         Some("channel.is_default DESC, channel.name COLLATE NOCASE, channel.id LIMIT ?"),
     );
-    let mut prepared = sqlx::query(AssertSqlSafe(query.as_str()));
+    let mut prepared =
+        sqlx::query(AssertSqlSafe(query.as_str())).bind(current_failure_window_start());
     if let Some(project_id) = project_id {
         prepared = prepared.bind(project_id);
     }
@@ -345,8 +470,12 @@ async fn read_channels(
 }
 
 fn channel_read_query(predicate: &str, order: Option<&str>) -> String {
+    let seen_at = channel_seen_at_sql();
+    let unseen_failure =
+        unseen_thread_failure_sql(&format!("AND failure_item.created_at > {seen_at}"));
     format!(
-        "SELECT
+        "{}
+         SELECT
             channel.id,
             channel.conversation_id,
             channel.project_id,
@@ -380,6 +509,32 @@ fn channel_read_query(predicate: &str, order: Option<&str>) -> String {
                       AND (cursor.last_read_order_key, cursor.last_read_item_id)
                           >= (item.order_key, item.id)
                )) AS unread_count,
+            (SELECT count(*) FROM chat_conversation_items item
+             JOIN chat_communication_messages message ON message.item_id = item.id
+             JOIN chat_reply_threads thread ON thread.id = item.reply_thread_id
+             WHERE item.conversation_id = channel.conversation_id
+               AND item.item_kind = 'message'
+               AND message.deleted_at IS NULL
+               AND message.author_participant_id IS NOT '{LOCAL_PARTICIPANT_ID}'
+               AND item.created_at > {seen_at}
+               AND NOT EXISTS (
+                    SELECT 1 FROM chat_reply_thread_read_cursors thread_cursor
+                    WHERE thread_cursor.reply_thread_id = thread.id
+                      AND thread_cursor.participant_id = '{LOCAL_PARTICIPANT_ID}'
+                      AND (thread_cursor.last_read_order_key, thread_cursor.last_read_item_id)
+                          >= (item.order_key, item.id)
+               )
+               AND EXISTS (
+                    SELECT 1 FROM chat_conversation_items own
+                    JOIN chat_communication_messages own_message ON own_message.item_id = own.id
+                    WHERE (own.id = thread.root_item_id OR own.reply_thread_id = thread.id)
+                      AND own_message.author_participant_id = '{LOCAL_PARTICIPANT_ID}'
+               )) AS unread_reply_count,
+            EXISTS (
+                SELECT 1 FROM chat_reply_threads thread
+                WHERE thread.conversation_id = channel.conversation_id
+                  AND {unseen_failure}
+            ) AS unseen_failure,
             (SELECT revision.normalized_markdown
              FROM chat_conversation_items item
              JOIN chat_communication_messages message ON message.item_id = item.id
@@ -389,31 +544,39 @@ fn channel_read_query(predicate: &str, order: Option<&str>) -> String {
                AND item.reply_thread_id IS NULL
                AND message.deleted_at IS NULL
              ORDER BY item.order_key DESC, item.id DESC LIMIT 1) AS latest_preview,
-            (SELECT assignment.state
-             FROM chat_work_assignments assignment
-             JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
-             WHERE thread.conversation_id = channel.conversation_id
-               AND assignment.state IN (
-                    'queued', 'working', 'waiting_for_answer',
-                    'waiting_for_approval', 'ready_for_review', 'failed'
-               )
-             ORDER BY
-               CASE assignment.state
-                 WHEN 'waiting_for_answer' THEN 1
-                 WHEN 'waiting_for_approval' THEN 2
-                 WHEN 'ready_for_review' THEN 3
-                 WHEN 'failed' THEN 4
-                 WHEN 'working' THEN 5
-                 ELSE 6
-               END,
-               assignment.updated_at DESC
-             LIMIT 1) AS attention_state
+            attention.state AS attention_state
          FROM chat_channels channel
          JOIN chat_conversations conversation ON conversation.id = channel.conversation_id
+         LEFT JOIN open_assignment_attention attention
+           ON attention.conversation_id = channel.conversation_id AND attention.attention_rank = 1
          WHERE {predicate}{}",
+        open_assignment_attention_cte(),
         order
             .map(|value| format!(" ORDER BY {value}"))
             .unwrap_or_default(),
+    )
+}
+
+/// The `open_assignment_attention` common table expression: every open assignment that still
+/// asks for attention, ranked per conversation by priority, then newest update, then id, so
+/// rank 1 is the channel's attention state. It binds the failure window start.
+fn open_assignment_attention_cte() -> String {
+    format!(
+        "WITH open_assignment_attention AS (
+            SELECT conversation_id, state,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY conversation_id
+                       ORDER BY priority, updated_at DESC, id
+                   ) AS attention_rank
+            FROM (
+                SELECT thread.conversation_id, assignment.state, assignment.updated_at,
+                       assignment.id, {ASSIGNMENT_ATTENTION_PRIORITY_SQL} AS priority
+                FROM chat_work_assignments assignment
+                JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
+                WHERE assignment.state IN ({CHANNEL_ATTENTION_STATES_SQL})
+                  AND {ASSIGNMENT_ATTENTION_PREDICATE_SQL}
+            )
+         )"
     )
 }
 
@@ -450,6 +613,14 @@ async fn channel_from_row(
         .await?,
         message_count: u64_value(row.try_get("message_count").map_err(persistence_error)?)?,
         unread_count: u64_value(row.try_get("unread_count").map_err(persistence_error)?)?,
+        unread_reply_count: u64_value(
+            row.try_get("unread_reply_count")
+                .map_err(persistence_error)?,
+        )?,
+        unseen_failure: row
+            .try_get::<i64, _>("unseen_failure")
+            .map_err(persistence_error)?
+            != 0,
         latest_preview: row.try_get("latest_preview").map_err(persistence_error)?,
         last_activity_at: timestamp(row.try_get("last_activity_at").map_err(persistence_error)?)?,
         attention_state,
@@ -592,7 +763,8 @@ fn normalized_topic(value: &str) -> ChatResult<String> {
     Ok(normalized)
 }
 
-fn validate_project_id(value: &str) -> ChatResult<()> {
+/// Rejects a project id that is empty, too long, or holds control characters.
+pub(crate) fn validate_project_id(value: &str) -> ChatResult<()> {
     if value.trim().is_empty() || value.len() > 1024 || value.chars().any(char::is_control) {
         return Err(ChatError::validation("projectId", "Project ID is invalid"));
     }
@@ -754,199 +926,4 @@ pub(crate) fn identifier_error(_error: String) -> ChatError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{LOCAL_PARTICIPANT_ID, mark_conversation_read, read_channel, timestamp};
-    use ganbaru_chat_contracts::models::{ChatChannelId, ChatConversationId};
-
-    const NOW: &str = "2026-10-20T12:00:00.000Z";
-    const LATER: &str = "2026-10-20T12:05:00.000Z";
-
-    async fn project_channel(pool: &sqlx::SqlitePool) -> (ChatChannelId, ChatConversationId) {
-        let (channel_id, conversation_id): (String, String) = sqlx::query_as(
-            "SELECT id, conversation_id FROM chat_channels WHERE project_id = 'project-chat'",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap();
-        (
-            ChatChannelId::new(channel_id).unwrap(),
-            ChatConversationId::new(conversation_id).unwrap(),
-        )
-    }
-
-    async fn seed_teammate_messages(
-        pool: &sqlx::SqlitePool,
-        conversation_id: &ChatConversationId,
-        messages: &[(&str, &str, bool)],
-    ) {
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "INSERT OR IGNORE INTO chat_participants
-                (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('participant:teammate', 'ai_teammate', 'Teammate', '{NOW}', '{NOW}');"
-        )))
-        .execute(pool)
-        .await
-        .unwrap();
-        for (item_id, order_key, deleted) in messages {
-            let deleted_at = deleted.then_some(NOW);
-            let revision_id = format!("revision:{item_id}");
-            sqlx::query(
-                "INSERT INTO chat_conversation_items
-                    (id, conversation_id, item_kind, order_key, created_at)
-                 VALUES (?, ?, 'message', ?, ?)",
-            )
-            .bind(item_id)
-            .bind(conversation_id.as_str())
-            .bind(order_key)
-            .bind(NOW)
-            .execute(pool)
-            .await
-            .unwrap();
-            sqlx::query(
-                "INSERT INTO chat_communication_messages
-                    (item_id, author_participant_id, deleted_at, created_at)
-                 VALUES (?, 'participant:teammate', ?, ?)",
-            )
-            .bind(item_id)
-            .bind(deleted_at)
-            .bind(NOW)
-            .execute(pool)
-            .await
-            .unwrap();
-            sqlx::query(
-                "INSERT INTO chat_communication_message_revisions
-                    (id, message_item_id, normalized_markdown, created_at)
-                 VALUES (?, ?, ?, ?)",
-            )
-            .bind(&revision_id)
-            .bind(item_id)
-            .bind(format!("Text of {item_id}"))
-            .bind(NOW)
-            .execute(pool)
-            .await
-            .unwrap();
-            sqlx::query(
-                "UPDATE chat_communication_messages SET current_revision_id = ? WHERE item_id = ?",
-            )
-            .bind(&revision_id)
-            .bind(item_id)
-            .execute(pool)
-            .await
-            .unwrap();
-        }
-    }
-
-    async fn local_cursor(
-        pool: &sqlx::SqlitePool,
-        conversation_id: &ChatConversationId,
-    ) -> (String, String, String) {
-        sqlx::query_as(
-            "SELECT last_read_order_key, last_read_item_id, updated_at
-             FROM chat_conversation_read_cursors
-             WHERE conversation_id = ? AND participant_id = ?",
-        )
-        .bind(conversation_id.as_str())
-        .bind(LOCAL_PARTICIPANT_ID)
-        .fetch_one(pool)
-        .await
-        .unwrap()
-    }
-
-    #[tokio::test]
-    async fn channel_summaries_leave_out_deleted_messages() {
-        let pool = crate::chat::tests::repository::pool_with_thread().await;
-        let (channel_id, conversation_id) = project_channel(&pool).await;
-        seed_teammate_messages(
-            &pool,
-            &conversation_id,
-            &[("item:kept", "c000", false), ("item:deleted", "c001", true)],
-        )
-        .await;
-
-        let channel = read_channel(&pool, &channel_id).await.unwrap();
-
-        assert_eq!(channel.latest_preview.as_deref(), Some("Text of item:kept"));
-        assert_eq!(channel.message_count, 1);
-        assert_eq!(channel.unread_count, 1);
-    }
-
-    #[tokio::test]
-    async fn unread_counts_break_equal_order_keys_by_item_id() {
-        let pool = crate::chat::tests::repository::pool_with_thread().await;
-        let (channel_id, conversation_id) = project_channel(&pool).await;
-        seed_teammate_messages(
-            &pool,
-            &conversation_id,
-            &[("item:a", "c000", false), ("item:b", "c000", false)],
-        )
-        .await;
-        sqlx::query(
-            "INSERT INTO chat_conversation_read_cursors
-                (conversation_id, participant_id, sync_key, last_read_order_key,
-                 last_read_item_id, updated_at)
-             VALUES (?, ?, 'cursor-test', 'c000', 'item:a', ?)",
-        )
-        .bind(conversation_id.as_str())
-        .bind(LOCAL_PARTICIPANT_ID)
-        .bind(NOW)
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let channel = read_channel(&pool, &channel_id).await.unwrap();
-
-        assert_eq!(channel.unread_count, 1);
-        assert_eq!(channel.latest_preview.as_deref(), Some("Text of item:b"));
-    }
-
-    #[tokio::test]
-    async fn read_cursor_never_moves_backward_or_rewrites_an_unchanged_position() {
-        let pool = crate::chat::tests::repository::pool_with_thread().await;
-        let (channel_id, conversation_id) = project_channel(&pool).await;
-        seed_teammate_messages(
-            &pool,
-            &conversation_id,
-            &[("item:a", "c000", false), ("item:b", "c000", false)],
-        )
-        .await;
-        let now = timestamp(NOW.to_owned()).unwrap();
-        let later = timestamp(LATER.to_owned()).unwrap();
-
-        mark_conversation_read(&pool, &conversation_id, LOCAL_PARTICIPANT_ID, &now)
-            .await
-            .unwrap();
-        assert_eq!(
-            local_cursor(&pool, &conversation_id).await,
-            ("c000".to_owned(), "item:b".to_owned(), NOW.to_owned())
-        );
-
-        mark_conversation_read(&pool, &conversation_id, LOCAL_PARTICIPANT_ID, &later)
-            .await
-            .unwrap();
-        assert_eq!(
-            local_cursor(&pool, &conversation_id).await,
-            ("c000".to_owned(), "item:b".to_owned(), NOW.to_owned())
-        );
-
-        sqlx::query(
-            "UPDATE chat_conversation_read_cursors
-             SET last_read_order_key = 'c900', last_read_item_id = 'item:remote'
-             WHERE conversation_id = ?",
-        )
-        .bind(conversation_id.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
-        mark_conversation_read(&pool, &conversation_id, LOCAL_PARTICIPANT_ID, &later)
-            .await
-            .unwrap();
-        assert_eq!(
-            local_cursor(&pool, &conversation_id).await,
-            ("c900".to_owned(), "item:remote".to_owned(), NOW.to_owned())
-        );
-        assert_eq!(
-            read_channel(&pool, &channel_id).await.unwrap().unread_count,
-            0
-        );
-    }
-}
+mod tests;

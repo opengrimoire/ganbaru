@@ -8,9 +8,11 @@ import type {
 import {
   composerModelSelection,
   isProviderAvailable,
+  providerHasCatalogModels,
   readComposerModelSelection,
   resolveDefaultProviderModel,
 } from "./model";
+import { providersInPickerOrder } from "./model-picker-model";
 
 export interface ComposerDefaultsInput {
   workingFolderId: string | null;
@@ -27,10 +29,15 @@ export interface ResolvedComposerDefaults {
   interactionMode: InteractionMode;
 }
 
-/** Resolves a complete, valid composer selection from settings and persisted draft state. */
+/**
+ * Resolves a complete, valid composer selection from settings and persisted draft state.
+ *
+ * @param nowMs Current instant, which decides plan-limit readiness when ranking providers.
+ */
 export function resolveComposerDefaults(
   settings: ChatSettingsRead,
   input: ComposerDefaultsInput,
+  nowMs: number,
 ): ResolvedComposerDefaults | null {
   const workingFolderId = input.workingFolderId;
   if (!workingFolderId) return null;
@@ -43,7 +50,7 @@ export function resolveComposerDefaults(
   ] ?? null;
   const resolved = currentProvider
     ? resolveDefaultProviderModel([currentProvider], currentProvider.configuration.instanceId)
-    : resolveDefaultProviderModel(settings.providerInstances, preferredProviderId);
+    : resolveDefaultProviderModel(providersInPickerOrder(settings.providerInstances, nowMs), preferredProviderId);
   if (!resolved) {
     return {
       providerInstanceId: null,
@@ -101,16 +108,14 @@ function validModelSelection(
   if (!value) return null;
   const selection = readComposerModelSelection(value);
   if (selection.providerManaged) {
-    return composerModelSelection(null, true, selection.options);
+    return providerHasCatalogModels(provider) ? null : composerModelSelection(null, true, selection.options);
   }
   if (!selection.modelId || !selectableModelIds(provider).has(selection.modelId)) return null;
   return composerModelSelection(selection.modelId, false, selection.options);
 }
 
 function selectableModelIds(provider: ProviderInstanceRead): ReadonlySet<string> {
-  const visibleIds = provider.configuration.visibleModelIds;
   return new Set((provider.modelCatalog?.models ?? [])
-    .filter((model) => model.availability !== "deprecated"
-      && (visibleIds.length === 0 || visibleIds.includes(model.id)))
+    .filter((model) => model.availability !== "deprecated")
     .map((model) => model.id));
 }

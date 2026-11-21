@@ -44,6 +44,7 @@ import {
 } from "$lib/projects/types";
 import { projectCalendarEventRootId } from "$lib/projects/scheduling/schedule";
 import type { Translate } from "$lib/i18n/translator.svelte";
+import { LocalizedError, userErrorMessage } from "$lib/i18n/user-errors";
 import type { ProjectCustomFieldValue } from "$lib/projects/types";
 import { defaultProjectListPresentation, parseProjectListPresentation, projectListPresentationForView, type ProjectListPresentation } from "$lib/projects/list/presentation";
 import type { ProjectCustomField, ProjectCustomFieldType } from "$lib/projects/types";
@@ -688,12 +689,12 @@ export class ProjectTaskQueryController {
       await this.#projects.saveTaskListColumns(viewId, nextColumns);
       return null;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = userErrorMessage(error, this.#translate("projects.columns.saveFailed"));
       if (request === this.#listColumnWriteGeneration && this.listViewId === viewId) {
         if (taskListColumnsMatch(this.listColumns, nextColumns)) this.listColumns = previousColumns;
         this.#listColumnWriteError = {
           viewId,
-          message: this.#translate("projects.columns.saveFailed", message),
+          message,
         };
       }
       return message;
@@ -740,7 +741,7 @@ export class ProjectTaskQueryController {
     catch (error: unknown) {
       if (generation === this.#presentationWriteGeneration && this.listViewId === viewId) {
         if (JSON.stringify(this.listPresentation) === JSON.stringify(next)) this.listPresentation = previous;
-        this.#presentationWriteError = {viewId, message: this.#translate("projects.columns.presentationFailed", error instanceof Error ? error.message : String(error))};
+        this.#presentationWriteError = {viewId, message: userErrorMessage(error, this.#translate("projects.columns.presentationFailed"))};
       }
     } finally { if (generation === this.#presentationWriteGeneration) this.#presentationWriteViewId = null; }
   }
@@ -758,8 +759,8 @@ export class ProjectTaskQueryController {
     this.#propertyWriteProjectId = projectId;
     this.#propertyWriteError = null;
     try {
-      if (!name.trim()) throw new Error(this.#translate("projects.columns.nameRequired"));
-      if (this.customFields.some((field) => field.name.toLocaleLowerCase() === name.trim().toLocaleLowerCase())) throw new Error(this.#translate("projects.columns.nameExists"));
+      if (!name.trim()) throw new LocalizedError(this.#translate("projects.columns.nameRequired"));
+      if (this.customFields.some((field) => field.name.toLocaleLowerCase() === name.trim().toLocaleLowerCase())) throw new LocalizedError(this.#translate("projects.columns.nameExists"));
       const created = source ? await this.#projects.duplicateCustomField(source, name) : await this.#projects.addCustomField(projectId, name, fieldType, icon);
       if (!created || this.projectId !== projectId || generation !== this.#propertyWriteGeneration) return false;
       if (!viewId || this.listViewId !== viewId) return true;
@@ -769,7 +770,7 @@ export class ProjectTaskQueryController {
       next.splice(side === "left" ? Math.max(0, anchorIndex) : anchorIndex + 1, 0, column);
       return await this.#persistListColumns(viewId, next) === null;
     } catch (error: unknown) {
-      if (this.projectId === projectId && generation === this.#propertyWriteGeneration) this.#propertyWriteError = {projectId, message: this.#translate("projects.columns.propertyFailed", error instanceof Error ? error.message : String(error))};
+      if (this.projectId === projectId && generation === this.#propertyWriteGeneration) this.#propertyWriteError = {projectId, message: userErrorMessage(error, this.#translate("projects.columns.propertyFailed"))};
       return false;
     } finally { if (generation === this.#propertyWriteGeneration) this.#propertyWriteProjectId = null; }
   }
@@ -788,7 +789,7 @@ export class ProjectTaskQueryController {
       await this.#projects.removeCustomField(field.id);
       return true;
     } catch (error: unknown) {
-      if (this.projectId === projectId && generation === this.#propertyWriteGeneration) this.#propertyWriteError = {projectId, message: this.#translate("projects.customFields.deleteFailed", error instanceof Error ? error.message : String(error))};
+      if (this.projectId === projectId && generation === this.#propertyWriteGeneration) this.#propertyWriteError = {projectId, message: userErrorMessage(error, this.#translate("projects.customFields.deleteFailed"))};
       return false;
     } finally { if (generation === this.#propertyWriteGeneration) this.#propertyWriteProjectId = null; }
   }

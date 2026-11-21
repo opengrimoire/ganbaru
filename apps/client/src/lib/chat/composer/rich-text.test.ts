@@ -6,6 +6,7 @@ import {
   chatComposerMarkdownOffset,
   chatComposerPlainText,
   chatComposerVisibleOffset,
+  clearChatComposerMarks,
   parseChatComposerDocument,
   replaceChatComposerText,
   toggleChatComposerMark,
@@ -137,6 +138,84 @@ describe("Chat composer rich text", () => {
     expect(chatComposerPlainText(formatted)).toBe("one\ntwo");
     expect(chatComposerMarkdown(toggleChatComposerMark(formatted, { start: 1, end: 6 }, "bold")))
       .toBe("one\ntwo");
+  });
+
+  it("serializes strikethrough and inline code inside emphasis", () => {
+    const document: ChatComposerDocument = {
+      lines: [{
+        runs: [
+          { text: "gone", marks: ["strikethrough"] },
+          { text: " ", marks: [] },
+          { text: "run()", marks: ["code"] },
+          { text: " ", marks: [] },
+          { text: "all", marks: ["bold", "italic", "strikethrough", "code"] },
+        ],
+      }],
+    };
+    const markdown = chatComposerMarkdown(document);
+
+    expect(markdown).toBe("~~gone~~ `run()` ***~~`all`~~***");
+    expect(parseChatComposerDocument(chatComposerDocumentVersioned(document), markdown)).toEqual(document);
+  });
+
+  it("fences inline code longer than its backticks and never escapes code text", () => {
+    const document: ChatComposerDocument = {
+      lines: [
+        { runs: [{ text: "a `b` c", marks: ["code"] }] },
+        { runs: [{ text: "`edge", marks: ["code"] }] },
+        { runs: [{ text: "x*_\\y", marks: ["code"] }] },
+      ],
+    };
+
+    expect(chatComposerMarkdown(document)).toBe("``a `b` c``\n`` `edge ``\n`x*_\\y`");
+  });
+
+  it("escapes tildes and backticks in marked text so they stay literal", () => {
+    const document: ChatComposerDocument = {
+      lines: [{ runs: [{ text: "~a~ `b`", marks: ["bold"] }] }],
+    };
+
+    expect(chatComposerMarkdown(document)).toBe("**\\~a\\~ \\`b\\`**");
+  });
+
+  it("maps offsets across code fences and strikethrough delimiters", () => {
+    const document: ChatComposerDocument = {
+      lines: [{
+        runs: [
+          { text: "Run ", marks: [] },
+          { text: "make", marks: ["code"] },
+          { text: " ", marks: [] },
+          { text: "now", marks: ["strikethrough"] },
+        ],
+      }],
+    };
+    // Markdown: "Run `make` ~~now~~"; visible: "Run make now".
+
+    expect(chatComposerMarkdownOffset(document, 4)).toBe(5);
+    expect(chatComposerMarkdownOffset(document, 8, "backward")).toBe(9);
+    expect(chatComposerMarkdownOffset(document, 9)).toBe(13);
+    expect(chatComposerMarkdownOffset(document, 12, "backward")).toBe(16);
+    expect(chatComposerVisibleOffset(document, 5)).toBe(4);
+    expect(chatComposerVisibleOffset(document, 13)).toBe(9);
+  });
+
+  it("toggles strikethrough and code off when the whole selection has them", () => {
+    const initial = chatComposerDocumentFromText("one two");
+    const struck = toggleChatComposerMark(initial, { start: 0, end: 7 }, "strikethrough");
+    const coded = toggleChatComposerMark(struck, { start: 4, end: 7 }, "code");
+
+    expect(chatComposerMarkdown(coded)).toBe("~~one~~ ~~`two`~~");
+    expect(chatComposerMarkdown(toggleChatComposerMark(coded, { start: 0, end: 7 }, "code")))
+      .toBe("~~`one two`~~");
+    expect(chatComposerMarkdown(toggleChatComposerMark(coded, { start: 4, end: 7 }, "code"))).toBe("~~one two~~");
+    expect(chatComposerMarkdown(toggleChatComposerMark(struck, { start: 0, end: 7 }, "strikethrough")))
+      .toBe("one two");
+  });
+
+  it("clears marks from a range", () => {
+    const formatted = toggleChatComposerMark(chatComposerDocumentFromText("one\ntwo"), { start: 0, end: 7 }, "bold");
+
+    expect(chatComposerMarkdown(clearChatComposerMarks(formatted, { start: 2, end: 5 }))).toBe("**on**e\nt**wo**");
   });
 
   it("loads versioned rich content only when it matches the Markdown fallback", () => {

@@ -8,7 +8,6 @@ impl OpenCodeEventNormalizer {
         properties: &Map<String, Value>,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
         let id = identifier(properties, "id", "permission ID")?;
-        state.pending_permissions.insert(id.to_string());
         let permission =
             text(properties, "permission").ok_or_else(|| protocol_error("permission kind"))?;
         let patterns = properties
@@ -19,6 +18,23 @@ impl OpenCodeEventNormalizer {
             || patterns.iter().any(|value| value.as_str().is_none())
         {
             return Err(protocol_error("permission patterns"));
+        }
+        let requested_patterns = patterns
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let organizational = state.organizational.is_some();
+        if state
+            .organizational
+            .as_ref()
+            .is_some_and(|policy| !policy.admits(permission, &requested_patterns, state.modes))
+        {
+            let request_id = ProviderRequestId::new(id.to_string())
+                .map_err(|_| protocol_error("permission ID"))?;
+            state.auto_answered_permissions.insert(id.to_string());
+            state.auto_reject_queue.push(request_id);
+            return Ok(Vec::new());
         }
         let mut decisions = vec![
             ApprovalDecisionOption {
@@ -34,7 +50,11 @@ impl OpenCodeEventNormalizer {
                 description: None,
             },
         ];
-        let session_grants = always_grants(permission, properties.get("always"));
+        let session_grants = if organizational {
+            Vec::new()
+        } else {
+            always_grants(permission, properties.get("always"))
+        };
         if !session_grants.is_empty() {
             decisions.insert(
                 1,
@@ -54,14 +74,32 @@ impl OpenCodeEventNormalizer {
             .join("\n");
         let request_id =
             ProviderRequestId::new(id.to_string()).map_err(|_| protocol_error("permission ID"))?;
-        Ok(vec![self.event_with_request(
+        let covered =
+            !organizational && state.session_rules.covers(permission, &requested_patterns);
+        state.pending_permissions.insert(
+            id.to_string(),
+            OpenCodePendingPermission {
+                permission: permission.to_string(),
+                patterns: requested_patterns,
+                always: session_grants
+                    .iter()
+                    .filter_map(|grant| match grant {
+                        SessionPermissionGrant::AllowRule { rule_content, .. } => {
+                            rule_content.clone()
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+            },
+        );
+        let mut events = vec![self.event_with_request(
             state,
             "permission.asked",
             None,
             None,
             Some(request_id.clone()),
             CanonicalEvent::RequestOpened(RequestOpenedEvent {
-                request_id,
+                request_id: request_id.clone(),
                 kind: request_kind(permission),
                 title: format!("OpenCode requested {permission}"),
                 detail: (!detail.is_empty()).then_some(detail),
@@ -70,7 +108,28 @@ impl OpenCodeEventNormalizer {
                 subject: None,
                 session_grants,
             }),
-        )?])
+        )?];
+        if covered {
+            state.auto_answered_permissions.insert(id.to_string());
+            state.auto_answer_queue.push(request_id.clone());
+            events.push(self.event_with_request(
+                state,
+                "permission.session_rule",
+                None,
+                None,
+                Some(request_id.clone()),
+                CanonicalEvent::RequestResolved(RequestResolvedEvent {
+                    request_id,
+                    state: RequestResolutionState::Resolved,
+                    decision: Some(ApprovalDecision {
+                        kind: ApprovalDecisionKind::AllowOnce,
+                        provider_option_id: Some(SESSION_RULE_OPTION_ID.to_string()),
+                        updated_tool_input: None,
+                    }),
+                }),
+            )?);
+        }
+        Ok(events)
     }
 
     pub(super) fn permission_replied(
@@ -80,8 +139,13 @@ impl OpenCodeEventNormalizer {
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
         let id = identifier(properties, "requestID", "permission reply ID")?;
         state.pending_permissions.remove(id);
+        if state.auto_answered_permissions.remove(id) {
+            return Ok(Vec::new());
+        }
         let reply = text(properties, "reply").ok_or_else(|| protocol_error("permission reply"))?;
+        let session_approved = state.session_approved_permissions.remove(id);
         let decision_kind = match reply {
+            "once" if session_approved => ApprovalDecisionKind::AllowSession,
             "once" => ApprovalDecisionKind::AllowOnce,
             "always" => ApprovalDecisionKind::AllowSession,
             "reject" => ApprovalDecisionKind::Deny,
@@ -178,6 +242,26 @@ impl OpenCodeEventNormalizer {
         }
         let request_id = ProviderRequestId::new(id.to_string())
             .map_err(|_| protocol_error("question request ID"))?;
+        if state.active_turn_id.is_none() {
+            // OpenCode woke itself up: no user turn owns the question, so it is shown as a
+            // notice and rejected rather than opened as a request that starts work.
+            state.unprompted_question_ids.insert(id.to_string());
+            state.unprompted_questions.push(request_id);
+            let detail = normalized_questions
+                .first()
+                .map(|question| question.question.clone());
+            return Ok(vec![self.event(
+                state,
+                "question.asked",
+                None,
+                None,
+                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                    code: "opencode_question_outside_turn".to_string(),
+                    title: "OpenCode asked a question while no turn was running".to_string(),
+                    detail,
+                }),
+            )?]);
+        }
         state.pending_questions.insert(id.to_string(), mappings);
         Ok(vec![self.event_with_request(
             state,
@@ -199,6 +283,9 @@ impl OpenCodeEventNormalizer {
         rejected: bool,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
         let id = identifier(properties, "requestID", "question reply ID")?;
+        if state.unprompted_question_ids.remove(id) {
+            return Ok(Vec::new());
+        }
         state.pending_questions.remove(id);
         let answers = if rejected {
             Vec::new()
@@ -225,6 +312,7 @@ impl OpenCodeEventNormalizer {
                         question_id: format!("question-{index}"),
                         selected_option_ids: selected,
                         free_form_text: None,
+                        attachment_ids: Vec::new(),
                     })
                 })
                 .collect::<ChatResult<Vec<_>>>()?

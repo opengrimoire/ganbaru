@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { LocalizedError } from "$lib/i18n/user-errors";
 import { createProjectSettingsReorderController } from "./reorder-controller.svelte";
 
 interface Entry {
@@ -32,7 +33,7 @@ describe("project settings reorder controller", () => {
       moveEntry: async () => { throw new Error("write failed"); },
       setError: (value) => { error = value; },
       reorderFailedMessage: () => "reorder failed",
-      saveFailedMessage: (message) => `save failed: ${message}`,
+      saveFailedMessage: () => "save failed",
     });
     controller.start(dragEvent(), entries[0]);
 
@@ -40,7 +41,28 @@ describe("project settings reorder controller", () => {
 
     expect(controller.pending).toBe(false);
     expect(controller.draggedId).toBeNull();
-    expect(error).toBe("save failed: write failed");
+    expect(error).toBe("save failed");
+  });
+
+  it("shows localized text a failed move carries instead of the generic message", async () => {
+    const entries: Entry[] = [
+      { id: "a", fieldId: "field-1" },
+      { id: "b", fieldId: "field-1" },
+    ];
+    let error: string | null = null;
+    const controller = createProjectSettingsReorderController({
+      dataType: "application/test",
+      getEntries: () => entries,
+      moveEntry: async () => { throw new LocalizedError("name already used"); },
+      setError: (value) => { error = value; },
+      reorderFailedMessage: () => "reorder failed",
+      saveFailedMessage: () => "save failed",
+    });
+    controller.start(dragEvent(), entries[0]);
+
+    await controller.moveToIndex("a", 1);
+
+    expect(error).toBe("name already used");
   });
 
   it("rejects option drops across fields before showing a marker", () => {
@@ -54,7 +76,7 @@ describe("project settings reorder controller", () => {
       moveEntry: async () => undefined,
       setError: () => undefined,
       reorderFailedMessage: () => "reorder failed",
-      saveFailedMessage: (message) => message,
+      saveFailedMessage: () => "save failed",
       canDrop: (dragged, target) => dragged.fieldId === target.fieldId,
     });
     controller.start(dragEvent(), entries[0]);
@@ -80,7 +102,7 @@ describe("project settings reorder controller", () => {
       moveEntry: async () => undefined,
       setError: () => undefined,
       reorderFailedMessage: () => "reorder failed",
-      saveFailedMessage: (message) => message,
+      saveFailedMessage: () => "save failed",
     });
     controller.start(dragEvent(), entries[0]);
     controller.dragOver(dragEvent(), entries[1], {

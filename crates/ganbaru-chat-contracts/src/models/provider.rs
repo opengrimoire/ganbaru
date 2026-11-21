@@ -17,6 +17,52 @@ pub struct ProviderInternalMcpConfig {
     /// The internal MCP endpoint also serves personal Chat resources, so its
     /// presence alone must never imply an organizational assignment.
     pub organizational_authority: bool,
+    /// Provider tool names of the internal tools an organizational run calls without an
+    /// approval prompt. Empty for a direct thread, and ignored by providers without a
+    /// verified per-tool approval setting.
+    pub pre_approved_tools: Vec<String>,
+    /// The execution target an organizational run was authorized for, set exactly when
+    /// `organizational_authority` is. A driver that enforces scopes fails closed without it.
+    pub organizational_scope: Option<ProviderOrganizationalScope>,
+}
+
+/// The authorized execution target of one organizational run, as a provider driver enforces it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ProviderOrganizationalScope {
+    /// No native workspace: the run works from an application-managed neutral directory.
+    Conversation,
+    /// One project working folder at the granted capability.
+    Folder {
+        capability: ProviderFolderCapability,
+    },
+    /// A writable private scratch directory.
+    Scratch,
+}
+
+/// The folder capability of an organizational folder target. Unlike
+/// `ChatFolderCapability`, it cannot be `None`, because a target folder always carries a grant.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderFolderCapability {
+    Read,
+    Edit,
+    Execute,
+    Publish,
+}
+
+impl ProviderFolderCapability {
+    /// Parses the stored capability of an execution target folder source; `none` and unknown
+    /// values have no provider scope.
+    pub fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "read" => Some(Self::Read),
+            "edit" => Some(Self::Edit),
+            "execute" => Some(Self::Execute),
+            "publish" => Some(Self::Publish),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Debug for ProviderInternalMcpConfig {
@@ -27,6 +73,8 @@ impl std::fmt::Debug for ProviderInternalMcpConfig {
             .field("url", &self.url)
             .field("bearer_token", &"[REDACTED]")
             .field("organizational_authority", &self.organizational_authority)
+            .field("pre_approved_tools", &self.pre_approved_tools)
+            .field("organizational_scope", &self.organizational_scope)
             .finish()
     }
 }
@@ -44,11 +92,15 @@ pub struct ProviderInstanceConfig {
     pub launch_arguments: Vec<String>,
     pub environment: BTreeMap<String, String>,
     pub credential_references: BTreeMap<String, CredentialReferenceId>,
-    pub visible_model_ids: Vec<ModelId>,
-    pub favorite_model_ids: Vec<ModelId>,
     pub provider_config: VersionedJson,
     #[serde(skip)]
     pub internal_mcp: Option<ProviderInternalMcpConfig>,
+    /// Device-local provider home that Ganbaru owns, set when a launch is resolved and never
+    /// stored. For a Grok instance with an API key it replaces `provider_home`, so a browser
+    /// login kept in the user's Grok home cannot outrank the key, and only the launched process
+    /// writes it.
+    #[serde(skip)]
+    pub private_home: Option<String>,
     #[serde(flatten)]
     pub unknown_fields: BTreeMap<String, Value>,
 }
@@ -82,7 +134,7 @@ impl ProviderCapabilities {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderAuthoritySupport {
-    /// The adapter can run a teammate from an application-managed neutral
+    /// The adapter can run an agent from an application-managed neutral
     /// directory without receiving project-folder or persistent-scratch grants.
     pub isolated_conversation: bool,
     pub internal_host_tools: bool,
@@ -92,6 +144,10 @@ pub struct ProviderAuthoritySupport {
     pub confined_commands: bool,
     pub network_boundary: bool,
     pub classified_publish: bool,
+    /// Every shell command the provider can run reaches Ganbaru's permission handler and is
+    /// never approved by the provider itself, so a person approves each command.
+    #[serde(default)]
+    pub person_approved_commands: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -102,12 +158,132 @@ pub struct ProviderFamilyMetadataRead {
     pub configuration_schema_version: u32,
     pub supported_platforms: Vec<String>,
     pub minimum_tested_cli_version: Option<String>,
+    /// The newest CLI version the replay transcripts and focused tests cover.
+    #[serde(default)]
+    pub maximum_tested_cli_version: Option<String>,
+    /// The command that updates the provider's CLI to its newest version, shown next to
+    /// version notices; `None` when the provider has no known update command.
+    #[serde(default)]
+    pub update_command: Option<String>,
+    /// How to install the provider's CLI on this device's platform, shown when its program is
+    /// missing; `None` when the provider documents no installer.
+    #[serde(default)]
+    pub install_guide: Option<ProviderInstallGuide>,
     pub default_executable_candidates: Vec<String>,
     pub implementation_status: ProviderImplementationStatus,
     pub maturity: ProviderMaturity,
     pub protocol_name: String,
     pub potential_capabilities: Vec<ProviderCapability>,
     pub unavailable_reason: Option<String>,
+}
+
+/// The provider's own install instructions for its CLI.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderInstallGuide {
+    /// The terminal this platform runs the commands in.
+    pub shell: ProviderInstallShell,
+    /// The installer command the provider documents for this platform's terminal.
+    pub command: String,
+    /// The command that signs the person in to their provider account once the CLI is installed.
+    pub sign_in_command: String,
+    /// The sign-in command for a terminal opened right after the installer ran, which names the
+    /// installed program by its folder when the installer leaves that folder off `PATH`.
+    pub sign_in_after_install_command: String,
+    /// The provider documentation page about installing the CLI.
+    pub docs_url: String,
+    /// A tool the installer needs that this device lacks, installed first. The registry names
+    /// every tool an installer needs, and the settings read keeps it only while discovery
+    /// cannot find its program.
+    #[serde(default)]
+    pub requirement: Option<ProviderInstallRequirement>,
+}
+
+/// A tool a provider installer needs, such as Node.js for an npm package.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderInstallRequirement {
+    /// The tool's name as people know it.
+    pub name: String,
+    /// The program discovery looks for to tell whether the tool is installed.
+    pub program: String,
+    /// The command that installs the tool in the guide's terminal.
+    pub command: String,
+}
+
+/// The terminal a provider's install and sign-in commands are written for.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderInstallShell {
+    /// A Linux or macOS terminal running a POSIX shell.
+    Terminal,
+    /// Windows PowerShell.
+    #[serde(rename = "powershell")]
+    PowerShell,
+}
+
+/// How a provider authenticates the sessions it starts, when the driver can tell.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAuthSource {
+    /// An API key the provider configuration supplies through its environment.
+    ApiKey,
+    /// The account login the CLI keeps in its own home.
+    AccountLogin,
+}
+
+/// What the signed-in account pays for the provider, when the CLI reports it. The app ranks
+/// providers by it, so only a plan the provider names as free ranks below an unknown one.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAccountPlan {
+    /// A paid plan of the provider, such as a ChatGPT or Claude subscription.
+    Subscription,
+    /// Usage billed to an API key.
+    ApiKey,
+    /// The provider's free plan.
+    Free,
+}
+
+/// Where a probed CLI version falls against the provider family's compatibility range.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderVersionAdmission {
+    /// At or above the minimum and at or below the newest tested version.
+    Supported,
+    /// Newer than the newest tested version and below any ceiling; sessions still start.
+    UntestedNewer,
+    /// Below the minimum; sessions are refused.
+    BelowMinimum,
+    /// At or above the ceiling of a protocol line Ganbaru has no runtime for; sessions are
+    /// refused.
+    AtOrAboveCeiling,
+    /// The version output could not be read.
+    Unreadable,
+}
+
+/// A newer release of a provider CLI than the one the last probe found, inside the family's
+/// supported range.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUpdateRead {
+    pub instance_id: ProviderInstanceId,
+    pub current_version: String,
+    pub latest_version: String,
+    /// The provider's own update command, as the person would type it.
+    pub update_command: String,
+    /// Whether Ganbaru can run the update command; `false` when a package manager or the
+    /// system owns the install and updates it instead.
+    pub runs_in_app: bool,
+}
+
+/// How running a provider's update command ended.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUpdateRunRead {
+    pub successful: bool,
+    /// The last lines the command wrote, kept when it failed so the reason stays visible.
+    pub output: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -118,10 +294,29 @@ pub struct ProviderProbeResult {
     pub version: Option<String>,
     pub negotiated_protocol_version: Option<String>,
     pub account_label: Option<String>,
+    /// How sessions authenticate; `None` when the driver cannot tell.
+    #[serde(default)]
+    pub auth_source: Option<ProviderAuthSource>,
+    /// The account's plan; `None` when the driver cannot tell.
+    #[serde(default)]
+    pub account_plan: Option<ProviderAccountPlan>,
     pub capabilities: ProviderCapabilities,
     pub authority_support: ProviderAuthoritySupport,
     pub checked_at: UtcTimestamp,
     pub detail: Option<String>,
+    /// The probed version against the family's compatibility range; `None` for families
+    /// without a range or when no version was read.
+    #[serde(default)]
+    pub version_admission: Option<ProviderVersionAdmission>,
+    /// The oldest CLI version every agent launch on this device accepts, present only when
+    /// the probed version is older, so agent runs fail while direct threads still start.
+    #[serde(default)]
+    pub agent_minimum_version: Option<String>,
+    /// Usage limits the provider reported during the probe; `None` when it cannot report them
+    /// without a turn. The app keeps them as the device's newest limit observation rather
+    /// than inside the stored probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_limits: Option<crate::events::RateLimitStatusEvent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -212,7 +407,6 @@ pub struct ProviderModel {
     pub availability: super::ModelAvailability,
     pub capabilities: Vec<ProviderCapability>,
     pub options: Vec<ModelOptionDefinition>,
-    pub custom: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -220,6 +414,11 @@ pub struct ProviderModel {
 pub struct ProviderModelCatalog {
     pub instance_id: ProviderInstanceId,
     pub models: Vec<ProviderModel>,
+    /// The entry of `models` that runs when nothing names a model, chosen by Ganbaru from the
+    /// catalog instead of following the provider's own default, which changes with whatever was
+    /// last picked in the provider's tool.
+    #[serde(default)]
+    pub recommended_model_id: Option<ModelId>,
     pub source: ModelCatalogSource,
     pub discovered_at: UtcTimestamp,
     pub stale: bool,

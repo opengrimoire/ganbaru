@@ -64,8 +64,14 @@ function locationStores(
     },
     chat: {
       get selectedChannelId() { return chat.selectedChannelId; },
+      get replyThreadTabId() { return chat.replyThreadTabId; },
       selectChannel: (channelId) => chat.selectChannel(channelId),
+      showReplyThreadTab: (channelId, replyThreadId) => chat.showReplyThreadTab(channelId, replyThreadId),
       channelName,
+      replyThreadTitle: (projectId, channelId) => {
+        const name = channelName(projectId, channelId);
+        return name === null ? null : t("chat.organization.threadInChannel", name);
+      },
     },
   };
 }

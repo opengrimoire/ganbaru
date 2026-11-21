@@ -1,8 +1,11 @@
 //! Pure provider discovery configuration and executable resolution.
 
 use super::{
-    config_io_error, device_state_error, discovery_state_error, mapping::portable_configuration,
-    providers::operation_context, read_chat_config, store::mutate_chat_config,
+    config_io_error, device_state_error, discovery_state_error,
+    mapping::portable_configuration,
+    providers::{apply_provider_probe, operation_context},
+    read_chat_config,
+    store::mutate_chat_config,
 };
 use crate::chat::device_state::{ChatProviderDeviceState, update_active_device_scope};
 use crate::chat::settings_commands::ChatSettingsState;
@@ -18,7 +21,10 @@ use ganbaru_chat_providers::executable_search::PLATFORM_EXECUTABLE_DIRECTORIES;
 use ganbaru_chat_providers::executable_search::{
     is_safe_executable_candidate, path_search_directories,
 };
-use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
+use ganbaru_chat_providers::{
+    InstallRoots, ProviderDriverFactory, ProviderDriverRegistry, installer_executable_directories,
+    search_path,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -83,23 +89,29 @@ pub(crate) fn default_provider_configuration(
         launch_arguments: Vec::new(),
         environment: BTreeMap::new(),
         credential_references: BTreeMap::new(),
-        visible_model_ids: Vec::new(),
-        favorite_model_ids: Vec::new(),
         provider_config: VersionedJson {
             schema_version: metadata.configuration_schema_version,
             value: provider_config,
         },
         internal_mcp: None,
+        private_home: None,
         unknown_fields: BTreeMap::new(),
     })
 }
 
 pub(crate) fn executable_search_directories() -> Vec<PathBuf> {
-    let mut directories = std::env::var_os("PATH")
+    let mut directories = search_path()
         .map(|path| path_search_directories(&path))
         .unwrap_or_default();
     if let Some(home) = platform_user_home() {
         directories.extend(fallback_executable_directories(&home));
+        let local_app_data = absolute_environment_directory("LOCALAPPDATA");
+        let roaming_app_data = absolute_environment_directory("APPDATA");
+        directories.extend(installer_executable_directories(&InstallRoots {
+            home: &home,
+            local_app_data: local_app_data.as_deref(),
+            roaming_app_data: roaming_app_data.as_deref(),
+        }));
     }
     let mut seen = BTreeSet::new();
     directories
@@ -128,6 +140,88 @@ pub(crate) fn installed_provider_executables(
         }
     }
     executables
+}
+
+/// Clears each install guide's requirement whose program `search_directories` already holds,
+/// so the guide only asks for a tool this device lacks.
+pub(crate) fn drop_met_install_requirements(
+    families: &mut [ProviderFamilyMetadataRead],
+    search_directories: &[PathBuf],
+) {
+    for guide in families
+        .iter_mut()
+        .filter_map(|metadata| metadata.install_guide.as_mut())
+    {
+        if guide.requirement.as_ref().is_some_and(|requirement| {
+            program_is_installed(&requirement.program, search_directories)
+        }) {
+            guide.requirement = None;
+        }
+    }
+}
+
+/// Whether a safe program named `name` sits in one of `search_directories`.
+fn program_is_installed(name: &str, search_directories: &[PathBuf]) -> bool {
+    search_directories.iter().any(|directory| {
+        executable_candidate_names(name)
+            .into_iter()
+            .any(|candidate| is_safe_executable_candidate(&directory.join(candidate)))
+    })
+}
+
+/// The CLI programs found for each family this device can set up, by family, so Settings can
+/// say whether a family that has no configuration is installed. A family whose search finds
+/// nothing maps to an empty list.
+pub(crate) fn installed_family_executables(
+    families: &[ProviderFamilyMetadataRead],
+    search_directories: &[PathBuf],
+) -> BTreeMap<ProviderFamilyId, Vec<String>> {
+    families
+        .iter()
+        .filter(|metadata| provider_family_is_discoverable(metadata))
+        .map(|metadata| {
+            (
+                metadata.family_id.clone(),
+                installed_provider_executables(metadata, search_directories),
+            )
+        })
+        .collect()
+}
+
+/// The program `executable` names on this device: a path resolves to its canonical file, and a
+/// bare name to the first safe match in `search_directories`. A program that cannot be found
+/// keeps its trimmed spelling, and an empty value is `None` because nothing would launch.
+pub(crate) fn resolve_executable_identity(
+    executable: &str,
+    search_directories: &[PathBuf],
+) -> Option<PathBuf> {
+    let executable = executable.trim();
+    if executable.is_empty() {
+        return None;
+    }
+    let named = Path::new(executable);
+    if named.components().count() > 1 || named.is_absolute() || executable.starts_with('~') {
+        let expanded = match executable
+            .strip_prefix("~/")
+            .or(executable.strip_prefix("~\\"))
+        {
+            Some(rest) => {
+                platform_user_home().map_or_else(|| named.to_path_buf(), |home| home.join(rest))
+            }
+            None => named.to_path_buf(),
+        };
+        return Some(std::fs::canonicalize(&expanded).unwrap_or(expanded));
+    }
+    let found = search_directories.iter().find_map(|directory| {
+        executable_candidate_names(executable)
+            .into_iter()
+            .map(|name| directory.join(name))
+            .find(|candidate| is_safe_executable_candidate(candidate))
+    });
+    Some(match found {
+        Some(candidate) => std::fs::canonicalize(&candidate).unwrap_or(candidate),
+        None => named.to_path_buf(),
+    })
 }
 
 pub(crate) fn replacement_provider_configurations(
@@ -175,6 +269,13 @@ fn platform_user_home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// A folder named by an environment variable, ignored unless it is an absolute path.
+fn absolute_environment_directory(variable: &str) -> Option<PathBuf> {
+    std::env::var_os(variable)
+        .map(PathBuf::from)
+        .filter(|directory| directory.is_absolute())
+}
+
 fn fallback_executable_directories(home: &Path) -> Vec<PathBuf> {
     #[cfg(windows)]
     {
@@ -216,21 +317,24 @@ pub(crate) struct ProviderDiscoveryRun {
     pub(crate) discovered_probes: BTreeMap<ProviderInstanceId, ProviderProbeResult>,
 }
 
+/// Discovers default providers the first time this app session asks for the active vault, and
+/// reports whether this call ran the discovery.
 pub(crate) async fn discover_default_providers_once(
     app: &tauri::AppHandle,
     state: &ChatSettingsState,
-) -> ChatResult<()> {
+) -> ChatResult<bool> {
     let vault_id = vault::active_vault_id(app).map_err(config_io_error)?;
     if discovery_finished(state, &vault_id)? {
-        return Ok(());
+        return Ok(false);
     }
 
     let _guard = state.discovery_lock.lock().await;
     if discovery_finished(state, &vault_id)? {
-        return Ok(());
+        return Ok(false);
     }
     discover_default_providers(app, state).await?;
-    mark_discovery_finished(state, vault_id)
+    mark_discovery_finished(state, vault_id)?;
+    Ok(true)
 }
 
 pub(crate) async fn discover_default_providers(
@@ -279,18 +383,14 @@ pub(crate) async fn discover_default_providers(
         }
 
         update_active_device_scope(app, |scope| {
-            scope.provider_instances.insert(
-                configuration.instance_id.clone(),
-                ChatProviderDeviceState {
-                    executable_path: Some(configuration.executable.clone()),
-                    provider_home_path: None,
-                    last_successful_probe_at: (probe.state == ProbeState::Healthy)
-                        .then(|| probe.checked_at.clone()),
-                    last_probe: Some(probe.clone()),
-                    model_catalog,
-                    approved_runtime_items: Default::default(),
-                },
-            );
+            let mut device = ChatProviderDeviceState {
+                executable_path: Some(configuration.executable.clone()),
+                ..ChatProviderDeviceState::default()
+            };
+            apply_provider_probe(&mut device, &probe, model_catalog);
+            scope
+                .provider_instances
+                .insert(configuration.instance_id.clone(), device);
             Ok(())
         })
         .map_err(device_state_error)?;

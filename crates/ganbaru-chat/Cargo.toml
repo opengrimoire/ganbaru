@@ -23,14 +23,17 @@ chrono = { workspace = true }
 ganbaru-atomic-files = { workspace = true }
 ganbaru-chat-contracts = { workspace = true }
 ganbaru-chat-providers = { workspace = true, optional = true }
+ganbaru-civil-time = { workspace = true }
 ganbaru-sync-contracts = { workspace = true }
 ganbaru-working-folders = { workspace = true }
+jiff = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
+url = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

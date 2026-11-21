@@ -11,14 +11,44 @@
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Trash2 from "@lucide/svelte/icons/trash";
   import * as chatApi from "$lib/api/chat";
-  import type { ChatExecutionEnvironmentRead, GitChangedPathRead, GitStatusRead, HostedChangeRequestRead, HostedSourceControlRead } from "$lib/chat/contracts";
+  import type { ChatCommitDraftContextRead, ChatExecutionEnvironmentRead, GitChangedPathRead, GitStatusRead, HostedChangeRequestRead, HostedSourceControlRead } from "$lib/chat/contracts";
   import { subscribeChatWorkspaceChanges } from "$lib/chat/workspace/observer-client";
+  import { COMMIT_MESSAGE_MAX_BYTES, commitMessageTooLong } from "$lib/chat/workspace/commit-message";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Select from "$lib/components/ui/Select.svelte";
+  import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import ChatAgentDraftAction from "./ChatAgentDraftAction.svelte";
+  import type { DraftExtraction } from "$lib/chat/source-control/draft-extraction";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import { LocalizedError } from "$lib/i18n/user-errors";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
+
+  interface FolderOption {
+    value: string;
+    label: string;
+  }
+
+  let {
+    folderId,
+    folderEnvironmentId,
+    environmentSwitchable,
+    folderOptions,
+    onFolderChange,
+  }: {
+    /** Folder this panel inspects, chosen per channel panel. */
+    folderId: string | null;
+    /** Execution environment inside that folder, or null for the folder itself. */
+    folderEnvironmentId: string | null;
+    /** True when the folder is the chat's working folder, so choosing an environment here changes the chat's. */
+    environmentSwitchable: boolean;
+    /** Folders of the channel's project bound on this device. */
+    folderOptions: readonly FolderOption[];
+    onFolderChange: (folderId: string) => void;
+  } = $props();
 
   const { t } = getLocalization();
   const chat = useChat();
@@ -58,15 +88,16 @@
   let providerRequest = 0;
   let hostedRequest = 0;
   let operationRequest = 0;
-  const workspace = $derived(chat.selectedWorkingFolderId);
+  const workspace = $derived(folderId);
   const staged = $derived(status?.files.filter(isStaged) ?? []);
   const unstaged = $derived(status?.files.filter(isUnstaged) ?? []);
+  const commitTooLong = $derived(commitMessageTooLong(commitMessage));
   const hostedProvider = $derived(hostedProviders.find((entry) => entry.kind === hostedProviderKind) ?? null);
 
   onMount(() => {
     const unsubscribe = subscribeChatWorkspaceChanges((batch) => {
       if (batch.workingFolderId !== workspace
-        || batch.executionEnvironmentId !== chat.selectedExecutionEnvironmentId
+        || batch.executionEnvironmentId !== folderEnvironmentId
         || (batch.relativePaths.length === 0 && !batch.gitMetadataChanged && !batch.overflowed)) return;
       if (liveRefreshTimer !== null) window.clearTimeout(liveRefreshTimer);
       liveRefreshTimer = window.setTimeout(() => {
@@ -82,7 +113,7 @@
 
   $effect(() => {
     const workingFolderId = workspace;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
+    const executionEnvironmentId = folderEnvironmentId;
     untrack(() => {
       refreshRequest += 1;
       environmentRequest += 1;
@@ -122,7 +153,34 @@
 
   function scopeMatches(workingFolderId: string | null, executionEnvironmentId: string | null): boolean {
     return workspace === workingFolderId
-      && chat.selectedExecutionEnvironmentId === executionEnvironmentId;
+      && folderEnvironmentId === executionEnvironmentId;
+  }
+
+  async function readCommitDraftContext(): Promise<ChatCommitDraftContextRead> {
+    const workingFolderId = workspace;
+    if (!workingFolderId) throw new LocalizedError(t("chat.sourceControl.agentDraftUnavailable"));
+    return chatApi.readCommitDraftContext(workingFolderId, folderEnvironmentId);
+  }
+
+  async function readChangeRequestDraftContext(): Promise<ChatCommitDraftContextRead> {
+    const workingFolderId = workspace;
+    if (!workingFolderId) throw new LocalizedError(t("chat.sourceControl.agentDraftUnavailable"));
+    return chatApi.readChangeRequestDraftContext(
+      workingFolderId,
+      changeRequestBase.trim(),
+      changeRequestHead.trim(),
+      folderEnvironmentId,
+    );
+  }
+
+  function applyCommitDraft(draft: Extract<DraftExtraction, { ok: true }>): void {
+    if (draft.kind === "commit") commitMessage = draft.message;
+  }
+
+  function applyChangeRequestDraft(draft: Extract<DraftExtraction, { ok: true }>): void {
+    if (draft.kind !== "change_request") return;
+    changeRequestTitle = draft.title;
+    changeRequestBody = draft.body;
   }
 
   function isStaged(file: GitChangedPathRead): boolean {
@@ -134,17 +192,12 @@
   }
 
   function message(reason: unknown): string {
-    if (reason instanceof Error) return reason.message;
-    if (typeof reason === "object" && reason !== null && "message" in reason) {
-      const value = (reason as { message?: unknown }).message;
-      if (typeof value === "string") return value;
-    }
-    return t("chat.sourceControl.operationFailed");
+    return chatErrorMessage(reason, t("chat.sourceControl.operationFailed"));
   }
 
   async function refresh(): Promise<void> {
     const workingFolderId = workspace;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
+    const executionEnvironmentId = folderEnvironmentId;
     if (!workingFolderId) return;
     if (loading || operation) {
       refreshPending = true;
@@ -181,7 +234,7 @@
 
   async function loadEnvironments(): Promise<void> {
     const workingFolderId = workspace;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
+    const executionEnvironmentId = folderEnvironmentId;
     if (!workingFolderId || environmentLoading) return;
     const request = ++environmentRequest;
     environmentLoading = true;
@@ -201,7 +254,7 @@
 
   async function discoverProviders(): Promise<void> {
     const workingFolderId = workspace;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
+    const executionEnvironmentId = folderEnvironmentId;
     if (!workingFolderId) return;
     const request = ++providerRequest;
     try {
@@ -224,7 +277,7 @@
   async function loadHostedRequests(): Promise<void> {
     const provider = hostedProviders.find((entry) => entry.kind === hostedProviderKind);
     const workingFolderId = workspace;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
+    const executionEnvironmentId = folderEnvironmentId;
     if (!workingFolderId || !provider?.repositorySlug || provider.status !== "available") {
       hostedRequest += 1;
       hostedLoading = false;
@@ -262,7 +315,7 @@
   async function createChangeRequest(): Promise<void> {
     const provider = hostedProviders.find((entry) => entry.kind === hostedProviderKind);
     const workingFolderId = workspace;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
+    const executionEnvironmentId = folderEnvironmentId;
     if (!workingFolderId || !provider?.repositorySlug || operation) return;
     const request = ++operationRequest;
     const providerKind = provider.kind;
@@ -296,7 +349,7 @@
   async function checkoutChangeRequest(request: HostedChangeRequestRead): Promise<void> {
     const provider = hostedProviders.find((entry) => entry.kind === request.providerKind);
     const workingFolderId = workspace;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
+    const executionEnvironmentId = folderEnvironmentId;
     if (!workingFolderId || operation) return;
     const operationId = ++operationRequest;
     operation = "checkout-change-request";
@@ -319,7 +372,7 @@
 
   async function configureBitbucket(): Promise<void> {
     const workingFolderId = workspace;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
+    const executionEnvironmentId = folderEnvironmentId;
     const repositorySlug = hostedProvider?.repositorySlug;
     if (!workingFolderId || !repositorySlug || operation) return;
     const request = ++operationRequest;
@@ -344,7 +397,7 @@
 
   async function removeBitbucketCredential(): Promise<void> {
     const workingFolderId = workspace;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
+    const executionEnvironmentId = folderEnvironmentId;
     const repositorySlug = hostedProvider?.repositorySlug;
     if (!workingFolderId || !repositorySlug || operation) return;
     const request = ++operationRequest;
@@ -364,7 +417,7 @@
 
   async function createWorktree(): Promise<void> {
     const workingFolderId = workspace;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
+    const executionEnvironmentId = folderEnvironmentId;
     const branchName = worktreeBranch.trim();
     const baseReference = worktreeBase.trim();
     if (!workingFolderId || operation || !branchName || !baseReference) return;
@@ -383,7 +436,7 @@
       });
       if (request !== operationRequest || !scopeMatches(workingFolderId, executionEnvironmentId)) return;
       environments = [...environments, environment];
-      chat.setExecutionEnvironment(environment.id);
+      if (environmentSwitchable) chat.setExecutionEnvironment(environment.id);
       worktreeFormOpen = false;
       worktreeBranch = "";
     } catch (reason: unknown) {
@@ -395,8 +448,14 @@
 
   async function removeWorktree(environment: ChatExecutionEnvironmentRead): Promise<void> {
     const workingFolderId = workspace;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
-    if (!workingFolderId || operation || !window.confirm(t("chat.sourceControl.confirmRemoveWorktree", environment.displayName))) return;
+    const executionEnvironmentId = folderEnvironmentId;
+    if (!workingFolderId || operation) return;
+    const confirmed = await requestConfirmation({
+      message: t("chat.sourceControl.confirmRemoveWorktree", environment.displayName),
+      confirmLabel: t("chat.sourceControl.removeWorktreeConfirm"),
+      danger: true,
+    });
+    if (!confirmed || operation || !scopeMatches(workingFolderId, executionEnvironmentId)) return;
     const request = ++operationRequest;
     operation = "remove-worktree";
     error = null;
@@ -404,7 +463,7 @@
       await chatApi.removeChatWorktreeEnvironment(workingFolderId, environment.id, true);
       if (request !== operationRequest || !scopeMatches(workingFolderId, executionEnvironmentId)) return;
       environments = environments.filter((entry) => entry.id !== environment.id);
-      if (chat.selectedExecutionEnvironmentId === environment.id) chat.setExecutionEnvironment(null);
+      if (environmentSwitchable && folderEnvironmentId === environment.id) chat.setExecutionEnvironment(null);
     } catch (reason: unknown) {
       if (request === operationRequest && scopeMatches(workingFolderId, executionEnvironmentId)) error = message(reason);
     } finally {
@@ -417,7 +476,7 @@
     action: (workspaceId: string, executionEnvironmentId: string | null) => Promise<GitStatusRead>,
   ): Promise<boolean> {
     const workingFolderId = workspace;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
+    const executionEnvironmentId = folderEnvironmentId;
     if (!workingFolderId || operation) return false;
     const request = ++operationRequest;
     operation = name;
@@ -445,7 +504,7 @@
 
   async function commit(): Promise<void> {
     const nextMessage = commitMessage.trim();
-    if (!nextMessage) return;
+    if (!nextMessage || commitTooLong) return;
     if (await run("commit", (workspaceId, environmentId) => chatApi.commitGitChanges(workspaceId, nextMessage, environmentId))) {
       commitMessage = "";
     }
@@ -477,7 +536,11 @@
   }
 
   async function discard(file: GitChangedPathRead): Promise<void> {
-    const confirmed = window.confirm(t("chat.sourceControl.confirmDiscard", file.relativePath));
+    const confirmed = await requestConfirmation({
+      message: t("chat.sourceControl.confirmDiscard", file.relativePath),
+      confirmLabel: t("chat.sourceControl.discardConfirm"),
+      danger: true,
+    });
     if (!confirmed) return;
     await run("discard", (workspaceId, environmentId) => chatApi.discardGitPaths(
       workspaceId,
@@ -495,6 +558,19 @@
 </script>
 
 <section class="source-panel" aria-label={t("chat.inspector.sourceControl")}>
+  {#if folderOptions.length > 1 && folderId}
+    <div class="folder-chooser">
+      <Select
+        inline
+        appearance="quiet"
+        class="w-full"
+        ariaLabel={t("chat.sourceControl.workingFolder")}
+        value={folderId}
+        options={folderOptions}
+        onChange={onFolderChange}
+      />
+    </div>
+  {/if}
   <header>
     <div class="branch-summary">
       <strong>{status?.detached ? t("chat.sourceControl.detached") : status?.branch ?? t("chat.sourceControl.noBranch")}</strong>
@@ -523,8 +599,8 @@
           <input
             type="radio"
             name="chat-execution-environment"
-            checked={(chat.selectedExecutionEnvironmentId ?? environments.find((entry) => entry.kind === "current_folder")?.id) === environment.id}
-            disabled={chat.selectedThreadId !== null || environment.lifecycleState !== "available"}
+            checked={(folderEnvironmentId ?? environments.find((entry) => entry.kind === "current_folder")?.id) === environment.id}
+            disabled={!environmentSwitchable || chat.selectedThreadId !== null || environment.lifecycleState !== "available"}
             onchange={() => chat.setExecutionEnvironment(environment.kind === "current_folder" ? null : environment.id)}
           />
           <span><strong>{environment.displayName}</strong><small>{environment.branchName ?? t("chat.sourceControl.currentFolder")}</small></span>
@@ -575,6 +651,16 @@
         <input class="field" bind:value={changeRequestTitle} maxlength="1024" placeholder={t("chat.sourceControl.changeRequestTitle")} aria-label={t("chat.sourceControl.changeRequestTitle")} />
         <div><input class="field" bind:value={changeRequestBase} maxlength="1024" placeholder={t("chat.sourceControl.baseBranch")} aria-label={t("chat.sourceControl.baseBranch")} /><input class="field" bind:value={changeRequestHead} maxlength="1024" placeholder={t("chat.sourceControl.headBranch")} aria-label={t("chat.sourceControl.headBranch")} /></div>
         <textarea class="field" bind:value={changeRequestBody} maxlength="262144" rows="3" placeholder={t("chat.sourceControl.changeRequestBody")} aria-label={t("chat.sourceControl.changeRequestBody")}></textarea>
+        <ChatAgentDraftAction
+          kind="change_request"
+          scopeKey={`${workspace ?? ""}\n${folderEnvironmentId ?? ""}`}
+          fieldValue={`${changeRequestTitle}\n${changeRequestBody}`}
+          allowed={changeRequestBase.trim().length > 0 && changeRequestHead.trim().length > 0 && operation === null}
+          base={changeRequestBase.trim()}
+          head={changeRequestHead.trim()}
+          readContext={readChangeRequestDraftContext}
+          onDraft={applyChangeRequestDraft}
+        />
         <label><Checkbox bind:checked={isChangeRequestDraft} />{t("chat.sourceControl.draftChangeRequest")}</label>
         <button type="submit" class="chat-primary-button" disabled={!changeRequestTitle.trim() || !changeRequestBase.trim() || !changeRequestHead.trim() || operation !== null}>{t("chat.sourceControl.createChangeRequest")}</button>
       </form>
@@ -644,14 +730,24 @@
     </div>
     <form class="commit" onsubmit={(event) => { event.preventDefault(); void commit(); }}>
       <label for="chat-commit-message">{t("chat.sourceControl.commitMessage")}</label>
-      <textarea class="field" id="chat-commit-message" maxlength="4000" rows="3" bind:value={commitMessage} placeholder={t("chat.sourceControl.commitPlaceholder")}></textarea>
-      <button type="submit" class="chat-primary-button" disabled={!commitMessage.trim() || staged.length === 0 || operation !== null}><Check size={14} />{t("chat.sourceControl.commit")}</button>
+      <textarea class="field" id="chat-commit-message" maxlength={COMMIT_MESSAGE_MAX_BYTES} rows="3" bind:value={commitMessage} placeholder={t("chat.sourceControl.commitPlaceholder")} aria-describedby={commitTooLong ? "chat-commit-message-error" : undefined} aria-invalid={commitTooLong ? "true" : undefined}></textarea>
+      {#if commitTooLong}<small id="chat-commit-message-error" class="field-error" role="alert">{t("chat.sourceControl.commitMessageTooLong")}</small>{/if}
+      <ChatAgentDraftAction
+        kind="commit"
+        scopeKey={`${workspace ?? ""}\n${folderEnvironmentId ?? ""}`}
+        fieldValue={commitMessage}
+        allowed={staged.length > 0 && operation === null}
+        readContext={readCommitDraftContext}
+        onDraft={applyCommitDraft}
+      />
+      <button type="submit" class="chat-primary-button" disabled={!commitMessage.trim() || commitTooLong || staged.length === 0 || operation !== null}><Check size={14} />{t("chat.sourceControl.commit")}</button>
     </form>
   {/if}
 </section>
 
 <style>
   .source-panel { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; }
+  .folder-chooser { border-bottom: 1px solid var(--border); padding: 0.35rem 0.45rem; }
   header { display: flex; align-items: center; gap: 0.5rem; border-bottom: 1px solid var(--border); padding: 0.55rem 0.7rem; }
   .branch-summary { display: flex; min-width: 0; flex: 1; align-items: center; gap: 0.45rem; }
   .branch-summary strong, .branch-summary small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -720,6 +816,7 @@
   .commit { display: grid; gap: 0.4rem; border-top: 1px solid var(--border); padding: 0.6rem 0.7rem; }
   .commit label { font-size: calc(0.68rem * var(--type-scale)); font-weight: 600; }
   .commit textarea { min-height: 3.8rem; resize: vertical; font-size: var(--panel-font-size); }
+  .commit .field-error { color: var(--destructive); font-size: calc(0.65rem * var(--type-scale)); }
   .commit button { display: inline-flex; align-items: center; justify-content: center; gap: 0.3rem; }
   .empty { padding: 1rem; text-align: center; color: var(--muted-foreground); font-size: calc(0.72rem * var(--type-scale)); }
   .empty.compact { padding: 0.4rem; }

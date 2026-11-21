@@ -42,6 +42,8 @@ Storage and interoperability stay canonical and untranslated:
 
 Settings, title bar, Calendar, Pomodoro, Music, distraction blocker, theme editor, diagnostics, and benchmark overlays all use catalog keys or feature-local helpers. Internal IDs, CSS tokens, config keys, SQL columns, generated benchmark output, and tests can stay English when they are not shown to users. If an internal English value is shown, localize it at the render boundary rather than changing the stored identity.
 
+Errors a person can see also come from the catalog. The frontend maps a structured error code or reason to its message, and otherwise shows a localized message naming the action that failed; backend error text is never the primary message and appears only as secondary technical detail, such as copyable text. Errors the frontend raises itself carry catalog text through `LocalizedError`. Logs, provider stderr, and the diagnostics and benchmark panels are developer detail and stay untranslated.
+
 Shared confirmation dialogs add localized Escape and Enter hints at render time, so feature catalogs provide only action text and translations never duplicate shortcut wording. A custom confirmation surface must render the same hints and keys.
 
 ## Adding a locale

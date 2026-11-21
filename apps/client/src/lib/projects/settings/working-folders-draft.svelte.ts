@@ -13,6 +13,14 @@ export type WorkingFolderSelection = ProjectWorkingFolderSelectionRead;
  */
 const EXTERNAL_FOLDER_ID_PREFIX = "working-folder:external:";
 
+/** Raised when a native selection points at a folder another row of the project already uses. */
+export class DuplicateWorkingFolderSelectionError extends Error {
+  constructor() {
+    super("This folder is already assigned to the selected project");
+    this.name = "DuplicateWorkingFolderSelectionError";
+  }
+}
+
 export interface ProjectSettingsWorkingFoldersPorts {
   pick: (workingFolderId?: string) => Promise<WorkingFolderSelection | null>;
   add: (request: CreateProjectWorkingFolderRequest, selection: WorkingFolderSelection) => Promise<ProjectWorkingFolderRead>;
@@ -94,7 +102,7 @@ export function createProjectSettingsWorkingFoldersDraft(ports: ProjectSettingsW
     const selection = await ports.pick(persisted ? folder.workingFolder.id : undefined);
     if (!selection || currentGeneration !== generation) return;
     if (rows.some((entry) => entry.workingFolder.id !== folder?.workingFolder.id && entry.canonicalPath === selection.canonicalPath)) {
-      throw new Error("This folder is already assigned to the selected project");
+      throw new DuplicateWorkingFolderSelectionError();
     }
     if (folder) {
       const id = folder.workingFolder.id;

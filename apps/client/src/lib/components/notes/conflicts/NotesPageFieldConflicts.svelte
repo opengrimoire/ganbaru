@@ -9,6 +9,7 @@
   import SyncConflictChoice from "$lib/components/sync/SyncConflictChoice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
+    NOTES_CONFLICT_ERROR_MESSAGE_KEYS,
     notesFieldConflictTitleKey,
     notesPropertyNameById,
     notesThreadStatusIsResolved,
@@ -72,14 +73,13 @@
       await notesConflicts.resolve({ pageId, target: conflict.target, id: conflict.id, choice });
       await onResolved();
     } catch (cause: unknown) {
-      if (cause instanceof NotesConflictError && cause.code === "resolved") {
-        outcome = { key, kind: "resolved", message: t("notes.conflict.resolved") };
-      } else if (cause instanceof NotesConflictError && cause.code === "unfit") {
-        outcome = { key, kind: "error", message: t("notes.conflict.unfit") };
-      } else {
-        console.warn("Notes conflict could not be resolved", cause);
-        outcome = { key, kind: "error", message: t("notes.conflict.failed") };
-      }
+      const code = cause instanceof NotesConflictError ? cause.code : "failed";
+      if (code === "failed") console.warn("Notes conflict could not be resolved", cause);
+      outcome = {
+        key,
+        kind: code === "resolved" ? "resolved" : "error",
+        message: t(NOTES_CONFLICT_ERROR_MESSAGE_KEYS[code]),
+      };
     } finally {
       busy = false;
     }

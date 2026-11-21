@@ -8,6 +8,7 @@
   import CollectionMenu from "$lib/components/collections/CollectionMenu.svelte";
   import CollectionQuickAdd from "$lib/components/collections/CollectionQuickAdd.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { formatDateTime, formatNumber } from "$lib/i18n/formatters";
   import { projectKanbanDropPlacement } from "$lib/projects/kanban-drag";
   import { projectPriorityDisplayColor, projectPriorityDisplayLabel } from "$lib/projects/display";
@@ -60,7 +61,7 @@
 
   async function perform(action: () => Promise<void>): Promise<void> {
     error = null;
-    try { await action(); } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+    try { await action(); } catch (caught) { error = userErrorMessage(caught, t("projects.detail.saveFailed")); }
   }
 
   function canMove(task: ProjectTask, status: ProjectStatus): boolean {

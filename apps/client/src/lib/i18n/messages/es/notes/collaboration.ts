@@ -2,7 +2,7 @@ import type { collaboration as enCollaboration } from "../../en/notes/collaborat
 import type { MessageShape } from "../../types";
 
 export const collaboration = {
-  loadCommentsFailed: (message: string) => `No se pudieron cargar los comentarios: ${message}`,
+  loadCommentsFailed: "No se pudieron cargar los comentarios.",
   commentPlaceholder: "Agregar un comentario...",
   replyPlaceholder: "Responder...",
   replyCommentInput: "Texto de respuesta",
@@ -28,8 +28,9 @@ export const collaboration = {
   commentSave: "Guardar",
   commentAttachmentUnavailable: "Archivo adjunto",
   commentRemoveAttachment: (name: string) => `Quitar ${name}`,
-  commentAttachFailed: (message: string) => `No se pudo adjuntar el archivo: ${message}`,
-  commentSendFailed: (message: string) => `No se pudo guardar el comentario: ${message}`,
+  commentAttachFailed: "No se pudo adjuntar el archivo.",
+  commentAttachmentOpenFailed: "No se pudo abrir el adjunto.",
+  commentSendFailed: "No se pudo guardar el comentario.",
   commentTooLarge: "Este comentario es demasiado largo para guardarlo. Acórtalo e inténtalo de nuevo.",
   commentEdited: "(editado)",
   commentAuthorUnknown: "Desconocido",
@@ -44,7 +45,7 @@ export const collaboration = {
   commentDelete: "Eliminar comentario",
   commentDeleteConfirmTitle: "¿Eliminar este comentario?",
   commentDeleteConfirmMessage: "Este comentario se quitará de la discusión.",
-  commentActionFailed: (message: string) => `No se pudo actualizar el comentario: ${message}`,
+  commentActionFailed: "No se pudo actualizar el comentario.",
   discussions: "Discusiones",
   discussionsButton: (open: number, unread: number) => unread > 0
     ? `Discusiones, ${open} ${open === 1 ? "abierta" : "abiertas"}, ${unread} sin leer`
@@ -68,7 +69,7 @@ export const collaboration = {
   newDiscussion: "Nuevo comentario",
   cancelNewDiscussion: "Cancelar nuevo comentario",
   pageNotifications: "Notificaciones de esta página",
-  pageNotificationsFailed: (message: string) => `No se pudieron cambiar las notificaciones: ${message}`,
+  pageNotificationsFailed: "No se pudieron cambiar las notificaciones.",
   pageNotificationLevelAll: "Menciones y recordatorios",
   pageNotificationLevelAllDetail: "Cuando alguien te menciona y para recordatorios de fecha en esta página",
   pageNotificationLevelMentions: "Solo menciones",
@@ -78,8 +79,7 @@ export const collaboration = {
   suggestionsCount: (count: number) =>
     `${count} ${count === 1 ? "sugerencia" : "sugerencias"}`,
   loadingSuggestions: "Cargando sugerencias",
-  loadSuggestionsFailed: (message: string) =>
-    `No se pudieron cargar las sugerencias: ${message}`,
+  loadSuggestionsFailed: "No se pudieron cargar las sugerencias.",
   noSuggestions: "No hay sugerencias",
   suggestedEdits: "Ediciones sugeridas",
   showDecidedSuggestions: "Mostrar decididas",

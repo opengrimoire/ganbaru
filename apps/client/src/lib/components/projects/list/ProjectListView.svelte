@@ -2,6 +2,7 @@
   import { onDestroy, untrack } from "svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { getCalendar } from "$lib/stores/calendar.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
@@ -133,10 +134,7 @@
     getStatuses: () => statuses,
     getPriorities: () => priorities,
     selectProjectFirstMessage: () => t("projects.tasks.selectProjectFirst"),
-    createFailedMessage: (error) => t(
-      "projects.tasks.createFailed",
-      error instanceof Error ? error.message : String(error),
-    ),
+    createFailedMessage: (error) => userErrorMessage(error, t("projects.tasks.createFailed")),
   });
   const drag = new ProjectListRowDragController({
     getTasks: () => tasks,
@@ -528,12 +526,13 @@
 >
   <div class="flex min-h-full flex-col gap-5 p-3">
     {#if viewport.resizeError}
-      <Notice class="text-sm" message={viewport.resizeError} />
+      <Notice class="text-sm" message={t("projects.columns.widthSaveFailed")} copy={viewport.resizeError} />
     {/if}
     {#if taskQuery?.loadError}
       <Notice
         class="text-sm"
-        message={t("projects.tasks.loadFailed", taskQuery.loadError)}
+        message={t("projects.tasks.loadFailed")}
+        copy={taskQuery.loadError}
         onRetry={() => taskQuery?.retryCurrent(selectedTaskIds, selectedTaskId)}
       />
     {/if}

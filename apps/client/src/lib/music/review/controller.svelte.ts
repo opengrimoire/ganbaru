@@ -13,6 +13,8 @@ import type {
   MusicPlaylistSummary,
   MusicReviewState,
 } from "$lib/music/library/contracts";
+import { localizedMusicError, musicErrorMessage } from "$lib/music/user-errors";
+import { translate } from "$lib/i18n/translator.svelte";
 
 /** Order key of an optimistic membership: the native write appends it and assigns the real key. */
 const OPTIMISTIC_ORDER_KEY = "";
@@ -161,7 +163,7 @@ export class MusicReviewController {
         },
       });
     } catch (error) {
-      this.library.error = error instanceof Error ? error : new Error(String(error));
+      this.library.error = localizedMusicError(error, "music.errors.membershipSaveFailed");
     }
   }
 
@@ -183,7 +185,7 @@ export class MusicReviewController {
       await this.toggleMembership(playlist);
       return playlistId;
     } catch (error) {
-      this.createError = error instanceof Error ? error.message : String(error);
+      this.createError = musicErrorMessage(error, translate("music.errors.playlistCreateFailed"));
       return null;
     } finally {
       this.creatingPlaylist = false;
@@ -251,7 +253,7 @@ export class MusicReviewController {
       this.inspector.itemId = detail.item.id;
       this.inspector.detail = detail;
       this.library.selectItem(previousSelectedItemId);
-      this.library.error = error instanceof Error ? error : new Error(String(error));
+      this.library.error = localizedMusicError(error, "music.errors.reviewSaveFailed");
       return false;
     } finally {
       this.actionBusy = false;
@@ -276,9 +278,9 @@ export class MusicReviewController {
   }
 
   private recordMembershipError(playlistId: string, error: unknown): void {
-    const message = error instanceof Error ? error.message : String(error);
-    this.library.error = error instanceof Error ? error : new Error(message);
-    this.membershipErrors = { ...this.membershipErrors, [playlistId]: message };
+    const failure = localizedMusicError(error, "music.errors.membershipSaveFailed");
+    this.library.error = failure;
+    this.membershipErrors = { ...this.membershipErrors, [playlistId]: failure.message };
   }
 }
 

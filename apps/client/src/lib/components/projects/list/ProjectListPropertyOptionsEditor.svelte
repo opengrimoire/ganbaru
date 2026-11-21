@@ -7,6 +7,7 @@
   import CollectionMenuItem from "$lib/components/collections/CollectionMenuItem.svelte";
   import CollectionMenuTextField from "$lib/components/collections/CollectionMenuTextField.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { useProjects } from "$lib/stores/projects.svelte";
   import { PROJECT_CUSTOM_FIELD_OPTION_DRAG_DATA_TYPE } from "$lib/projects/custom-fields";
   import { createProjectSettingsReorderController } from "$lib/projects/settings/reorder-controller.svelte";
@@ -34,7 +35,7 @@
     moveEntry: projects.moveCustomFieldOption,
     setError: (message) => { error = message; },
     reorderFailedMessage: () => t("projects.customFields.optionReorderFailed"),
-    saveFailedMessage: (message) => t("projects.customFields.optionSaveFailed", message),
+    saveFailedMessage: () => t("projects.customFields.optionSaveFailed"),
   });
   const busy = $derived(disabled || saving || reorder.pending);
   const reorderable = $derived(!busy && options.length > 1);
@@ -50,7 +51,7 @@
    *
    * @returns Whether the write succeeded.
    */
-  async function write(action: () => Promise<unknown>, failure: (message: string) => string): Promise<boolean> {
+  async function write(action: () => Promise<unknown>, failure: () => string): Promise<boolean> {
     if (busy) return false;
     saving = true;
     error = null;
@@ -58,7 +59,7 @@
       await action();
       return true;
     } catch (cause: unknown) {
-      error = failure(cause instanceof Error ? cause.message : String(cause));
+      error = userErrorMessage(cause, failure());
       return false;
     } finally { saving = false; }
   }
@@ -89,7 +90,7 @@
       return;
     }
     newName = "";
-    const added = await write(() => projects.addCustomFieldOption(field.id, name), (message) => t("projects.customFields.optionSaveFailed", message));
+    const added = await write(() => projects.addCustomFieldOption(field.id, name), () => t("projects.customFields.optionSaveFailed"));
     if (added) {
       if (!keepOpen && !newName) adding = false;
     } else if (!newName) {
@@ -102,11 +103,11 @@
       error = t("projects.customFields.optionNameExists");
       return;
     }
-    void write(() => projects.updateCustomFieldOption(option, { name }), (message) => t("projects.customFields.optionSaveFailed", message));
+    void write(() => projects.updateCustomFieldOption(option, { name }), () => t("projects.customFields.optionSaveFailed"));
   }
 
   function remove(option: ProjectCustomFieldOption): void {
-    void write(() => projects.removeCustomFieldOption(option.id), (message) => t("projects.customFields.optionDeleteFailed", message));
+    void write(() => projects.removeCustomFieldOption(option.id), () => t("projects.customFields.optionDeleteFailed"));
   }
 
   /** Move an option one step with the arrow keys on its handle, keeping focus on the handle. */

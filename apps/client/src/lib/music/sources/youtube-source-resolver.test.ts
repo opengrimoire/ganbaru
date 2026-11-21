@@ -80,7 +80,7 @@ describe("YouTube source resolver", () => {
     await expect(resolveMusicYouTubeSource(source, new AbortController().signal, 1_000, dependencies({
       type: "ganbaru-youtube-error",
       code: 150,
-    }))).rejects.toThrow("does not allow embedded playback");
+    }))).rejects.toThrow("does not allow playback outside YouTube");
     expect(document.querySelector("iframe")).toBeNull();
   });
 
@@ -146,7 +146,7 @@ describe("YouTube source resolver", () => {
           close,
         }),
       },
-    )).rejects.toThrow("WebView messaging is unavailable");
+    )).rejects.toThrow("The YouTube link could not be checked, so check your connection and try again.");
     expect(close).toHaveBeenCalledOnce();
   });
 });

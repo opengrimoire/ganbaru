@@ -8,6 +8,7 @@
   import ProjectsSection from "$lib/components/settings/sections/ProjectsSection.svelte";
   import NotesSection from "$lib/components/settings/sections/NotesSection.svelte";
   import ChatSection from "$lib/components/settings/sections/ChatSection.svelte";
+  import AgentsSection from "$lib/components/settings/sections/AgentsSection.svelte";
   import FocusSection from "$lib/components/settings/sections/FocusSection.svelte";
   import MusicSection from "$lib/components/settings/sections/MusicSection.svelte";
   import DistractionsSection from "$lib/components/settings/distractions/DistractionsSection.svelte";
@@ -27,14 +28,11 @@
     activeSection,
     initialDistractionsTab,
     initialContactsTab,
-    activeChatSubsection,
-    initialChatTeammateId,
-    initialChatChannelId,
-    initialChatCreateTeammate,
+    activeAgentsSubsection,
     onOpenDistractionsLimitEditor,
     onOpenNotesTransferPanel,
     onOpenChatProviderSetup,
-    onChatSubsectionChange,
+    onAgentsSubsectionChange,
     onRequestNavigation,
     onDraftStateChange,
   }: SettingsSectionRendererProps = $props();
@@ -88,15 +86,13 @@
     onOpenLimitEditor={onOpenDistractionsLimitEditor}
   />
 {:else if activeSection === "chat"}
-  <ChatSection
-    initialSubsection={activeChatSubsection}
-    {initialChatTeammateId}
-    {initialChatChannelId}
-    {initialChatCreateTeammate}
+  <ChatSection />
+{:else if activeSection === "agents"}
+  <AgentsSection
+    initialSubsection={activeAgentsSubsection}
     onOpenProviderSetup={onOpenChatProviderSetup}
-    onSubsectionChange={onChatSubsectionChange}
+    onSubsectionChange={onAgentsSubsectionChange}
     {onRequestNavigation}
-    onTeammateDraftStateChange={(open: boolean) => onDraftStateChange(open ? "teammate" : null)}
   />
 {:else if activeSection === "data"}
   {#if DataSection}

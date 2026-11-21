@@ -26,7 +26,7 @@ Exclusion at build time, rather than hiding controls in the UI, reduces artifact
 | Calendar | Events, recurrence, reminders, projects, active runs | Native notification and alarm projection |
 | Projects | Full local planning and task views | Responsive UI, no local coding working-folder execution |
 | Notes | Pages, blocks, databases, history, links, assets | Responsive UI, document picker for bounded files, no working-folder Markdown |
-| Chat | Channels, messages, replies, search, drafts, scheduling | Provider-free communication and existing review activity only; no Codex, Claude, Cursor, Grok, OpenCode, shells, terminals, or Git |
+| Chat | Channels, messages, replies, search, drafts, scheduling | Provider-free communication and existing review activity only, plus a read-only live view of work a linked desktop runs, pulled from that desktop on the LAN; no Codex, Claude, Cursor, Grok, OpenCode, shells, terminals, or Git |
 | Pomodoro | Canonical accepted runs, history and recovery in `ganbaru-pomodoro` | Commitment reminders, accepted-phase deadline alarms and ongoing notification |
 | Music | Canonical library, playlists, assignments, player state | Selected document tree and Media3 local audio; no desktop soundscape engine |
 | Distraction blocker | Shared rule and usage-limit intent | Selected packages, Usage Access, Accessibility Home action, native journal, linked-device combined usage |

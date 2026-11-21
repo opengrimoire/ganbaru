@@ -4,7 +4,9 @@ use crate::attachment_files::{
 use crate::models::{
     ChatAttachmentId, ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, UtcTimestamp,
 };
-use ganbaru_atomic_files::{FinalSymlink, read_regular_file_capped, remove_file_within};
+#[cfg(feature = "native-runtime")]
+use ganbaru_atomic_files::remove_file_within;
+use ganbaru_atomic_files::{FinalSymlink, read_regular_file_capped};
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
 use std::io;
@@ -91,7 +93,7 @@ pub async fn import_attachment_bytes(
     let display_name = request.display_name.trim();
     if display_name.is_empty()
         || display_name.len() > 1_000
-        || crate::workspace::protected_paths::text_has_control_characters(display_name)
+        || ganbaru_chat_contracts::protected_paths::text_has_control_characters(display_name)
     {
         return Err(ChatError::validation(
             "attachment.name",
@@ -237,6 +239,7 @@ pub fn read_managed_attachment_bytes(
     Ok((path, bytes))
 }
 
+#[cfg(feature = "native-runtime")]
 pub async fn run_due_attachment_cleanup(
     pool: &SqlitePool,
     vault_root: &Path,
@@ -357,6 +360,7 @@ pub async fn run_due_attachment_cleanup(
 /// scheduled message reference, or resource thread reference still names, together with their
 /// resources. The attachment named by the job ID is released as well, since a job queued
 /// before files were stored by digest names the attachment's earlier path.
+#[cfg(feature = "native-runtime")]
 async fn release_unreferenced_attachments(
     pool: &SqlitePool,
     relative_path: &str,

@@ -53,6 +53,7 @@ const MAX_DIGEST_DIRECTORY_DEPTH: usize = 8;
 const MAX_LOCATION_OUTPUT_BYTES: usize = 64 * 1024;
 const GIT_DIGEST_DOMAIN: &[u8] = b"ganbaru-folder-trust-git-v1";
 const PROVIDER_DIGEST_DOMAIN: &[u8] = b"ganbaru-folder-trust-provider-v4";
+const REQUESTED_DIGEST_DOMAIN: &[u8] = b"ganbaru-requested-git-configuration-v1";
 
 /// SHA-256 digest of folder configuration covered by a trust decision.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -117,6 +118,90 @@ pub async fn folder_configuration(root: PathBuf) -> Result<FolderConfiguration, 
     tokio::task::spawn_blocking(move || folder_configuration_blocking(&root))
         .await
         .map_err(|_| GitRunError::Unavailable)?
+}
+
+/// The configuration a requested run reads, as an agent's request records
+/// it and its confirmation compares it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestedConfiguration {
+    /// Every effective configuration entry in every scope, so remotes, URL
+    /// rewrites, push settings, identity, and signing are all covered.
+    pub digest: FolderConfigDigest,
+    /// True when repository configuration (including files it includes)
+    /// chooses how Git connects or authenticates: a credential helper, an SSH
+    /// or proxy command, a proxy, or TLS trust. Such a folder is refused,
+    /// because an agent could have written it.
+    pub repository_connection: bool,
+}
+
+/// Reads the configuration a requested run in `root` would read.
+pub fn requested_configuration_blocking(
+    root: &Path,
+) -> Result<RequestedConfiguration, GitRunError> {
+    let entries = read_effective_config(
+        root,
+        GitPolicy::requested(),
+        &[],
+        GIT_CONFIG_READ_DEADLINE,
+        None,
+    )?;
+    Ok(requested_configuration_of(&entries))
+}
+
+/// Async form of [`requested_configuration_blocking`].
+pub async fn requested_configuration(root: PathBuf) -> Result<RequestedConfiguration, GitRunError> {
+    tokio::task::spawn_blocking(move || requested_configuration_blocking(&root))
+        .await
+        .map_err(|_| GitRunError::Unavailable)?
+}
+
+pub(super) fn requested_configuration_of(entries: &[GitConfigEntry]) -> RequestedConfiguration {
+    let mut hasher = DigestWriter::new(REQUESTED_DIGEST_DOMAIN);
+    for entry in entries {
+        hasher.field(scope_label(entry.scope).as_bytes());
+        hasher.field(entry.key.as_bytes());
+        match &entry.value {
+            Some(value) => {
+                hasher.field(b"=");
+                hasher.field(value.as_bytes());
+            }
+            None => hasher.field(b"true"),
+        }
+    }
+    RequestedConfiguration {
+        digest: hasher.finish(),
+        repository_connection: entries
+            .iter()
+            .any(|entry| entry.scope.is_repository() && is_connection_key(&entry.key)),
+    }
+}
+
+/// Keys that choose how Git connects to a remote or authenticates to it.
+fn is_connection_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    let Some((section, rest)) = lower.split_once('.') else {
+        return false;
+    };
+    let (subsection, name) = match rest.rsplit_once('.') {
+        Some((subsection, name)) => (Some(subsection), name),
+        None => (None, rest),
+    };
+    matches!(
+        (section, subsection, name),
+        ("credential", _, "helper")
+            | ("core", None, "sshcommand" | "gitproxy" | "askpass")
+            | ("remote", Some(_), "proxy")
+            | (
+                "http",
+                _,
+                "proxy"
+                    | "sslverify"
+                    | "sslcainfo"
+                    | "sslcapath"
+                    | "pinnedpubkey"
+                    | "curloptresolve"
+            )
+    )
 }
 
 pub(super) struct DigestOutcome {

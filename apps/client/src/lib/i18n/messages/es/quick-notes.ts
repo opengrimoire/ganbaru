@@ -158,6 +158,8 @@ export const quickNotes = {
   reordered: (position: number, total: number) => `Nota movida a la posición ${position} de ${total}`,
   reorderFailed: "No se pudo guardar el orden de la nota",
   loadFailed: "No se pudieron cargar las notas rápidas",
+  actionFailed: "No se pudo cambiar la nota rápida",
+  openFailed: "No se pudo abrir la nota rápida",
   retry: "Reintentar",
   selectionActions: "Acciones de la nota seleccionada",
 } as const satisfies MessageShape<typeof enQuickNotes>;

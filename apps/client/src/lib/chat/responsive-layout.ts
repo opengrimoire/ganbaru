@@ -1,3 +1,5 @@
+import { CHAT_REPLY_THREAD_WIDTH_BOUNDS } from "./contracts/config";
+
 export type ChatLayoutVariant =
   | "three_column"
   | "no_inspector"
@@ -26,7 +28,8 @@ export interface ChatLayoutDecision {
 }
 
 export const CHAT_CONVERSATION_MIN_PX = 440;
-export const CHAT_REPLY_THREAD_WIDTH_PX = 440;
+/** Default reply thread column width, in CSS pixels. */
+export const CHAT_REPLY_THREAD_WIDTH_PX = CHAT_REPLY_THREAD_WIDTH_BOUNDS.default;
 export const CHAT_AUXILIARY_CONVERSATION_MIN_PX = 320;
 export const CHAT_RAIL_WIDTH_PX = 256;
 export const CHAT_RAIL_COLLAPSED_WIDTH_PX = 44;
@@ -38,6 +41,9 @@ const BASE_HYSTERESIS = 24;
 const INSPECTOR_FIT_RATIO = 0.38;
 const INSPECTOR_FIT_MINIMUM = 420;
 const INSPECTOR_FIT_MAXIMUM = 720;
+const REPLY_THREAD_FIT_RATIO = 0.32;
+const REPLY_THREAD_FIT_MINIMUM = 400;
+const REPLY_THREAD_FIT_MAXIMUM = 560;
 const BOTTOM_PANEL_FIT_RATIO = 0.32;
 const BOTTOM_PANEL_FIT_MINIMUM = 190;
 const BOTTOM_PANEL_FIT_MAXIMUM = 360;
@@ -45,7 +51,8 @@ const BOTTOM_PANEL_MAXIMUM_RATIO = 0.5;
 const BASE_CONVERSATION_HEIGHT_MIN = 240;
 const COLLAPSE_SNAP_RATIO = 0.45;
 
-export interface ChatInspectorResizeInput {
+/** Shell and panel constraints of a resizable side column, the inspector or the reply thread. */
+export interface ChatColumnResizeInput {
   containerWidth: number;
   railVisible: boolean;
   fontScale?: number;
@@ -69,7 +76,7 @@ export interface ChatBottomPanelResizeInput {
  * @param input Current shell, rail, and inspector constraints.
  * @returns The largest inspector width that keeps the conversation usable.
  */
-export function chatInspectorResizeMaximum(input: ChatInspectorResizeInput): number {
+export function chatInspectorResizeMaximum(input: ChatColumnResizeInput): number {
   const occupiedByRail = input.railReservedWidth
     ?? (input.railVisible ? CHAT_RAIL_WIDTH_PX : CHAT_RAIL_COLLAPSED_WIDTH_PX);
   const available = input.containerWidth
@@ -89,13 +96,45 @@ export function chatInspectorResizeMaximum(input: ChatInspectorResizeInput): num
  * @param input Current shell and rail constraints.
  * @returns A context-sensitive inspector width inside the hard resize bounds.
  */
-export function fittedChatInspectorWidth(input: ChatInspectorResizeInput): number {
+export function fittedChatInspectorWidth(input: ChatColumnResizeInput): number {
   const scale = boundedFontScale(input.fontScale);
   return fittedPanelSize(
     input.containerWidth * INSPECTOR_FIT_RATIO,
     INSPECTOR_FIT_MINIMUM * scale,
     INSPECTOR_FIT_MAXIMUM * scale,
     chatInspectorResizeMaximum(input),
+  );
+}
+
+/**
+ * Bounds a reply thread column while reserving the conversation reading width beside it. The conversation keeps the
+ * narrower minimum it has beside an open reply thread unless the input sets another.
+ *
+ * @param input Current shell, rail, and reply thread constraints, with the inspector column width as additional
+ * reserved width when it is open.
+ * @returns The largest reply thread width that keeps the conversation usable.
+ */
+export function chatReplyThreadResizeMaximum(input: ChatColumnResizeInput): number {
+  return chatInspectorResizeMaximum({
+    ...input,
+    conversationMinimum: input.conversationMinimum
+      ?? CHAT_AUXILIARY_CONVERSATION_MIN_PX * boundedFontScale(input.fontScale),
+  });
+}
+
+/**
+ * Selects a comfortable reply thread width for reading a conversation.
+ *
+ * @param input Current shell, rail, and reply thread constraints.
+ * @returns A context-sensitive reply thread width inside the hard resize bounds.
+ */
+export function fittedChatReplyThreadWidth(input: ChatColumnResizeInput): number {
+  const scale = boundedFontScale(input.fontScale);
+  return fittedPanelSize(
+    input.containerWidth * REPLY_THREAD_FIT_RATIO,
+    REPLY_THREAD_FIT_MINIMUM * scale,
+    REPLY_THREAD_FIT_MAXIMUM * scale,
+    chatReplyThreadResizeMaximum(input),
   );
 }
 

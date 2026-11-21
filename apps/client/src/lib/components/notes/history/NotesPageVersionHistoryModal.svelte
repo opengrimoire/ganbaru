@@ -3,6 +3,7 @@
   import Copy from "@lucide/svelte/icons/copy";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import type { NotesFailure } from "$lib/notes/failure";
   import { notesLocalUserDisplayName } from "$lib/notes/collaboration/local-user";
   import { notesPageTitle } from "$lib/notes/pages/title";
   import type {
@@ -52,13 +53,13 @@
     }
     return historicalPageFromLoaded(notes.pageHistoryVersion);
   });
-  const error = $derived(
+  const error = $derived<NotesFailure | null>(
     notes.pageHistorySnapshotsError
-      ? t("notes.loadPageHistoryFailed", notes.pageHistorySnapshotsError)
+      ? { message: t("notes.loadPageHistoryFailed"), detail: notes.pageHistorySnapshotsError }
       : notes.pageHistoryVersionError
-        ? t("notes.loadPageHistoryVersionFailed", notes.pageHistoryVersionError)
+        ? { message: t("notes.loadPageHistoryVersionFailed"), detail: notes.pageHistoryVersionError }
         : notes.pageHistoryActionError
-          ? t("notes.pageHistoryActionFailed", notes.pageHistoryActionError)
+          ? { message: t("notes.pageHistoryActionFailed"), detail: notes.pageHistoryActionError }
           : null,
   );
 

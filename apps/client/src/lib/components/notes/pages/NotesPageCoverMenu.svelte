@@ -7,6 +7,8 @@
   import IconPickerColorChoicePanel from "$lib/components/icon-picker/IconPickerColorChoicePanel.svelte";
   import IconPickerUploadPanel from "$lib/components/icon-picker/IconPickerUploadPanel.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { contrastRatio } from "$lib/color/math";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -76,7 +78,7 @@
   let panelPlacement = $state({ left: 0, top: 0, width: PANEL_WIDTH_PX, height: PANEL_HEIGHT_PX });
   let query = $state("");
   let uploadUrl = $state("");
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let busy = $state(false);
   let active = true;
   let hasInteracted = false;
@@ -143,7 +145,7 @@
       if (!active || hasInteracted) return;
       askEveryTime = readProjectIconAskEveryTime(getConfigKey<unknown>(ASK_COLOR_KEY, false));
       if (initialCover?.type !== "design") color = readProjectIconDefaultColor(getConfigKey<unknown>(DEFAULT_COLOR_KEY, "default"));
-    }).catch((cause: unknown) => { if (active) error = String(cause); });
+    }).catch((cause: unknown) => { if (active) error = notesFailure(cause, t("notes.pageCoverSettingsLoadFailed")); });
     /** Dismiss outside both panels while allowing the originating trigger to toggle. */
     function outside(event: PointerEvent): void {
       isKeyboardInteraction = false;
@@ -209,7 +211,7 @@
       colorChoice = null;
       if (shouldCloseAfter) close();
     } catch (cause) {
-      if (active) error = t("notes.pageCoverSaveFailed", cause instanceof Error ? cause.message : String(cause));
+      if (active) error = notesFailure(cause, t("notes.pageCoverSaveFailed"));
     } finally { if (active) busy = false; }
   }
 
@@ -257,34 +259,34 @@
     if (!inspection.ok) {
       const { issue } = inspection;
       if (issue === "unsupported-type") {
-        return Promise.reject(new Error(t("notes.pageCoverUnsupportedType")));
+        return Promise.reject(new LocalizedError(t("notes.pageCoverUnsupportedType")));
       }
       if (issue === "too-large") {
-        return Promise.reject(new Error(t(
+        return Promise.reject(new LocalizedError(t(
           "notes.pageCoverTooLarge",
           NOTES_PAGE_COVER_IMAGE_MAX_MEGABYTES,
         )));
       }
       if (issue === "invalid-image") {
-        return Promise.reject(new Error(t("notes.pageCoverInvalidImage")));
+        return Promise.reject(new LocalizedError(t("notes.pageCoverInvalidImage")));
       }
       if (issue === "dimensions-too-large") {
-        return Promise.reject(new Error(t(
+        return Promise.reject(new LocalizedError(t(
           "notes.pageCoverDimensionsTooLarge",
           MANAGED_IMAGE_MAX_DIMENSION_PIXELS,
         )));
       }
       if (issue === "too-many-pixels") {
-        return Promise.reject(new Error(t(
+        return Promise.reject(new LocalizedError(t(
           "notes.pageCoverPixelCountTooLarge",
           MANAGED_IMAGE_MAX_MEGAPIXELS,
         )));
       }
-      return Promise.reject(new Error(t("notes.pageCoverUploadFailed")));
+      return Promise.reject(new LocalizedError(t("notes.pageCoverUploadFailed")));
     }
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onerror = () => reject(new Error(t("notes.pageCoverUploadFailed")));
+      reader.onerror = () => reject(new LocalizedError(t("notes.pageCoverUploadFailed")));
       reader.onload = () => {
         if (typeof reader.result === "string") {
           const dataUrl = normalizeManagedImageDataUrl(
@@ -295,9 +297,9 @@
             resolve(dataUrl);
             return;
           }
-          reject(new Error(t("notes.pageCoverUploadFailed")));
+          reject(new LocalizedError(t("notes.pageCoverUploadFailed")));
         } else {
-          reject(new Error(t("notes.pageCoverUploadFailed")));
+          reject(new LocalizedError(t("notes.pageCoverUploadFailed")));
         }
       };
       reader.readAsDataURL(file);
@@ -318,7 +320,7 @@
       busy = false;
       await selectCover(createNotesLocalFilePageCover(asset));
     } catch (cause) {
-      if (active) error = cause instanceof Error ? cause.message : String(cause);
+      if (active) error = notesFailure(cause, t("notes.pageCoverUploadFailed"));
     } finally { if (active) busy = false; }
   }
 
@@ -334,7 +336,7 @@
       busy = false;
       await selectCover(createNotesLocalFilePageCover(asset));
     } catch (cause) {
-      if (active) error = cause instanceof Error ? cause.message : String(cause);
+      if (active) error = notesFailure(cause, t("notes.pageCoverUploadFailed"));
     } finally { if (active) busy = false; }
   }
 
@@ -418,9 +420,9 @@
           {#if matchingDesigns.length === 0}<p class="py-6 text-center text-[0.8rem] text-muted-foreground">{t("notes.pageCoverNoDesigns")}</p>{/if}
         </div>
       </div>
-      {#if error}<Notice class="mx-3 mb-3 text-[0.8rem]" message={error} />{/if}
+      {#if error}<Notice class="mx-3 mb-3 text-[0.8rem]" message={error.message} copy={error.detail} />{/if}
     {:else}
-      <IconPickerUploadPanel uploadDraft={null} uploadPreviewUrl={null} uploadError={error} uploading={busy}
+      <IconPickerUploadPanel uploadDraft={null} uploadPreviewUrl={null} uploadError={error?.message ?? null} uploading={busy}
         uploadBodyStyle={`max-height:${Math.max(0, panelPlacement.height - 48)}px;`} bind:uploadUrl
         onChooseFile={chooseLocalFile} onDiscardDraft={() => {}} onSelectDraft={() => {}} onDownloadUrl={() => {}} remoteUrlAvailable={false} />
     {/if}

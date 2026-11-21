@@ -1,6 +1,9 @@
 //! Closed-world organizational host tools for provider assignments.
 
 use super::internal_mcp::{InternalMcpRunScope, generate_opaque_handle};
+use ganbaru_chat::coordination::push_requests::PushRequestRefusal;
+use ganbaru_chat::coordination::reports::HostReportRefusal;
+use ganbaru_chat::coordination::schedule_proposals::ScheduleProposalRefusal;
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatFolderCapability, ChatResult};
 use rmcp::model::{Tool, ToolAnnotations};
 use serde_json::{Map, Value, json};
@@ -12,14 +15,24 @@ use tokio::sync::Mutex;
 mod audit;
 mod authorization;
 mod channels;
+pub(super) mod delegation;
+mod pointers;
+mod push;
+mod registry;
+mod reports;
+mod schedule;
+mod secrets;
 mod workspace;
 
 use audit::{
     complete_audit_allowed, complete_audit_denied, denial_category, reserve_audit,
     returned_message_revisions,
 };
-pub(crate) use authorization::{verify_publication_scope, verify_scope};
+pub(crate) use authorization::{
+    verify_authorized_folder_source, verify_publication_scope, verify_scope,
+};
 use channels::{channel_messages, list_referenced_channels};
+use registry::{HostTool, HostToolClass};
 use workspace::{
     delete_workspace_file, list_authorized_roots, patch_workspace_file, read_workspace_file,
     search_workspace_paths, write_workspace_file,
@@ -63,15 +76,34 @@ pub(crate) struct HostToolContext<'a> {
 }
 
 pub(crate) fn definitions(scope: &InternalMcpRunScope) -> Vec<Tool> {
-    let mut tools = vec![
-        tool(
-            "chat_list_referenced_channels",
+    HostTool::ALL
+        .into_iter()
+        .filter(|tool| tool.offered(scope))
+        .filter_map(definition)
+        .collect()
+}
+
+/// Provider tool names, as `mcp__<server>__<tool>`, of the host tools an organizational run
+/// calls without a provider approval prompt.
+pub(crate) fn pre_approved_tool_names(server_name: &str) -> Vec<String> {
+    HostTool::ALL
+        .into_iter()
+        .filter(|tool| tool.pre_approved())
+        .map(|tool| format!("mcp__{server_name}__{}", tool.name()))
+        .collect()
+}
+
+/// The MCP declaration of an implemented tool, or `None` for a tool without a handler.
+fn definition(tool: HostTool) -> Option<Tool> {
+    let name = tool.name();
+    let definition = match tool {
+        HostTool::ListReferencedChannels => read_tool(
+            name,
             "List the channel sources explicitly authorized for this assignment",
             json!({}),
-            true,
         ),
-        tool(
-            "chat_search_channel_messages",
+        HostTool::SearchChannelMessages => read_tool(
+            name,
             "Search one explicitly referenced channel within its frozen authorization cutoff",
             json!({
                 "sourceHandle": { "type": "string", "minLength": 1, "maxLength": 1024 },
@@ -79,26 +111,23 @@ pub(crate) fn definitions(scope: &InternalMcpRunScope) -> Vec<Tool> {
                 "limit": { "type": "integer", "minimum": 1, "maximum": MAX_PAGE_SIZE },
                 "cursor": { "type": "string", "minLength": 1, "maxLength": 1024 }
             }),
-            true,
         ),
-        tool(
-            "chat_read_channel_messages",
+        HostTool::ReadChannelMessages => read_tool(
+            name,
             "Read one explicitly referenced channel within its frozen authorization cutoff",
             json!({
                 "sourceHandle": { "type": "string", "minLength": 1, "maxLength": 1024 },
                 "limit": { "type": "integer", "minimum": 1, "maximum": MAX_PAGE_SIZE },
                 "cursor": { "type": "string", "minLength": 1, "maxLength": 1024 }
             }),
-            true,
         ),
-        tool(
-            "chat_list_authorized_roots",
+        HostTool::ListAuthorizedRoots => read_tool(
+            name,
             "List the project folders explicitly authorized for this assignment",
             json!({}),
-            true,
         ),
-        tool(
-            "chat_search_workspace_paths",
+        HostTool::SearchWorkspacePaths => read_tool(
+            name,
             "Search paths in one authorized project folder",
             json!({
                 "rootHandle": { "type": "string", "minLength": 1, "maxLength": 1024 },
@@ -106,82 +135,120 @@ pub(crate) fn definitions(scope: &InternalMcpRunScope) -> Vec<Tool> {
                 "limit": { "type": "integer", "minimum": 1, "maximum": MAX_PAGE_SIZE },
                 "cursor": { "type": "string", "minLength": 1, "maxLength": 1024 }
             }),
-            true,
         ),
-        tool(
-            "chat_read_workspace_file",
+        HostTool::ReadWorkspaceFile => read_tool(
+            name,
             "Read a bounded UTF-8 file from one authorized project folder",
             json!({
                 "rootHandle": { "type": "string", "minLength": 1, "maxLength": 1024 },
                 "relativePath": { "type": "string", "minLength": 1, "maxLength": 4096 }
             }),
+        ),
+        HostTool::WriteWorkspaceFile => mutating_tool(
+            name,
+            "Replace an authorized UTF-8 file when its expected revision still matches",
+            json!({
+                "rootHandle": { "type": "string", "minLength": 1, "maxLength": 1024 },
+                "relativePath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+                "contents": { "type": "string", "maxLength": MAX_WORKSPACE_CONTENT_BYTES },
+                "expectedRevision": { "type": "string", "minLength": 16, "maxLength": 128 }
+            }),
+            false,
+        ),
+        HostTool::CreateWorkspaceFile => mutating_tool(
+            name,
+            "Create a new bounded UTF-8 file in one authorized project folder",
+            json!({
+                "rootHandle": { "type": "string", "minLength": 1, "maxLength": 1024 },
+                "relativePath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+                "contents": { "type": "string", "maxLength": MAX_WORKSPACE_CONTENT_BYTES }
+            }),
+            false,
+        ),
+        HostTool::PatchWorkspaceFile => mutating_tool(
+            name,
+            "Apply bounded byte-range edits when the authorized file revision still matches",
+            json!({
+                "rootHandle": { "type": "string", "minLength": 1, "maxLength": 1024 },
+                "relativePath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+                "expectedRevision": { "type": "string", "minLength": 16, "maxLength": 128 },
+                "edits": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": MAX_WORKSPACE_PATCH_EDITS,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "startByte": { "type": "integer", "minimum": 0 },
+                            "endByte": { "type": "integer", "minimum": 0 },
+                            "replacement": { "type": "string", "maxLength": MAX_WORKSPACE_CONTENT_BYTES }
+                        },
+                        "required": ["startByte", "endByte", "replacement"],
+                        "additionalProperties": false
+                    }
+                }
+            }),
+            false,
+        ),
+        HostTool::DeleteWorkspaceFile => mutating_tool(
+            name,
+            "Delete an authorized file when its expected revision still matches",
+            json!({
+                "rootHandle": { "type": "string", "minLength": 1, "maxLength": 1024 },
+                "relativePath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+                "expectedRevision": { "type": "string", "minLength": 16, "maxLength": 128 }
+            }),
             true,
         ),
-    ];
-    if scope
-        .folder_sources
-        .iter()
-        .any(|source| source.capability.rank() >= ChatFolderCapability::Edit.rank())
-    {
-        tools.extend([
-            tool(
-                "chat_write_workspace_file",
-                "Replace an authorized UTF-8 file when its expected revision still matches",
-                json!({
-                    "rootHandle": { "type": "string", "minLength": 1, "maxLength": 1024 },
-                    "relativePath": { "type": "string", "minLength": 1, "maxLength": 4096 },
-                    "contents": { "type": "string", "maxLength": MAX_WORKSPACE_CONTENT_BYTES },
-                    "expectedRevision": { "type": "string", "minLength": 16, "maxLength": 128 }
-                }),
-                false,
-            ),
-            tool(
-                "chat_create_workspace_file",
-                "Create a new bounded UTF-8 file in one authorized project folder",
-                json!({
-                    "rootHandle": { "type": "string", "minLength": 1, "maxLength": 1024 },
-                    "relativePath": { "type": "string", "minLength": 1, "maxLength": 4096 },
-                    "contents": { "type": "string", "maxLength": MAX_WORKSPACE_CONTENT_BYTES }
-                }),
-                false,
-            ),
-            tool(
-                "chat_patch_workspace_file",
-                "Apply bounded byte-range edits when the authorized file revision still matches",
-                json!({
-                    "rootHandle": { "type": "string", "minLength": 1, "maxLength": 1024 },
-                    "relativePath": { "type": "string", "minLength": 1, "maxLength": 4096 },
-                    "expectedRevision": { "type": "string", "minLength": 16, "maxLength": 128 },
-                    "edits": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": MAX_WORKSPACE_PATCH_EDITS,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "startByte": { "type": "integer", "minimum": 0 },
-                                "endByte": { "type": "integer", "minimum": 0 },
-                                "replacement": { "type": "string", "maxLength": MAX_WORKSPACE_CONTENT_BYTES }
-                            },
-                            "required": ["startByte", "endByte", "replacement"],
-                            "additionalProperties": false
-                        }
-                    }
-                }),
-                false,
-            ),
-            destructive_tool(
-                "chat_delete_workspace_file",
-                "Delete an authorized file when its expected revision still matches",
-                json!({
-                    "rootHandle": { "type": "string", "minLength": 1, "maxLength": 1024 },
-                    "relativePath": { "type": "string", "minLength": 1, "maxLength": 4096 },
-                    "expectedRevision": { "type": "string", "minLength": 16, "maxLength": 128 }
-                }),
-            ),
-        ]);
-    }
-    tools
+        HostTool::DelegateAssignment => mutating_tool(
+            name,
+            "Hand bounded work to another agent of this channel within this assignment's folders and ranks",
+            delegation::properties(),
+            false,
+        ),
+        HostTool::Ask => mutating_tool(
+            name,
+            "Ask the person who assigned this work a question and wait for their answer in the reply thread",
+            reports::ask_properties(),
+            false,
+        ),
+        HostTool::Report => mutating_tool(
+            name,
+            "Post a plan, a revised plan, or a short fact to suggest as a channel note in the reply thread; your final message is already posted as your reply, so never repeat it here as a result",
+            reports::report_properties(),
+            false,
+        ),
+        HostTool::ReadReplyPointer => read_tool(
+            name,
+            "Read the whole text of an earlier reply that a pointer record shortened",
+            pointers::properties(),
+        ),
+        HostTool::RequestSecret => mutating_tool(
+            name,
+            "Ask the person who assigned this work for a secret value; once provided it is in the private file at the returned path, so check that file before asking for the status",
+            secrets::request_properties(),
+            false,
+        ),
+        HostTool::SecretStatus => mutating_tool(
+            name,
+            "Check whether a secret request was provided, declined, or expired",
+            secrets::status_properties(),
+            false,
+        ),
+        HostTool::ProposeSchedule => mutating_tool(
+            name,
+            "Propose a message to send in this reply thread later, once or on a repeat rule; nothing is scheduled until the person confirms it",
+            schedule::properties(),
+            false,
+        ),
+        HostTool::RequestPush => mutating_tool(
+            name,
+            "Ask the person who assigned this work to push the checked out branch of a folder you may publish from; pass commitMessage instead of committing yourself to have Ganbaru commit every change in the folder with the person's identity and signing first; nothing is committed or pushed until the person confirms it",
+            push::properties(),
+            false,
+        ),
+    };
+    Some(definition)
 }
 
 pub(crate) async fn call(
@@ -189,18 +256,32 @@ pub(crate) async fn call(
     name: &str,
     arguments: &Map<String, Value>,
 ) -> ChatResult<Value> {
+    // A provided secret never reaches the audit hash, a replicated row, or a workspace file
+    // through a host tool; an agent that must write one uses its own shell.
+    let redacted =
+        tauri::Manager::try_state::<crate::chat::secrets::ChatSecretRegistry>(context.app)
+            .and_then(|registry| registry.redact_arguments(context.thread_id, arguments));
+    let arguments = redacted.as_ref().unwrap_or(arguments);
     let request_hash = request_hash(name, arguments)?;
-    let response_reservation = host_tool_is_mutating(name).then_some(MAX_RESPONSE_BYTES);
+    let tool = HostTool::from_name(name);
+    // An unknown name spends the read budget, so probing for tools is never free.
+    let class = tool.map_or(HostToolClass::Read, HostTool::class);
+    let mutates_outside_reply = class.mutates_outside_reply();
+    let response_reservation = mutates_outside_reply.then_some(MAX_RESPONSE_BYTES);
     let invocation_id = reserve_audit(
         context.pool,
         context.scope,
         name,
+        class,
         &request_hash,
         response_reservation.unwrap_or(0),
     )
     .await
     .map_err(|_| generic_denial_error())?;
-    let result = call_authorized(&context, name, arguments).await;
+    let result = match authorize_call(context.pool, context.thread_id, context.scope, tool).await {
+        Ok(tool) => dispatch(&context, tool, arguments).await,
+        Err(error) => Err(error),
+    };
     match result {
         Ok(value) => {
             let response_bytes = serde_json::to_vec(&value)
@@ -212,7 +293,7 @@ pub(crate) async fn call(
                     context.scope,
                     &invocation_id,
                     "budget_exhausted",
-                    host_tool_is_mutating(name),
+                    mutates_outside_reply,
                 )
                 .await?;
                 return Err(generic_denial_error());
@@ -222,7 +303,7 @@ pub(crate) async fn call(
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             let returned_revisions = returned_message_revisions(&value)?;
-            let queried_channel_sources = if name == "chat_list_referenced_channels" {
+            let queried_channel_sources = if tool == Some(HostTool::ListReferencedChannels) {
                 context.scope.channel_sources.iter().collect::<Vec<_>>()
             } else {
                 value
@@ -251,17 +332,23 @@ pub(crate) async fn call(
             Ok(value)
         }
         Err(error) => {
-            let mutation_outcome_unknown = host_tool_is_mutating(name);
+            // A typed refusal changed nothing, so its code is both the audit category and the
+            // error the agent sees, which lets it adjust its next call.
+            if let Some((code, refusal)) = typed_refusal(tool, &error) {
+                complete_audit_denied(context.pool, context.scope, &invocation_id, code, false)
+                    .await?;
+                return Err(refusal);
+            }
             complete_audit_denied(
                 context.pool,
                 context.scope,
                 &invocation_id,
-                if mutation_outcome_unknown {
+                if mutates_outside_reply {
                     "mutation_outcome_unknown"
                 } else {
                     denial_category(&error)
                 },
-                mutation_outcome_unknown,
+                mutates_outside_reply,
             )
             .await?;
             Err(generic_denial_error())
@@ -269,24 +356,76 @@ pub(crate) async fn call(
     }
 }
 
-async fn call_authorized(
+/// The stable code and tool error of a refusal the agent may act on, when `error` is one
+/// for `tool`.
+fn typed_refusal(tool: Option<HostTool>, error: &ChatError) -> Option<(&'static str, ChatError)> {
+    match tool? {
+        HostTool::DelegateAssignment => delegation::DelegationRefusal::from_error(error)
+            .map(|refusal| (refusal.code(), refusal.into_error())),
+        HostTool::Ask | HostTool::Report => HostReportRefusal::from_error(error)
+            .map(|refusal| (refusal.code(), refusal.into_error())),
+        HostTool::RequestPush => PushRequestRefusal::from_error(error)
+            .map(|refusal| (refusal.code(), refusal.into_error()))
+            .or_else(|| {
+                HostReportRefusal::from_error(error)
+                    .map(|refusal| (refusal.code(), refusal.into_error()))
+            }),
+        HostTool::RequestSecret => secrets::SecretToolRefusal::from_error(error)
+            .map(|refusal| (refusal.code(), refusal.into_error())),
+        HostTool::ProposeSchedule => ScheduleProposalRefusal::from_error(error)
+            .map(|refusal| (refusal.code(), refusal.into_error()))
+            .or_else(|| {
+                HostReportRefusal::from_error(error)
+                    .map(|refusal| (refusal.code(), refusal.into_error()))
+            }),
+        _ => None,
+    }
+}
+
+/// Checks the run's live scope and that the run is offered the named tool, returning the tool
+/// to dispatch. An unknown or unoffered tool gets the same generic denial as a revoked scope.
+async fn authorize_call(
+    pool: &SqlitePool,
+    thread_id: &ganbaru_chat_contracts::models::ChatThreadId,
+    scope: &InternalMcpRunScope,
+    tool: Option<HostTool>,
+) -> ChatResult<HostTool> {
+    verify_scope(pool, thread_id, scope).await?;
+    tool.filter(|tool| tool.offered(scope))
+        .ok_or_else(generic_denial_error)
+}
+
+async fn dispatch(
     context: &HostToolContext<'_>,
-    name: &str,
+    tool: HostTool,
     arguments: &Map<String, Value>,
 ) -> ChatResult<Value> {
-    verify_scope(context.pool, context.thread_id, context.scope).await?;
-    match name {
-        "chat_list_referenced_channels" => list_referenced_channels(context).await,
-        "chat_search_channel_messages" => channel_messages(context, arguments, true).await,
-        "chat_read_channel_messages" => channel_messages(context, arguments, false).await,
-        "chat_list_authorized_roots" => list_authorized_roots(context).await,
-        "chat_search_workspace_paths" => search_workspace_paths(context, arguments).await,
-        "chat_read_workspace_file" => read_workspace_file(context, arguments).await,
-        "chat_write_workspace_file" => write_workspace_file(context, arguments, false).await,
-        "chat_create_workspace_file" => write_workspace_file(context, arguments, true).await,
-        "chat_patch_workspace_file" => patch_workspace_file(context, arguments).await,
-        "chat_delete_workspace_file" => delete_workspace_file(context, arguments).await,
-        _ => Err(generic_denial_error()),
+    match tool {
+        HostTool::ListReferencedChannels => list_referenced_channels(context).await,
+        HostTool::SearchChannelMessages => channel_messages(context, arguments, true).await,
+        HostTool::ReadChannelMessages => channel_messages(context, arguments, false).await,
+        HostTool::ListAuthorizedRoots => list_authorized_roots(context).await,
+        HostTool::SearchWorkspacePaths => search_workspace_paths(context, arguments).await,
+        HostTool::ReadWorkspaceFile => read_workspace_file(context, arguments).await,
+        HostTool::WriteWorkspaceFile => write_workspace_file(context, arguments, false).await,
+        HostTool::CreateWorkspaceFile => write_workspace_file(context, arguments, true).await,
+        HostTool::PatchWorkspaceFile => patch_workspace_file(context, arguments).await,
+        HostTool::DeleteWorkspaceFile => delete_workspace_file(context, arguments).await,
+        HostTool::DelegateAssignment => {
+            delegation::delegate(context, arguments)
+                .await
+                .map_err(|error| match error {
+                    delegation::DelegationCallError::Refused(refusal) => refusal.into_error(),
+                    delegation::DelegationCallError::Failed(error) => error,
+                })
+        }
+        HostTool::Ask => reports::ask(context, arguments).await,
+        HostTool::Report => reports::report(context, arguments).await,
+        HostTool::ReadReplyPointer => pointers::read_reply_pointer(context, arguments).await,
+        HostTool::RequestSecret => secrets::request_secret(context, arguments).await,
+        HostTool::SecretStatus => secrets::secret_status(context, arguments).await,
+        HostTool::ProposeSchedule => schedule::propose(context, arguments).await,
+        HostTool::RequestPush => push::request_push(context, arguments).await,
     }
 }
 
@@ -373,12 +512,17 @@ impl InternalMcpToolRuntime {
     }
 }
 
-fn tool(name: &'static str, description: &'static str, properties: Value, read_only: bool) -> Tool {
-    configured_tool(name, description, properties, read_only, false)
+fn read_tool(name: &'static str, description: &'static str, properties: Value) -> Tool {
+    configured_tool(name, description, properties, true, false)
 }
 
-fn destructive_tool(name: &'static str, description: &'static str, properties: Value) -> Tool {
-    configured_tool(name, description, properties, false, true)
+fn mutating_tool(
+    name: &'static str,
+    description: &'static str,
+    properties: Value,
+    destructive: bool,
+) -> Tool {
+    configured_tool(name, description, properties, false, destructive)
 }
 
 fn configured_tool(
@@ -391,7 +535,18 @@ fn configured_tool(
     let properties = properties.as_object().cloned().unwrap_or_default();
     let required = properties
         .keys()
-        .filter(|key| !matches!(key.as_str(), "cursor" | "limit"))
+        .filter(|key| {
+            !matches!(
+                key.as_str(),
+                "cursor"
+                    | "limit"
+                    | "folders"
+                    | "choices"
+                    | "recurrence"
+                    | "remote"
+                    | "commitMessage"
+            )
+        })
         .cloned()
         .map(Value::String)
         .collect::<Vec<_>>();
@@ -468,16 +623,6 @@ fn wire_folder_capability(capability: ChatFolderCapability) -> &'static str {
     }
 }
 
-fn host_tool_is_mutating(name: &str) -> bool {
-    matches!(
-        name,
-        "chat_write_workspace_file"
-            | "chat_create_workspace_file"
-            | "chat_patch_workspace_file"
-            | "chat_delete_workspace_file"
-    )
-}
-
 fn generic_denial_error() -> ChatError {
     ChatError::new(ChatErrorCode::Permission, GENERIC_DENIAL, false)
 }
@@ -501,6 +646,12 @@ fn persistence_error<T>(_error: T) -> ChatError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::internal_mcp::InternalMcpFolderSource;
+    use crate::chat::revocation::tests::pool_with_folder_runs;
+    use ganbaru_chat_contracts::models::{
+        ChatAgentRunId, ChatAuthorizationRevisionId, ChatConversationId, ChatRuntimeApprovalPolicy,
+        ChatThreadId, ChatTurnId, ChatWorkAssignmentId, ProjectWorkingFolderId,
+    };
 
     #[test]
     fn response_truncation_preserves_utf8_at_byte_boundaries() {
@@ -612,5 +763,412 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// The working run of [`pool_with_folder_runs`], holding `workspace-1` at `capability`.
+    fn working_scope(capability: ChatFolderCapability) -> InternalMcpRunScope {
+        InternalMcpRunScope {
+            run_id: ChatAgentRunId::new("run:working").unwrap(),
+            provider_turn_id: ChatTurnId::new("turn:working").unwrap(),
+            assignment_id: ChatWorkAssignmentId::new("assignment:folders").unwrap(),
+            authorization_revision_id: ChatAuthorizationRevisionId::new("authorization:working")
+                .unwrap(),
+            destination_conversation_id: ChatConversationId::new(
+                ganbaru_chat::project_defaults::default_channel_ids("project-chat")
+                    .unwrap()
+                    .0,
+            )
+            .unwrap(),
+            authorization_scope_digest: "0".repeat(64),
+            execution_environment_id: None,
+            scratch_generation_id: None,
+            runtime_approval_policy: ChatRuntimeApprovalPolicy::Ask,
+            channel_sources: Vec::new(),
+            folder_sources: vec![InternalMcpFolderSource {
+                root_handle: format!("{:032}", 1),
+                working_folder_id: ProjectWorkingFolderId::new("workspace-1").unwrap(),
+                capability,
+                is_execution_target: true,
+                runtime_approval_policy: ChatRuntimeApprovalPolicy::Ask,
+            }],
+            delegation_depth: 0,
+            delegation_target_available: true,
+        }
+    }
+
+    #[test]
+    fn every_host_tool_round_trips_its_name_and_is_listed_only_when_implemented() {
+        let publishing = working_scope(ChatFolderCapability::Publish);
+        let editing = working_scope(ChatFolderCapability::Edit);
+        let reading = working_scope(ChatFolderCapability::Read);
+        for tool in HostTool::ALL {
+            assert_eq!(HostTool::from_name(tool.name()), Some(tool));
+            assert_eq!(definition(tool).is_some(), tool.implemented(), "{tool:?}");
+            let mutates_folders = matches!(
+                tool.class(),
+                HostToolClass::Edit | HostToolClass::Destructive
+            );
+            let publishes = tool == HostTool::RequestPush;
+            assert_eq!(
+                tool.offered(&reading),
+                tool.implemented() && !mutates_folders && !publishes,
+                "{tool:?}"
+            );
+            assert_eq!(
+                tool.offered(&editing),
+                tool.implemented() && !publishes,
+                "{tool:?}"
+            );
+            assert_eq!(tool.offered(&publishing), tool.implemented(), "{tool:?}");
+        }
+        assert_eq!(HostTool::from_name("chat_unknown"), None);
+        let listed: Vec<String> = definitions(&reading)
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        assert!(listed.iter().all(|name| {
+            HostTool::from_name(name).is_some_and(|tool| {
+                matches!(
+                    tool.class(),
+                    HostToolClass::Read
+                        | HostToolClass::Delegate
+                        | HostToolClass::Ask
+                        | HostToolClass::Report
+                        | HostToolClass::Secret
+                        | HostToolClass::Schedule
+                )
+            })
+        }));
+        assert!(listed.contains(&"chat_ask".to_owned()));
+        assert!(listed.contains(&"chat_report".to_owned()));
+        assert!(listed.contains(&"chat_request_secret".to_owned()));
+        assert!(listed.contains(&"chat_secret_status".to_owned()));
+        assert!(listed.contains(&"chat_propose_schedule".to_owned()));
+        assert!(!listed.contains(&"chat_request_push".to_owned()));
+        assert!(
+            definitions(&publishing)
+                .iter()
+                .any(|tool| tool.name == "chat_request_push")
+        );
+    }
+
+    #[test]
+    fn host_tools_require_all_but_their_optional_inputs() {
+        let required = |tool: HostTool| -> Vec<String> {
+            let definition = definition(tool).expect("implemented");
+            let mut names: Vec<String> = definition.input_schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|name| name.as_str().unwrap().to_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(required(HostTool::Ask), ["clientRequestId", "question"]);
+        assert_eq!(
+            required(HostTool::Report),
+            ["body", "clientRequestId", "kind"]
+        );
+        assert_eq!(
+            required(HostTool::ProposeSchedule),
+            ["clientRequestId", "firstAt", "message", "reason"]
+        );
+        assert_eq!(
+            required(HostTool::RequestPush),
+            ["clientRequestId", "rootHandle", "summary"]
+        );
+    }
+
+    /// The audit column's CHECK accepts exactly the classes the registry knows.
+    #[test]
+    fn class_wire_names_are_distinct_and_only_open_classes_mutate_outside_the_reply() {
+        let wires: std::collections::BTreeSet<&str> = HostToolClass::ALL
+            .into_iter()
+            .map(HostToolClass::wire)
+            .collect();
+        assert_eq!(wires.len(), HostToolClass::ALL.len());
+        for class in HostToolClass::ALL {
+            assert!(class.call_limit() > 0, "{class:?}");
+        }
+        assert!(!HostToolClass::Read.mutates_outside_reply());
+        assert!(!HostToolClass::Ask.mutates_outside_reply());
+        assert!(!HostToolClass::Report.mutates_outside_reply());
+        assert!(HostToolClass::Edit.mutates_outside_reply());
+        assert!(HostToolClass::Destructive.mutates_outside_reply());
+    }
+
+    #[test]
+    fn only_offered_read_ask_report_and_schedule_tools_are_pre_approved() {
+        let names = pre_approved_tool_names("ganbaru-chat");
+        let expected: Vec<String> = HostTool::ALL
+            .into_iter()
+            .filter(|tool| tool.implemented())
+            .filter(|tool| {
+                matches!(
+                    tool.class(),
+                    HostToolClass::Read
+                        | HostToolClass::Ask
+                        | HostToolClass::Report
+                        | HostToolClass::Schedule
+                )
+            })
+            .map(|tool| format!("mcp__ganbaru-chat__{}", tool.name()))
+            .collect();
+        assert_eq!(names, expected);
+        assert!(names.contains(&"mcp__ganbaru-chat__chat_read_workspace_file".to_string()));
+        assert!(names.contains(&"mcp__ganbaru-chat__chat_propose_schedule".to_string()));
+        for tool in HostTool::ALL {
+            let listed = names.contains(&format!("mcp__ganbaru-chat__{}", tool.name()));
+            if listed {
+                assert!(
+                    tool.offered(&working_scope(ChatFolderCapability::Publish)),
+                    "{tool:?}"
+                );
+            }
+            if !matches!(
+                tool.class(),
+                HostToolClass::Read
+                    | HostToolClass::Ask
+                    | HostToolClass::Report
+                    | HostToolClass::Schedule
+            ) {
+                assert!(!listed, "{tool:?} keeps its provider approval");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_and_unoffered_tools_are_denied_like_a_stale_scope() {
+        let pool = pool_with_folder_runs().await;
+        let thread_id = ChatThreadId::new("thread-1").unwrap();
+        let reading = working_scope(ChatFolderCapability::Read);
+        assert_eq!(
+            authorize_call(
+                &pool,
+                &thread_id,
+                &reading,
+                Some(HostTool::ReadWorkspaceFile)
+            )
+            .await
+            .unwrap(),
+            HostTool::ReadWorkspaceFile
+        );
+        for tool in [
+            None,
+            Some(HostTool::WriteWorkspaceFile),
+            Some(HostTool::DeleteWorkspaceFile),
+        ] {
+            let error = authorize_call(&pool, &thread_id, &reading, tool)
+                .await
+                .unwrap_err();
+            assert_eq!(error.message, GENERIC_DENIAL, "{tool:?}");
+        }
+        let mut stale = reading.clone();
+        stale.run_id = ChatAgentRunId::new("run:missing").unwrap();
+        let error = authorize_call(&pool, &thread_id, &stale, Some(HostTool::ReadWorkspaceFile))
+            .await
+            .unwrap_err();
+        assert_eq!(error.message, GENERIC_DENIAL);
+    }
+
+    #[tokio::test]
+    async fn a_agent_removed_from_the_channel_cannot_expand_a_pointer() {
+        let pool = pool_with_folder_runs().await;
+        let thread_id = ChatThreadId::new("thread-1").unwrap();
+        let reading = working_scope(ChatFolderCapability::Read);
+        authorize_call(
+            &pool,
+            &thread_id,
+            &reading,
+            Some(HostTool::ReadReplyPointer),
+        )
+        .await
+        .expect("offered while the scope is live");
+        sqlx::query("UPDATE chat_agent_channel_memberships SET removed_at = ?")
+            .bind("2026-11-12T09:00:00.000Z")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let error = authorize_call(
+            &pool,
+            &thread_id,
+            &reading,
+            Some(HostTool::ReadReplyPointer),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.message, GENERIC_DENIAL);
+    }
+
+    #[tokio::test]
+    async fn each_class_spends_its_own_call_limit() {
+        let pool = pool_with_folder_runs().await;
+        let scope = working_scope(ChatFolderCapability::Edit);
+        let hash = "a".repeat(64);
+        let read_limit = HostToolClass::Read.call_limit();
+        for _ in 0..read_limit {
+            reserve_audit(
+                &pool,
+                &scope,
+                "chat_read_workspace_file",
+                HostToolClass::Read,
+                &hash,
+                1,
+            )
+            .await
+            .unwrap();
+        }
+        let refused = reserve_audit(
+            &pool,
+            &scope,
+            "chat_read_workspace_file",
+            HostToolClass::Read,
+            &hash,
+            1,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.message, GENERIC_DENIAL);
+        for _ in 0..HostToolClass::Ask.call_limit() {
+            reserve_audit(&pool, &scope, "chat_ask", HostToolClass::Ask, &hash, 1)
+                .await
+                .unwrap();
+        }
+        assert!(
+            reserve_audit(&pool, &scope, "chat_ask", HostToolClass::Ask, &hash, 1)
+                .await
+                .is_err()
+        );
+        reserve_audit(
+            &pool,
+            &scope,
+            "chat_report",
+            HostToolClass::Report,
+            &hash,
+            1,
+        )
+        .await
+        .unwrap();
+        // A third proposal in one revision is refused by the schedule class limit.
+        for _ in 0..HostToolClass::Schedule.call_limit() {
+            reserve_audit(
+                &pool,
+                &scope,
+                "chat_propose_schedule",
+                HostToolClass::Schedule,
+                &hash,
+                1,
+            )
+            .await
+            .unwrap();
+        }
+        let refused = reserve_audit(
+            &pool,
+            &scope,
+            "chat_propose_schedule",
+            HostToolClass::Schedule,
+            &hash,
+            1,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.message, GENERIC_DENIAL);
+        let counted: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT tool_class, count(*) FROM chat_host_tool_invocations
+             GROUP BY tool_class ORDER BY tool_class",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            counted,
+            vec![
+                (
+                    "ask".to_string(),
+                    i64::from(HostToolClass::Ask.call_limit())
+                ),
+                ("read".to_string(), i64::from(read_limit)),
+                ("report".to_string(), 1),
+                (
+                    "schedule".to_string(),
+                    i64::from(HostToolClass::Schedule.call_limit())
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_secret_request_names_its_private_file_and_reports_only_its_state() {
+        let pool = pool_with_folder_runs().await;
+        let scope = working_scope(ChatFolderCapability::Read);
+        let root = std::env::temp_dir().join("ganbaru-secret-tool-root");
+        let now = chrono::Utc::now();
+        let arguments = |label: &str| {
+            json!({ "label": label, "purpose": "Publish the preview build" })
+                .as_object()
+                .unwrap()
+                .clone()
+        };
+        let opened = secrets::request_secret_in(&pool, &root, &scope, &arguments("Token"), now)
+            .await
+            .unwrap();
+        let request_id = opened["requestId"].as_str().unwrap();
+        assert_eq!(opened["state"], "pending");
+        assert_eq!(
+            opened["path"].as_str().unwrap(),
+            crate::chat::secrets::secret_file_path(&root, "run:working", request_id)
+                .to_string_lossy()
+        );
+        let status_arguments = json!({ "requestId": request_id })
+            .as_object()
+            .unwrap()
+            .clone();
+        let status = secrets::secret_status_in(&pool, &scope, &status_arguments, now)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            json!({ "requestId": request_id, "state": "pending" })
+        );
+
+        let mut other_run = scope.clone();
+        other_run.run_id = ChatAgentRunId::new("run:queued").unwrap();
+        let hidden = secrets::secret_status_in(&pool, &other_run, &status_arguments, now)
+            .await
+            .unwrap_err();
+        assert_eq!(hidden.message, GENERIC_DENIAL);
+        for label in ["", "two\nlines"] {
+            let refused = secrets::request_secret_in(&pool, &root, &scope, &arguments(label), now)
+                .await
+                .unwrap_err();
+            assert_eq!(refused.message, GENERIC_DENIAL, "{label:?}");
+        }
+
+        for _ in 1..crate::chat::secrets::MAX_OPEN_SECRET_REQUESTS_PER_RUN {
+            secrets::request_secret_in(&pool, &root, &scope, &arguments("Token"), now)
+                .await
+                .unwrap();
+        }
+        let limited = secrets::request_secret_in(&pool, &root, &scope, &arguments("Token"), now)
+            .await
+            .unwrap_err();
+        let (code, refusal) = typed_refusal(Some(HostTool::RequestSecret), &limited).unwrap();
+        assert_eq!(code, "secret_request_limit");
+        assert_eq!(refusal.message, "secret_request_limit");
+        assert!(typed_refusal(Some(HostTool::SecretStatus), &limited).is_none());
+    }
+
+    #[test]
+    fn push_request_refusals_reach_the_agent_and_other_errors_stay_generic() {
+        let detached = PushRequestRefusal::Detached.into_error();
+        let (code, refusal) = typed_refusal(Some(HostTool::RequestPush), &detached).unwrap();
+        assert_eq!(code, "push_branch_detached");
+        assert_eq!(refusal.message, "push_branch_detached");
+        let inactive = HostReportRefusal::AssignmentInactive.into_error();
+        let (code, _) = typed_refusal(Some(HostTool::RequestPush), &inactive).unwrap();
+        assert_eq!(code, HostReportRefusal::AssignmentInactive.code());
+        assert!(typed_refusal(Some(HostTool::Ask), &detached).is_none());
+        assert!(typed_refusal(Some(HostTool::RequestPush), &generic_denial_error()).is_none());
     }
 }

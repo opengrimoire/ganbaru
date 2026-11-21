@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createRawSnippet, mount, tick, unmount } from "svelte";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { applyBlockUpdate, blockPlainText, createBlockUpdate } from "$lib/notes/blocks/factory";
 import { notesBlockOutlineFromBlock } from "$lib/notes/blocks/outline";
 import { createProvisionalNotesPage } from "$lib/notes/pages/creation";
@@ -187,6 +187,15 @@ function databaseInPage(owner: NotesPageOpenResponse, title = "Planning") {
 }
 
 describe("Notes preview ownership", () => {
+  // Transforming the view and its lazily loaded database surfaces costs seconds once per file,
+  // so it happens here instead of inside the timeout of whichever test touches them first.
+  beforeAll(async () => {
+    await Promise.all([
+      import("./NotesView.svelte"),
+      import("$lib/components/notes/blocks/NotesChildDatabaseBlock.svelte"),
+      import("$lib/components/notes/database/NotesDatabaseTableView.svelte"),
+    ]);
+  }, 60_000);
   let component: ReturnType<typeof mount> | undefined;
   afterEach(async () => {
     if (component) await unmount(component);
@@ -356,7 +365,7 @@ describe("Notes preview ownership", () => {
       title.value = "Unsaved title";
       title.dispatchEvent(new Event("input", { bubbles: true }));
       title.blur();
-      await vi.waitFor(() => expect(document.body.textContent).toContain("Rename failed"));
+      await vi.waitFor(() => expect(document.body.textContent).toContain("The change could not be saved."));
       expect(blockPlainText(notes.blockById(blockId)!)).toBe("");
       expect(title.value).toBe("");
     } finally {
@@ -812,7 +821,7 @@ describe("Notes preview ownership", () => {
     expect(document.querySelector("[data-notes-main-page]")?.textContent).toContain("Main note content");
     rejectLoad(new Error("Read failed"));
     await failure; await tick();
-    expect(document.querySelector("[data-notes-page-peek] [role='alert']")?.textContent).toContain("Read failed");
+    expect(document.querySelector("[data-notes-page-peek] [role='alert']")?.textContent).toContain("Notes could not be loaded.");
     [...document.querySelectorAll<HTMLButtonElement>("[data-notes-page-peek] button")].find((button) => button.textContent?.trim() === "Close")!.click();
     await vi.waitFor(() => {
       expect(notes.selectedPageId).toBe(parent.page.id);
@@ -850,7 +859,7 @@ describe("Notes preview ownership", () => {
     await expect(notes.selectPage(child.page.id, { openMode: "full" })).rejects.toThrow("Read failed");
     await tick();
     const pane = document.querySelector("[data-notes-main-page]")!;
-    expect(pane.querySelector("[role='alert']")?.textContent).toContain("Read failed");
+    expect(pane.querySelector("[role='alert']")?.textContent).toContain("Notes could not be loaded.");
     expect(pane.querySelector('[data-notes-skeleton="page"]')).toBeNull();
     expect([...pane.querySelectorAll<HTMLButtonElement>("button")].some((button) => button.textContent?.trim() === "Close")).toBe(false);
     expect(pane.querySelector("[data-notice-dismiss]")).toBeNull();

@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import {
   getNotesBlockFrontier,
   getNotesBlockOutlineFrontier,
@@ -31,10 +32,6 @@ interface NotesHydrationControllerContext {
     childIdsByParentId: Record<string, string[]>,
   ) => void;
   setLoadError: (message: string) => void;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Coordinate Notes outline expansion and bounded block hydration. */
@@ -224,7 +221,7 @@ export function createNotesHydrationController(context: NotesHydrationController
     if (!pageId) return;
     void loadDescendantFrontiers(pageId, generation).catch((error) => {
       if (generation === context.readPageGeneration() && pageId === context.readSelectedPageId()) {
-        context.setLoadError(errorMessage(error));
+        context.setLoadError(notesErrorDetail(error));
       }
     });
   }

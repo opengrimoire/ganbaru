@@ -3,7 +3,8 @@
   import MailPlus from "@lucide/svelte/icons/mail-plus";
   import UserRoundPlus from "@lucide/svelte/icons/user-round-plus";
   import X from "@lucide/svelte/icons/x";
-  import type { ChatAiTeammateRead } from "$lib/chat/contracts";
+  import { agentNeedsSetupHere } from "$lib/chat/agents/agent-setup";
+  import type { ChatAiAgentRead } from "$lib/chat/contracts";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import ProjectPickerMobileDialog from "$lib/components/projects/pickers/ProjectPickerMobileDialog.svelte";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
@@ -19,40 +20,40 @@
   import type { InvitationSpaceSummary } from "./model";
 
   /**
-   * The one member picker: contacts and teammates in one searchable list with multi-selection chips, the way
+   * The one member picker: contacts and agents in one searchable list with multi-selection chips, the way
    * messaging apps build a group. Each group label carries its own creation action and invitations sit beside the
    * title, so the list holds only participants. Desktop anchors it to its trigger; the mobile shell shows it as a sheet.
    */
   let {
     anchor = null,
     title,
-    teammates = [],
-    memberTeammateIds = new Set<string>(),
+    agents = [],
+    memberAgentIds = new Set<string>(),
     includeContacts = true,
-    includeTeammates = false,
+    includeAgents = false,
     space = null,
     horizontalAlign = "end",
     confirmLabel = null,
     onConfirm,
     onClose,
-    onNewTeammate,
+    onNewAgent,
   }: {
     /** Trigger the desktop panel anchors to; the mobile sheet ignores it. */
     anchor?: HTMLElement | null;
     title: string;
-    /** Every teammate of the vault; members of the target space are shown as already added. */
-    teammates?: readonly ChatAiTeammateRead[];
-    memberTeammateIds?: ReadonlySet<string>;
+    /** Every agent of the vault; members of the target space are shown as already added. */
+    agents?: readonly ChatAiAgentRead[];
+    memberAgentIds?: ReadonlySet<string>;
     includeContacts?: boolean;
-    includeTeammates?: boolean;
+    includeAgents?: boolean;
     /** Enables "Invite someone" for spaces that accept invitations. */
     space?: InvitationSpaceSummary | null;
     horizontalAlign?: "start" | "end";
     confirmLabel?: string | null;
-    /** Receives the selected teammate IDs; when absent the confirmation stays unavailable. */
-    onConfirm?: (teammateIds: string[]) => void | Promise<void>;
+    /** Receives the selected agent IDs; when absent the confirmation stays unavailable. */
+    onConfirm?: (agentIds: string[]) => void | Promise<void>;
     onClose: () => void;
-    onNewTeammate?: () => void;
+    onNewAgent?: () => void;
   } = $props();
 
   const AVATAR_SIZE = 22;
@@ -69,24 +70,23 @@
   let confirming = $state(false);
 
   const normalizedQuery = $derived(query.trim().toLocaleLowerCase());
-  const candidates = $derived(teammates.filter((teammate) => !memberTeammateIds.has(teammate.participant.id)));
-  const matchingCandidates = $derived(candidates.filter((teammate) =>
+  const candidates = $derived(agents.filter((agent) => !memberAgentIds.has(agent.participant.id)));
+  const matchingCandidates = $derived(candidates.filter((agent) =>
     !normalizedQuery
-    || teammate.participant.displayName.toLocaleLowerCase().includes(normalizedQuery)
-    || teammate.role.toLocaleLowerCase().includes(normalizedQuery)));
-  const selectedTeammates = $derived(candidates.filter((teammate) => selectedIds.has(teammate.participant.id)));
+    || agent.participant.displayName.toLocaleLowerCase().includes(normalizedQuery)));
+  const selectedAgents = $derived(candidates.filter((agent) => selectedIds.has(agent.participant.id)));
   const nestedOpen = $derived(inviteOpen || addContactOpen);
   const confirmText = $derived(selectedIds.size > 0 ? t("contacts.picker.confirmCount", selectedIds.size) : (confirmLabel ?? t("contacts.picker.confirm")));
 
-  function teammateDetail(teammate: ChatAiTeammateRead): string {
-    if (teammate.configurationState !== "healthy") return t("chat.organization.needsSetup");
-    return teammate.role || t("chat.organization.aiTeammate");
+  function agentDetail(agent: ChatAiAgentRead): string {
+    if (agentNeedsSetupHere(agent.configurationState)) return t("chat.organization.needsSetup");
+    return t("chat.organization.aiAgent");
   }
 
-  function setSelected(teammateId: string, selected: boolean): void {
+  function setSelected(agentId: string, selected: boolean): void {
     const next = new Set(selectedIds);
-    if (selected) next.add(teammateId);
-    else next.delete(teammateId);
+    if (selected) next.add(agentId);
+    else next.delete(agentId);
     selectedIds = next;
   }
 
@@ -120,15 +120,15 @@
     {/if}
   </div>
   <div class={cn("shrink-0 px-2", mobileLayout ? "pt-2 pb-1" : "pb-1")}>
-    <SearchField bind:value={query} inline label={includeTeammates ? t("contacts.picker.search") : t("contacts.picker.searchContacts")} clearLabel={t("contacts.picker.clearSearch")} focusOnMount={!mobileLayout} />
+    <SearchField bind:value={query} inline label={includeAgents ? t("contacts.picker.search") : t("contacts.picker.searchContacts")} clearLabel={t("contacts.picker.clearSearch")} focusOnMount={!mobileLayout} />
   </div>
-  {#if selectedTeammates.length > 0}
+  {#if selectedAgents.length > 0}
     <div class="flex flex-wrap gap-1 px-2 pb-1">
-      {#each selectedTeammates as teammate (teammate.participant.id)}
+      {#each selectedAgents as agent (agent.participant.id)}
         <span class="inline-flex max-w-full items-center gap-1 rounded-full border border-border py-0.5 pr-1 pl-0.5 text-panel-detail">
-          <ChatParticipantAvatar participant={teammate.participant} {teammate} size={CHIP_AVATAR_SIZE} />
-          <span class="min-w-0 truncate" dir="auto">{teammate.participant.displayName}</span>
-          <button type="button" class="grid size-4 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={t("contacts.picker.remove", teammate.participant.displayName)} onclick={() => setSelected(teammate.participant.id, false)}><X size={11} /></button>
+          <ChatParticipantAvatar participant={agent.participant} {agent} size={CHIP_AVATAR_SIZE} />
+          <span class="min-w-0 truncate" dir="auto">{agent.participant.displayName}</span>
+          <button type="button" class="grid size-4 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={t("contacts.picker.remove", agent.participant.displayName)} onclick={() => setSelected(agent.participant.id, false)}><X size={11} /></button>
         </span>
       {/each}
     </div>
@@ -142,24 +142,24 @@
       </div>
       <p class="picker-empty">{t("contacts.picker.noContacts")}</p>
     {/if}
-    {#if includeTeammates}
+    {#if includeAgents}
       <div class="picker-group-label menu-label">
-        <span class="truncate">{t("contacts.picker.teammates")}</span>
-        {#if onNewTeammate}{@render headingAction(t("contacts.picker.newTeammate"), Bot, mobileLayout, onNewTeammate)}{/if}
+        <span class="truncate">{t("contacts.picker.agents")}</span>
+        {#if onNewAgent}{@render headingAction(t("contacts.picker.newAgent"), Bot, mobileLayout, onNewAgent)}{/if}
       </div>
-      {#if teammates.length === 0}
-        <p class="picker-empty">{t("contacts.picker.noTeammates")}</p>
+      {#if agents.length === 0}
+        <p class="picker-empty">{t("contacts.picker.noAgents")}</p>
       {:else if candidates.length === 0}
         <p class="picker-empty">{t("contacts.picker.allAdded")}</p>
       {:else if matchingCandidates.length === 0}
         <p class="picker-empty">{t("contacts.picker.noMatches")}</p>
       {/if}
-      {#each matchingCandidates as teammate (teammate.participant.id)}
+      {#each matchingCandidates as agent (agent.participant.id)}
         <label class="menu-item cursor-pointer gap-2.5">
-          <Checkbox checked={selectedIds.has(teammate.participant.id)} onChange={(checked) => setSelected(teammate.participant.id, checked)} />
-          <ChatParticipantAvatar participant={teammate.participant} {teammate} size={AVATAR_SIZE} />
-          <span class="min-w-0 flex-1 truncate" dir="auto">{teammate.participant.displayName}</span>
-          <span class="max-w-[45%] truncate text-panel-detail text-muted-foreground">{teammateDetail(teammate)}</span>
+          <Checkbox checked={selectedIds.has(agent.participant.id)} onChange={(checked) => setSelected(agent.participant.id, checked)} />
+          <ChatParticipantAvatar participant={agent.participant} {agent} size={AVATAR_SIZE} />
+          <span class="min-w-0 flex-1 truncate" dir="auto">{agent.participant.displayName}</span>
+          <span class="max-w-[45%] truncate text-panel-detail text-muted-foreground">{agentDetail(agent)}</span>
         </label>
       {/each}
     {/if}

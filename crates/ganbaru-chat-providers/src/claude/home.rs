@@ -1,73 +1,43 @@
 //! Claude executable, configuration directory, environment, and continuation identity.
 
+use super::preferences::{host_preference_variable, preference_variable_names};
 use crate::models::{
     ChatError, ChatErrorCode, ChatResult, ContinuationGroupId, ProviderInstanceConfig,
 };
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-const MAX_CUSTOM_MODELS: usize = 128;
-const MAX_MODEL_ID_BYTES: usize = 256;
-const MAX_MODEL_LABEL_BYTES: usize = 160;
 #[cfg(windows)]
 const MAX_SHIM_BYTES: u64 = 64 * 1024;
+/// Variables Ganbaru sets to run shell commands under the sandbox, which a configured
+/// environment may not name.
+const SANDBOX_ENVIRONMENT_NAMES: &[&str] = &[
+    super::protocol::SHELL_PREFIX_ENVIRONMENT,
+    super::protocol::TEMPORARY_DIRECTORY_ENVIRONMENT,
+    ganbaru_sandbox::POLICY_FILE_VARIABLE,
+];
+/// Appended to the continuation group digest of organizational sessions only.
+const ORGANIZATIONAL_CONTINUATION_MARKER: &[u8] = b"\0organizational";
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(default, rename_all = "camelCase")]
-pub struct ClaudeProviderSettings {
-    pub allow_custom_models: bool,
-    pub custom_model_ids: Vec<String>,
-    pub custom_model_labels: BTreeMap<String, String>,
-}
-
-impl ClaudeProviderSettings {
-    pub fn parse(configuration: &ProviderInstanceConfig) -> ChatResult<Self> {
-        if configuration.provider_config.schema_version != 1 {
-            return Err(ChatError::validation(
-                "providerConfig.schemaVersion",
-                "Claude provider config schema is unsupported",
-            ));
-        }
-        let settings: Self = serde_json::from_value(configuration.provider_config.value.clone())
-            .map_err(|_| {
-                ChatError::validation("providerConfig", "Claude provider config is invalid")
-            })?;
-        if settings.custom_model_ids.len() > MAX_CUSTOM_MODELS
-            || settings.custom_model_ids.iter().any(|model| {
-                model.trim().is_empty()
-                    || model.len() > MAX_MODEL_ID_BYTES
-                    || model.chars().any(char::is_control)
-            })
-        {
-            return Err(ChatError::validation(
-                "providerConfig.customModelIds",
-                "Claude custom model configuration is invalid",
-            ));
-        }
-        if !settings.allow_custom_models && !settings.custom_model_ids.is_empty() {
-            return Err(ChatError::validation(
-                "providerConfig.customModelIds",
-                "Claude custom models require the advanced custom-model option",
-            ));
-        }
-        let ids = settings.custom_model_ids.iter().collect::<BTreeSet<_>>();
-        if settings.custom_model_labels.iter().any(|(id, label)| {
-            !ids.contains(id)
-                || label.trim().is_empty()
-                || label.len() > MAX_MODEL_LABEL_BYTES
-                || label.chars().any(char::is_control)
-        }) {
-            return Err(ChatError::validation(
-                "providerConfig.customModelLabels",
-                "Claude custom model labels are invalid",
-            ));
-        }
-        Ok(settings)
+/// Validates a Claude provider configuration. Claude takes no provider settings, so only the
+/// schema version and the object shape are checked.
+pub fn validate_provider_config(configuration: &ProviderInstanceConfig) -> ChatResult<()> {
+    if configuration.provider_config.schema_version != 1 {
+        return Err(ChatError::validation(
+            "providerConfig.schemaVersion",
+            "Claude provider config schema is unsupported",
+        ));
     }
+    if !configuration.provider_config.value.is_object() {
+        return Err(ChatError::validation(
+            "providerConfig",
+            "Claude provider config is invalid",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,12 +46,38 @@ pub struct ClaudeHome {
 }
 
 impl ClaudeHome {
+    /// The continuation group of a direct session in this config directory, which tests use to
+    /// compare config directories.
+    #[cfg(test)]
     pub fn continuation_group(&self) -> ChatResult<ContinuationGroupId> {
+        self.continuation_group_with_authority(false)
+    }
+
+    /// The continuation group of a session in this config directory. Organizational sessions
+    /// launch with a different surface, so they never continue a direct session or the reverse.
+    /// Only organizational groups carry the authority marker, because the direct launch
+    /// identity is unchanged by it.
+    pub fn continuation_group_with_authority(
+        &self,
+        organizational_authority: bool,
+    ) -> ChatResult<ContinuationGroupId> {
         let mut digest = Sha256::new();
         digest.update(b"ganbaru-chat-claude-config-v1\0");
         digest.update(path_identity_bytes(&self.config_directory));
+        if organizational_authority {
+            digest.update(ORGANIZATIONAL_CONTINUATION_MARKER);
+        }
         ContinuationGroupId::new(format!("claude-config-{:x}", digest.finalize()))
             .map_err(|_| internal_identity_error())
+    }
+
+    /// The probe detail of a config directory with no signed-in account. A directory other than
+    /// the default `~/.claude` is named, because the CLI then reads its sign-in from
+    /// `CLAUDE_CONFIG_DIR` and a plain `claude` sign-in would land in the default directory.
+    pub fn authentication_hint(&self) -> String {
+        let default_home = PathBuf::from(default_claude_home());
+        let default_home = fs::canonicalize(&default_home).unwrap_or(default_home);
+        authentication_hint(&self.config_directory, &default_home)
     }
 }
 
@@ -105,18 +101,19 @@ pub fn resolve_claude_home(configuration: &ProviderInstanceConfig) -> ChatResult
     Ok(ClaudeHome { config_directory })
 }
 
+/// The environment of a Claude process: allowlisted host variables, then the preference
+/// variables of the user settings file in `preferences`, then the configured environment.
+///
+/// # Errors
+///
+/// Fails when the configured environment names a variable Ganbaru owns or holds a NUL.
 pub fn claude_process_environment(
     configuration: &ProviderInstanceConfig,
     home: &ClaudeHome,
+    preferences: &BTreeMap<String, String>,
 ) -> ChatResult<BTreeMap<String, String>> {
-    let mut environment = BTreeMap::new();
-    for name in minimal_inherited_environment_names() {
-        if let Ok(value) = std::env::var(name) {
-            if !value.contains('\0') {
-                environment.insert((*name).to_string(), value);
-            }
-        }
-    }
+    let mut environment = inherited_environment(crate::host_path::host_variable);
+    environment.extend(preferences.clone());
     for (name, value) in &configuration.environment {
         if name.is_empty()
             || name.contains(['=', '\0'])
@@ -124,6 +121,9 @@ pub fn claude_process_environment(
             || name.eq_ignore_ascii_case("CLAUDE_CONFIG_DIR")
             || name.eq_ignore_ascii_case("HOME")
             || name.eq_ignore_ascii_case("USERPROFILE")
+            || SANDBOX_ENVIRONMENT_NAMES
+                .iter()
+                .any(|reserved| name.eq_ignore_ascii_case(reserved))
         {
             return Err(ChatError::validation(
                 "environment",
@@ -224,6 +224,44 @@ fn path_identity_bytes(path: &Path) -> Vec<u8> {
     {
         path.to_string_lossy().to_lowercase().into_bytes()
     }
+}
+
+/// Host variables every Claude process inherits when they are set: proxy and certificate
+/// settings so network access works behind a corporate proxy, plus the shell and terminal
+/// identity the CLI's tools read. Host Claude session variables are never inherited.
+const PORTABLE_INHERITED_ENVIRONMENT_NAMES: [&str; 11] = [
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+    "SHELL",
+    "USER",
+    "TERM",
+];
+
+/// Copies the allowlisted host variables that `lookup` reports, skipping values with NUL, and
+/// the preference variables whose host value passes their check.
+pub(super) fn inherited_environment(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> BTreeMap<String, String> {
+    let host = minimal_inherited_environment_names()
+        .iter()
+        .chain(PORTABLE_INHERITED_ENVIRONMENT_NAMES.iter())
+        .filter_map(|name| {
+            lookup(name)
+                .filter(|value| !value.contains('\0'))
+                .map(|value| ((*name).to_string(), value))
+        });
+    let preferences = preference_variable_names().filter_map(|name| {
+        lookup(name)
+            .filter(|value| host_preference_variable(name, value))
+            .map(|value| (name.to_string(), value))
+    });
+    host.chain(preferences).collect()
 }
 
 fn minimal_inherited_environment_names() -> &'static [&'static str] {
@@ -382,5 +420,17 @@ fn internal_identity_error() -> ChatError {
         ChatErrorCode::Internal,
         "Claude continuation identity could not be created",
         false,
+    )
+}
+
+/// The probe detail of `config_directory` when it has no signed-in account, naming it when it
+/// is not `default_home`.
+pub(super) fn authentication_hint(config_directory: &Path, default_home: &Path) -> String {
+    if config_directory == default_home {
+        return "Claude authentication is required".to_string();
+    }
+    format!(
+        "Claude authentication is required; sign in with CLAUDE_CONFIG_DIR={}",
+        config_directory.display()
     )
 }

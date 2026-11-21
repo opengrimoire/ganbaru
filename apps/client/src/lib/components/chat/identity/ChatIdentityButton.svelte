@@ -1,14 +1,18 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
-  import LockKeyhole from "@lucide/svelte/icons/lock-keyhole";
   import Settings from "@lucide/svelte/icons/settings";
   import Zap from "@lucide/svelte/icons/zap";
-  import type { ChatParticipantRead, ChatRuntimeApprovalPolicy } from "$lib/chat/contracts";
-  import { chatParticipantDisplayName } from "$lib/chat/teammates/participant-display";
-  import type { ChatModelParticipant } from "$lib/chat/teammates/participant-identity";
-  import { compactModelName, compactModelOptionLabel } from "$lib/chat/composer/model-picker-model";
-  import { teammateExecutionSummary } from "$lib/chat/teammates/draft";
-  import { chatTeammateModelParticipant } from "$lib/chat/teammates/identity";
+  import * as chatApi from "$lib/api/chat";
+  import type { ChatInteractionStateRead, ChatParticipantRead, ChatThreadId } from "$lib/chat/contracts";
+  import { composerMeterRead, type ComposerUsage } from "$lib/chat/composer/composer-meter";
+  import { formatNumber } from "$lib/i18n/formatters";
+  import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
+  import { agentCardStatus } from "$lib/chat/agents/agent-card-status";
+  import type { ChatModelParticipant } from "$lib/chat/agents/participant-identity";
+  import { compactModelOptionLabel } from "$lib/chat/composer/model-picker-model";
+  import { formatModelDisplayName } from "$lib/chat/composer/model-company";
+  import { agentExecutionSummary } from "$lib/chat/agents/execution-summary";
+  import { chatAgentModelParticipant } from "$lib/chat/agents/identity";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -16,6 +20,7 @@
   import { portal } from "$lib/utils/portal";
   import ChatModelAvatar from "./ChatModelAvatar.svelte";
   import ChatParticipantAvatar from "./ChatParticipantAvatar.svelte";
+  import ProviderPlanLimits from "./ProviderPlanLimits.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
 
   type IdentityPresentation = "avatar" | "name" | "mention";
@@ -28,17 +33,27 @@
     currentResponseSettings = false,
     size = 34,
     shape = "default",
+    usageThreadId = null,
+    usage = null,
   }: {
     participant?: ChatParticipantRead | null;
+    /**
+     * Context usage the card shows when it reads none from a provider thread, such as a run a phone reads from the
+     * desktop that executes it.
+     */
+    usage?: ComposerUsage | null;
     model?: ChatModelParticipant | null;
     presentation: IdentityPresentation;
     triggerLabel?: string | null;
     currentResponseSettings?: boolean;
     size?: number;
     shape?: "default" | "compact";
+    /** Provider thread whose context usage the card shows while open, or `null` to show no usage. */
+    usageThreadId?: ChatThreadId | null;
   } = $props();
 
-  const { t } = getLocalization();
+  const localization = getLocalization();
+  const { t } = localization;
   const chat = useChat();
   const preferences = getPreferences();
   const settings = getSettingsLauncher();
@@ -47,25 +62,37 @@
   const closeDelayMs = 140;
   const viewportInsetPx = 8;
   const cardGapPx = 7;
+  /** Card height assumed before the card has rendered once. */
+  const fallbackCardHeightPx = 260;
   const cardWidthPx = FLOATING_WIDTH.lg;
   let triggerElement = $state<HTMLButtonElement | null>(null);
   let cardElement = $state<HTMLElement | null>(null);
   let open = $state(false);
   let pinned = $state(false);
+  let lastPointerType: string | null = null;
   let cardStyle = $state("visibility:hidden");
   let previewTimer: ReturnType<typeof setTimeout> | null = null;
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
-  const teammate = $derived(participant?.kind === "ai_teammate"
-    ? chat.teammateIdentities.find((entry) => entry.participant.id === participant.id) ?? null
+  const agent = $derived(participant?.kind === "ai_agent"
+    ? chat.agentIdentities.find((entry) => entry.participant.id === participant.id) ?? null
     : null);
-  const teammateModel = $derived(participant?.kind === "ai_teammate"
-    ? chatTeammateModelParticipant(participant.id, chat.teammateIdentities, chat.settings)
+  const agentModel = $derived(participant?.kind === "ai_agent"
+    ? chatAgentModelParticipant(participant.id, chat.agentIdentities, chat.settings)
     : null);
-  const teammateProvider = $derived(teammate?.latestPolicy
+  const agentProvider = $derived(agent?.localProviderInstanceId
     ? chat.settings?.providerInstances.find((entry) => (
-      entry.configuration.instanceId === teammate.latestPolicy?.providerInstanceId
+      entry.configuration.instanceId === agent.localProviderInstanceId
     )) ?? null
     : null);
+  /** Whether the agent can take work, with the catalog and plan limits of the provider that would run it. */
+  const cardStatus = $derived(agentCardStatus(agent, agentProvider, Boolean(participant?.archivedAt)));
+  /** The provider whose plan limits the card shows: the agent's, or the one serving the model. */
+  const cardProvider = $derived(agentProvider ?? (model
+    ? chat.settings?.providerInstances.find((entry) => entry.configuration.familyId === model.providerFamilyId) ?? null
+    : null));
+  /** The plan limits the card shows: this device's provider, or what a linked desktop shares for the agent. */
+  const planLimitsSource = $derived(cardProvider
+    ?? (participant?.kind === "ai_agent" && cardStatus.usageLimits ? { usageLimits: cardStatus.usageLimits } : null));
   const displayName = $derived(participant
     ? chatParticipantDisplayName(
       participant,
@@ -73,12 +100,14 @@
       t("chat.timeline.you"),
     )
     : model?.displayName ?? "");
+  /** The user's full name from their profile, shown under the display name on their own card. */
+  const localFullName = $derived(preferences.profileFullName.trim());
   const visibleTriggerLabel = $derived(triggerLabel
     ?? (presentation === "mention" ? `@${displayName}` : displayName));
-  const cardModel = $derived(teammateModel ?? model);
-  const cardReasoning = $derived(teammateReasoning() ?? cardModel?.defaultReasoning ?? null);
+  const cardModel = $derived(agentModel ?? model);
+  const cardReasoning = $derived(agentReasoning() ?? cardModel?.defaultReasoning ?? null);
   const formattedModelName = $derived(cardModel
-    ? compactModelName(cardModel.displayName, cardModel.providerFamilyId)
+    ? formatModelDisplayName(cardModel.displayName)
     : null);
   const formattedReasoning = $derived(cardReasoning
     ? compactModelOptionLabel(
@@ -89,24 +118,46 @@
       )
     : null);
   const fastEnabled = $derived.by(() => {
-    const policy = teammate?.latestPolicy;
+    const policy = agent?.latestPolicy;
     if (!policy) return false;
-    if (policy.speed !== null) return policy.speed === "fast";
-    const modelDefinition = teammateProvider?.modelCatalog?.models.find((candidate) => (
+    const modelDefinition = cardStatus.models.find((candidate) => (
       candidate.id === policy.modelId
     )) ?? null;
-    return teammateExecutionSummary(policy.modelOptions, modelDefinition).speed === "fast";
+    return agentExecutionSummary(policy.modelOptions, modelDefinition).speed === "fast";
   });
-  const approvalPolicy = $derived(participant?.kind === "ai_teammate"
-      ? chat.selectedChannel?.memberships.find((membership) => (
-        membership.participant.id === participant.id && membership.removedAt === null
-      ))?.aiAccess?.runtimeApprovalOverride ?? null
-    : null);
-  const approvalLabel = $derived(approvalPolicy ? approvalPolicyLabel(approvalPolicy) : null);
+  let usageState = $state<ChatInteractionStateRead | null>(null);
+  let usageReadFailed = $state(false);
+  let usageRequest = 0;
+  /** Whether a hover preview is counting down, so context usage can load before the card opens. */
+  let previewPending = $state(false);
+  const usageWanted = $derived(open || previewPending);
+  /** Usage given with the card, shown only when no provider thread is read. */
+  const givenUsage = $derived(usageThreadId ? null : usage);
+  const usageMeter = $derived(usageState
+    ? composerMeterRead(usageState.usage, usageState.rateLimitStatus).meter
+    : givenUsage ? composerMeterRead(givenUsage, null).meter : null);
+
+  $effect(() => {
+    const threadId = usageWanted ? usageThreadId : null;
+    const request = ++usageRequest;
+    usageState = null;
+    usageReadFailed = false;
+    if (!threadId) return;
+    chatApi.readChatInteractionState(threadId)
+      .then((read) => { if (request === usageRequest) usageState = read; })
+      .catch(() => {
+        // Context usage is advisory, so a failed read only says it is unavailable.
+        if (request === usageRequest) usageReadFailed = true;
+      });
+  });
 
   onDestroy(() => {
     cancelPreview();
     cancelClose();
+  });
+
+  $effect(() => {
+    if (open && cardProvider) chat.refreshStaleProviderLimits(cardProvider);
   });
 
   $effect(() => {
@@ -125,11 +176,18 @@
       triggerElement?.focus();
     };
     void tick().then(reposition);
+    // Context usage and plan limits arrive after the card opens, so a taller card is placed again.
+    const resizeObserver = cardElement && typeof ResizeObserver !== "undefined" ? new ResizeObserver(reposition) : null;
+    if (cardElement) {
+      resizeObserver?.observe(cardElement);
+      for (const child of cardElement.children) resizeObserver?.observe(child);
+    }
     window.addEventListener("pointerdown", closeFromOutside, true);
     window.addEventListener("keydown", closeFromKeyboard, true);
     window.addEventListener("resize", reposition);
     window.addEventListener("scroll", reposition, true);
     return () => {
+      resizeObserver?.disconnect();
       window.removeEventListener("pointerdown", closeFromOutside, true);
       window.removeEventListener("keydown", closeFromKeyboard, true);
       window.removeEventListener("resize", reposition);
@@ -141,6 +199,7 @@
     if (previewTimer === null) return;
     clearTimeout(previewTimer);
     previewTimer = null;
+    previewPending = false;
   }
 
   function cancelClose(): void {
@@ -152,9 +211,11 @@
   function schedulePreview(): void {
     cancelClose();
     if (open || previewTimer !== null) return;
+    previewPending = true;
     previewTimer = setTimeout(() => {
       previewTimer = null;
       open = true;
+      previewPending = false;
     }, previewDelayMs);
   }
 
@@ -174,7 +235,12 @@
     }, closeDelayMs);
   }
 
+  /**
+   * Opens the card for keyboard and touch activation, which have no hover preview; a mouse click
+   * leaves the hover preview as it is.
+   */
   function togglePinned(event: MouseEvent): void {
+    if (event.detail > 0 && lastPointerType === "mouse") return;
     cancelPreview();
     cancelClose();
     if (open && pinned) {
@@ -198,46 +264,51 @@
     pinned = false;
   }
 
+  /**
+   * Opens the card below its trigger when it fits there, above when it fits there, and otherwise
+   * on the roomier side with its height capped to that space. The height is the card's full
+   * content, so a capped card that scrolls still measures what it needs.
+   */
   function positionCard(): void {
     if (!open || !triggerElement) return;
     const triggerBounds = triggerElement.getBoundingClientRect();
-    const cardBounds = cardElement?.getBoundingClientRect();
-    const cardHeight = cardBounds?.height ?? 260;
-    const cardWidth = cardBounds?.width ?? cardWidthPx;
-    const availableBelow = window.innerHeight - triggerBounds.bottom - viewportInsetPx;
-    const top = availableBelow >= cardHeight + cardGapPx
-      ? triggerBounds.bottom + cardGapPx
-      : Math.max(viewportInsetPx, triggerBounds.top - cardHeight - cardGapPx);
+    const cardWidth = cardElement?.getBoundingClientRect().width ?? cardWidthPx;
+    const cardHeight = cardElement
+      ? cardElement.scrollHeight + cardElement.offsetHeight - cardElement.clientHeight
+      : fallbackCardHeightPx;
+    const availableBelow = Math.max(0, window.innerHeight - triggerBounds.bottom - cardGapPx - viewportInsetPx);
+    const availableAbove = Math.max(0, triggerBounds.top - cardGapPx - viewportInsetPx);
+    const openAbove = cardHeight > availableBelow
+      && (cardHeight <= availableAbove || availableAbove > availableBelow);
+    const maxHeight = openAbove ? availableAbove : availableBelow;
+    const top = openAbove
+      ? Math.max(viewportInsetPx, triggerBounds.top - cardGapPx - Math.min(cardHeight, maxHeight))
+      : triggerBounds.bottom + cardGapPx;
     const idealLeft = triggerBounds.left;
     const left = Math.min(
       Math.max(viewportInsetPx, idealLeft),
       Math.max(viewportInsetPx, window.innerWidth - cardWidth - viewportInsetPx),
     );
-    cardStyle = `left:${Math.round(left)}px;top:${Math.round(top)}px;visibility:visible`;
+    cardStyle = `left:${Math.round(left)}px;top:${Math.round(top)}px;max-height:${Math.round(maxHeight)}px;visibility:visible`;
   }
 
-  function teammateStatus(): string {
-    if (participant?.archivedAt) return t("chat.organization.archivedParticipant");
-    if (teammate?.configurationState === "healthy") return t("chat.organization.availableParticipant");
-    return t("chat.organization.needsSetup");
+  function agentStatus(): string {
+    switch (cardStatus.availability) {
+      case "archived": return t("chat.organization.archivedParticipant");
+      case "needs_setup": return t("chat.organization.needsSetup");
+      case "no_linked_desktop": return t("chat.organization.unavailableOnLinkedDesktops");
+      case "available": return t("chat.organization.availableParticipant");
+    }
   }
 
-  function approvalPolicyLabel(policy: ChatRuntimeApprovalPolicy): string {
-    if (policy === "ask") return t("settings.chat.teammates.runtime.ask");
-    if (policy === "autoApprove") return t("settings.chat.teammates.runtime.autoApprove");
-    if (policy === "unattended") return t("settings.chat.teammates.runtime.unattended");
-    return t("settings.chat.teammates.runtime.providerCustom");
-  }
-
-  function teammateReasoning(): string | null {
-    const policy = teammate?.latestPolicy;
-    const selectedValue = policy?.effort
-      ?? policy?.modelOptions.find((option) => /effort|reasoning/iu.test(option.key))?.value;
+  function agentReasoning(): string | null {
+    const policy = agent?.latestPolicy;
+    const selectedValue = policy?.modelOptions.find((option) => /effort|reasoning/iu.test(option.key))?.value;
     const value = typeof selectedValue === "string"
       ? selectedValue
       : selectedValue?.kind === "choice" ? selectedValue.value : null;
-    if (!value) return teammateModel?.defaultReasoning ?? null;
-    const modelDefinition = teammateProvider?.modelCatalog?.models.find((candidate) => (
+    if (!value) return agentModel?.defaultReasoning ?? null;
+    const modelDefinition = cardStatus.models.find((candidate) => (
       candidate.id === policy?.modelId
     ));
     const optionDefinition = modelDefinition?.options.find((option) => (
@@ -247,14 +318,29 @@
     return optionDefinition.options.find((option) => option.value === value)?.label ?? value;
   }
 
+  /** One line of context usage: the share used with the token counts, or the bare count when the window is unknown. */
+  function contextUsageLabel(): string {
+    if (!usageMeter) return t("chat.composer.contextUnavailable");
+    const used = formatNumber(localization.locale, usageMeter.usedTokens);
+    if (usageMeter.maximumTokens === null) return t("chat.composer.contextUnknown", used);
+    const maximum = formatNumber(localization.locale, usageMeter.maximumTokens, { notation: "compact" });
+    return usageMeter.ratio === null
+      ? t("chat.composer.contextUsed", used, maximum)
+      : t("chat.composer.contextSummary", contextPercentage(usageMeter.ratio), used, maximum);
+  }
+
+  function contextPercentage(value: number): string {
+    return formatNumber(localization.locale, value * 100, { maximumFractionDigits: 0 });
+  }
+
   function openIdentitySettings(): void {
     closeCard();
     if (participant?.kind === "local_user") {
       settings.open("profile");
       return;
     }
-    if (participant?.kind === "ai_teammate") {
-      settings.open("chat", { chatSubsection: "teammates", chatTeammateId: participant.id });
+    if (participant?.kind === "ai_agent") {
+      settings.open("agents", { agentsSubsection: "providers" });
     }
   }
 </script>
@@ -267,9 +353,11 @@
   class:name-trigger={presentation === "name"}
   class:mention-trigger={presentation === "mention"}
   aria-label={presentation === "avatar" ? t("chat.organization.identityDetailsFor", visibleTriggerLabel) : undefined}
+  data-app-tooltip-disabled="true"
   aria-haspopup="dialog"
   aria-expanded={open}
   aria-controls={open ? cardId : undefined}
+  onpointerdown={(event) => { lastPointerType = event.pointerType; }}
   onpointerenter={schedulePreview}
   onpointerleave={scheduleClose}
   onfocus={showFromFocus}
@@ -297,46 +385,51 @@
       {:else if model}<ChatModelAvatar familyId={model.company.iconFamilyId} label={model.company.name} size={40} />{/if}
       <div class="identity-heading">
         <div class="identity-name-line">
-          <strong>{displayName}</strong>
-          {#if participant?.kind === "ai_teammate"}
+          <strong>{participant?.kind === "local_user" && preferences.profileDisplayName.trim() ? `${displayName} ${t("chat.organization.youSuffix")}` : displayName}</strong>
+          {#if participant?.kind === "ai_agent"}
             <span
               class="identity-status-dot"
-              class:available={teammate?.configurationState === "healthy"}
+              class:available={cardStatus.availability === "available"}
               role="img"
-              aria-label={teammateStatus()}
+              aria-label={agentStatus()}
             ></span>
           {/if}
         </div>
-        {#if participant?.kind === "local_user"}<small>{t("chat.organization.localProfile")}</small>
-        {:else if participant?.kind === "ai_teammate" && teammate?.role}<small>{teammate.role}</small>
+        {#if participant?.kind === "local_user"}
+          {#if localFullName && localFullName !== displayName}<small>{localFullName}</small>{/if}
         {/if}
       </div>
     </div>
 
-    <div class="identity-body">
-      {#if participant?.kind === "local_user"}
-        <div class="privacy-note"><LockKeyhole size={14} /><span>{t("chat.organization.localProfileDetail")}</span></div>
-      {:else if cardModel}
+    {#if participant?.kind !== "local_user"}<div class="identity-body">
+      {#if cardModel}
         <div class="identity-settings-summary">
           <span class="identity-settings-label">{currentResponseSettings ? t("chat.organization.currentResponseSettings") : t("chat.organization.defaultSettings")}</span>
           <div class="identity-model-row">
             {#if fastEnabled}<span class="identity-fast-indicator" aria-label={t("chat.composer.fastEnabled")}><Zap size={13} fill="currentColor" /></span>{/if}
             <span class="identity-model-name">{formattedModelName}</span>
             {#if formattedReasoning}<span class="identity-effort-name">{formattedReasoning}</span>{/if}
-            {#if approvalLabel}
-              <span class="identity-model-divider" aria-hidden="true">|</span>
-              <span class="identity-approval">{approvalLabel}</span>
-            {/if}
           </div>
         </div>
       {:else}
         <p class="identity-description">{t("chat.organization.collaboratorIdentity")}</p>
       {/if}
-    </div>
+      {#if usageThreadId || givenUsage}
+        <div class="identity-context" data-identity-context aria-busy={(Boolean(usageThreadId) && !usageState && !usageReadFailed) || undefined}>
+          <span class="identity-settings-label">{t("chat.composer.contextWindow")}</span>
+          {#if usageState || givenUsage}
+            {#if usageMeter}<span>{contextUsageLabel()}</span>{:else}<small>{contextUsageLabel()}</small>{/if}
+            {#if usageState?.automaticCompactionReported || usageMeter?.warning}<small>{t("chat.composer.contextCompaction")}</small>{/if}
+          {:else if usageReadFailed}<small>{t("chat.composer.contextUnavailable")}</small>
+          {:else}<span class="identity-context-pending">{t("common.loading")}</span>{/if}
+        </div>
+      {/if}
+      {#if planLimitsSource}<ProviderPlanLimits provider={planLimitsSource} />{/if}
+    </div>{/if}
 
-    {#if participant?.kind === "local_user" || participant?.kind === "ai_teammate"}
+    {#if participant?.kind === "local_user" || participant?.kind === "ai_agent"}
       <footer>
-        <button type="button" onclick={openIdentitySettings}><Settings size={13} />{participant.kind === "local_user" ? t("chat.organization.openProfileSettings") : t("chat.organization.openTeammateSettings")}</button>
+        <button type="button" onclick={openIdentitySettings}><Settings size={13} />{participant.kind === "local_user" ? t("chat.organization.openProfileSettings") : t("chat.organization.openAgentSettings")}</button>
       </footer>
     {/if}
   </div>
@@ -357,7 +450,7 @@
   .identity-heading strong { overflow:hidden; font-size:calc(0.9rem * var(--type-scale)); font-weight:650; line-height:1.2rem; text-overflow:ellipsis; white-space:nowrap; }
   .identity-heading small { overflow:hidden; color:var(--muted-foreground); font-size:var(--panel-detail-font-size); text-overflow:ellipsis; white-space:nowrap; }
   .identity-status-dot { width:0.42rem; height:0.42rem; flex:0 0 auto; border-radius:999px; background:var(--status-tentative); }
-  .identity-status-dot.available { background:var(--action-confirm); }
+  .identity-status-dot.available { background:var(--action-confirm-signal); }
   .identity-body { display:grid; gap:0.65rem; padding:0.3rem 0.8rem 0.7rem; }
   .identity-description { overflow-wrap:anywhere; font-size:var(--panel-font-size); line-height:1.1rem; }
   .identity-settings-summary { display:grid; min-width:0; gap:0.18rem; }
@@ -366,11 +459,9 @@
   .identity-fast-indicator { display:grid; flex:0 0 auto; place-items:center; }
   .identity-model-name { overflow:hidden; min-width:0; text-overflow:ellipsis; white-space:nowrap; }
   .identity-effort-name { flex:0 0 auto; }
-  .identity-model-divider { flex:0 0 auto; color:var(--muted-foreground); }
-  .identity-approval { overflow:hidden; min-width:0; color:var(--foreground); text-overflow:ellipsis; white-space:nowrap; }
-  .privacy-note { display:grid; grid-template-columns:1rem minmax(0,1fr); gap:0.55rem; align-items:start; color:var(--muted-foreground); }
-  .privacy-note :global(svg) { margin-top:0.1rem; color:color-mix(in srgb,var(--primary) 70%,var(--foreground)); }
-  .privacy-note span { font-size:var(--panel-detail-font-size); line-height:1rem; }
+  .identity-context { display:grid; min-width:0; gap:0.22rem; font-size:var(--panel-font-size); }
+  .identity-context small { color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
+  .identity-context-pending { color:var(--muted-foreground); }
   footer { display:flex; justify-content:flex-end; padding:0.25rem 0.65rem 0.5rem; }
   footer button { display:inline-flex; min-height:1.75rem; align-items:center; gap:0.35rem; border-radius:var(--floating-item-radius); padding:0.25rem 0.45rem; color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
   footer button:hover,footer button:focus-visible { background:var(--accent); color:var(--foreground); }

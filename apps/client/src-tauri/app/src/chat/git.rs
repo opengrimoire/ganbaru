@@ -3,7 +3,7 @@
 use super::workspace::mutation::ChatWorkspaceMutationRegistry;
 use super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizationOperation};
 use crate::db;
-use ganbaru_chat::git::{self, GitStatusRead};
+use ganbaru_chat::git::{self, ChatCommitDraftContextRead, GitStatusRead};
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId,
 };
@@ -37,6 +37,46 @@ pub async fn chat_git_status(
     .await?;
     let folder = authorized.git_folder();
     git::status(folder).await
+}
+
+/// Reads the bounded staged changes and recent subjects an agent drafts a commit message from.
+#[tauri::command]
+pub async fn chat_read_commit_draft_context(
+    app: tauri::AppHandle,
+    db_url: String,
+    working_folder_id: ProjectWorkingFolderId,
+    execution_environment_id: Option<String>,
+) -> ChatResult<ChatCommitDraftContextRead> {
+    let authorized = authorized_folder(
+        &app,
+        &db_url,
+        &working_folder_id,
+        execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::Git,
+    )
+    .await?;
+    git::commit_draft_context(authorized.git_folder()).await
+}
+
+/// Reads the bounded branch range changes and subjects an agent drafts change request text from.
+#[tauri::command]
+pub async fn chat_read_change_request_draft_context(
+    app: tauri::AppHandle,
+    db_url: String,
+    working_folder_id: ProjectWorkingFolderId,
+    base: String,
+    head: String,
+    execution_environment_id: Option<String>,
+) -> ChatResult<ChatCommitDraftContextRead> {
+    let authorized = authorized_folder(
+        &app,
+        &db_url,
+        &working_folder_id,
+        execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::Git,
+    )
+    .await?;
+    git::change_request_draft_context(authorized.git_folder(), &base, &head).await
 }
 
 #[tauri::command]
@@ -96,13 +136,7 @@ pub async fn chat_git_commit(
     message: String,
     execution_environment_id: Option<String>,
 ) -> ChatResult<GitStatusRead> {
-    let message = message.trim();
-    if message.is_empty() || message.len() > 4_000 || message.chars().any(char::is_control) {
-        return Err(ChatError::validation(
-            "message",
-            "Commit message is invalid",
-        ));
-    }
+    let message = normalize_commit_message(&message)?;
     let authorized = authorized_folder(
         &app,
         &db_url,
@@ -113,7 +147,7 @@ pub async fn chat_git_commit(
     .await?;
     let folder = authorized.git_folder();
     let _guard = mutations.try_mutation(&authorized.canonical_path)?;
-    git::commit(folder, message).await?;
+    git::commit(folder, &message).await?;
     git::status(folder).await
 }
 
@@ -410,6 +444,37 @@ fn validate_relative_path(path: &str) -> ChatResult<&str> {
     Ok(path)
 }
 
+/// Longest commit message, in UTF-8 bytes. The source control panel mirrors it as
+/// `COMMIT_MESSAGE_MAX_BYTES`.
+const MAX_COMMIT_MESSAGE_BYTES: usize = 4_000;
+
+/// Normalizes a commit message from the source control panel: line endings become LF and
+/// surrounding whitespace is trimmed. Line breaks and tabs are kept; an empty or oversized
+/// message, or one with any other control character, is refused.
+fn normalize_commit_message(raw: &str) -> ChatResult<String> {
+    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
+    let message = normalized.trim();
+    if message.is_empty() {
+        return Err(ChatError::validation("message", "Commit message is empty"));
+    }
+    if message.len() > MAX_COMMIT_MESSAGE_BYTES {
+        return Err(ChatError::validation(
+            "message",
+            "Commit message is too long",
+        ));
+    }
+    if message
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+    {
+        return Err(ChatError::validation(
+            "message",
+            "Commit message contains a control character",
+        ));
+    }
+    Ok(message.to_string())
+}
+
 fn validate_ref_name(value: &str) -> ChatResult<&str> {
     if value.is_empty()
         || value.len() > 1_024
@@ -451,7 +516,52 @@ fn validate_remote_url(value: &str) -> ChatResult<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_ref_name, validate_relative_path, validate_remote_url};
+    use super::{
+        MAX_COMMIT_MESSAGE_BYTES, normalize_commit_message, validate_ref_name,
+        validate_relative_path, validate_remote_url,
+    };
+    use ganbaru_chat_contracts::models::ChatErrorCode;
+
+    #[test]
+    fn commit_messages_keep_line_breaks_and_tabs_with_normalized_endings() {
+        assert_eq!(
+            normalize_commit_message("  fix: subject\r\n\r\nBody\rline\twith tab\n\n").unwrap(),
+            "fix: subject\n\nBody\nline\twith tab"
+        );
+        let at_limit = "a".repeat(MAX_COMMIT_MESSAGE_BYTES);
+        assert_eq!(normalize_commit_message(&at_limit).unwrap(), at_limit);
+        let multibyte_at_limit = "é".repeat(MAX_COMMIT_MESSAGE_BYTES / 'é'.len_utf8());
+        assert!(normalize_commit_message(&multibyte_at_limit).is_ok());
+    }
+
+    #[test]
+    fn commit_messages_refuse_empty_oversized_and_control_text() {
+        let over_limit = "a".repeat(MAX_COMMIT_MESSAGE_BYTES + 1);
+        for raw in [
+            "",
+            " \r\n\t ",
+            over_limit.as_str(),
+            "fix: subject\0",
+            "fix: \u{7}subject",
+            "fix: \u{1b}[31msubject",
+            "fix: sub\u{85}ject",
+        ] {
+            let refused = normalize_commit_message(raw).expect_err("message is refused");
+            assert_eq!(refused.code, ChatErrorCode::Validation);
+        }
+    }
+
+    #[test]
+    fn the_source_control_panel_mirrors_the_commit_message_bound() {
+        let panel = include_str!("../../../../src/lib/chat/workspace/commit-message.ts");
+        let mirrored = panel
+            .lines()
+            .find_map(|line| line.strip_prefix("export const COMMIT_MESSAGE_MAX_BYTES = "))
+            .and_then(|value| value.strip_suffix(';'))
+            .map(|value| value.replace('_', ""))
+            .and_then(|value| value.parse::<usize>().ok());
+        assert_eq!(mirrored, Some(MAX_COMMIT_MESSAGE_BYTES));
+    }
 
     #[test]
     fn rejects_git_option_and_traversal_injections() {

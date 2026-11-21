@@ -1,7 +1,7 @@
 <script lang="ts">
-  import type { ChatAiTeammateRead, ChatParticipantRead } from "$lib/chat/contracts";
-  import { chatParticipantDisplayName } from "$lib/chat/teammates/participant-display";
-  import { chatTeammateModelParticipant } from "$lib/chat/teammates/identity";
+  import type { ChatAiAgentRead, ChatParticipantRead } from "$lib/chat/contracts";
+  import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
+  import { chatAgentCompany } from "$lib/chat/agents/identity";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -10,12 +10,12 @@
 
   let {
     participant,
-    teammate = null,
+    agent = null,
     size = 32,
     shape = "default",
   }: {
     participant: ChatParticipantRead;
-    teammate?: ChatAiTeammateRead | null;
+    agent?: ChatAiAgentRead | null;
     size?: number;
     shape?: "default" | "compact";
   } = $props();
@@ -27,10 +27,10 @@
     preferences.profileDisplayName,
     t("chat.timeline.you"),
   ));
-  const teammateIdentity = $derived(participant.kind === "ai_teammate"
-    ? chatTeammateModelParticipant(
+  const agentCompany = $derived(participant.kind === "ai_agent"
+    ? chatAgentCompany(
       participant.id,
-      teammate ? [teammate, ...chat.teammateIdentities] : chat.teammateIdentities,
+      agent ? [agent, ...chat.agentIdentities] : chat.agentIdentities,
       chat.settings,
     )
     : null);
@@ -38,18 +38,18 @@
 
 <span
   class="participant-avatar"
-  class:agent={participant.kind === "ai_teammate"}
+  class:agent={participant.kind === "ai_agent"}
   class:local={participant.kind === "local_user"}
   style={`width:${size}px;height:${size}px;--chat-participant-avatar-radius:${shape === "compact" ? "0.2rem" : "22%"}`}
   aria-hidden="true"
 >
   {#if participant.kind === "local_user"}
     <ProfileAvatar {displayName} imagePath={preferences.profileAvatarImagePath} crop={preferences.profileImageCrop} color={preferences.profileColor} {size} />
-  {:else if participant.kind === "ai_teammate"}
-    {#if teammateIdentity}
+  {:else if participant.kind === "ai_agent"}
+    {#if agentCompany}
       <ChatModelAvatar
-        familyId={teammateIdentity.company.iconFamilyId}
-        label={teammateIdentity.company.name}
+        familyId={agentCompany.iconFamilyId}
+        label={agentCompany.name}
         {size}
       />
     {:else}

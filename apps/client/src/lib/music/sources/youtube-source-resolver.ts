@@ -11,6 +11,8 @@ import {
   usesNativeYouTubeHost,
   type NativeYouTubeHost,
 } from "$lib/music/youtube-native-host";
+import { LocalizedError } from "$lib/i18n/user-errors";
+import { translate } from "$lib/i18n/translator.svelte";
 
 export type MusicYouTubeResolutionSource = YouTubeVideoSource | YouTubePlaylistSource;
 
@@ -192,13 +194,13 @@ export async function resolveMusicYouTubeSource(
       if (!message || message.token !== token || message.load !== load) return;
       if (message.type === "ganbaru-youtube-error") {
         const reason = message.code === 101 || message.code === 150
-          ? "This video does not allow embedded playback."
-          : "This video is unavailable or private.";
-        finish(new Error(reason));
+          ? translate("music.errors.youtubeEmbeddingBlocked")
+          : translate("music.errors.youtubeUnavailable");
+        finish(new LocalizedError(reason));
         return;
       }
       if (message.type === "ganbaru-youtube-playlist-error") {
-        finish(new Error("This playlist is unavailable, private, or empty."));
+        finish(new LocalizedError(translate("music.errors.youtubePlaylistUnavailable")));
         return;
       }
       if (source.kind === "youtube-playlist" && message.type === "ganbaru-youtube-playlist") {
@@ -233,14 +235,14 @@ export async function resolveMusicYouTubeSource(
       }
     };
     const timerId = dependencies.setTimer(
-      () => finish(new Error("YouTube did not respond in time.")),
+      () => finish(new LocalizedError(translate("music.errors.youtubeTimedOut"))),
       timeoutMs,
     );
     signal.addEventListener("abort", onAbort, { once: true });
     if (dependencies.nativeHost) {
       nativeHost = dependencies.nativeHost(handleData);
       nativeHost.open(url.toString(), HIDDEN_NATIVE_YOUTUBE_BOUNDS).catch((error: unknown) => {
-        finish(error instanceof Error ? error : new Error(String(error)));
+        finish(new LocalizedError(translate("music.errors.youtubeResolveFailed"), { cause: error }));
       });
       return;
     }

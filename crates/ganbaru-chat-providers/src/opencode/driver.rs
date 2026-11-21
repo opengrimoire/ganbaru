@@ -6,7 +6,10 @@ use super::event_stream::OpenCodeEventStream;
 use super::http_client::*;
 use super::local_server::OwnedOpenCodeServer;
 use super::normalizer::{OpenCodeEventNormalizer, OpenCodeRouteState};
-use super::permissions::permission_override;
+use super::permissions::{
+    OpenCodeOrganizationalPolicy, OpenCodePermissionRule, organizational_permission_error,
+    organizational_rules, permission_override, permission_reply,
+};
 use super::protocol::{OpenCodeCommand, parse_resume_cursor, resume_cursor};
 use super::support::*;
 use crate::events::*;
@@ -22,6 +25,10 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 
 const MAX_RECONNECT_ATTEMPTS: usize = 6;
+/// Longest wait for any event, heartbeats included, while a turn runs and no request waits for
+/// the user before the stream counts as silent and is reconnected. OpenCode heartbeat timing is
+/// unconfirmed, so the bound is wide and idle sessions are never timed out.
+pub(super) const OPENCODE_BUSY_STREAM_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_RECONCILIATION_PAGES: usize = 100;
 const MAX_RECONCILIATION_MESSAGES: usize = 10_000;
 
@@ -33,6 +40,9 @@ pub struct OpenCodeProviderDriver {
     pub(super) live: Option<OpenCodeLiveSession>,
     pub(super) cached_models: Option<ProviderModelCatalog>,
     pub(super) cached_commands: Vec<OpenCodeCommand>,
+    /// Silence bound of the event stream during a turn, [`OPENCODE_BUSY_STREAM_TIMEOUT`] outside
+    /// tests.
+    pub(super) busy_stream_timeout: Duration,
 }
 
 pub(super) struct OpenCodeLiveSession {
@@ -47,6 +57,9 @@ pub(super) struct OpenCodeLiveSession {
     pub session_id: ProviderSessionId,
     pub provider_thread_id: String,
     pub command_task: Option<JoinHandle<()>>,
+    /// The session rules last sent to an organizational session, which each turn re-derives
+    /// from its modes; none for a direct session.
+    pub organizational_rules: Option<Vec<OpenCodePermissionRule>>,
 }
 
 impl Drop for OpenCodeLiveSession {
@@ -160,7 +173,15 @@ impl OpenCodeProviderDriver {
             live: None,
             cached_models: None,
             cached_commands: Vec::new(),
+            busy_stream_timeout: OPENCODE_BUSY_STREAM_TIMEOUT,
         })
+    }
+
+    /// Shortens the silence bound so tests can observe a silent stream in real time.
+    #[cfg(test)]
+    pub(super) fn with_busy_stream_timeout(mut self, timeout: Duration) -> Self {
+        self.busy_stream_timeout = timeout;
+        self
     }
 
     pub fn metadata_read() -> ProviderFamilyMetadataRead {
@@ -175,6 +196,9 @@ impl OpenCodeProviderDriver {
                 "macos".to_string(),
             ],
             minimum_tested_cli_version: Some(MINIMUM_OPENCODE_VERSION.to_string()),
+            maximum_tested_cli_version: Some(OPENCODE_COMPATIBILITY.maximum_tested.to_string()),
+            update_command: Some("opencode upgrade".to_string()),
+            install_guide: crate::cli_install::install_guide("opencode"),
             default_executable_candidates: vec!["opencode".to_string()],
             implementation_status: ProviderImplementationStatus::Available,
             maturity: ProviderMaturity::Beta,
@@ -317,6 +341,10 @@ impl OpenCodeProviderDriver {
         }
         let workspace = canonical_workspace(input.workspace())?;
         self.require_external_workspace_confirmation()?;
+        let organizational_scope = self.organizational_scope()?;
+        let organizational_rules = organizational_scope
+            .map(|scope| self.organizational_rules_for(scope, input.modes()))
+            .transpose()?;
         let continuation_group_id = continuation_group(&self.settings, None)?;
         if input
             .expected_continuation()
@@ -347,6 +375,16 @@ impl OpenCodeProviderDriver {
             .ok_or_else(driver_state_error)?;
         let password = server_password(&owned_server, self.external_password.as_ref());
         let client = OpenCodeHttpClient::new(origin, &workspace, password)?;
+        if organizational_rules.is_some() {
+            let admitted = match client.health().await {
+                Ok(health) => ensure_organizational_version(&health),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = admitted {
+                stop_owned_server(&mut owned_server).await;
+                return Err(error);
+            }
+        }
         if registers_internal_mcp(&self.settings.connection, password) {
             if let Some(server) = &self.configuration.internal_mcp {
                 if let Err(error) = client
@@ -367,7 +405,9 @@ impl OpenCodeProviderDriver {
                 return Err(error);
             }
         };
-        let rules = permission_override(input.modes().safety_mode);
+        let rules = organizational_rules
+            .clone()
+            .or_else(|| permission_override(input.modes().safety_mode));
         let resolved = match resolve_native_session(
             &client,
             resume_session_id.as_deref(),
@@ -386,10 +426,15 @@ impl OpenCodeProviderDriver {
         let local_session_id = new_local_session_id(&self.configuration.instance_id)?;
         let provider_thread = ProviderThreadId::new(provider_thread_id.clone())
             .map_err(|_| super::protocol::protocol_error("session ID"))?;
-        let route = Arc::new(Mutex::new(OpenCodeRouteState::new(
-            provider_thread_id.clone(),
-            input.modes(),
-        )));
+        let mut route_state = OpenCodeRouteState::new(provider_thread_id.clone(), input.modes());
+        if let (Some(scope), Some(server)) = (
+            organizational_scope,
+            self.configuration.internal_mcp.as_ref(),
+        ) {
+            route_state = route_state
+                .with_organizational(OpenCodeOrganizationalPolicy::new(scope, &server.name));
+        }
+        let route = Arc::new(Mutex::new(route_state));
         let normalizer = Arc::new(OpenCodeEventNormalizer::new(
             self.configuration.instance_id.clone(),
             input.thread_id().clone(),
@@ -438,6 +483,10 @@ impl OpenCodeProviderDriver {
             expected_shutdown: Arc::clone(&expected_shutdown),
             terminal_error: Arc::clone(&terminal_error),
             session_id: provider_thread_id.clone(),
+            busy_stream_timeout: self.busy_stream_timeout,
+            shell: owned_server
+                .as_ref()
+                .and_then(OwnedOpenCodeServer::shell_sandbox),
         });
         self.live = Some(OpenCodeLiveSession {
             client,
@@ -451,6 +500,7 @@ impl OpenCodeProviderDriver {
             session_id: local_session_id.clone(),
             provider_thread_id,
             command_task: None,
+            organizational_rules,
         });
         Ok(ProviderSessionSnapshot {
             session_id: local_session_id,
@@ -533,6 +583,47 @@ impl OpenCodeProviderDriver {
         Ok(live)
     }
 
+    /// The scope an organizational launch enforces, or none for direct runs. Only the internal
+    /// server's organizational flag selects it, and a flagged server without a scope fails
+    /// closed.
+    pub(super) fn organizational_scope(&self) -> ChatResult<Option<ProviderOrganizationalScope>> {
+        match self.configuration.internal_mcp.as_ref() {
+            Some(server) if server.organizational_authority => server
+                .organizational_scope
+                .map(Some)
+                .ok_or_else(organizational_permission_error),
+            _ => Ok(None),
+        }
+    }
+
+    /// The session rules of an organizational run in `scope` under `modes`.
+    pub(super) fn organizational_rules_for(
+        &self,
+        scope: ProviderOrganizationalScope,
+        modes: TurnModeSnapshot,
+    ) -> ChatResult<Vec<OpenCodePermissionRule>> {
+        let server = self
+            .configuration
+            .internal_mcp
+            .as_ref()
+            .ok_or_else(organizational_permission_error)?;
+        organizational_rules(
+            scope,
+            modes,
+            &server.name,
+            &server.pre_approved_tools,
+            self.commands_confined(),
+        )
+    }
+
+    /// Whether the sandbox helper confines every command of an organizational session: an
+    /// owned server whose scope runs commands starts with the confined shell, or not at all, on
+    /// a device with an enforcing helper.
+    pub(super) fn commands_confined(&self) -> bool {
+        matches!(self.settings.connection, OpenCodeConnectionMode::Local)
+            && crate::confinement::sandbox_helper().is_some()
+    }
+
     fn require_external_workspace_confirmation(&self) -> ChatResult<()> {
         if self.settings.is_external() && !self.settings.external_workspace_access_confirmed {
             return Err(ChatError::validation(
@@ -596,6 +687,66 @@ struct EventPumpResources {
     expected_shutdown: Arc<AtomicBool>,
     terminal_error: Arc<Mutex<Option<ChatError>>>,
     session_id: String,
+    busy_stream_timeout: Duration,
+    /// The confined shell whose Git metadata guard is checked after each command and turn.
+    shell: Option<Arc<crate::confinement::ShellSandbox>>,
+}
+
+/// Why the event pump left a stream to reconnect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamInterruption {
+    Disconnected,
+    Silent,
+}
+
+impl StreamInterruption {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Disconnected => "opencode_event_stream_disconnected",
+            Self::Silent => "opencode_event_stream_silent",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Disconnected => "OpenCode event stream disconnected",
+            Self::Silent => "OpenCode event stream stayed silent during a turn",
+        }
+    }
+}
+
+/// What one wait on the event stream produced.
+enum StreamPoll {
+    Event(Value),
+    Interrupted(StreamInterruption),
+    /// The wait ran out while no turn was running or a request waited for the user; the stream
+    /// is kept.
+    IdleWait,
+}
+
+/// Waits for the next event. A wait that began during a turn, with no request waiting for the
+/// user, and outlasts the busy timeout counts as a silent stream. Any other wait just restarts,
+/// so a turn starting or a request being answered during it is detected within twice the timeout.
+async fn next_stream_event(
+    resources: &EventPumpResources,
+    stream: &mut OpenCodeEventStream,
+) -> StreamPoll {
+    let busy = resources
+        .route
+        .lock()
+        .is_ok_and(|state| state.active_turn_id.is_some() && !state.awaiting_user());
+    match tokio::time::timeout(resources.busy_stream_timeout, stream.next()).await {
+        Ok(Ok(Some(envelope))) => StreamPoll::Event(envelope),
+        Ok(Ok(None) | Err(_)) => StreamPoll::Interrupted(StreamInterruption::Disconnected),
+        Err(_) if busy => StreamPoll::Interrupted(StreamInterruption::Silent),
+        Err(_) => StreamPoll::IdleWait,
+    }
+}
+
+/// Whether an envelope shows the stream carries session activity again. OpenCode sends
+/// `server.connected` on every subscription, so it does not end a reconnect series.
+fn resets_reconnects(envelope: &Value) -> bool {
+    envelope.get("type").and_then(Value::as_str) != Some("server.connected")
 }
 
 fn spawn_event_pump(mut resources: EventPumpResources) -> JoinHandle<()> {
@@ -605,31 +756,55 @@ fn spawn_event_pump(mut resources: EventPumpResources) -> JoinHandle<()> {
         };
         let mut reconnect_attempt = 0_usize;
         loop {
-            match stream.next().await {
-                Ok(Some(envelope)) => {
-                    reconnect_attempt = 0;
+            match next_stream_event(&resources, &mut stream).await {
+                StreamPoll::Event(envelope) => {
+                    if resets_reconnects(&envelope) {
+                        reconnect_attempt = 0;
+                    }
                     let events = resources
                         .route
                         .lock()
                         .map_err(|_| driver_state_error())
                         .and_then(|mut state| resources.normalizer.normalize(&mut state, envelope));
+                    let events = match events {
+                        Ok(events) => {
+                            let events = answer_from_session_rules(&resources, events).await;
+                            match reject_outside_scope(&resources, events).await {
+                                Ok(events) => reject_unprompted_questions(&resources, events).await,
+                                Err(error) => Err(error),
+                            }
+                        }
+                        Err(error) => Err(error),
+                    };
+                    let guard_check = events
+                        .as_ref()
+                        .is_ok_and(|events| ends_confined_work(events));
                     if emit_events(&resources.sink, events).await.is_err() {
                         settle_event_failure(
                             &resources,
+                            StreamInterruption::Disconnected.code(),
                             "OpenCode event normalization or persistence failed",
                         )
                         .await;
                         return;
                     }
+                    if guard_check && end_after_git_metadata_change(&resources).await {
+                        return;
+                    }
                 }
-                Ok(None) | Err(_) => {
+                StreamPoll::IdleWait => {}
+                StreamPoll::Interrupted(interruption) => {
                     if resources.expected_shutdown.load(Ordering::Acquire) {
                         return;
                     }
                     reconnect_attempt += 1;
                     if reconnect_attempt > MAX_RECONNECT_ATTEMPTS {
-                        settle_event_failure(&resources, "OpenCode event stream disconnected")
-                            .await;
+                        settle_event_failure(
+                            &resources,
+                            interruption.code(),
+                            interruption.message(),
+                        )
+                        .await;
                         return;
                     }
                     if reconcile_messages(&resources).await.is_err() {
@@ -645,6 +820,112 @@ fn spawn_event_pump(mut resources: EventPumpResources) -> JoinHandle<()> {
             }
         }
     })
+}
+
+/// Rejects at OpenCode the questions it asked while no turn ran, so its run does not wait on an
+/// answer no one was asked for.
+///
+/// A rejection OpenCode refuses adds a warning, because the question then stays pending there.
+async fn reject_unprompted_questions(
+    resources: &EventPumpResources,
+    mut events: Vec<CanonicalRuntimeEvent>,
+) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
+    let questions = resources
+        .route
+        .lock()
+        .map_err(|_| driver_state_error())?
+        .take_unprompted_questions();
+    for request_id in questions {
+        if let Err(error) = resources.client.reject_question(request_id.as_str()).await {
+            let state = resources.route.lock().map_err(|_| driver_state_error())?;
+            events.push(resources.normalizer.external_event(
+                &state,
+                "question/reject",
+                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                    code: "opencode_question_reject_failed".to_string(),
+                    title: "OpenCode kept a question asked outside a turn".to_string(),
+                    detail: Some(error.message),
+                }),
+            )?);
+        }
+    }
+    Ok(events)
+}
+
+/// Rejects at OpenCode the permission requests an organizational scope cannot need, which never
+/// reach the person.
+///
+/// A rejection OpenCode refuses adds a warning, because the tool call then waits there.
+async fn reject_outside_scope(
+    resources: &EventPumpResources,
+    mut events: Vec<CanonicalRuntimeEvent>,
+) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
+    let rejections = resources
+        .route
+        .lock()
+        .map_err(|_| driver_state_error())?
+        .take_auto_rejections();
+    for request_id in rejections {
+        if let Err(error) = resources
+            .client
+            .reply_permission(
+                request_id.as_str(),
+                permission_reply(ApprovalDecisionKind::Deny),
+            )
+            .await
+        {
+            let state = resources.route.lock().map_err(|_| driver_state_error())?;
+            events.push(resources.normalizer.external_event(
+                &state,
+                "permission/reject",
+                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                    code: "opencode_scope_reject_failed".to_string(),
+                    title: "OpenCode kept a request outside the agent scope".to_string(),
+                    detail: Some(error.message),
+                }),
+            )?);
+        }
+    }
+    Ok(events)
+}
+
+/// Sends the `once` reply for requests a session rule covered.
+///
+/// A request whose reply OpenCode refuses loses its resolution event and stays open for the user.
+async fn answer_from_session_rules(
+    resources: &EventPumpResources,
+    mut events: Vec<CanonicalRuntimeEvent>,
+) -> Vec<CanonicalRuntimeEvent> {
+    let answers = match resources.route.lock() {
+        Ok(mut state) => state.take_auto_answers(),
+        Err(_) => return events,
+    };
+    for request_id in answers {
+        let accepted = resources
+            .client
+            .reply_permission(
+                request_id.as_str(),
+                permission_reply(ApprovalDecisionKind::AllowOnce),
+            )
+            .await
+            .is_ok();
+        if let Ok(mut state) = resources.route.lock() {
+            if accepted {
+                state.complete_auto_answer(&request_id);
+            } else {
+                state.release_auto_answer(&request_id);
+            }
+        }
+        if !accepted {
+            events.retain(|event| {
+                !matches!(
+                    &event.event,
+                    CanonicalEvent::RequestResolved(resolved) if resolved.request_id == request_id
+                )
+            });
+        }
+    }
+    events
 }
 
 async fn reconcile_messages(resources: &EventPumpResources) -> ChatResult<()> {
@@ -719,7 +1000,8 @@ async fn emit_events(
     Ok(())
 }
 
-async fn settle_event_failure(resources: &EventPumpResources, message: &str) {
+/// Ends the session after the event stream failed for good, reporting `code`.
+async fn settle_event_failure(resources: &EventPumpResources, code: &str, message: &str) {
     let error = ChatError::new(ChatErrorCode::TransportUnavailable, message, true);
     if let Ok(mut terminal) = resources.terminal_error.lock() {
         *terminal = Some(error);
@@ -734,7 +1016,7 @@ async fn settle_event_failure(resources: &EventPumpResources, message: &str) {
                 &state,
                 "transport/error",
                 CanonicalEvent::RuntimeError(RuntimeErrorEvent {
-                    code: "opencode_event_stream_disconnected".to_string(),
+                    code: code.to_string(),
                     message: message.to_string(),
                     recoverable: true,
                     safe_details: None,
@@ -745,6 +1027,67 @@ async fn settle_event_failure(resources: &EventPumpResources, message: &str) {
         let _ = resources.sink.emit(event).await;
         let _ = resources.sink.flush().await;
     }
+}
+
+/// Whether `events` finish a command or a turn, after which the Git metadata guard of a confined
+/// session is checked.
+fn ends_confined_work(events: &[CanonicalRuntimeEvent]) -> bool {
+    events.iter().any(|event| match &event.event {
+        CanonicalEvent::ItemCompleted(item) => item.kind == CanonicalItemKind::CommandExecution,
+        CanonicalEvent::TurnCompleted(_) | CanonicalEvent::TurnAborted(_) => true,
+        _ => false,
+    })
+}
+
+/// Checks the Git metadata of a confined session and, when its commands changed it, aborts the
+/// run, fails the session with the reason, and reports that it ended. A session without the
+/// confined shell is never ended here.
+async fn end_after_git_metadata_change(resources: &EventPumpResources) -> bool {
+    let Some(shell) = resources.shell.as_ref() else {
+        return false;
+    };
+    let Err(error) = shell.guard().verify() else {
+        return false;
+    };
+    resources.expected_shutdown.store(true, Ordering::Release);
+    if let Ok(mut terminal) = resources.terminal_error.lock() {
+        *terminal = Some(error.clone());
+    }
+    let _ = resources.client.abort(&resources.session_id).await;
+    let events = resources
+        .route
+        .lock()
+        .map_err(|_| driver_state_error())
+        .and_then(|mut state| {
+            state.session_state = ProviderSessionState::Failed;
+            let warning = resources.normalizer.external_event(
+                &state,
+                "session/git_metadata_changed",
+                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                    code: crate::confinement::GIT_METADATA_CHANGED_CODE.to_string(),
+                    title: "An agent changed this folder's Git configuration".to_string(),
+                    detail: Some(error.message.clone()),
+                }),
+            )?;
+            let failure = resources.normalizer.external_event(
+                &state,
+                "session/git_metadata_changed",
+                CanonicalEvent::RuntimeError(RuntimeErrorEvent {
+                    code: crate::confinement::GIT_METADATA_CHANGED_CODE.to_string(),
+                    message: error.message.clone(),
+                    recoverable: false,
+                    safe_details: None,
+                }),
+            )?;
+            Ok(vec![warning, failure])
+        });
+    if let Ok(events) = events {
+        for event in events {
+            let _ = resources.sink.emit(event).await;
+        }
+        let _ = resources.sink.flush().await;
+    }
+    true
 }
 
 fn reconnect_delay(attempt: usize) -> Duration {

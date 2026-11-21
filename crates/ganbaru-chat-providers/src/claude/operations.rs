@@ -2,16 +2,19 @@
 
 use super::driver::*;
 use super::home::resolve_claude_home;
+use super::instructions::{ClaudeSessionInstructions, check_turn_instructions};
 use super::normalizer::ClaudeRouteState;
 use super::protocol::*;
 use super::session::*;
 use super::support::*;
 use crate::events::*;
 use crate::models::*;
+use crate::registry::{admit_version, refused_version};
 use crate::{
     DriverFuture, DriverOperationContext, ProviderAuthoritySupport, ProviderDriver,
     ProviderEventSink,
 };
+use ganbaru_chat_contracts::model_recommendation::{NativeCompany, recommended_model_id};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex, atomic::Ordering};
 use std::time::Duration;
@@ -40,20 +43,57 @@ impl ProviderDriver for ClaudeProviderDriver {
         &self.configuration
     }
 
+    fn cli_command(&self, arguments: &[&str]) -> ChatResult<crate::ProviderCliCommand> {
+        let home = super::home::resolve_claude_home(&self.configuration)?;
+        let preferences = super::preferences::user_preferences(&home.config_directory);
+        let environment = super::home::claude_process_environment(
+            &self.configuration,
+            &home,
+            &preferences.environment,
+        )?;
+        let executable =
+            super::home::resolve_claude_executable(&self.configuration.executable, &environment)?;
+        Ok(crate::ProviderCliCommand::new(
+            executable.executable,
+            &executable.prefix_arguments,
+            arguments,
+            environment,
+        ))
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         claude_capabilities()
     }
 
+    fn session_process_id(&self) -> Option<u32> {
+        self.live.as_ref()?.connection.process_id()
+    }
+
+    fn background_work_running(&self) -> bool {
+        self.live.as_ref().is_some_and(|live| {
+            live.route
+                .lock()
+                .is_ok_and(|route| route.background_work_running())
+        })
+    }
+
+    /// Agent launches load only the tools their scope allows, confine the file tools to
+    /// the working directory, and send every web search, web fetch, and shell command to
+    /// Ganbaru as a permission request. Where the Ganbaru sandbox is present, the commands run under
+    /// it as the CLI's shell prefix, and a launch on a CLI too old for that is refused unless
+    /// the person approves each command. Publication goes through the push request host tool,
+    /// which a person confirms.
     fn authority_support(&self) -> ProviderAuthoritySupport {
         ProviderAuthoritySupport {
             isolated_conversation: true,
             internal_host_tools: true,
-            deny_shell: false,
-            read_only_root: false,
-            writable_root: false,
-            confined_commands: false,
-            network_boundary: false,
-            classified_publish: false,
+            deny_shell: true,
+            read_only_root: true,
+            writable_root: true,
+            confined_commands: crate::confinement::sandbox_helper().is_some(),
+            network_boundary: true,
+            classified_publish: true,
+            person_approved_commands: true,
         }
     }
 
@@ -71,8 +111,12 @@ impl ProviderDriver for ClaudeProviderDriver {
     ) -> DriverFuture<'a, ProviderProbeResult> {
         Box::pin(async move {
             let checked_at = now_utc()?;
-            match self.probe_snapshot(context).await {
+            match self.probe_snapshot(context, true).await {
                 Ok(snapshot) => {
+                    let version_admission = Some(admit_version::<ClaudeVersion>(
+                        &CLAUDE_COMPATIBILITY,
+                        &snapshot.version.to_string(),
+                    )?);
                     self.cached_commands = snapshot.initialize.commands.clone();
                     let authenticated = snapshot.initialize.account.is_some()
                         || self
@@ -81,6 +125,10 @@ impl ProviderDriver for ClaudeProviderDriver {
                             .contains_key("ANTHROPIC_API_KEY");
                     self.cached_models = Some(ProviderModelCatalog {
                         instance_id: self.configuration.instance_id.clone(),
+                        recommended_model_id: recommended_model_id(
+                            NativeCompany::Anthropic,
+                            &snapshot.models,
+                        ),
                         models: snapshot.models,
                         source: ModelCatalogSource::Provider,
                         discovered_at: checked_at.clone(),
@@ -95,6 +143,12 @@ impl ProviderDriver for ClaudeProviderDriver {
                         },
                         version: Some(snapshot.version.to_string()),
                         negotiated_protocol_version: Some("stream-json".to_string()),
+                        auth_source: None,
+                        account_plan: snapshot
+                            .initialize
+                            .account
+                            .as_ref()
+                            .and_then(ClaudeAccount::plan),
                         account_label: snapshot.initialize.account.and_then(|account| {
                             account
                                 .email
@@ -104,22 +158,46 @@ impl ProviderDriver for ClaudeProviderDriver {
                         capabilities: claude_capabilities(),
                         authority_support: self.authority_support(),
                         checked_at,
-                        detail: (!authenticated)
-                            .then_some("Claude authentication is required".to_string()),
+                        detail: (!authenticated).then(|| snapshot.home.authentication_hint()),
+                        version_admission,
+                        agent_minimum_version: agent_minimum_version(
+                            snapshot.version,
+                            crate::confinement::sandbox_helper().is_some(),
+                        )
+                        .map(|minimum| minimum.to_string()),
+                        usage_limits: snapshot.usage_limits,
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),
-                Err(error) => Ok(ProviderProbeResult {
-                    instance_id: self.configuration.instance_id.clone(),
-                    state: probe_state_for_error(error.code),
-                    version: None,
-                    negotiated_protocol_version: None,
-                    account_label: None,
-                    capabilities: claude_capabilities(),
-                    authority_support: self.authority_support(),
-                    checked_at,
-                    detail: Some(probe_detail(error.code).to_string()),
-                }),
+                Err(error) => {
+                    let refusal = refused_version(&error);
+                    let agent_minimum = refusal
+                        .as_ref()
+                        .and_then(|(_, version)| parse_version(version).ok())
+                        .and_then(|version| {
+                            agent_minimum_version(
+                                version,
+                                crate::confinement::sandbox_helper().is_some(),
+                            )
+                        })
+                        .map(|minimum| minimum.to_string());
+                    Ok(ProviderProbeResult {
+                        instance_id: self.configuration.instance_id.clone(),
+                        state: probe_state_for_error(error.code),
+                        version: refusal.as_ref().map(|(_, version)| version.clone()),
+                        negotiated_protocol_version: None,
+                        auth_source: None,
+                        account_plan: None,
+                        account_label: None,
+                        capabilities: claude_capabilities(),
+                        authority_support: self.authority_support(),
+                        checked_at,
+                        detail: Some(probe_detail(error.code).to_string()),
+                        version_admission: refusal.map(|(admission, _)| admission),
+                        agent_minimum_version: agent_minimum,
+                        usage_limits: None,
+                    })
+                }
             }
         })
     }
@@ -129,10 +207,14 @@ impl ProviderDriver for ClaudeProviderDriver {
         context: &'a DriverOperationContext,
     ) -> DriverFuture<'a, ProviderModelCatalog> {
         Box::pin(async move {
-            let snapshot = self.probe_snapshot(context).await?;
+            let snapshot = self.probe_snapshot(context, false).await?;
             self.cached_commands = snapshot.initialize.commands.clone();
             let catalog = ProviderModelCatalog {
                 instance_id: self.configuration.instance_id.clone(),
+                recommended_model_id: recommended_model_id(
+                    NativeCompany::Anthropic,
+                    &snapshot.models,
+                ),
                 models: snapshot.models,
                 source: ModelCatalogSource::Provider,
                 discovered_at: now_utc()?,
@@ -165,7 +247,7 @@ impl ProviderDriver for ClaudeProviderDriver {
                     ));
                 }
             }
-            home.continuation_group()
+            home.continuation_group_with_authority(self.organizational_authority())
         })
     }
 
@@ -203,18 +285,29 @@ impl ProviderDriver for ClaudeProviderDriver {
             let requested_effort = selected_effort(&request.model_options)?;
             let requested_fast_mode = selected_fast_mode(&request.model_options)?;
             let live = self.live_mut(&request.session_id)?;
-            if requested_effort.is_some() && requested_effort != live.effective_effort {
-                return Err(ChatError::unsupported(
-                    "Claude effort can only be changed when starting a session",
-                ));
-            }
-            if requested_fast_mode.is_some() && requested_fast_mode != live.effective_fast_mode {
-                return Err(ChatError::unsupported(
-                    "Claude Fast mode can only be changed when starting a session",
-                ));
-            }
+            check_turn_instructions(
+                live.instructions
+                    .as_ref()
+                    .map(ClaudeSessionInstructions::digest),
+                request.developer_instructions.as_deref(),
+            )?;
+            // A busy session keeps the running turn's permission mode, model, and effort.
+            ensure_no_active_turn(&live.route)?;
+            let flags_changed = (requested_effort.is_some()
+                && requested_effort != live.effective_effort)
+                || (requested_fast_mode.is_some()
+                    && requested_fast_mode != live.effective_fast_mode);
+            let permission_mode = if let Some(scope) = live.organizational {
+                Some(organizational_permission_mode(
+                    request.modes,
+                    scope,
+                    live.shell.is_some(),
+                )?)
+            } else {
+                permission_mode(request.modes)
+            };
             let client = live.connection.client();
-            if let Some(mode) = permission_mode(request.modes) {
+            if let Some(mode) = permission_mode {
                 client
                     .request("set_permission_mode", json!({ "mode": mode }), context)
                     .await
@@ -229,6 +322,22 @@ impl ProviderDriver for ClaudeProviderDriver {
                     live.effective_model = Some(model.clone());
                 }
             }
+            if flags_changed {
+                // An option the turn leaves unset keeps its live value, so changing one never
+                // resets the other.
+                let effort = requested_effort.or_else(|| live.effective_effort.clone());
+                let fast_mode = requested_fast_mode.or(live.effective_fast_mode);
+                client
+                    .request(
+                        "apply_flag_settings",
+                        apply_flag_settings_payload(effort.as_deref(), fast_mode)?,
+                        context,
+                    )
+                    .await
+                    .map_err(|error| error.to_chat_error("effort change"))?;
+                live.effective_effort = effort;
+                live.effective_fast_mode = fast_mode;
+            }
             let effective_model = live.effective_model.clone();
             let provider_turn_id =
                 ProviderTurnId::new(format!("claude-{}", request.turn_id.as_str()))
@@ -236,11 +345,7 @@ impl ProviderDriver for ClaudeProviderDriver {
             let event = {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                 if state.active_chat_turn_id.is_some() {
-                    return Err(ChatError::new(
-                        ChatErrorCode::Busy,
-                        "Claude already has an active turn; queue or steer the prompt",
-                        true,
-                    ));
+                    return Err(send_busy_error());
                 }
                 state.active_chat_turn_id = Some(request.turn_id.clone());
                 state.session_state = ProviderSessionState::Active;
@@ -263,7 +368,9 @@ impl ProviderDriver for ClaudeProviderDriver {
                 release_active_turn(&live.route);
                 return Err(error);
             }
+            let armed = arm_organizational_deadline(live);
             if let Err(error) = client.send(message).await {
+                disarm_organizational_deadline(live, armed);
                 release_active_turn(&live.route);
                 return Err(error.to_chat_error("turn dispatch"));
             }
@@ -316,7 +423,9 @@ impl ProviderDriver for ClaudeProviderDriver {
                 release_active_turn(&live.route);
                 return Err(error);
             }
+            let armed = arm_organizational_deadline(live);
             if let Err(error) = live.connection.client().send(message).await {
+                disarm_organizational_deadline(live, armed);
                 release_active_turn(&live.route);
                 return Err(error.to_chat_error("context compaction"));
             }
@@ -535,6 +644,40 @@ impl ProviderDriver for ClaudeProviderDriver {
             ))
         })
     }
+}
+
+/// Starts the organizational init deadline before a user message is written, because the
+/// CLI answers the first user message with `system/init`. Returns whether this call started it.
+fn arm_organizational_deadline(live: &ClaudeLiveSession) -> bool {
+    live.organizational_deadline
+        .as_ref()
+        .is_some_and(|deadline| deadline.arm())
+}
+
+/// Clears a deadline this dispatch started when its user message never reached the CLI.
+fn disarm_organizational_deadline(live: &ClaudeLiveSession, armed: bool) {
+    if armed {
+        if let Some(deadline) = live.organizational_deadline.as_ref() {
+            deadline.disarm();
+        }
+    }
+}
+
+/// Refuses a send while a turn is active, before any live option changes.
+fn ensure_no_active_turn(route: &Mutex<ClaudeRouteState>) -> ChatResult<()> {
+    let state = route.lock().map_err(|_| driver_state_error())?;
+    if state.active_chat_turn_id.is_some() {
+        return Err(send_busy_error());
+    }
+    Ok(())
+}
+
+fn send_busy_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::Busy,
+        "Claude already has an active turn; queue or steer the prompt",
+        true,
+    )
 }
 
 /// Clears the active turn claim after a turn fails before the provider accepted it.

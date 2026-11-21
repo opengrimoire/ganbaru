@@ -20,6 +20,7 @@ import type {
   ChatSettingsRead,
   ChatThreadId,
   ChatThreadShellRead,
+  ChatTurnId,
   InteractionMode,
   ModelId,
   ProjectWorkingFolderId,
@@ -29,11 +30,18 @@ import type {
   VersionedJson,
 } from "$lib/chat/contracts";
 import { chatErrorMessage } from "$lib/chat/error-presentation";
+import { translate } from "$lib/i18n/translator.svelte";
 import type { TimelineMessageRow } from "$lib/chat/timeline/model";
 
 export interface ChatComposerSendOptions {
   promptOverride?: string;
   omitComposerContext?: boolean;
+}
+
+/** A turn sent in a provider thread. */
+export interface ChatThreadTurnRef {
+  threadId: ChatThreadId;
+  turnId: ChatTurnId;
 }
 
 export interface ChatComposerRuntimeControllerOptions {
@@ -43,7 +51,7 @@ export interface ChatComposerRuntimeControllerOptions {
   selectedExecutionEnvironmentId: () => string | null;
   setSelectedThreadId: (threadId: ChatThreadId | null) => void;
   upsertThread: (thread: ChatThreadShellRead) => void;
-  loadTimeline: (threadId: ChatThreadId) => Promise<void>;
+  refreshTimeline: (threadId: ChatThreadId) => Promise<void>;
   clearTimeline: () => void;
   setSettings: (settings: ChatSettingsRead) => void;
   onComposerChanged: () => void;
@@ -172,7 +180,7 @@ export class ChatComposerRuntimeController {
       if (queuedFollowupDispatchReady(interaction.sessionState, latestTurnState)
         && interaction.queuedFollowup) {
         void this.dispatchQueuedFollowup(interaction.queuedFollowup).catch((error: unknown) => {
-          this.sendError = chatErrorMessage(error);
+          this.sendError = chatErrorMessage(error, translate("chatErrors.actions.sendMessage"));
         });
       }
     } finally {
@@ -285,10 +293,12 @@ export class ChatComposerRuntimeController {
     this.options.upsertThread(result.thread);
     if (!current) this.discardDraft();
     this.options.setSelectedThreadId(result.thread.id);
-    this.sendError = result.launchError?.message ?? null;
+    this.sendError = result.launchError
+      ? chatErrorMessage(result.launchError, translate("chatErrors.actions.sendMessage"))
+      : null;
     this.failedSendOptions = result.launchError ? { ...options } : null;
     try {
-      await this.options.loadTimeline(result.thread.id);
+      await this.options.refreshTimeline(result.thread.id);
     } finally {
       this.pendingUserMessage = null;
     }
@@ -308,6 +318,42 @@ export class ChatComposerRuntimeController {
       console.error("Chat composer selection could not be remembered after sending", error);
     }
     await this.refreshInteraction(result.thread.id);
+  }
+
+  /**
+   * Sends `prompt` as a turn in the selected thread with that thread's own provider, model, and modes.
+   * The composer draft, attachments, and mentions stay untouched, and no thread is created.
+   *
+   * @param prompt Turn text, shown in the thread like any other turn.
+   * @returns The thread and turn that carry the request.
+   */
+  async sendThreadTurn(prompt: string): Promise<ChatThreadTurnRef> {
+    const thread = this.options.selectedThread();
+    const workingFolderId = thread?.workingFolderId ?? null;
+    if (!thread || !workingFolderId) throw new Error("A Chat thread is required before sending a turn");
+    const turnId = crypto.randomUUID();
+    const result = await chatApi.sendChatTurn({
+      command: { clientCommandId: crypto.randomUUID(), expectedThreadRevision: thread.revision },
+      workingFolderId,
+      threadId: thread.id,
+      newThreadId: null,
+      executionEnvironmentId: null,
+      turnId,
+      messageId: crypto.randomUUID(),
+      providerInstanceId: thread.providerInstanceId,
+      providerManagedModel: thread.modelId === null,
+      modelId: thread.modelId,
+      modelOptions: thread.modelOptions,
+      modes: thread.modes,
+      prompt,
+      attachmentIds: [],
+      mentions: [],
+    });
+    this.options.upsertThread(result.thread);
+    if (result.launchError) throw new Error(result.launchError.message, { cause: result.launchError });
+    await this.options.refreshTimeline(thread.id);
+    await this.refreshInteraction(thread.id);
+    return { threadId: thread.id, turnId };
   }
 
   async retryFailedSend(): Promise<void> {
@@ -349,7 +395,7 @@ export class ChatComposerRuntimeController {
     });
     this.composerController.markSent();
     await this.composerController.flush();
-    await this.options.loadTimeline(thread.id);
+    await this.options.refreshTimeline(thread.id);
   }
 
   async queue(): Promise<void> {
@@ -408,7 +454,7 @@ export class ChatComposerRuntimeController {
     await this.refreshInteraction(threadId);
   }
 
-  async resolveApproval(decision: ApprovalDecision): Promise<void> {
+  async resolveApproval(decision: ApprovalDecision, remember = false): Promise<void> {
     const pending = this.interaction?.pendingRequest;
     const thread = this.options.selectedThread();
     if (!pending || !thread) return;
@@ -418,6 +464,7 @@ export class ChatComposerRuntimeController {
       requestId: pending.id,
       providerRequestId: pending.providerRequestId,
       decision,
+      ...(remember ? { remember } : {}),
     });
     await this.refreshInteraction(thread.id);
   }
@@ -447,11 +494,26 @@ export class ChatComposerRuntimeController {
         workingFolderId,
         crypto.randomUUID(),
         file.name,
-        [...new Uint8Array(await file.arrayBuffer())],
+        new Uint8Array(await file.arrayBuffer()),
       );
       this.attachments = [...this.attachments, attachment];
       this.composerController.setAttachments(this.attachments.map((entry) => entry.id));
     }
+  }
+
+  /**
+   * Attaches pasted text too large to read inline as a text attachment.
+   *
+   * @param text The pasted text, with hidden characters removed.
+   * @param displayName The attachment name shown on its chip and to the provider.
+   */
+  async importTextSnippet(text: string, displayName: string): Promise<void> {
+    const workingFolderId = this.composer.workingFolderId;
+    if (!workingFolderId) throw new Error("Choose a project working folder before attaching pasted text");
+    if (this.attachments.length >= CHAT_IMAGE_LIMIT) throw new Error(`Attach up to ${CHAT_IMAGE_LIMIT} Chat attachments`);
+    const attachment = await chatApi.importChatTextSnippet(workingFolderId, crypto.randomUUID(), displayName, text);
+    this.attachments = [...this.attachments, attachment];
+    this.composerController.setAttachments(this.attachments.map((entry) => entry.id));
   }
 
   async pickImages(title: string): Promise<void> {
@@ -488,7 +550,7 @@ export class ChatComposerRuntimeController {
     } catch (error: unknown) {
       if (request === this.attachmentRequest) {
         this.attachments = [];
-        this.sendError = chatErrorMessage(error);
+        this.sendError = chatErrorMessage(error, translate("chatErrors.actions.sendMessage"));
       }
     }
   }
@@ -525,8 +587,10 @@ export class ChatComposerRuntimeController {
       });
       await chatApi.markChatQueuedFollowupDispatched(thread.id, queued.id);
       this.options.upsertThread(result.thread);
-      this.sendError = result.launchError?.message ?? null;
-      await this.options.loadTimeline(thread.id);
+      this.sendError = result.launchError
+        ? chatErrorMessage(result.launchError, translate("chatErrors.actions.sendMessage"))
+        : null;
+      await this.options.refreshTimeline(thread.id);
       await this.refreshInteraction(thread.id);
     } finally {
       this.queuedDispatches.delete(queued.id);

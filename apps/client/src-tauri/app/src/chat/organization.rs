@@ -1,10 +1,14 @@
-//! Durable organizational messages, reply threads, teammates, and work assignments.
+//! Durable organizational messages, reply threads, agents, and work assignments.
 
 #[cfg(desktop)]
 use super::channels::sync_key;
 use super::channels::{
     chat_pool, i64_value, identifier_error, now_timestamp, optional_timestamp, persistence_error,
     timestamp, u64_value,
+};
+pub use channel_notes::{
+    AcceptChatNoteProposalCommand, ChatNoteProposalStateRead, CreateChatChannelNoteCommand,
+    DeleteChatChannelNoteCommand, DismissChatNoteProposalCommand, UpdateChatChannelNoteCommand,
 };
 pub use ganbaru_chat::coordination::contracts::*;
 use ganbaru_chat_contracts::models::*;
@@ -24,22 +28,46 @@ const MAX_SEARCH_RESULTS: u32 = 100;
 
 #[cfg(desktop)]
 pub mod access;
+mod agent_kinds;
+mod agent_lifecycle;
 #[cfg(desktop)]
 mod assignments;
+mod channel_notes;
 mod common;
 #[cfg(desktop)]
 mod context;
 #[cfg(desktop)]
-mod dispatch;
+mod continuation;
 #[cfg(desktop)]
+mod delegation;
+#[cfg(desktop)]
+mod dispatch;
+mod inputs;
+#[cfg(desktop)]
+mod instruction_files;
+mod model_choice;
 mod primary_folder;
+#[cfg(desktop)]
+mod provider_agents;
+mod push_approvals;
+#[cfg(desktop)]
+mod push_requests;
 mod reads;
+mod remembered_approvals;
+pub(crate) mod review_queue;
 mod scheduling;
-mod teammate_lifecycle;
 mod workflow;
 
 #[cfg(desktop)]
-pub(crate) use assignments::start_synced_assignment_work;
+use agent_lifecycle::{remove_custom_agent, restore_custom_agent, set_agent_archived};
+#[cfg(desktop)]
+pub(crate) use assignments::{
+    continue_queued_replies_after_turn, deliver_delegation_outcomes_of_assignments,
+    deliver_delegation_outcomes_of_thread, resume_answered_work_of_thread,
+    start_synced_assignment_work,
+};
+#[cfg(desktop)]
+use common::validate_policy;
 use common::{
     AttachmentSource, PageCursor, ScheduledPostTarget, chat_writers, conversation_item_id,
     has_thread_eligible_mention, map_command_receipt_error, message_revision_id,
@@ -47,31 +75,35 @@ use common::{
     scheduled_post_ids, serialization_error, this_device_id, validate_message_request,
 };
 #[cfg(desktop)]
-pub(crate) use common::{
-    effective_runtime_approval, native_assignment_safety_mode, parse_approval_policy,
-    parse_runtime_approval_policy, teammate_runtime_approval, wire_runtime_approval_policy,
-};
+pub(crate) use common::{native_assignment_safety_mode, parse_runtime_approval_policy};
 #[cfg(desktop)]
-use common::{
-    json_object, require_unused_teammate_name, validate_display_name, validate_policy,
-    validate_profile_text, validate_teammate_role,
+pub(crate) use delegation::{
+    DelegatedFolder, DelegationRequest, delegate_assignment, is_lifecycle_revocation,
 };
 #[cfg(desktop)]
 use dispatch::{deliver_assignment_input, dispatch_assignment_job};
+#[cfg(desktop)]
+pub(crate) use provider_agents::DeviceProviders;
+#[cfg(desktop)]
+pub(crate) use push_requests::push_standing_requests_after_turn;
 pub(crate) use reads::read_memberships_for_conversation;
+#[cfg(test)]
+pub(crate) use reads::read_reply_thread_summary;
 use reads::{
-    read_active_or_latest_assignment, read_assignment, read_message, read_reply_thread_page,
-    read_teammate,
+    read_active_or_latest_assignment, read_agent, read_assignment, read_message,
+    read_reply_thread_page,
 };
 #[cfg(desktop)]
-use teammate_lifecycle::set_teammate_archived;
+pub(crate) use scheduling::validate_proposed_schedule;
 #[cfg(desktop)]
 use workflow::insert_policy_revision;
 use workflow::{
-    AssignmentWrite, ChannelCopy, CommunicationMessageWrite, PostingDevice, insert_channel_copy,
+    AssignmentWrite, ChannelCopy, CommunicationMessageWrite, MessageAuthor, PostRoutingChoices,
+    PostingDevice, REVIEW_REFUSED_NO_EXECUTING_DEVICE, insert_channel_copy,
     insert_communication_message, next_item_order_key, persist_assignment_routing,
     read_post_receipt, require_continuation_scope_is_unchanged, require_reply_thread,
-    resolve_invoked_teammate,
+    require_reviewable_assignment, require_reviewed_work_is_latest, resolve_invoked_agent,
+    review_refusal,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -82,20 +114,29 @@ enum StoredPostMessageReceipt {
         reply_thread_id: Option<ChatReplyThreadId>,
         assignment_id: Option<ChatWorkAssignmentId>,
         assignment_input_queued: bool,
+        #[serde(default)]
+        routed_as: Option<ChatFollowupRouting>,
     },
 }
 
 #[tauri::command]
-pub async fn chat_list_teammates(
+pub async fn chat_list_agents(
     app: tauri::AppHandle,
     db_url: String,
     archived: bool,
-) -> ChatResult<Vec<ChatAiTeammateRead>> {
-    let pool = chat_pool(app, db_url).await?;
+) -> ChatResult<Vec<ChatAiAgentRead>> {
+    let local_instances = local_provider_instances(&app);
+    let pool = chat_pool(app.clone(), db_url).await?;
+    #[cfg(desktop)]
+    provider_agents::ensure_device_provider_agents(
+        &pool,
+        &provider_agents::read_device_providers(&app),
+    )
+    .await?;
     let rows = sqlx::query(
         "SELECT participant_id
-         FROM chat_teammates teammate
-         JOIN chat_participants participant ON participant.id = teammate.participant_id
+         FROM chat_agents agent
+         JOIN chat_participants participant ON participant.id = agent.participant_id
          WHERE (participant.archived_at IS NOT NULL) = ?
          ORDER BY participant.display_name COLLATE NOCASE, participant.id",
     )
@@ -103,101 +144,170 @@ pub async fn chat_list_teammates(
     .fetch_all(&pool)
     .await
     .map_err(persistence_error)?;
-    let mut teammates = Vec::with_capacity(rows.len());
+    let mut agents = Vec::with_capacity(rows.len());
     for row in rows {
         let id = ChatParticipantId::new(
             row.try_get::<String, _>("participant_id")
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?;
-        teammates.push(read_teammate(&pool, &id).await?);
+        agents.push(read_agent(&pool, &id, &local_instances).await?);
     }
-    Ok(teammates)
+    Ok(agents)
 }
 
 #[tauri::command]
-pub async fn chat_read_teammate(
+pub async fn chat_read_agent(
     app: tauri::AppHandle,
     db_url: String,
-    teammate_id: ChatParticipantId,
-) -> ChatResult<ChatAiTeammateRead> {
-    read_teammate(&chat_pool(app, db_url).await?, &teammate_id).await
+    agent_id: ChatParticipantId,
+) -> ChatResult<ChatAiAgentRead> {
+    let local_instances = local_provider_instances(&app);
+    read_agent(&chat_pool(app, db_url).await?, &agent_id, &local_instances).await
 }
 
+/// The provider instance of each family on this device. Android runs no provider, so it has
+/// none and reads what the linked desktop that would run each agent shares instead.
+fn local_provider_instances(app: &tauri::AppHandle) -> reads::LocalProviderInstances {
+    #[cfg(desktop)]
+    {
+        provider_agents::read_device_providers(app).local_instances()
+    }
+    #[cfg(mobile)]
+    {
+        match common::this_device_id(app) {
+            Ok(device_id) => reads::LocalProviderInstances::linked_reader(device_id),
+            Err(error) => {
+                eprintln!(
+                    "Chat could not read linked provider status: {}",
+                    error.message
+                );
+                reads::LocalProviderInstances::new()
+            }
+        }
+    }
+}
+
+/// Sets the default model and options of an agent as a new policy revision.
 #[tauri::command]
 #[cfg(desktop)]
-pub async fn chat_create_teammate(
+pub async fn chat_set_agent_policy(
     app: tauri::AppHandle,
     db_url: String,
-    request: CreateChatTeammateCommand,
-) -> ChatResult<ChatAiTeammateRead> {
-    let display_name = validate_display_name(&request.display_name)?;
-    let role = validate_teammate_role(&request.role)?;
-    validate_profile_text(&request.instructions, 65_536, "instructions")?;
-    validate_policy(&app, &request.policy)?;
-    let avatar_data = json_object(&request.avatar, "avatar")?;
-    let home_device_id = crate::sync::devices::stable_device_id(&app)
-        .map_err(crate::chat::settings::device_state_error)?;
+    request: SetChatAgentPolicyCommand,
+) -> ChatResult<ChatAiAgentRead> {
+    validate_policy(&request.policy)?;
+    let local_instances = local_provider_instances(&app);
     let pool = chat_pool(app, db_url).await?;
+    set_agent_policy(&pool, &request).await?;
+    read_agent(&pool, &request.agent_id, &local_instances).await
+}
+
+/// Creates an agent a person names, with its own model and effort, on a provider family this
+/// device runs.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn chat_create_agent(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: CreateChatAgentCommand,
+) -> ChatResult<ChatAiAgentRead> {
+    validate_policy(&request.policy)?;
+    let providers = provider_agents::read_device_providers(&app);
+    if providers.get(request.provider_family_id.as_str()).is_none() {
+        return Err(ChatError::validation(
+            "providerFamilyId",
+            "This provider is not set up on this device",
+        ));
+    }
+    let local_instances = providers.local_instances();
+    let pool = chat_pool(app, db_url).await?;
+    let agent_id = provider_agents::create_custom_agent(
+        &pool,
+        &request.provider_family_id,
+        &request.display_name,
+        &request.policy,
+    )
+    .await?;
+    read_agent(&pool, &agent_id, &local_instances).await
+}
+
+/// Stores the policy of `request` as the newest revision of a non-archived agent.
+#[cfg(desktop)]
+async fn set_agent_policy(
+    pool: &SqlitePool,
+    request: &SetChatAgentPolicyCommand,
+) -> ChatResult<()> {
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    require_unused_teammate_name(
-        &mut transaction,
-        &display_name,
-        request.teammate_id.as_str(),
+    let exists: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM chat_agents agent
+         JOIN chat_participants participant ON participant.id = agent.participant_id
+         WHERE agent.participant_id = ? AND participant.archived_at IS NULL",
     )
-    .await?;
-    sqlx::query(
-        "INSERT INTO chat_participants
-            (id, participant_kind, display_name, avatar_schema_version,
-             avatar_data, created_at, updated_at)
-         VALUES (?, 'ai_teammate', ?, ?, ?, ?, ?)",
-    )
-    .bind(request.teammate_id.as_str())
-    .bind(display_name)
-    .bind(i64::from(request.avatar.schema_version))
-    .bind(avatar_data)
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .execute(&mut *transaction)
+    .bind(request.agent_id.as_str())
+    .fetch_optional(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    sqlx::query(
-        "INSERT INTO chat_teammates
-            (participant_id, role, instructions, home_device_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)",
-    )
-    .bind(request.teammate_id.as_str())
-    .bind(role)
-    .bind(request.instructions.trim())
-    .bind(home_device_id)
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
-    insert_policy_revision(
-        &mut transaction,
-        &request.teammate_id,
-        &request.policy,
-        &now,
-    )
-    .await?;
-    transaction.commit().await.map_err(persistence_error)?;
-    read_teammate(&pool, &request.teammate_id).await
+    if exists.is_none() {
+        return Err(ChatError::new(
+            ChatErrorCode::NotFound,
+            "The AI agent was not found",
+            true,
+        ));
+    }
+    insert_policy_revision(&mut transaction, &request.agent_id, &request.policy, &now).await?;
+    transaction.commit().await.map_err(persistence_error)
 }
 
 #[tauri::command]
 #[cfg(desktop)]
-pub async fn chat_archive_teammate(
+pub async fn chat_archive_agent(
     app: tauri::AppHandle,
     db_url: String,
-    teammate_id: ChatParticipantId,
+    agent_id: ChatParticipantId,
     expected_revision: u64,
     archived: bool,
-) -> ChatResult<ChatAiTeammateRead> {
+) -> ChatResult<ChatAiAgentRead> {
+    let local_instances = local_provider_instances(&app);
     let pool = chat_pool(app, db_url).await?;
-    set_teammate_archived(&pool, &teammate_id, expected_revision, archived).await
+    set_agent_archived(
+        &pool,
+        &agent_id,
+        expected_revision,
+        archived,
+        &local_instances,
+    )
+    .await
+}
+
+/// Removes an agent a person named: deletes it when it was never used, and archives and hides it
+/// otherwise.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn chat_remove_custom_agent(
+    app: tauri::AppHandle,
+    db_url: String,
+    agent_id: ChatParticipantId,
+    expected_revision: u64,
+) -> ChatResult<ChatCustomAgentRemoval> {
+    let local_instances = local_provider_instances(&app);
+    let pool = chat_pool(app, db_url).await?;
+    remove_custom_agent(&pool, &agent_id, expected_revision, &local_instances).await
+}
+
+/// Brings a hidden agent a person named back to the agent list, still archived.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn chat_restore_custom_agent(
+    app: tauri::AppHandle,
+    db_url: String,
+    agent_id: ChatParticipantId,
+    expected_revision: u64,
+) -> ChatResult<ChatAiAgentRead> {
+    let local_instances = local_provider_instances(&app);
+    let pool = chat_pool(app, db_url).await?;
+    restore_custom_agent(&pool, &agent_id, expected_revision, &local_instances).await
 }
 
 #[tauri::command]
@@ -226,7 +336,6 @@ pub async fn chat_read_mobile_channel_roster(
 }
 
 #[tauri::command]
-#[cfg(desktop)]
 pub async fn chat_read_project_primary_working_folder(
     app: tauri::AppHandle,
     db_url: String,
@@ -262,7 +371,7 @@ pub async fn chat_post_message(
     db_url: String,
     request: PostChatMessageCommand,
 ) -> ChatResult<PostChatMessageResult> {
-    match post_message(app, db_url, &request, None).await? {
+    match post_message(app, db_url, &request, None, None).await? {
         PostOutcome::Posted(result) => Ok(result),
         PostOutcome::Refused(refusal) => Err(refusal),
     }
@@ -277,15 +386,6 @@ pub(super) enum PostOutcome<T> {
     Refused(ChatError),
 }
 
-/// Whether the send of a scheduled message carries consent given on this device.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ScheduledConsent {
-    /// This device scheduled exactly this request, or the user pressed send now or retry.
-    Local,
-    /// A due message this device never consented to, as one scheduled or rewritten elsewhere.
-    Unattended,
-}
-
 /// A scheduled message being sent under the claim `claim_token`.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ScheduledSend<'a> {
@@ -293,18 +393,60 @@ pub(super) struct ScheduledSend<'a> {
     pub(super) scheduled_message_id: &'a ChatScheduledMessageId,
     /// Claim the sender holds on it.
     pub(super) claim_token: &'a str,
-    /// Consent behind this send, which decides whether its work starts by itself.
-    pub(super) consent: ScheduledConsent,
+    /// Occurrence a repeating message posts, or `None` for a one-time message.
+    pub(super) occurrence: Option<ScheduledOccurrence<'a>>,
+}
+
+/// The occurrence of a repeating scheduled message a send posts. The post advances the series
+/// instead of deleting the message.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ScheduledOccurrence<'a> {
+    /// Occurrence key that the post ids and the command receipt derive from.
+    pub(super) key: &'a str,
+    /// Due time of the occurrence as stored when the send claimed it; the series advances only
+    /// while it still names this occurrence.
+    pub(super) due_at: &'a str,
+    /// Due time of the occurrence after it.
+    pub(super) next_at: &'a str,
+}
+
+impl ScheduledSend<'_> {
+    /// Command id the post of this send records its receipt under: the stored request's id for
+    /// a one-time message, and one derived from it and the occurrence for a repeating message,
+    /// so each occurrence posts once.
+    fn receipt_command_id(&self, request: &PostChatMessageCommand) -> ChatResult<ChatCommandId> {
+        match self.occurrence {
+            None => Ok(request.client_command_id.clone()),
+            Some(occurrence) => ChatCommandId::new(ganbaru_chat::ids::derived_id(
+                ganbaru_chat::ids::SCHEDULED_OCCURRENCE_COMMAND_ID_PREFIX,
+                &[request.client_command_id.as_str(), occurrence.key],
+            )?)
+            .map_err(identifier_error),
+        }
+    }
+}
+
+/// Ready-for-review work a post asks changes on. The post checks it in its own transaction and
+/// refuses it unless the post continues it in a follow-up, which completes it with changes
+/// requested.
+#[cfg_attr(mobile, allow(dead_code))]
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ReviewedWork<'a> {
+    /// Assignment under review, which must be the latest work of the post's reply thread.
+    pub(super) assignment_id: &'a ChatWorkAssignmentId,
+    /// Revision the reviewer saw.
+    pub(super) expected_revision: u64,
 }
 
 /// Posts `request`, or sends the scheduled message `scheduled` with it, and starts the work the
 /// post routes to. A scheduled send whose request does not match its stored row is refused
-/// and starts nothing.
+/// and starts nothing. With `review`, the post is the note that asks changes on that work.
 pub(super) async fn post_message(
     app: tauri::AppHandle,
     db_url: String,
     request: &PostChatMessageCommand,
     scheduled: Option<ScheduledSend<'_>>,
+    review: Option<ReviewedWork<'_>>,
 ) -> ChatResult<PostOutcome<PostChatMessageResult>> {
     #[cfg(desktop)]
     let dispatch_app = app.clone();
@@ -317,6 +459,7 @@ pub(super) async fn post_message(
         &pool,
         request,
         scheduled,
+        review,
         PostingDevice::this_device(&device_id, &writers),
     )
     .await?
@@ -331,38 +474,29 @@ pub(super) async fn post_message(
         .clone()
         .filter(|_| posted.assignment_write.executes_here)
     {
-        match post_acceptance_digest(&pool, &posted.assignment_write, scheduled).await {
-            Ok(Some(digest)) => assignments::record_post_acceptance(&app, &assignment_id, digest),
-            Ok(None) => {}
-            Err(error) => eprintln!(
-                "Chat assignment {} was not recorded as accepted: {error}",
-                assignment_id.as_str()
-            ),
-        }
-        if posted.assignment_write.awaits_acceptance && posted.assignment_write.input_queued {
-            // A pending reply of reviewed work continues through follow-up recovery, which
-            // starts it only when the teammate holds a local acceptance.
-            tauri::async_runtime::spawn(async move {
-                if let Err(error) =
-                    assignments::recover_assignment_dispatch_jobs(dispatch_app, dispatch_db_url)
-                        .await
-                {
-                    eprintln!("Chat follow-up of an unattended reply did not start: {error}");
-                }
-            });
-        } else if posted.assignment_write.input_queued {
+        if posted.assignment_write.routed_as == Some(ChatFollowupRouting::Steer) {
+            // A queued reply waits for the current turn to end, when follow-up recovery
+            // continues the work with it.
             let input_message_id = posted.item_id.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = deliver_assignment_input(
-                    dispatch_app,
-                    dispatch_db_url,
-                    assignment_id,
+                    dispatch_app.clone(),
+                    dispatch_db_url.clone(),
+                    assignment_id.clone(),
                     input_message_id,
                 )
                 .await;
+                // An answer to a question whose asking run ended needs a new run to reach.
+                if let Err(error) = assignments::resume_answered_assignments(
+                    dispatch_app,
+                    dispatch_db_url,
+                    [assignment_id.as_str().to_owned()],
+                )
+                .await
+                {
+                    eprintln!("Answered Chat work did not continue: {error}");
+                }
             });
-        } else if posted.assignment_write.awaits_acceptance {
-            assignments::start_unattended_assignment(&app, &assignment_id);
         } else {
             tauri::async_runtime::spawn(async move {
                 let _ = dispatch_assignment_job(dispatch_app, dispatch_db_url, assignment_id).await;
@@ -379,6 +513,7 @@ async fn write_post(
     pool: &SqlitePool,
     request: &PostChatMessageCommand,
     scheduled: Option<ScheduledSend<'_>>,
+    review: Option<ReviewedWork<'_>>,
     device: PostingDevice<'_>,
 ) -> ChatResult<PostOutcome<PersistedPost>> {
     if let Some(send) = scheduled
@@ -387,36 +522,12 @@ async fn write_post(
         return Ok(PostOutcome::Refused(refusal));
     }
     validate_message_request(request)?;
-    persist_post(pool, request, scheduled, device)
+    if scheduled.is_some() {
+        scheduling::refuse_scheduled_post_choices(request)?;
+    }
+    persist_post_with(pool, request, scheduled, review, device)
         .await
         .map(PostOutcome::Posted)
-}
-
-/// The acceptance digest the post that wrote `write` gives on this device, or `None` when it
-/// gives none. A user post, or a scheduled send with local consent, that dispatches new work
-/// accepts exactly the subject its dispatch job consented to run. An unattended scheduled send
-/// accepts nothing, since a peer may have written or rewritten its request.
-#[cfg(desktop)]
-async fn post_acceptance_digest(
-    pool: &SqlitePool,
-    write: &AssignmentWrite,
-    scheduled: Option<ScheduledSend<'_>>,
-) -> ChatResult<Option<String>> {
-    let Some(assignment_id) = write.assignment_id.as_ref() else {
-        return Ok(None);
-    };
-    let consented = scheduled.is_none_or(|send| send.consent == ScheduledConsent::Local);
-    if !consented || !write.dispatches_here() {
-        return Ok(None);
-    }
-    let digest = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT consented_digest FROM chat_assignment_dispatch_jobs WHERE assignment_id = ?",
-    )
-    .bind(assignment_id.as_str())
-    .fetch_optional(pool)
-    .await
-    .map_err(persistence_error)?;
-    Ok(digest.flatten())
 }
 
 /// A post written to the vault. Only desktop dispatches the work it routed.
@@ -435,32 +546,61 @@ const DELETE_CLAIMED_SCHEDULED_MESSAGE: &str = "DELETE FROM chat_scheduled_messa
          WHERE dispatch.scheduled_message_id = ?1 AND dispatch.claim_token = ?2
      )";
 
-/// Writes the post of `request` from `device` in one transaction. A scheduled send posts under
-/// ids derived from the scheduled message, copies its stored attachment values, and deletes the
-/// scheduled message in the same transaction, so it posts once even when the device stops
-/// between steps. An unattended send still posts, but queues no dispatch for the work it creates
-/// and leaves existing work as it is.
+/// Writes the post of `request` from `device` with no review.
+#[cfg(test)]
 async fn persist_post(
     pool: &SqlitePool,
     request: &PostChatMessageCommand,
     scheduled: Option<ScheduledSend<'_>>,
     device: PostingDevice<'_>,
 ) -> ChatResult<PersistedPost> {
-    let device = match scheduled {
-        Some(ScheduledSend {
-            consent: ScheduledConsent::Unattended,
-            ..
-        }) => device.unattended(),
-        _ => device,
+    persist_post_with(pool, request, scheduled, None, device).await
+}
+
+/// Writes the post of `request` from `device` in one transaction. A scheduled send posts under
+/// ids derived from the scheduled message and its occurrence, copies its stored attachment
+/// values, and in the same transaction deletes a one-time scheduled message or advances a
+/// repeating one past the occurrence, so each occurrence posts once even when the device stops
+/// between steps. With `review`, the same transaction refuses the post
+/// unless that work is still the latest of the reply thread, ready for review, and at the
+/// revision the reviewer saw, and unless the post continues it in a follow-up assignment, which
+/// completes it with changes requested and carries its pending replies.
+async fn persist_post_with(
+    pool: &SqlitePool,
+    request: &PostChatMessageCommand,
+    scheduled: Option<ScheduledSend<'_>>,
+    review: Option<ReviewedWork<'_>>,
+    device: PostingDevice<'_>,
+) -> ChatResult<PersistedPost> {
+    let receipt_command_id = match scheduled {
+        Some(scheduled) => scheduled.receipt_command_id(request)?,
+        None => request.client_command_id.clone(),
     };
-    if let Some(result) = read_post_receipt(pool, &request.client_command_id).await? {
-        if let Some(scheduled) = scheduled {
-            sqlx::query(DELETE_CLAIMED_SCHEDULED_MESSAGE)
-                .bind(scheduled.scheduled_message_id.as_str())
-                .bind(scheduled.claim_token)
-                .execute(pool)
-                .await
-                .map_err(persistence_error)?;
+    if let Some(result) = read_post_receipt(pool, &receipt_command_id).await? {
+        match scheduled {
+            Some(ScheduledSend {
+                occurrence: Some(occurrence),
+                scheduled_message_id,
+                claim_token,
+                ..
+            }) => {
+                scheduling::finish_posted_occurrence(
+                    pool,
+                    scheduled_message_id,
+                    claim_token,
+                    occurrence,
+                )
+                .await?;
+            }
+            Some(scheduled) => {
+                sqlx::query(DELETE_CLAIMED_SCHEDULED_MESSAGE)
+                    .bind(scheduled.scheduled_message_id.as_str())
+                    .bind(scheduled.claim_token)
+                    .execute(pool)
+                    .await
+                    .map_err(persistence_error)?;
+            }
+            None => {}
         }
         return Ok(PersistedPost {
             item_id: result.message.item_id.clone(),
@@ -479,7 +619,7 @@ async fn persist_post(
     if let Some(reply_thread_id) = request.reply_thread_id.as_ref() {
         require_reply_thread(pool, reply_thread_id, &channel.conversation_id).await?;
     }
-    let resolved_invocation = resolve_invoked_teammate(
+    let resolved_invocation = resolve_invoked_agent(
         pool,
         &channel.conversation_id,
         request.reply_thread_id.as_ref(),
@@ -493,12 +633,16 @@ async fn persist_post(
             .is_some(),
         &request.references,
     )?;
+    if let Some(review) = review {
+        require_reviewed_work_is_latest(resolved_invocation.as_ref(), review)?;
+    }
     let now = now_timestamp()?;
     let (item_id, revision_id) = match scheduled {
         Some(scheduled) => {
             let ids = scheduled_post_ids(
                 scheduled.scheduled_message_id.as_str(),
                 ScheduledPostTarget::Message,
+                scheduled.occurrence.map(|occurrence| occurrence.key),
             )?;
             (ids.item_id, ids.revision_id)
         }
@@ -517,12 +661,20 @@ async fn persist_post(
         None => None,
     };
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    if let Some(review) = review {
+        require_reviewable_assignment(
+            &mut transaction,
+            review.assignment_id,
+            review.expected_revision,
+        )
+        .await?;
+    }
     sqlx::query(
         "INSERT INTO chat_organizational_command_receipts
             (client_command_id, command_kind, state, created_at, updated_at)
          VALUES (?, 'post_message', 'accepted', ?, ?)",
     )
-    .bind(request.client_command_id.as_str())
+    .bind(receipt_command_id.as_str())
     .bind(now.as_str())
     .bind(now.as_str())
     .execute(&mut *transaction)
@@ -537,6 +689,7 @@ async fn persist_post(
     insert_communication_message(
         &mut transaction,
         CommunicationMessageWrite {
+            author: MessageAuthor::LocalPerson,
             item_id: &item_id,
             revision_id: &revision_id,
             conversation_id: &channel.conversation_id,
@@ -544,9 +697,9 @@ async fn persist_post(
             order_key: &order_key,
             request,
             attachments,
-            invoked_teammate_id: resolved_invocation
+            invoked_agent_id: resolved_invocation
                 .as_ref()
-                .map(|invocation| &invocation.teammate_id),
+                .map(|invocation| &invocation.agent_id),
             now: &now,
         },
     )
@@ -605,7 +758,10 @@ async fn persist_post(
                 reply_thread_id,
                 &item_id,
                 resolved_invocation.as_ref(),
-                request.execution_target.as_ref(),
+                PostRoutingChoices {
+                    execution_target: request.execution_target.as_ref(),
+                    followup_routing: request.followup_routing,
+                },
                 device,
                 &now,
             )
@@ -613,6 +769,21 @@ async fn persist_post(
         }
         None => AssignmentWrite::NONE,
     };
+    if let Some(review) = review {
+        // Only a follow-up completes the reviewed work and carries its pending replies. Without
+        // one no device can run the agent, so the note and the replies would reach no run:
+        // the whole post rolls back and the reviewer keeps the note.
+        let continued = assignment_write
+            .assignment_id
+            .as_ref()
+            .is_some_and(|id| id != review.assignment_id);
+        if !continued {
+            return Err(review_refusal(
+                REVIEW_REFUSED_NO_EXECUTING_DEVICE,
+                "No device can run this agent, so the changes cannot be requested yet",
+            ));
+        }
+    }
     if request.also_send_to_channel && request.reply_thread_id.is_some() {
         insert_channel_copy(
             &mut transaction,
@@ -624,6 +795,7 @@ async fn persist_post(
                         scheduled_post_ids(
                             scheduled.scheduled_message_id.as_str(),
                             ScheduledPostTarget::ChannelCopy,
+                            scheduled.occurrence.map(|occurrence| occurrence.key),
                         )
                     })
                     .transpose()?,
@@ -631,19 +803,35 @@ async fn persist_post(
             },
             resolved_invocation
                 .as_ref()
-                .map(|invocation| &invocation.teammate_id),
+                .map(|invocation| &invocation.agent_id),
             &now,
         )
         .await?;
     }
     if let Some(scheduled) = scheduled {
-        let deleted = sqlx::query(DELETE_CLAIMED_SCHEDULED_MESSAGE)
-            .bind(scheduled.scheduled_message_id.as_str())
-            .bind(scheduled.claim_token)
-            .execute(&mut *transaction)
-            .await
-            .map_err(persistence_error)?;
-        if deleted.rows_affected() != 1 {
+        let finished = match scheduled.occurrence {
+            Some(occurrence) => {
+                scheduling::advance_claimed_series(
+                    &mut transaction,
+                    scheduled.scheduled_message_id,
+                    scheduled.claim_token,
+                    occurrence,
+                    &now,
+                )
+                .await?
+            }
+            None => {
+                sqlx::query(DELETE_CLAIMED_SCHEDULED_MESSAGE)
+                    .bind(scheduled.scheduled_message_id.as_str())
+                    .bind(scheduled.claim_token)
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(persistence_error)?
+                    .rows_affected()
+                    == 1
+            }
+        };
+        if !finished {
             return Err(ChatError::new(
                 ChatErrorCode::Conflict,
                 "The scheduled message changed before it was sent",
@@ -656,6 +844,7 @@ async fn persist_post(
         reply_thread_id: target_reply_thread_id.clone(),
         assignment_id: assignment_write.assignment_id.clone(),
         assignment_input_queued: assignment_write.input_queued,
+        routed_as: assignment_write.routed_as,
     };
     sqlx::query(
         "UPDATE chat_organizational_command_receipts
@@ -664,7 +853,7 @@ async fn persist_post(
     )
     .bind(serde_json::to_string(&receipt_locator).map_err(serialization_error)?)
     .bind(now.as_str())
-    .bind(request.client_command_id.as_str())
+    .bind(receipt_command_id.as_str())
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
@@ -684,6 +873,7 @@ async fn persist_post(
         reply_thread_id: target_reply_thread_id,
         assignment,
         assignment_input_queued: assignment_write.input_queued,
+        routed_as: assignment_write.routed_as,
     };
     let serialized = serde_json::to_string(&result).map_err(serialization_error)?;
     sqlx::query(
@@ -693,7 +883,7 @@ async fn persist_post(
     )
     .bind(serialized)
     .bind(now_timestamp()?.as_str())
-    .bind(request.client_command_id.as_str())
+    .bind(receipt_command_id.as_str())
     .execute(pool)
     .await
     .map_err(persistence_error)?;
@@ -713,6 +903,175 @@ pub async fn chat_schedule_message(
     scheduling::schedule_message(app, db_url, request).await
 }
 
+/// Schedules the message a person confirmed from an agent's schedule proposal.
+#[tauri::command]
+pub async fn chat_confirm_schedule_proposal(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: ConfirmScheduleProposalCommand,
+) -> ChatResult<ChatScheduledMessageRead> {
+    scheduling::confirm_schedule_proposal(app, db_url, request).await
+}
+
+/// Hides an agent's schedule proposal on this device. The dismissal never syncs.
+#[tauri::command]
+pub fn chat_dismiss_schedule_proposal(
+    app: tauri::AppHandle,
+    proposal_item_id: ChatConversationItemId,
+) -> ChatResult<()> {
+    scheduling::dismiss_schedule_proposal(&app, &proposal_item_id)
+}
+
+/// Reads whether each schedule proposal is pending, confirmed, or dismissed on this device.
+#[tauri::command]
+pub async fn chat_read_schedule_proposal_states(
+    app: tauri::AppHandle,
+    db_url: String,
+    proposal_item_ids: Vec<ChatConversationItemId>,
+) -> ChatResult<Vec<ChatScheduleProposalStateRead>> {
+    scheduling::read_schedule_proposal_states(app, db_url, proposal_item_ids).await
+}
+
+/// Pushes the commit an agent's open push request names, after checking that the folder
+/// still names it, and answers the request.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn chat_confirm_push_request(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: ConfirmPushRequestCommand,
+) -> ChatResult<PostChatMessageResult> {
+    push_requests::confirm_push_request(app, db_url, request).await
+}
+
+/// Reads whether each push request is waiting, open, pushed, or closed.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn chat_read_push_request_states(
+    app: tauri::AppHandle,
+    db_url: String,
+    request_item_ids: Vec<ChatConversationItemId>,
+) -> ChatResult<Vec<ChatPushRequestStateRead>> {
+    push_requests::read_push_request_states(app, db_url, request_item_ids).await
+}
+
+/// Lists the active standing push approvals of a channel.
+#[tauri::command]
+pub async fn chat_list_push_approvals(
+    app: tauri::AppHandle,
+    db_url: String,
+    channel_id: ChatChannelId,
+) -> ChatResult<Vec<ChatChannelPushApprovalRead>> {
+    let pool = chat_pool(app, db_url).await?;
+    let channel = super::channels::read_channel(&pool, &channel_id).await?;
+    push_approvals::list_push_approvals(&pool, &channel.conversation_id).await
+}
+
+/// Revokes a standing push approval, so later matching push requests ask again.
+#[tauri::command]
+pub async fn chat_revoke_push_approval(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: RevokeChatPushApprovalCommand,
+) -> ChatResult<()> {
+    let pool = chat_pool(app, db_url).await?;
+    push_approvals::revoke_push_approval(&pool, &request).await
+}
+
+/// Lists the active remembered agent approvals of a channel.
+#[tauri::command]
+pub async fn chat_list_remembered_approvals(
+    app: tauri::AppHandle,
+    db_url: String,
+    channel_id: ChatChannelId,
+) -> ChatResult<Vec<ChatChannelRememberedApprovalRead>> {
+    let pool = chat_pool(app, db_url).await?;
+    let channel = super::channels::read_channel(&pool, &channel_id).await?;
+    remembered_approvals::list_remembered_approvals(&pool, &channel.conversation_id).await
+}
+
+/// Revokes a remembered agent approval, so later matching requests ask again.
+#[tauri::command]
+pub async fn chat_revoke_remembered_approval(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: RevokeChatRememberedApprovalCommand,
+) -> ChatResult<()> {
+    let pool = chat_pool(app, db_url).await?;
+    remembered_approvals::revoke(&pool, &request).await
+}
+
+/// Lists the live notes of a channel the local person belongs to, newest updated first.
+#[tauri::command]
+pub async fn chat_list_channel_notes(
+    app: tauri::AppHandle,
+    db_url: String,
+    channel_id: ChatChannelId,
+) -> ChatResult<Vec<ChatChannelNoteRead>> {
+    channel_notes::list_channel_notes(&chat_pool(app, db_url).await?, &channel_id).await
+}
+
+/// Saves a note a person wrote in a channel.
+#[tauri::command]
+pub async fn chat_create_channel_note(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: CreateChatChannelNoteCommand,
+) -> ChatResult<ChatChannelNoteRead> {
+    channel_notes::create_channel_note(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Rewords a channel note at the revision the person saw.
+#[tauri::command]
+pub async fn chat_update_channel_note(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: UpdateChatChannelNoteCommand,
+) -> ChatResult<ChatChannelNoteRead> {
+    channel_notes::update_channel_note(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Deletes a channel note at the revision the person saw.
+#[tauri::command]
+pub async fn chat_delete_channel_note(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: DeleteChatChannelNoteCommand,
+) -> ChatResult<()> {
+    channel_notes::delete_channel_note(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Saves an agent's note proposal as a channel note, as suggested or with the person's text.
+#[tauri::command]
+pub async fn chat_accept_note_proposal(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: AcceptChatNoteProposalCommand,
+) -> ChatResult<ChatChannelNoteRead> {
+    channel_notes::accept_note_proposal(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Dismisses an agent's note proposal so no device saves it.
+#[tauri::command]
+pub async fn chat_dismiss_note_proposal(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: DismissChatNoteProposalCommand,
+) -> ChatResult<()> {
+    channel_notes::dismiss_note_proposal(&chat_pool(app, db_url).await?, &request).await
+}
+
+/// Reads whether each note proposal is pending, saved, or dismissed on every linked device.
+#[tauri::command]
+pub async fn chat_read_note_proposal_states(
+    app: tauri::AppHandle,
+    db_url: String,
+    proposal_item_ids: Vec<ChatConversationItemId>,
+) -> ChatResult<Vec<ChatNoteProposalStateRead>> {
+    channel_notes::read_note_proposal_states(&chat_pool(app, db_url).await?, proposal_item_ids)
+        .await
+}
+
 #[tauri::command]
 pub async fn chat_list_scheduled_messages(
     app: tauri::AppHandle,
@@ -730,6 +1089,15 @@ pub async fn chat_cancel_scheduled_message(
     scheduled_message_id: ChatScheduledMessageId,
 ) -> ChatResult<()> {
     scheduling::cancel_scheduled_message(app, db_url, scheduled_message_id).await
+}
+
+#[tauri::command]
+pub async fn chat_update_scheduled_message(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: UpdateScheduledChatMessageCommand,
+) -> ChatResult<ChatScheduledMessageRead> {
+    scheduling::update_scheduled_message(app, db_url, request).await
 }
 
 #[tauri::command]
@@ -844,17 +1212,14 @@ pub async fn chat_read_reply_thread_page(
     cursor: Option<String>,
     limit: Option<u32>,
 ) -> ChatResult<ChatReplyThreadPageRead> {
-    let pool = chat_pool(app.clone(), db_url).await?;
-    let page = read_reply_thread_page(
+    let pool = chat_pool(app, db_url).await?;
+    read_reply_thread_page(
         &pool,
         &reply_thread_id,
         parse_cursor(cursor.as_deref())?,
         limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE),
     )
-    .await?;
-    #[cfg(desktop)]
-    let page = assignments::mark_local_acceptance(&app, &pool, page).await?;
-    Ok(page)
+    .await
 }
 
 #[tauri::command]
@@ -878,7 +1243,7 @@ async fn search_messages(
     project_id: Option<&str>,
     limit: Option<u32>,
 ) -> ChatResult<Vec<ChatMessageSearchResultRead>> {
-    let rows = sqlx::query(
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT
             channel.project_id,
             channel.id AS channel_id,
@@ -901,9 +1266,11 @@ async fn search_messages(
          JOIN chat_channels channel ON channel.conversation_id = search.conversation_id
          WHERE chat_communication_search_fts MATCH ?
            AND (? IS NULL OR channel.project_id = ?)
+           AND NOT {}
          ORDER BY rank, item.created_at DESC
          LIMIT ?",
-    )
+        inputs::AWAITING_DELIVERY_SQL
+    )))
     .bind(fts_query)
     .bind(project_id)
     .bind(project_id)
@@ -965,15 +1332,35 @@ async fn search_messages(
         .collect()
 }
 
+/// Cancels active work from any linked device. The settled state replicates, and the executing
+/// device stops the run when it applies it; a desktop also stops what it runs itself.
 #[tauri::command]
-#[cfg(desktop)]
 pub async fn chat_cancel_assignment(
     app: tauri::AppHandle,
     db_url: String,
     assignment_id: ChatWorkAssignmentId,
     expected_revision: u64,
 ) -> ChatResult<ChatWorkAssignmentRead> {
-    assignments::cancel_assignment(app, db_url, assignment_id, expected_revision).await
+    let pool = chat_pool(app.clone(), db_url.clone()).await?;
+    let cancelled =
+        workflow::cancel_assignment_work(&pool, &assignment_id, expected_revision).await?;
+    let assignment = cancelled.assignment.clone();
+    #[cfg(desktop)]
+    assignments::end_cancelled_work(&app, &db_url, &pool, cancelled, "assignment-cancel").await?;
+    Ok(assignment)
+}
+
+/// Accepts ready-for-review work or requests changes with a note, which continues the work in the same thread.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn chat_review_assignment(
+    app: tauri::AppHandle,
+    db_url: String,
+    assignment_id: ChatWorkAssignmentId,
+    expected_revision: u64,
+    review: ChatAssignmentReviewRequest,
+) -> ChatResult<ChatWorkAssignmentRead> {
+    assignments::review_assignment(app, db_url, assignment_id, expected_revision, review).await
 }
 
 #[tauri::command]
@@ -987,26 +1374,79 @@ pub async fn chat_retry_assignment(
     assignments::retry_assignment(app, db_url, assignment_id, expected_revision).await
 }
 
-/// Starts synced work that waits for a local action on this device and records the acceptance.
+/// Lists the assignments that wait for the person in every channel, or in one project's
+/// channels, by priority and recency, with how many match in all.
 #[tauri::command]
-#[cfg(desktop)]
-pub async fn chat_accept_assignment_here(
+pub async fn chat_list_review_queue(
+    app: tauri::AppHandle,
+    db_url: String,
+    project_id: Option<String>,
+) -> ChatResult<ChatReviewQueueRead> {
+    review_queue::list_review_queue(app, db_url, project_id).await
+}
+
+/// Lists the replies routed to an assignment after the message that started it, with their
+/// delivery state.
+#[tauri::command]
+pub async fn chat_list_assignment_inputs(
     app: tauri::AppHandle,
     db_url: String,
     assignment_id: ChatWorkAssignmentId,
-    seen_digest: String,
-) -> ChatResult<Option<ChatWorkAssignmentRead>> {
-    assignments::accept_assignment_here(app, db_url, assignment_id, seen_digest).await
+) -> ChatResult<Vec<ChatAssignmentInputRead>> {
+    inputs::list_assignment_inputs_command(app, db_url, assignment_id).await
 }
 
-/// Lists the work that waits for a local action on this device, across every reply thread.
+/// Replaces the text of a reply that has not reached the agent yet.
 #[tauri::command]
-#[cfg(desktop)]
-pub async fn chat_list_waiting_assignments(
+pub async fn chat_edit_assignment_input(
     app: tauri::AppHandle,
     db_url: String,
-) -> ChatResult<Vec<ChatWaitingAssignmentRead>> {
-    assignments::list_waiting_assignments(app, db_url).await
+    input_id: ChatAssignmentInputId,
+    edit: ChatAssignmentInputEditRequest,
+) -> ChatResult<ChatAssignmentInputRead> {
+    inputs::edit_assignment_input_command(app, db_url, input_id, edit).await
+}
+
+/// Cancels a reply that has not reached the agent yet, keeping it in the thread.
+#[tauri::command]
+pub async fn chat_cancel_assignment_input(
+    app: tauri::AppHandle,
+    db_url: String,
+    input_id: ChatAssignmentInputId,
+) -> ChatResult<ChatAssignmentInputRead> {
+    inputs::cancel_assignment_input_command(app, db_url, input_id).await
+}
+
+/// Holds a waiting reply back from delivery, or resumes it, keeping its place in the queue.
+#[tauri::command]
+pub async fn chat_set_assignment_input_held(
+    app: tauri::AppHandle,
+    db_url: String,
+    input_id: ChatAssignmentInputId,
+    held: bool,
+) -> ChatResult<ChatAssignmentInputRead> {
+    inputs::set_assignment_input_held_command(app, db_url, input_id, held).await
+}
+
+/// Sends a waiting reply into the current turn of its work instead of after it.
+#[tauri::command]
+pub async fn chat_steer_assignment_input(
+    app: tauri::AppHandle,
+    db_url: String,
+    input_id: ChatAssignmentInputId,
+) -> ChatResult<ChatAssignmentInputRead> {
+    inputs::steer_assignment_input_command(app, db_url, input_id).await
+}
+
+/// Puts the waiting replies of an assignment in a new order, returning every input it lists.
+#[tauri::command]
+pub async fn chat_reorder_assignment_inputs(
+    app: tauri::AppHandle,
+    db_url: String,
+    assignment_id: ChatWorkAssignmentId,
+    ordered_input_ids: Vec<ChatAssignmentInputId>,
+) -> ChatResult<Vec<ChatAssignmentInputRead>> {
+    inputs::reorder_assignment_inputs_command(app, db_url, assignment_id, ordered_input_ids).await
 }
 
 /// Starts the work of a mention whose post recorded no assignment, running it on this device.
@@ -1016,9 +1456,9 @@ pub async fn chat_start_mentioned_assignment(
     app: tauri::AppHandle,
     db_url: String,
     message_item_id: ChatConversationItemId,
-    teammate_id: ChatParticipantId,
+    agent_id: ChatParticipantId,
 ) -> ChatResult<ChatWorkAssignmentRead> {
-    assignments::start_mentioned_assignment(app, db_url, message_item_id, teammate_id).await
+    assignments::start_mentioned_assignment(app, db_url, message_item_id, agent_id).await
 }
 
 #[cfg(test)]

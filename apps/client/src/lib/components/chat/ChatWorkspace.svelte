@@ -6,9 +6,11 @@
   import {
     CHAT_LOCAL_EXECUTION_COMPONENTS,
     listenForChatChanges,
+    listenForChatOrganizationChanges,
     preloadChatLocalExecutionUi,
   } from "$lib/chat/workspace/local-execution-ui";
   import { inspectorFocusAction } from "$lib/chat/workspace/inspector-model";
+  import { chatPanelScope } from "$lib/chat/workspace/panel-visibility.svelte";
   import {
     CHAT_OPEN_WORKSPACE_PANEL_EVENT,
     chatWorkspaceRequest,
@@ -16,19 +18,28 @@
   import {
     alignPanelSizeToDevicePixel,
     CHAT_AUXILIARY_CONVERSATION_MIN_PX,
-    CHAT_REPLY_THREAD_WIDTH_PX,
     chatBottomPanelResizeMaximum,
     chatLayoutDecision,
     chatLayoutsEqual,
     chatInspectorResizeMaximum,
+    chatReplyThreadResizeMaximum,
     fittedChatBottomPanelHeight,
     fittedChatInspectorWidth,
+    fittedChatReplyThreadWidth,
     panelSizeWithCollapseSnap,
     panelWidthFromKey,
+    type ChatColumnResizeInput,
     type ChatLayoutDecision,
   } from "$lib/chat/responsive-layout";
-  import type { ChatPanelPreferences } from "$lib/chat/contracts";
-  import { parseChatChangeNotification } from "$lib/chat/validation";
+  import { createPanelPointerResize, type PanelPointerResize } from "$lib/chat/workspace/panel-pointer-resize";
+  import {
+    CHAT_INSPECTOR_WIDTH_BOUNDS,
+    CHAT_REPLY_THREAD_WIDTH_BOUNDS,
+    type ChatPanelPreferences,
+    type ChatPanelWidthBounds,
+    type ChatRestorePreviewRead,
+  } from "$lib/chat/contracts";
+  import { defaultChatConfiguration, parseChatChangeNotification } from "$lib/chat/validation";
   import { hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import { firstFocusable, trapTabFocus } from "$lib/chat/focus-navigation";
   import {
@@ -36,6 +47,7 @@
     restoreChatCheckpoint,
   } from "$lib/chat/review/checkpoint-restoration";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -53,8 +65,16 @@
   import ChatChannelArchive from "$lib/components/chat/channels/ChatChannelArchive.svelte";
   import ChatChannelFeed from "$lib/components/chat/channels/ChatChannelFeed.svelte";
   import ChatReplyThreadPanel from "$lib/components/chat/timeline/ChatReplyThreadPanel.svelte";
+  import ChatReplyThreadSheet from "$lib/components/chat/timeline/ChatReplyThreadSheet.svelte";
+  import ChatRestoreDialog from "$lib/components/chat/review/ChatRestoreDialog.svelte";
   import { isTextEntryElement, OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
+  import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
+  import { createBackgroundAnnouncementTracker } from "$lib/chat/notifications/announcements";
+  import { getPomodoro } from "$lib/stores/pomodoro.svelte";
+  import { attentionSignals, type ChatAttentionSignal } from "$lib/chat/notifications/gate";
+  import { getChatQuietStatus } from "$lib/chat/notifications/quiet-status.svelte";
 
   let {
     projectSidebar = undefined,
@@ -75,11 +95,6 @@
   const localization = getLocalization();
   const { t } = localization;
   const chat = useChat();
-  // The open reply thread already shows its own Start here notice.
-  const waitingAssignments = $derived(
-    chat.waitingAssignments.filter((waiting) => waiting.replyThreadId !== chat.openReplyThreadId),
-  );
-  const latestWaitingAssignment = $derived(waitingAssignments[0] ?? null);
   const paneEvents = useChatPaneEvents();
   const preferences = getPreferences();
   const projects = useProjects();
@@ -88,9 +103,6 @@
     BUILD_PLATFORM_PROFILE,
     "chat.local-execution",
   );
-  const DEFAULT_INSPECTOR_WIDTH = 520;
-  const MIN_INSPECTOR_WIDTH = 240;
-  const MAX_INSPECTOR_WIDTH = 960;
   const DEFAULT_BOTTOM_PANEL_HEIGHT = 190;
   const MIN_BOTTOM_PANEL_HEIGHT = 96;
   const MAX_BOTTOM_PANEL_HEIGHT = 520;
@@ -100,8 +112,9 @@
   const INITIAL_SHELL_WIDTH = 1_200;
   const INITIAL_SHELL_HEIGHT = 700;
   const INITIAL_FONT_SCALE = 1;
-  const initialInspectorWidth = chat.settings?.configuration.panels.inspectorWidthPx
-    ?? DEFAULT_INSPECTOR_WIDTH;
+  const initialPanels = chat.settings?.configuration.panels;
+  const initialInspectorWidth = initialPanels?.inspectorWidthPx ?? CHAT_INSPECTOR_WIDTH_BOUNDS.default;
+  const initialReplyThreadWidth = initialPanels?.replyThreadWidthPx ?? CHAT_REPLY_THREAD_WIDTH_BOUNDS.default;
   let rootElement: HTMLDivElement | undefined = $state();
   let primaryHeaderElement: HTMLDivElement | undefined = $state();
   let globalActionsElement: HTMLDivElement | undefined = $state();
@@ -114,11 +127,16 @@
   const WorkspaceObserver = CHAT_LOCAL_EXECUTION_COMPONENTS?.WorkspaceObserver ?? null;
   const WorkspacePanel = CHAT_LOCAL_EXECUTION_COMPONENTS?.WorkspacePanel ?? null;
   let resizingInspector = $state(false);
+  let resizingReplyThread = $state(false);
   let resizingBottomPanel = $state(false);
   let inspectorWidth = $state(initialInspectorWidth);
+  /** Reply thread column width the user chose; the shown width aligns it to the display. */
+  let replyThreadWidth = $state(initialReplyThreadWidth);
   let bottomPanelHeight = $state(DEFAULT_BOTTOM_PANEL_HEIGHT);
-  let bottomPanelOpen = $state(false);
-  let bottomPanelMounted = $state(false);
+  /** The selected channel owns whether its bottom panel is open, so the shell only reads it. */
+  const bottomPanelOpen = $derived(chat.bottomPanelOpen);
+  /** Keeps the bottom panel mounted once any channel opened it, so its close transition and terminals survive. */
+  let bottomPanelMounted = $state(untrack(() => chat.bottomPanelOpen));
   let bottomPanelSkipCloseTransition = $state(false);
   let reducedMotion = $state(false);
   let headerEditingTitle = $state(false);
@@ -126,6 +144,7 @@
   let projectSettingsTrigger = $state<HTMLButtonElement | null>(null);
   let projectSettingsProjectId = $state<string | null>(null);
   let inspectorWasOpen = false;
+  let inspectorFocusChannelId = untrack(() => chat.selectedChannelId);
   let inspectorReturnFocus: HTMLElement | null = null;
   let replyThreadWasOpen = false;
   let replyThreadReturnFocus: HTMLElement | null = null;
@@ -149,16 +168,21 @@
     inspectorOpen: chat.inspectorOpen,
     inspectorWidth: initialInspectorWidth,
     replyThreadOpen: chat.openReplyThreadId !== null,
-    replyThreadWidth: CHAT_REPLY_THREAD_WIDTH_PX,
+    replyThreadWidth: initialReplyThreadWidth,
   }));
   const bottomPanelVisible = $derived(
     bottomPanelOpen && layout.variant !== "minimum_recovery",
   );
-  const auxiliaryPairOpen = $derived(chat.openReplyThreadId !== null && chat.inspectorOpen);
   const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
-  const projectHosted = $derived(projectSidebar !== undefined && !mobileShell);
+  /** A reply thread shown in a workspace tab of its own fills the view, without the rail, channel header, or feed. */
+  const replyThreadTab = $derived(chat.replyThreadTabId !== null && !mobileShell);
+  /** Whether the reply thread shows beside or over the channel feed, which a reply thread tab replaces. */
+  const replyThreadBesideFeed = $derived(chat.openReplyThreadId !== null && !replyThreadTab);
+  const auxiliaryPairOpen = $derived(replyThreadBesideFeed && chat.inspectorOpen);
+  const timelineDensity = $derived(chat.settings?.configuration.behavior.timelineDensity ?? "comfortable");
+  const projectHosted = $derived(projectSidebar !== undefined && !mobileShell && !replyThreadTab);
   const visibleRailOpen = $derived(
-    projectHosted ? false : mobileShell ? mobileRailOpen : auxiliaryPairOpen ? transientRailOpen : chat.railOpen,
+    replyThreadTab ? false : projectHosted ? false : mobileShell ? mobileRailOpen : auxiliaryPairOpen ? transientRailOpen : chat.railOpen,
   );
   const observeRailOpenForHover = suppressHoverOnToggle();
   $effect(() => observeRailOpenForHover(visibleRailOpen));
@@ -166,16 +190,24 @@
   const railUsesMobilePanel = $derived(
     mobileShell && layout.railPresentation === "sheet",
   );
-  const railDocked = $derived(projectHosted || (layout.railPresentation === "column" && !mobileShell));
+  const railDocked = $derived(projectHosted || (layout.railPresentation === "column" && !mobileShell && !replyThreadTab));
   const railIsModal = $derived(
     layout.railPresentation === "sheet" && !railUsesMobilePanel && visibleRailOpen,
   );
-  const replyThreadWidth = $derived(CHAT_REPLY_THREAD_WIDTH_PX * fontScale);
   const displayedInspectorWidth = $derived.by(() => {
     if (!auxiliaryPairOpen) return inspectorWidth;
     const reservedWidth = CHAT_AUXILIARY_CONVERSATION_MIN_PX * fontScale + replyThreadWidth;
-    return Math.min(inspectorWidth, Math.max(MIN_INSPECTOR_WIDTH, shellWidth - reservedWidth));
+    return Math.min(inspectorWidth, Math.max(CHAT_INSPECTOR_WIDTH_BOUNDS.minimum, shellWidth - reservedWidth));
   });
+  /** Right edge of the reply thread column, which is the inspector's left edge when the inspector is a column. */
+  const replyThreadEnd = $derived(
+    shellRight - (layout.inspectorPresentation === "column" ? displayedInspectorWidth : 0),
+  );
+  /**
+   * The reply thread width moved so the separator line between the thread and the conversation lands on a device pixel
+   * and renders one crisp pixel wide.
+   */
+  const displayedReplyThreadWidth = $derived(alignReplyThreadWidthToDisplay(replyThreadWidth));
   const threadFullSurface = $derived(layout.replyThreadPresentation === "main");
   const threadColumnOpen = $derived(layout.replyThreadPresentation === "column");
   let loadError = $state<string | null>(null);
@@ -186,10 +218,6 @@
   let announcedThreadId: string | null = null;
   let announcedTurnState: string | null = null;
   let announcedRequestId: string | null = null;
-  let inspectorResizeFrame: number | null = null;
-  let bottomResizeFrame: number | null = null;
-  let inspectorResizeEndFrame: number | null = null;
-  let bottomResizeEndFrame: number | null = null;
   let panelTransitionFrame: number | null = null;
   let initialLoadingTimer: number | null = null;
   let panelTransitionsEnabled = $state(false);
@@ -212,20 +240,23 @@
         requestAnimationFrame(preloadChatLocalExecutionUi);
       })
       .catch((error) => {
-        loadError = error instanceof Error ? error.message : String(error);
+        loadError = chatErrorMessage(error, t("chatErrors.actions.loadChat"));
       });
     refreshWorkspacePixelGeometry();
     inspectorWidth = alignInspectorWidthToDisplay(
-      chat.settings?.configuration.panels.inspectorWidthPx ?? DEFAULT_INSPECTOR_WIDTH,
+      chat.settings?.configuration.panels.inspectorWidthPx ?? CHAT_INSPECTOR_WIDTH_BOUNDS.default,
     );
     if (chat.settings) enablePanelTransitionsAfterLayout();
     const unlisten = listenForChatChanges((payload) => {
       try {
         const change = parseChatChangeNotification(payload);
-        void chat.handleNativeChange(change.threadId).catch(() => undefined);
+        void chat.handleNativeChange(change.threadId, change).catch(() => undefined);
       } catch (error: unknown) {
         console.error("Invalid Chat change notification", error);
       }
+    });
+    const unlistenOrganization = listenForChatOrganizationChanges(() => {
+      void chat.handleOrganizationChange().catch(() => undefined);
     });
     const observer = new ResizeObserver(([entry]) => {
       if (!entry) return;
@@ -244,27 +275,6 @@
       void restoreMessageCheckpoint(event.detail.threadId, event.detail.checkpointId);
     };
     const openWorkspaceTool = (event: Event) => { openInspectorWorkspaceForEvent(event); };
-    const openTeammates = (event: Event) => {
-      const participantId = event instanceof CustomEvent
-        && typeof event.detail === "object"
-        && event.detail !== null
-        && "participantId" in event.detail
-        && typeof event.detail.participantId === "string"
-        ? event.detail.participantId
-        : undefined;
-      const channelId = event instanceof CustomEvent
-        && typeof event.detail === "object"
-        && event.detail !== null
-        && "channelId" in event.detail
-        && typeof event.detail.channelId === "string"
-        ? event.detail.channelId
-        : undefined;
-      settings.open("chat", {
-        chatSubsection: "teammates",
-        chatTeammateId: participantId,
-        chatChannelId: channelId,
-      });
-    };
     paneEvents.addEventListener("ganbaru:chat-revert-message", revertMessage);
     paneEvents.addEventListener("ganbaru:chat-open-review", openWorkspaceTool);
     paneEvents.addEventListener("ganbaru:chat-open-file", openWorkspaceTool);
@@ -279,15 +289,14 @@
       if (!channelId) return;
       paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-edit-channel", { detail: { channelId } }));
     };
-    paneEvents.addEventListener("ganbaru:chat-configure-teammate", openTeammates);
     paneEvents.addEventListener("ganbaru:chat-manage-members", manageMembers);
     return () => {
+      answerRestoreDialog(false);
       observer.disconnect();
       headerGeometryObserver.disconnect();
-      if (inspectorResizeFrame !== null) window.cancelAnimationFrame(inspectorResizeFrame);
-      if (bottomResizeFrame !== null) window.cancelAnimationFrame(bottomResizeFrame);
-      if (inspectorResizeEndFrame !== null) window.cancelAnimationFrame(inspectorResizeEndFrame);
-      if (bottomResizeEndFrame !== null) window.cancelAnimationFrame(bottomResizeEndFrame);
+      sideColumnResizers.inspector.dispose();
+      sideColumnResizers.replyThread.dispose();
+      bottomPanelResizer.dispose();
       if (panelTransitionFrame !== null) window.cancelAnimationFrame(panelTransitionFrame);
       if (initialLoadingTimer !== null) window.clearTimeout(initialLoadingTimer);
       for (const timer of Object.values(snapTransitionTimers)) {
@@ -297,9 +306,9 @@
       paneEvents.removeEventListener("ganbaru:chat-revert-message", revertMessage);
       paneEvents.removeEventListener("ganbaru:chat-open-review", openWorkspaceTool);
       paneEvents.removeEventListener("ganbaru:chat-open-file", openWorkspaceTool);
-      paneEvents.removeEventListener("ganbaru:chat-configure-teammate", openTeammates);
       paneEvents.removeEventListener("ganbaru:chat-manage-members", manageMembers);
       void unlisten.then((dispose) => dispose());
+      void unlistenOrganization.then((dispose) => dispose());
     };
   });
 
@@ -309,7 +318,7 @@
     untrack(() => {
       void chat.syncProjectSelection(projectId).catch((error: unknown) => {
         if (projects.selectedProjectId === projectId) {
-          loadError = error instanceof Error ? error.message : String(error);
+          loadError = chatErrorMessage(error, t("chatErrors.actions.loadChat"));
         }
       });
     });
@@ -330,6 +339,31 @@
     const target = replyThreadReturnFocus;
     replyThreadReturnFocus = null;
     queueMicrotask(() => target?.isConnected && target.focus());
+  }
+
+  /**
+   * Closes the workspace tab that shows the reply thread on its own. When it is this window's only tab, its channel
+   * opens in a tab first, so closing the thread never closes the window.
+   */
+  function closeReplyThreadTab(): void {
+    const channel = chat.selectedChannel;
+    const replyThreadId = chat.replyThreadTabId;
+    const tab = tabs.tabs.find(({ location: { item } }) =>
+      item?.type === "chat-reply-thread" && item.id === replyThreadId && item.channelId === channel?.id,
+    );
+    if (tab && tabs.tabs.length > 1) {
+      tabs.close(tab.id);
+      return;
+    }
+    if (!channel) return;
+    if (tab) {
+      tabs.openLocation("item", { kind: "chat", projectId: channel.projectId, item: { type: "chat-channel", id: channel.id } });
+      tabs.close(tab.id);
+      return;
+    }
+    void chat.selectChannel(channel.id).catch((error: unknown) => {
+      layoutError = chatErrorMessage(error);
+    });
   }
 
   function openRail(): void {
@@ -421,9 +455,10 @@
 
   $effect(() => {
     if (!chat.settings) return;
-    const configuredInspectorWidth = chat.settings.configuration.panels.inspectorWidthPx;
-    if (!resizingInspector && !pendingPanelWidths) {
-      inspectorWidth = alignInspectorWidthToDisplay(configuredInspectorWidth);
+    const { inspectorWidthPx, replyThreadWidthPx } = chat.settings.configuration.panels;
+    if (!pendingPanelWidths) {
+      if (!resizingInspector) inspectorWidth = alignInspectorWidthToDisplay(inspectorWidthPx);
+      if (!resizingReplyThread) replyThreadWidth = replyThreadWidthPx;
     }
     enablePanelTransitionsAfterLayout();
   });
@@ -443,6 +478,60 @@
     else if (state === "completed") politeAnnouncement = t("chat.accessibility.responseCompleted");
     else if (state === "interrupted") politeAnnouncement = t("chat.accessibility.turnInterrupted");
     else if (state === "failed") politeAnnouncement = t("chat.accessibility.turnFailed");
+  });
+
+  // One pane speaks background work, so a split of two Chat tabs announces each change once.
+  const tabs = getWorkspaceTabs();
+  const announcesBackgroundWork = getWorkspacePaneScope() === "primary";
+  const quietStatus = getChatQuietStatus();
+  const pomodoro = getPomodoro();
+  const backgroundAnnouncements = createBackgroundAnnouncementTracker();
+  const focusPhaseKey = $derived(`${pomodoro.isActive}:${pomodoro.isRunning}:${pomodoro.phase}`);
+
+  function backgroundAnnouncementText(signal: ChatAttentionSignal): string {
+    if (signal.kind === "answer") return t("chat.accessibility.backgroundAnswer", signal.agentName, signal.channelName);
+    if (signal.kind === "approval") {
+      return t("chat.accessibility.backgroundApproval", signal.agentName, signal.channelName);
+    }
+    if (signal.kind === "review") return t("chat.accessibility.backgroundReview", signal.agentName, signal.channelName);
+    return t("chat.accessibility.backgroundFailure", signal.agentName, signal.channelName);
+  }
+
+  /** Speaks the background change the tracker picks after a completed quiet read. */
+  function announceBackgroundWork(): void {
+    const signal = backgroundAnnouncements.decide({
+      quiet: quietStatus.state?.quiet ?? true,
+      enabled: (chat.settings?.configuration.behavior ?? defaultChatConfiguration().behavior).announceBackgroundWork,
+      selectedReplyThreadId: chat.openReplyThreadId,
+    });
+    if (!signal) return;
+    // Clearing first lets the live region repeat text identical to the previous announcement.
+    politeAnnouncement = "";
+    const text = backgroundAnnouncementText(signal);
+    void tick().then(() => {
+      politeAnnouncement = text;
+    });
+  }
+
+  $effect(() => {
+    if (!announcesBackgroundWork) return;
+    return quietStatus.use(announceBackgroundWork);
+  });
+
+  // A queue change rereads the quiet state first, and the completed read decides whether to speak.
+  $effect(() => {
+    if (!announcesBackgroundWork) return;
+    const queue = chat.reviewQueue;
+    untrack(() => {
+      if (backgroundAnnouncements.observe(queue ? attentionSignals(queue).signals : null)) quietStatus.refresh();
+    });
+  });
+
+  // A Focus phase change can end quiet, which releases a held announcement.
+  $effect(() => {
+    if (!announcesBackgroundWork) return;
+    const _focusPhase = focusPhaseKey;
+    untrack(() => quietStatus.refresh());
   });
 
   $effect(() => {
@@ -467,11 +556,32 @@
       railOpen: projectHosted ? !projects.sidebarCollapsed : visibleRailOpen,
       inspectorOpen: chat.inspectorOpen,
       inspectorWidth: displayedInspectorWidth,
-      replyThreadOpen: chat.openReplyThreadId !== null,
-      replyThreadWidth,
+      replyThreadOpen: replyThreadBesideFeed,
+      replyThreadWidth: displayedReplyThreadWidth,
       previousVariant: layout.variant,
     });
     if (!chatLayoutsEqual(layout, next)) layout = next;
+  });
+
+  $effect(() => {
+    if (bottomPanelOpen) bottomPanelMounted = true;
+  });
+
+  let shownPanelScope = untrack(() => chatPanelScope(chat.selectedChannelId, chat.replyThreadTabId));
+  /**
+   * Shows another channel's or reply thread tab's panel arrangement at once: panel transitions turn off before the DOM
+   * applies the new open state and come back after it is laid out, so neither panel slides open or closed on a switch.
+   */
+  $effect.pre(() => {
+    const panelScope = chatPanelScope(chat.selectedChannelId, chat.replyThreadTabId);
+    if (panelScope === shownPanelScope) return;
+    shownPanelScope = panelScope;
+    if (panelTransitionFrame !== null) {
+      window.cancelAnimationFrame(panelTransitionFrame);
+      panelTransitionFrame = null;
+    }
+    panelTransitionsEnabled = false;
+    enablePanelTransitionsAfterLayout();
   });
 
   $effect(() => {
@@ -502,6 +612,15 @@
 
   $effect(() => {
     const open = chat.inspectorOpen;
+    const channelId = chat.selectedChannelId;
+    // Switching channels shows that channel's panel without moving focus into or out of it.
+    const sameChannel = channelId === inspectorFocusChannelId;
+    inspectorFocusChannelId = channelId;
+    if (!sameChannel) {
+      inspectorReturnFocus = null;
+      inspectorWasOpen = open;
+      return;
+    }
     const action = inspectorFocusAction(inspectorWasOpen, open);
     if (action === "enter") {
       inspectorReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -517,7 +636,11 @@
   $effect(() => {
     const open = chat.openReplyThreadId !== null;
     if (open && !replyThreadWasOpen) {
-      queueMicrotask(() => document.querySelector<HTMLElement>("[data-chat-reply-thread] [data-thread-tab]")?.focus());
+      // The tab on desktop, or the thread itself where a phone sheet shows no header.
+      queueMicrotask(() => {
+        const thread = document.querySelector<HTMLElement>("[data-chat-reply-thread]");
+        (thread?.querySelector<HTMLElement>("[data-thread-tab]") ?? thread)?.focus();
+      });
     }
     replyThreadWasOpen = open;
   });
@@ -658,9 +781,23 @@
   ): number {
     return alignPanelSizeToDevicePixel({
       value,
-      minimum: MIN_INSPECTOR_WIDTH,
+      minimum: CHAT_INSPECTOR_WIDTH_BOUNDS.minimum,
       maximum,
       anchor: shellRight,
+      direction: "from-end",
+      devicePixelRatio: displayPixelRatio,
+    });
+  }
+
+  function alignReplyThreadWidthToDisplay(
+    value: number,
+    maximum = CHAT_REPLY_THREAD_WIDTH_BOUNDS.maximum,
+  ): number {
+    return alignPanelSizeToDevicePixel({
+      value,
+      minimum: CHAT_REPLY_THREAD_WIDTH_BOUNDS.minimum,
+      maximum,
+      anchor: replyThreadEnd,
       direction: "from-end",
       devicePixelRatio: displayPixelRatio,
     });
@@ -680,14 +817,70 @@
     });
   }
 
-  function inspectorWidthFromPointer(requested: number): number {
-    const maximum = inspectorResizeMaximum();
-    const snapped = panelSizeWithCollapseSnap(
-      requested,
-      MIN_INSPECTOR_WIDTH,
-      maximum,
-    );
-    return snapped === 0 ? 0 : alignInspectorWidthToDisplay(snapped, maximum);
+  /** A resizable column beside the conversation, whose separator sits on its start edge. */
+  type SideColumn = "inspector" | "replyThread";
+
+  function sideColumnBounds(column: SideColumn): ChatPanelWidthBounds {
+    return column === "inspector" ? CHAT_INSPECTOR_WIDTH_BOUNDS : CHAT_REPLY_THREAD_WIDTH_BOUNDS;
+  }
+
+  function sideColumnWidth(column: SideColumn): number {
+    return column === "inspector" ? displayedInspectorWidth : displayedReplyThreadWidth;
+  }
+
+  function alignSideColumnWidth(column: SideColumn, value: number, maximum: number): number {
+    return column === "inspector"
+      ? alignInspectorWidthToDisplay(value, maximum)
+      : alignReplyThreadWidthToDisplay(value, maximum);
+  }
+
+  function setSideColumnWidth(column: SideColumn, width: number): void {
+    if (column === "inspector") inspectorWidth = width;
+    else replyThreadWidth = width;
+  }
+
+  /**
+   * Constraints of a side column. Beside an open reply thread the conversation keeps its narrower minimum and the rail
+   * is a sheet, and each column reserves the other one's width when both are columns.
+   */
+  function sideColumnResizeInput(column: SideColumn): ChatColumnResizeInput {
+    const bounds = sideColumnBounds(column);
+    const input: ChatColumnResizeInput = {
+      containerWidth: shellWidth,
+      railVisible: layout.railPresentation === "column" && visibleRailOpen,
+      fontScale,
+      minimum: bounds.minimum,
+      maximum: bounds.maximum,
+    };
+    if (!auxiliaryPairOpen) return input;
+    const otherColumnWidth = column === "inspector"
+      ? displayedReplyThreadWidth
+      : layout.inspectorPresentation === "column" ? inspectorWidth : 0;
+    return {
+      ...input,
+      railReservedWidth: 0,
+      conversationMinimum: CHAT_AUXILIARY_CONVERSATION_MIN_PX * fontScale,
+      additionalReservedWidth: otherColumnWidth,
+    };
+  }
+
+  function sideColumnResizeMaximum(column: SideColumn): number {
+    if (column === "inspector") {
+      if (layout.inspectorPresentation !== "column") return CHAT_INSPECTOR_WIDTH_BOUNDS.maximum;
+      return chatInspectorResizeMaximum(sideColumnResizeInput(column));
+    }
+    if (layout.replyThreadPresentation !== "column") return CHAT_REPLY_THREAD_WIDTH_BOUNDS.maximum;
+    return chatReplyThreadResizeMaximum(sideColumnResizeInput(column));
+  }
+
+  function inspectorResizeMaximum(): number {
+    return sideColumnResizeMaximum("inspector");
+  }
+
+  function sideColumnWidthFromPointer(column: SideColumn, requested: number): number {
+    const maximum = sideColumnResizeMaximum(column);
+    const snapped = panelSizeWithCollapseSnap(requested, sideColumnBounds(column).minimum, maximum);
+    return snapped === 0 ? 0 : alignSideColumnWidth(column, snapped, maximum);
   }
 
   function bottomPanelHeightFromPointer(requested: number): number {
@@ -715,116 +908,54 @@
     }, PANEL_TRANSITION_MS);
   }
 
-  function beginInspectorResize(event: PointerEvent): void {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    refreshWorkspacePixelGeometry();
-    if (inspectorResizeEndFrame !== null) window.cancelAnimationFrame(inspectorResizeEndFrame);
-    inspectorResizeEndFrame = null;
-    resizingInspector = true;
-    const startX = event.clientX;
-    const startWidth = displayedInspectorWidth;
-    const target = event.currentTarget as HTMLElement;
-    target.focus();
-    target.setPointerCapture(event.pointerId);
-    let pendingWidth = startWidth;
-    const move = (moveEvent: PointerEvent) => {
-      const nextWidth = inspectorWidthFromPointer(startWidth + startX - moveEvent.clientX);
-      animateCollapseBoundary("inspector", pendingWidth, nextWidth);
-      pendingWidth = nextWidth;
-      if (inspectorResizeFrame !== null) return;
-      inspectorResizeFrame = window.requestAnimationFrame(() => {
-        inspectorWidth = pendingWidth;
-        inspectorResizeFrame = null;
-      });
-    };
-    const end = (endEvent: PointerEvent) => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", end);
-      target.removeEventListener("pointercancel", end);
-      if (inspectorResizeFrame !== null) window.cancelAnimationFrame(inspectorResizeFrame);
-      inspectorResizeFrame = null;
-      if (endEvent.type === "pointercancel") {
-        inspectorWidth = startWidth;
-      } else if (pendingWidth === 0) {
-        inspectorWidth = startWidth;
-        chat.inspectorOpen = false;
-      } else {
-        inspectorWidth = pendingWidth;
-        if (pendingWidth !== startWidth) persistPanelWidths();
-      }
-      inspectorResizeEndFrame = window.requestAnimationFrame(() => {
-        inspectorResizeEndFrame = window.requestAnimationFrame(() => {
-          resizingInspector = false;
-          inspectorResizeEndFrame = null;
-        });
-      });
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", end);
-    target.addEventListener("pointercancel", end);
-  }
+  const sideColumnResizers: Record<SideColumn, PanelPointerResize> = {
+    inspector: createPanelPointerResize({
+      axis: "x",
+      currentSize: () => displayedInspectorWidth,
+      sizeFromPointer: (requested) => sideColumnWidthFromPointer("inspector", requested),
+      applySize: (size) => { inspectorWidth = size; },
+      setResizing: (resizing) => { resizingInspector = resizing; },
+      beforeStart: refreshWorkspacePixelGeometry,
+      onPendingSize: (current, next) => animateCollapseBoundary("inspector", current, next),
+      onCollapse: () => { chat.inspectorOpen = false; },
+      onCommit: persistPanelWidths,
+    }),
+    replyThread: createPanelPointerResize({
+      axis: "x",
+      currentSize: () => displayedReplyThreadWidth,
+      sizeFromPointer: (requested) => sideColumnWidthFromPointer("replyThread", requested),
+      applySize: (size) => { replyThreadWidth = size; },
+      setResizing: (resizing) => { resizingReplyThread = resizing; },
+      beforeStart: refreshWorkspacePixelGeometry,
+      onCollapse: closeReplyThread,
+      onCommit: persistPanelWidths,
+    }),
+  };
 
-  function beginBottomPanelResize(event: PointerEvent): void {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    refreshWorkspacePixelGeometry();
-    if (bottomResizeEndFrame !== null) window.cancelAnimationFrame(bottomResizeEndFrame);
-    bottomResizeEndFrame = null;
-    resizingBottomPanel = true;
-    const startY = event.clientY;
-    const startHeight = bottomPanelHeight;
-    const target = event.currentTarget as HTMLElement;
-    let pendingHeight = startHeight;
-    target.focus();
-    target.setPointerCapture(event.pointerId);
-    const move = (moveEvent: PointerEvent) => {
-      const nextHeight = bottomPanelHeightFromPointer(startHeight + startY - moveEvent.clientY);
-      animateCollapseBoundary("bottom", pendingHeight, nextHeight);
-      pendingHeight = nextHeight;
-      if (bottomResizeFrame !== null) return;
-      bottomResizeFrame = window.requestAnimationFrame(() => {
-        bottomPanelHeight = pendingHeight;
-        bottomResizeFrame = null;
-      });
-    };
-    const end = (endEvent: PointerEvent) => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", end);
-      target.removeEventListener("pointercancel", end);
-      if (bottomResizeFrame !== null) window.cancelAnimationFrame(bottomResizeFrame);
-      bottomResizeFrame = null;
-      if (endEvent.type === "pointercancel") {
-        bottomPanelHeight = startHeight;
-      } else if (pendingHeight === 0) {
-        bottomPanelHeight = startHeight;
-        closeBottomPanel(true);
-      } else {
-        bottomPanelHeight = pendingHeight;
-      }
-      bottomResizeEndFrame = window.requestAnimationFrame(() => {
-        bottomResizeEndFrame = window.requestAnimationFrame(() => {
-          resizingBottomPanel = false;
-          bottomResizeEndFrame = null;
-        });
-      });
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", end);
-    target.addEventListener("pointercancel", end);
-  }
+  const bottomPanelResizer = createPanelPointerResize({
+    axis: "y",
+    currentSize: () => bottomPanelHeight,
+    sizeFromPointer: bottomPanelHeightFromPointer,
+    applySize: (size) => { bottomPanelHeight = size; },
+    setResizing: (resizing) => { resizingBottomPanel = resizing; },
+    beforeStart: refreshWorkspacePixelGeometry,
+    onPendingSize: (current, next) => animateCollapseBoundary("bottom", current, next),
+    onCollapse: () => closeBottomPanel(true),
+  });
 
-  function resizeInspectorFromKey(event: KeyboardEvent): void {
+  function resizeSideColumnFromKey(column: SideColumn, event: KeyboardEvent): void {
     if (event.key === "Enter") {
       event.preventDefault();
-      fitInspectorToAvailableSpace();
+      fitSideColumnToAvailableSpace(column);
       return;
     }
+    const bounds = sideColumnBounds(column);
+    const maximum = sideColumnResizeMaximum(column);
     const next = panelWidthFromKey({
-      current: displayedInspectorWidth,
-      minimum: MIN_INSPECTOR_WIDTH,
-      maximum: inspectorResizeMaximum(),
-      defaultValue: DEFAULT_INSPECTOR_WIDTH,
+      current: sideColumnWidth(column),
+      minimum: bounds.minimum,
+      maximum,
+      defaultValue: bounds.default,
       step: 16,
       direction: "reversed",
       key: event.key,
@@ -832,41 +963,15 @@
     if (next === null) return;
     event.preventDefault();
     refreshWorkspacePixelGeometry();
-    inspectorWidth = alignInspectorWidthToDisplay(next);
-    void persistPanelWidths();
+    setSideColumnWidth(column, alignSideColumnWidth(column, next, maximum));
+    persistPanelWidths();
   }
 
-  function inspectorResizeMaximum(): number {
-    if (layout.inspectorPresentation !== "column") return MAX_INSPECTOR_WIDTH;
-    return chatInspectorResizeMaximum({
-      containerWidth: shellWidth,
-      railVisible: layout.railPresentation === "column" && visibleRailOpen,
-      fontScale,
-      minimum: MIN_INSPECTOR_WIDTH,
-      maximum: MAX_INSPECTOR_WIDTH,
-      ...(auxiliaryPairOpen ? {
-        railReservedWidth: 0,
-        conversationMinimum: CHAT_AUXILIARY_CONVERSATION_MIN_PX * fontScale,
-        additionalReservedWidth: replyThreadWidth,
-      } : {}),
-    });
-  }
-
-  function fitInspectorToAvailableSpace(): void {
+  function fitSideColumnToAvailableSpace(column: SideColumn): void {
     refreshWorkspacePixelGeometry();
-    const fitted = fittedChatInspectorWidth({
-      containerWidth: shellWidth,
-      railVisible: layout.railPresentation === "column" && visibleRailOpen,
-      fontScale,
-      minimum: MIN_INSPECTOR_WIDTH,
-      maximum: MAX_INSPECTOR_WIDTH,
-      ...(auxiliaryPairOpen ? {
-        railReservedWidth: 0,
-        conversationMinimum: CHAT_AUXILIARY_CONVERSATION_MIN_PX * fontScale,
-        additionalReservedWidth: replyThreadWidth,
-      } : {}),
-    });
-    inspectorWidth = alignInspectorWidthToDisplay(fitted);
+    const input = sideColumnResizeInput(column);
+    const fitted = column === "inspector" ? fittedChatInspectorWidth(input) : fittedChatReplyThreadWidth(input);
+    setSideColumnWidth(column, alignSideColumnWidth(column, fitted, sideColumnResizeMaximum(column)));
     persistPanelWidths();
   }
 
@@ -883,12 +988,7 @@
 
   function toggleBottomPanel(): void {
     bottomPanelSkipCloseTransition = false;
-    if (bottomPanelOpen) {
-      bottomPanelOpen = false;
-      return;
-    }
-    bottomPanelMounted = true;
-    bottomPanelOpen = true;
+    chat.bottomPanelOpen = !chat.bottomPanelOpen;
   }
 
   function openInspectorWorkspaceForEvent(event: Event): void {
@@ -907,7 +1007,7 @@
 
   function closeBottomPanel(skipTransition = false): void {
     bottomPanelSkipCloseTransition = skipTransition;
-    bottomPanelOpen = false;
+    chat.bottomPanelOpen = false;
   }
 
   function resizeBottomPanelFromKey(event: KeyboardEvent): void {
@@ -943,6 +1043,7 @@
     if (!chat.settings) return;
     pendingPanelWidths = {
       inspectorWidthPx: Math.round(inspectorWidth),
+      replyThreadWidthPx: Math.round(replyThreadWidth),
     };
     panelWidthSave ??= savePendingPanelWidths();
   }
@@ -957,11 +1058,12 @@
         await chat.refreshSettings();
         if (pendingPanelWidths !== savedWidths) continue;
         inspectorWidth = alignInspectorWidthToDisplay(savedWidths.inspectorWidthPx);
+        replyThreadWidth = savedWidths.replyThreadWidthPx;
         pendingPanelWidths = null;
       }
     } catch (error: unknown) {
       pendingPanelWidths = null;
-      layoutError = error instanceof Error ? error.message : String(error);
+      layoutError = chatErrorMessage(error, t("chatErrors.actions.loadLayout"));
     } finally {
       panelWidthSave = null;
     }
@@ -972,9 +1074,38 @@
       await chat.reload();
       loadError = null;
     } catch (error: unknown) {
-      loadError = error instanceof Error ? error.message : String(error);
+      loadError = chatErrorMessage(error, t("chatErrors.actions.loadChat"));
       throw error;
     }
+  }
+
+  /** The open checkpoint restore confirmation and the answer it is waiting for. */
+  interface RestoreDialogState {
+    preview: ChatRestorePreviewRead;
+    threadId: string;
+    checkpointId: string;
+    resolve: (confirmed: boolean) => void;
+  }
+
+  let restoreDialog = $state<RestoreDialogState | null>(null);
+
+  function confirmRestorePreview(threadId: string, checkpointId: string, preview: ChatRestorePreviewRead): Promise<boolean> {
+    restoreDialog?.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      restoreDialog = { preview, threadId, checkpointId, resolve };
+    });
+  }
+
+  function answerRestoreDialog(confirmed: boolean): RestoreDialogState | null {
+    const open = restoreDialog;
+    restoreDialog = null;
+    open?.resolve(confirmed);
+    return open;
+  }
+
+  function refreshRestorePreview(): void {
+    const open = answerRestoreDialog(false);
+    if (open) void restoreMessageCheckpoint(open.threadId, open.checkpointId);
   }
 
   async function restoreMessageCheckpoint(threadId: string, checkpointId: string): Promise<void> {
@@ -985,15 +1116,11 @@
       await restoreChatCheckpoint({
         thread,
         checkpointId,
-        confirm: (preview) => window.confirm([
-          t("chat.timeline.revert"),
-          preview.files.map((file) => file.relativePath).join("\n"),
-          ...preview.warnings,
-        ].filter(Boolean).join("\n\n")),
+        confirm: (preview) => confirmRestorePreview(threadId, checkpointId, preview),
         onRestored: (restoredThreadId) => chat.handleNativeChange(restoredThreadId),
       });
     } catch (error: unknown) {
-      layoutError = error instanceof Error ? error.message : String(error);
+      layoutError = chatErrorMessage(error);
     }
   }
 </script>
@@ -1008,9 +1135,13 @@
   />
 {/snippet}
 
+{#snippet sideColumnSeparator(column: SideColumn, visible: boolean, resizing: boolean, label: string)}
+  <div class="chat-panel-separator chat-column-separator" class:chat-thread-separator={column === "replyThread"} class:chat-inspector-separator={column === "inspector"} class:hidden={!visible} class:active={resizing}><input type="range" min={sideColumnBounds(column).minimum} max={sideColumnResizeMaximum(column)} step="any" value={sideColumnWidth(column)} aria-label={label} onpointerdown={sideColumnResizers[column].begin} onkeydown={(event) => resizeSideColumnFromKey(column, event)} ondblclick={(event) => { event.preventDefault(); fitSideColumnToAvailableSpace(column); }} /><span class="chat-panel-separator-line" aria-hidden="true"></span></div>
+{/snippet}
+
 <svelte:window onkeydown={handleKeydown} />
 
-<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} data-canvas-edge={!mobileShell} data-project-sidebar={projectHosted} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;${canvasEdgeWidth === null ? "" : `--chat-canvas-edge-width:${canvasEdgeWidth}px;`}`}>
+<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:resizing-panels={resizingInspector || resizingReplyThread || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-density={timelineDensity} data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} data-canvas-edge={!mobileShell} data-project-sidebar={projectHosted} data-reply-thread-tab={replyThreadTab} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${displayedReplyThreadWidth}px;${canvasEdgeWidth === null ? "" : `--chat-canvas-edge-width:${canvasEdgeWidth}px;`}`}>
   <div class="chat-canvas" aria-hidden="true"></div>
 {#if WorkspaceObserver}<WorkspaceObserver />{/if}
   <div class="sr-only" aria-live="polite" aria-atomic="true">{politeAnnouncement}</div>
@@ -1042,22 +1173,22 @@
     </div>
   {/if}
   <main class="main-shell relative flex min-w-0 flex-col">
-        {#if latestWaitingAssignment}
-          <Notice class="waiting-work-notice" role="status" message={t("chat.organization.waitingWork", waitingAssignments.length, latestWaitingAssignment.teammateDisplayName, latestWaitingAssignment.channelName)} copy={false}>
-            {#snippet actions()}
-              <button type="button" class="notice-action-text" onclick={() => { void chat.openWaitingAssignment(latestWaitingAssignment); }}>{t("chat.organization.openWaitingWork")}</button>
-            {/snippet}
-          </Notice>
-        {/if}
         {#if loadError}
           <div class="min-h-0 flex-1 text-sm"><Notice layout="fill" message={loadError} onRetry={retryWorkspaceLoad} /></div>
         {:else if chat.channelArchiveOpen}
           <ChatChannelArchive />
         {:else if chat.selectedChannel}
-          {#if threadFullSurface && chat.openReplyThreadId}
+          {#if replyThreadTab}
+            {#if chat.openReplyThreadId}
+              <ChatReplyThreadPanel presentation="main" reserveGlobalActions={!chat.inspectorOpen} onClose={closeReplyThreadTab} />
+            {:else}
+              <Loading layout="fill" class="min-h-0 flex-1" />
+            {/if}
+          {:else if threadFullSurface && chat.openReplyThreadId && !mobileShell}
             <ChatReplyThreadPanel presentation="main" onClose={closeReplyThread} />
           {:else}
             <ChatChannelFeed onThreadOpened={threadOpened} />
+            {#if mobileShell && chat.openReplyThreadId && !threadColumnOpen}<ChatReplyThreadSheet onClose={closeReplyThread} />{/if}
           {/if}
         {:else if !chat.loading && !chat.channelsLoading}
           <ChatFirstUse />
@@ -1066,14 +1197,14 @@
         {/if}
   </main>
 
-  <div class="chat-panel-separator chat-thread-separator" class:hidden={!threadColumnOpen}><span class="chat-panel-separator-line" aria-hidden="true"></span></div>
+  {@render sideColumnSeparator("replyThread", threadColumnOpen, resizingReplyThread, t("chat.resizeReplyThread"))}
   <aside class="chat-thread-shell" class:open={threadColumnOpen} inert={!threadColumnOpen} aria-label={t("chat.organization.thread")}>
     {#if threadColumnOpen}
       <ChatReplyThreadPanel presentation="complementary" reserveGlobalActions={!chat.inspectorOpen} onClose={closeReplyThread} />
     {/if}
   </aside>
 
-  <div class="chat-panel-separator chat-inspector-separator" class:hidden={!chat.inspectorOpen || layout.inspectorPresentation !== "column"} class:active={resizingInspector}><input type="range" min={MIN_INSPECTOR_WIDTH} max={inspectorResizeMaximum()} step="any" value={displayedInspectorWidth} aria-label={t("chat.resizeInspector")} onpointerdown={beginInspectorResize} onkeydown={resizeInspectorFromKey} ondblclick={(event) => { event.preventDefault(); fitInspectorToAvailableSpace(); }} /><span class="chat-panel-separator-line" aria-hidden="true"></span></div>
+  {@render sideColumnSeparator("inspector", chat.inspectorOpen && layout.inspectorPresentation === "column", resizingInspector, t("chat.resizeInspector"))}
   <aside class="chat-inspector-shell" class:open={chat.inspectorOpen} class:resizing={resizingInspector} class:snap-transition={snapTransitioning.inspector} data-presentation={layout.inspectorPresentation} inert={!chat.inspectorOpen} role={layout.inspectorPresentation === "sheet" && chat.inspectorOpen ? "dialog" : undefined} aria-modal={layout.inspectorPresentation === "sheet" && chat.inspectorOpen ? "true" : undefined} aria-label={t("chat.openInspector")} onkeydown={(event) => { if (layout.inspectorPresentation === "sheet") handleSheetKeydown(event, () => { chat.inspectorOpen = false; }); }}>
     <div class="chat-inspector-content-shell">
       {#if WorkspacePanel}<WorkspacePanel placement="inspector" visible={chat.inspectorOpen} onClose={() => { chat.inspectorOpen = false; }} />{/if}
@@ -1095,8 +1226,8 @@
   {/if}
 
   {#if bottomPanelMounted}
-    <div class="chat-panel-separator chat-bottom-separator" class:hidden={!bottomPanelVisible} class:active={resizingBottomPanel}><input type="range" min={MIN_BOTTOM_PANEL_HEIGHT} max={bottomPanelResizeMaximum()} step="any" value={bottomPanelHeight} aria-label={t("chat.resizeBottomPanel")} onpointerdown={beginBottomPanelResize} onkeydown={resizeBottomPanelFromKey} ondblclick={(event) => { event.preventDefault(); fitBottomPanelToAvailableSpace(); }} /><span class="chat-panel-separator-line" aria-hidden="true"></span></div>
-    <div class="chat-bottom-transition-shell" class:open={bottomPanelVisible} class:skip-transition={bottomPanelSkipCloseTransition} class:snap-transition={snapTransitioning.bottom} inert={!bottomPanelVisible} style={`--chat-bottom-height:${bottomPanelHeight}px`} in:slide={{ duration: reducedMotion ? 0 : PANEL_TRANSITION_MS, easing: quintOut }}>
+    <div class="chat-panel-separator chat-bottom-separator" class:hidden={!bottomPanelVisible} class:active={resizingBottomPanel}><input type="range" min={MIN_BOTTOM_PANEL_HEIGHT} max={bottomPanelResizeMaximum()} step="any" value={bottomPanelHeight} aria-label={t("chat.resizeBottomPanel")} onpointerdown={bottomPanelResizer.begin} onkeydown={resizeBottomPanelFromKey} ondblclick={(event) => { event.preventDefault(); fitBottomPanelToAvailableSpace(); }} /><span class="chat-panel-separator-line" aria-hidden="true"></span></div>
+    <div class="chat-bottom-transition-shell" class:open={bottomPanelVisible} class:skip-transition={bottomPanelSkipCloseTransition} class:snap-transition={snapTransitioning.bottom} inert={!bottomPanelVisible} style={`--chat-bottom-height:${bottomPanelHeight}px`} in:slide={{ duration: reducedMotion || !panelTransitionsEnabled ? 0 : PANEL_TRANSITION_MS, easing: quintOut }}>
       <div class="chat-bottom-shell">{#if WorkspacePanel}<WorkspacePanel placement="bottom" visible={bottomPanelVisible} onClose={() => { closeBottomPanel(); }} />{/if}</div>
     </div>
   {/if}
@@ -1114,6 +1245,14 @@
   {/if}
   {#if !mobileShell}
     <div bind:this={canvasEdgeElement} class="chat-canvas-edge surface-content-edge" aria-hidden="true"></div>
+  {/if}
+  {#if restoreDialog}
+    <ChatRestoreDialog
+      preview={restoreDialog.preview}
+      onRestore={() => answerRestoreDialog(true)}
+      onCancel={() => answerRestoreDialog(false)}
+      onRefresh={refreshRestorePreview}
+    />
   {/if}
 </div>
 
@@ -1135,6 +1274,7 @@
     --chat-conversation-max-width: 60rem;
     --chat-conversation-gutter: 1rem;
     --chat-conversation-entry-space: 0.45rem;
+    --chat-participant-start-space: 1.1rem;
     --chat-reply-thread-column-width: 0px;
     --chat-inspector-column-width: 0px;
     --chat-global-actions-width: 6.5rem;
@@ -1144,6 +1284,13 @@
   .chat-workspace :global(svg.lucide:not(.explorer-sidebar *)) { stroke-width: var(--chat-icon-stroke-width); }
   .chat-workspace :global(svg.lucide[stroke-width="1"]:not(.explorer-sidebar *)) { stroke-width: 1; }
   .chat-workspace :global(svg.lucide[stroke-width="1.5"]:not(.explorer-sidebar *)) { stroke-width: var(--chat-compact-icon-stroke-width); }
+  /* Compact density tightens the spacing between timeline and channel rows; text size stays with the type scale. */
+  .chat-workspace[data-density="compact"] {
+    --chat-conversation-flow-space: 0.35rem;
+    --chat-conversation-block-space: 0.45rem;
+    --chat-conversation-entry-space: 0.2rem;
+    --chat-participant-start-space: 0.55rem;
+  }
   /* A column rail sizes its own track, so it shares the docked explorer collapse motion with Projects and Notes. */
   .chat-workspace[data-rail-presentation="column"] { --chat-rail-column-width: auto; }
   .chat-workspace[data-rail-presentation="sheet"] { --chat-rail-column-width: 0px; }
@@ -1165,7 +1312,6 @@
   .chat-workspace[data-rail-presentation="column"][data-rail-docked="true"] .chat-rail-shell { grid-row: 1 / 5; }
   .chat-workspace[data-rail-docked="true"] .chat-rail-shell { margin: calc(-1 * var(--chat-canvas-inset)) var(--chat-canvas-inset) calc(-1 * var(--chat-canvas-inset)) calc(-1 * var(--chat-canvas-inset)); }
   .main-shell { grid-column: 2; grid-row: 2; min-width: min(440px, 100cqw); min-height: 0; }
-  .main-shell :global(.waiting-work-notice) { flex: none; margin: 0.35rem 0.5rem 0; padding: 0.25rem 0.35rem; font-size: 0.75rem; }
   .chat-workspace[data-reply-thread-presentation="column"] .main-shell { min-width: min(320px, 100cqw); }
   /* Beside a docked rail the main column owns the canvas's bottom-left corner, so its full-bleed fills (composer docks, panels) follow the rounded edge. Only that corner is clipped, so popovers still escape upward and rightward. */
   .chat-workspace[data-rail-docked="true"]:not(:has(.chat-bottom-transition-shell.open)) .main-shell { clip-path: inset(-100vmax -100vmax 0 0 round 0 0 0 max(0px, var(--content-radius) - var(--chat-canvas-inset))); }
@@ -1185,11 +1331,11 @@
   .chat-panel-separator { position: relative; z-index: 1; background: transparent; }
   .chat-panel-separator-line { --chat-divider-highlight: color-mix(in srgb, var(--ring) 55%, var(--border)); position: absolute; pointer-events: none; background: var(--border); }
   .chat-panel-separator input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; appearance: none; touch-action: none; cursor: inherit; opacity: 0; }
-  .chat-thread-separator, .chat-inspector-separator { width: 8px; min-width: 8px; margin-inline: -4px; }
-  .chat-inspector-separator { cursor: col-resize; }
-  .chat-thread-separator::before, .chat-inspector-separator::before { position: absolute; inset: 0 0 auto; height: var(--toolbar-h); background: var(--cal-bg); content: ""; pointer-events: none; }
-  .chat-thread-separator .chat-panel-separator-line, .chat-inspector-separator .chat-panel-separator-line { inset-block: 0; left: 50%; width: 1px; }
-  .chat-inspector-separator:is(:hover, .active) .chat-panel-separator-line, .chat-inspector-separator input:focus-visible + .chat-panel-separator-line { background: linear-gradient(to bottom, var(--border), var(--chat-divider-highlight) 50%, var(--border)); }
+  /* Column separators paint above the composer docks that float over the end of each timeline, so their line reaches the bottom edge. */
+  .chat-column-separator { z-index: 2; width: 8px; min-width: 8px; margin-inline: -4px; cursor: col-resize; }
+  .chat-column-separator::before { position: absolute; inset: 0 0 auto; height: var(--toolbar-h); background: var(--cal-bg); content: ""; pointer-events: none; }
+  .chat-column-separator .chat-panel-separator-line { inset-block: 0; left: 50%; width: 1px; }
+  .chat-column-separator:is(:hover, .active) .chat-panel-separator-line, .chat-column-separator input:focus-visible + .chat-panel-separator-line { background: linear-gradient(to bottom, var(--border), var(--chat-divider-highlight) 50%, var(--border)); }
   .chat-inspector-shell.open.resizing { min-width: 0; }
   .chat-inspector-content-shell { width: var(--chat-inspector-width); height: 100%; }
   .chat-bottom-separator { width: 100%; height: 8px; min-height: 8px; margin-block: -4px; cursor: row-resize; }
@@ -1217,6 +1363,10 @@
   .chat-workspace[data-project-sidebar="true"] { --chat-rail-column-width: auto; }
   .chat-workspace[data-project-sidebar="true"] .chat-rail-shell, .chat-workspace[data-project-sidebar="true"] .chat-rail-shell.closed { position: relative; inset: auto; z-index: auto; grid-row: 1 / 5; width: auto; min-width: 0; box-shadow: none; transform: none; }
   .chat-workspace[data-project-sidebar="true"][data-active-surface="rail"] .main-shell { display: flex; }
+  /* A reply thread tab keeps the rail and channel header mounted for its channel's tab but shows only the thread, from the top edge. */
+  .chat-workspace[data-reply-thread-tab="true"] { --chat-rail-column-width: 0px; }
+  .chat-workspace[data-reply-thread-tab="true"] :is(.chat-primary-header, .chat-rail-shell) { display: none; }
+  .chat-workspace[data-reply-thread-tab="true"] .main-shell { grid-row: 1 / 3; display: flex; }
   @media (prefers-reduced-motion: reduce) {
     :global(.chat-workspace *), :global(.chat-workspace *::before), :global(.chat-workspace *::after) {
       scroll-behavior: auto !important;

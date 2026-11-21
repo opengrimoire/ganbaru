@@ -42,6 +42,9 @@
     type MusicBuilderInitialAction,
   } from "$lib/music/builder/loader";
   import { getMusicSourcesController } from "$lib/music/sources/controller.svelte";
+  import { musicPlaybackErrorMessage } from "$lib/music/playback-errors";
+  import { musicErrorMessage } from "$lib/music/user-errors";
+  import { technicalErrorDetail } from "$lib/i18n/user-errors";
 
   let {
     onClose,
@@ -96,6 +99,7 @@
   let firstUseRedirectHandled = $state(firstUseFolderIsReady());
   let playlistBuilderComponent = $state<MusicBuilderComponent | null>(musicBuilderLoader.peek());
   let playlistBuilderLoading = $state(false);
+  /** Technical detail of a failed builder load, empty when the failure had none, and null while no failure is shown. */
   let playlistBuilderLoadError = $state<string | null>(null);
   let playlistBuilderMounted = $state(firstUseFolderIsReady());
   let playlistBuilderInitialAction = $state<MusicBuilderInitialAction | null>(null);
@@ -413,7 +417,7 @@
     try {
       playlistBuilderComponent = await musicBuilderLoader.load();
     } catch (error) {
-      playlistBuilderLoadError = error instanceof Error ? error.message : String(error);
+      playlistBuilderLoadError = technicalErrorDetail(error) ?? "";
     } finally {
       playlistBuilderLoading = false;
     }
@@ -437,7 +441,7 @@
       void sources.prepareFirstUseFolder(draft.selection, draft.name);
       openPlaylistBuilder();
     } catch (error) {
-      firstUseFolderError = error instanceof Error ? error.message : String(error);
+      firstUseFolderError = musicErrorMessage(error, t("music.errors.folderAddFailed"));
     } finally {
       firstUseFolderChoosing = false;
     }
@@ -453,7 +457,8 @@
     try {
       await revealLocalFile(source.path);
     } catch (error) {
-      player.playerError = error instanceof Error ? error.message : String(error);
+      console.error("Unable to show the local file location.", error);
+      player.playerError = musicErrorMessage(error, t("music.errors.revealFailed"));
     }
   }
 
@@ -809,12 +814,12 @@
     </div>
   {:else if musicPage === "playlist-builder"}
     <section class="relative grid h-full min-h-40 place-items-center overflow-hidden p-5 text-center text-foreground" style="background-color: var(--cal-bg);">
-      {#if playlistBuilderLoadError}
+      {#if playlistBuilderLoadError !== null}
         <button type="button" onclick={closePlaylistBuilder} class="absolute left-3 top-3 inline-flex h-8 items-center rounded-full bg-secondary px-3 text-[0.7rem] font-medium text-secondary-foreground hover:bg-accent hover:text-accent-foreground">{t("music.mediaPlayer")}</button>
         <Notice
           class="max-w-sm text-sm"
-          title={t("music.builder.loadFailed")}
-          message={playlistBuilderLoadError}
+          message={t("music.builder.loadFailed")}
+          copy={playlistBuilderLoadError || undefined}
           retryLabel={t("music.builder.retry")}
           onRetry={loadPlaylistBuilder}
         />
@@ -996,7 +1001,7 @@
             {#if player.snapshot.error}
               <div class="flex max-w-[80%] flex-col items-center gap-2 text-center text-[0.8rem]">
                 <AlertCircle size={musicIconSize} strokeWidth={musicIconStrokeWidth} />
-                <span class="max-w-full truncate">{player.snapshot.error ?? player.loadedTitle}</span>
+                <span class="max-w-full truncate">{musicPlaybackErrorMessage(player.snapshot.error)}</span>
               </div>
             {/if}
           </div>

@@ -13,7 +13,7 @@ The repository has a substantial local desktop and Android foundation:
 - Projects with planning views, tasks, dependencies, custom fields, templates, scheduling links, and history.
 - Notes with pages, blocks, databases, templates, links, comments, assets, history, and transfer workflows.
 - Quick notes, English and Spanish localization, profiles, and customizable themes.
-- Project channels over durable native coding-agent sessions, with workspace tools, terminals, checkpoints, review, and explicit access profiles.
+- Project channels over durable native coding-agent sessions, with workspace tools, terminals, checkpoints, review, and per-channel agent access.
 - Local Music libraries and playlists with desktop and Android playback, plus YouTube integration.
 - Chromium website blocking, desktop application blocking, and consented Android application enforcement.
 - An adaptive Android shell covering the main features, portable backup and restore, and notifications.
@@ -81,7 +81,7 @@ Saved desktop environments that prepare applications, browser resources, Music, 
 
 ### Structured project delegation
 
-Reviewable planning proposals, task-linked agent runs, assignment and review workflows, budgets, and sustainable work-in-progress limits on top of Projects and Chat. A person approves commitments before Projects or Calendar change. See [Guided planning and review](features/projects/guided-planning.md) and [Agents and coordination](features/chat/agents-and-coordination.md).
+Reviewable planning proposals, task-linked agent runs, assignment and review workflows, and sustainable work-in-progress limits on top of Projects and Chat. A person approves commitments before Projects or Calendar change. See [Guided planning and review](features/projects/guided-planning.md) and [Agents and coordination](features/chat/agents-and-coordination.md).
 
 ## Later outcomes
 

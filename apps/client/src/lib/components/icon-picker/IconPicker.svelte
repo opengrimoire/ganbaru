@@ -18,6 +18,7 @@
   import { getEventColor } from "$lib/calendar/utils";
   import { contrastRatio } from "$lib/color/math";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { LocalizedError, userErrorMessage } from "$lib/i18n/user-errors";
   import {
     inspectManagedImageFile,
     MANAGED_ICON_IMAGE_MAX_BYTES,
@@ -116,11 +117,13 @@
     showEmoji = true,
     showUpload = true,
     showRemove = true,
+    showCustomEmoji = true,
     showIconColor = true,
     nested = false,
     initiallyOpen = false,
     panelAlign = "end",
     panelAnchor = null,
+    onOpenChange,
     class: className = "",
   }: {
     value: string;
@@ -132,6 +135,8 @@
     showEmoji?: boolean;
     showUpload?: boolean;
     showRemove?: boolean;
+    /** Offer the custom emoji and their recents; off where a value must be a native emoji, such as message text. */
+    showCustomEmoji?: boolean;
     /** Offer an icon color; without it, icons keep the automatic color and the saved default color is ignored. */
     showIconColor?: boolean;
     /** Keep the panels inside the nearest floating root, so the menu or panel that hosts the picker treats them as its own. */
@@ -140,6 +145,8 @@
     panelAlign?: "start" | "end";
     /** Stable panel anchor when the action that opened the picker is removed. */
     panelAnchor?: HTMLElement | null;
+    /** Reports when the picker panel opens or closes, such as for a host that keeps its controls shown meanwhile. */
+    onOpenChange?: (open: boolean) => void;
     class?: string;
   } = $props();
 
@@ -179,6 +186,9 @@
   const gridGroupGapHeight = 12;
 
   let open = $state(false);
+  $effect(() => {
+    onOpenChange?.(open);
+  });
   let activeTab = $state<IconPickerTab>("icons");
   let pickerInteractionSource: PickerInteractionSource = "pointer";
   let triggerElement = $state<HTMLElement | undefined>();
@@ -263,10 +273,10 @@
     return projectIconDisplayLabel(parsedValue);
   });
   const emojiRecentValues = $derived(
-    projectIconEmojiRecentValues(recentValues),
+    projectIconEmojiRecentValues(recentValues).filter((recent) => showCustomEmoji || parseProjectIcon(recent).kind === "emoji"),
   );
   const lucideRecentValues = $derived(projectIconLucideRecentValues(recentValues));
-  const visibleCustomEmojis = $derived(iconPickerVisibleCustomEmojis(projects.customEmojis, emojiQuery));
+  const visibleCustomEmojis = $derived(showCustomEmoji ? iconPickerVisibleCustomEmojis(projects.customEmojis, emojiQuery) : []);
   const visibleEmojiCategories = $derived(
     iconPickerVisibleEmojiCategories(t("projects.iconPicker.symbolsAndFlags")),
   );
@@ -760,34 +770,34 @@
     if (!inspection.ok) {
       const { issue } = inspection;
       if (issue === "unsupported-type") {
-        return Promise.reject(new Error(t("projects.iconPicker.uploadUnsupportedType")));
+        return Promise.reject(new LocalizedError(t("projects.iconPicker.uploadUnsupportedType")));
       }
       if (issue === "too-large") {
-        return Promise.reject(new Error(t(
+        return Promise.reject(new LocalizedError(t(
           "projects.iconPicker.uploadTooLarge",
           MANAGED_ICON_IMAGE_MAX_MEGABYTES,
         )));
       }
       if (issue === "invalid-image") {
-        return Promise.reject(new Error(t("projects.iconPicker.uploadInvalidImage")));
+        return Promise.reject(new LocalizedError(t("projects.iconPicker.uploadInvalidImage")));
       }
       if (issue === "dimensions-too-large") {
-        return Promise.reject(new Error(t(
+        return Promise.reject(new LocalizedError(t(
           "projects.iconPicker.uploadDimensionsTooLarge",
           MANAGED_IMAGE_MAX_DIMENSION_PIXELS,
         )));
       }
       if (issue === "too-many-pixels") {
-        return Promise.reject(new Error(t(
+        return Promise.reject(new LocalizedError(t(
           "projects.iconPicker.uploadPixelCountTooLarge",
           MANAGED_IMAGE_MAX_MEGAPIXELS,
         )));
       }
-      return Promise.reject(new Error(t("projects.iconPicker.uploadFailed")));
+      return Promise.reject(new LocalizedError(t("projects.iconPicker.uploadFailed")));
     }
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onerror = () => reject(new Error(t("projects.iconPicker.uploadFailed")));
+      reader.onerror = () => reject(new LocalizedError(t("projects.iconPicker.uploadFailed")));
       reader.onload = () => {
         if (typeof reader.result === "string") {
           const dataUrl = normalizeManagedImageDataUrl(
@@ -798,9 +808,9 @@
             resolve(dataUrl);
             return;
           }
-          reject(new Error(t("projects.iconPicker.uploadFailed")));
+          reject(new LocalizedError(t("projects.iconPicker.uploadFailed")));
         } else {
-          reject(new Error(t("projects.iconPicker.uploadFailed")));
+          reject(new LocalizedError(t("projects.iconPicker.uploadFailed")));
         }
       };
       reader.readAsDataURL(file);
@@ -837,7 +847,7 @@
         uploadDraft = asset;
       }
     } catch (error) {
-      uploadError = error instanceof Error ? error.message : String(error);
+      uploadError = userErrorMessage(error, t("projects.iconPicker.uploadSaveFailed"));
     } finally {
       uploading = false;
       await refreshPanelPlacement();
@@ -856,7 +866,7 @@
         uploadDraft = asset;
       }
     } catch (error) {
-      uploadError = error instanceof Error ? error.message : String(error);
+      uploadError = userErrorMessage(error, t("projects.iconPicker.uploadSaveFailed"));
     } finally {
       uploading = false;
       await refreshPanelPlacement();
@@ -887,7 +897,7 @@
           : await downloadProjectIconImageUrl(url);
       }
     } catch (error) {
-      uploadError = error instanceof Error ? error.message : String(error);
+      uploadError = userErrorMessage(error, t("projects.iconPicker.downloadFailed"));
     } finally {
       uploading = false;
       await refreshPanelPlacement();
@@ -922,7 +932,7 @@
     try {
       customEmojiDraft = await pickProjectIconImageFile();
     } catch (error) {
-      customEmojiError = error instanceof Error ? error.message : String(error);
+      customEmojiError = userErrorMessage(error, t("projects.iconPicker.uploadSaveFailed"));
     }
   }
 
@@ -931,7 +941,7 @@
     try {
       customEmojiDraft = await saveFileAsProjectIcon(file);
     } catch (error) {
-      customEmojiError = error instanceof Error ? error.message : String(error);
+      customEmojiError = userErrorMessage(error, t("projects.iconPicker.uploadSaveFailed"));
     }
   }
 
@@ -966,7 +976,7 @@
       customEmojiDraft = null;
       customEmojiPanelOpen = false;
     } catch (error) {
-      customEmojiError = error instanceof Error ? error.message : String(error);
+      customEmojiError = userErrorMessage(error, t("projects.iconPicker.customEmojiSaveFailed"));
     } finally {
       customEmojiSaving = false;
     }
@@ -1244,7 +1254,7 @@
               bind:skinTonePanelOpen
               bind:iconColorPanelOpen
               bind:customEmojiPanelOpen
-              allowCustomEmojiCreate={showUpload}
+              allowCustomEmojiCreate={showUpload && showCustomEmoji}
               {gridScrollable}
               {gridCanScrollUp}
               {gridCanScrollDown}

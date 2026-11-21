@@ -102,7 +102,7 @@
       <Loading layout="rows" rows={3} label={t("notes.loadingTrash")} class="py-2 text-[0.866667rem]" />
     {:else if notes.trashError}
       <div class="h-full min-h-32 text-[0.866667rem]">
-        <Notice layout="fill" message={t("notes.loadTrashFailed", notes.trashError)} copy={notes.trashError} onRetry={() => notes.reloadTrashedPages(search)} />
+        <Notice layout="fill" message={t("notes.loadTrashFailed")} copy={notes.trashError} onRetry={() => notes.reloadTrashedPages(search)} />
       </div>
     {:else if filteredPages.length === 0}
       <div class="py-2 text-[0.866667rem] text-muted-foreground">

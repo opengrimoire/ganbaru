@@ -6,6 +6,7 @@
   import MobileNavigation from "$lib/components/mobile/MobileNavigation.svelte";
   import MobileTopBar from "$lib/components/mobile/MobileTopBar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import ConfirmationHost from "$lib/components/ui/ConfirmationHost.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { ensureDbUrl } from "$lib/api/db";
   import { setSyncForeground } from "$lib/api/sync";
@@ -964,8 +965,8 @@
       <Notice
         layout="fill"
         class="text-sm"
-        title={t("common.viewLoadFailed", title)}
-        message={failure.message}
+        message={t("common.viewLoadFailed", title)}
+        copy={failure.message}
         onRetry={() => retryDeferredSurface(surface)}
         onDismiss={onClose ?? undefined}
       />
@@ -1043,8 +1044,8 @@
             <Notice
               layout="fill"
               class="text-sm"
-              title={t("common.viewLoadFailed", currentTitle)}
-              message={loadError.message}
+              message={t("common.viewLoadFailed", currentTitle)}
+              copy={loadError.message}
               onRetry={retryWorkspaceLoad}
             />
           </div>
@@ -1108,10 +1109,7 @@
         initialSection={settingsLauncher.targetSection}
         initialDistractionsTab={settingsLauncher.targetDistractionsTab}
         initialContactsTab={settingsLauncher.targetContactsTab}
-        initialChatSubsection={settingsLauncher.targetChatSubsection}
-        initialChatTeammateId={settingsLauncher.targetChatTeammateId}
-        initialChatChannelId={settingsLauncher.targetChatChannelId}
-        initialChatCreateTeammate={settingsLauncher.targetChatCreateTeammate}
+        initialAgentsSubsection={settingsLauncher.targetAgentsSubsection}
         onClose={closeSettings}
       />
     </div>
@@ -1165,4 +1163,5 @@
       <NotesHeldEditToast />
     {/await}
   {/if}
+  <ConfirmationHost />
 </div>

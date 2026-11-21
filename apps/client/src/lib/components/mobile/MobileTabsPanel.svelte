@@ -12,7 +12,7 @@
   import { dismissOnOutside, type DismissOnOutsideReason } from "$lib/utils/dismiss-on-outside";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { createSortableDrag } from "$lib/utils/sortable-drag.svelte";
-  import { workspaceTabFullLabel, workspaceTabKindIcon, workspaceTabKindLabel } from "$lib/workspace-tabs/presentation";
+  import { workspaceTabFullLabel, workspaceTabIcon, workspaceTabKindIcon, workspaceTabKindLabel } from "$lib/workspace-tabs/presentation";
 
   /** The workspace tab operations the panel uses. */
   export type MobileTabsPanelTabs = Pick<WorkspaceTabs, "tabs" | "activeTabId" | "activate" | "openKind" | "close" | "move">;
@@ -88,7 +88,7 @@
       <div class="min-h-0 overflow-x-hidden overflow-y-auto p-2" use:scrollEdgeFadeAction>
         <ul class="flex flex-col gap-0.5">
           {#each tabs.tabs as tab (tab.id)}
-            {@const Icon = workspaceTabKindIcon(tab.location.kind)}
+            {@const Icon = workspaceTabIcon(tab)}
             {@const active = tab.id === tabs.activeTabId}
             {@const label = workspaceTabFullLabel(tab, t)}
             <li {@attach drag.item(tab.id)} data-mobile-tab-row={tab.id}>

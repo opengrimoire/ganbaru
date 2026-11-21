@@ -2,6 +2,7 @@
   import CornerLeftUp from "@lucide/svelte/icons/corner-left-up";
   import ListTree from "@lucide/svelte/icons/list-tree";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { NotesDatabaseRowHierarchyMetadata } from "$lib/notes/database/row-hierarchy";
   import { notesDatabaseParentExclusions, notesDatabaseRowCanAddSubitems, notesDatabaseSubitemExclusions } from "$lib/notes/database/row-page-properties";
@@ -50,17 +51,13 @@
 
   let picker = $state<{ mode: PickerMode; anchor: HTMLElement } | null>(null);
   let pending = $state(false);
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
 
   const canAddSubitems = $derived(notesDatabaseRowCanAddSubitems(hierarchy));
   const relatives = $derived({ rowId: row.id, hierarchy, childIds: subitems.map((subitem) => subitem.id) });
 
   function titleOf(page: NotesPage): string {
     return notesDatabaseRowTitle(page, "");
-  }
-
-  function messageOf(caught: unknown): string {
-    return caught instanceof Error ? caught.message : String(caught);
   }
 
   /** Run a save from outside the picker, showing a failure below the section. */
@@ -71,7 +68,7 @@
     try {
       await task();
     } catch (caught) {
-      error = messageOf(caught);
+      error = notesFailure(caught, t("notes.databaseRowPageRelationFailed"));
     } finally {
       pending = false;
     }
@@ -135,7 +132,7 @@
     </button>
   </span>
 
-  {#if error}<Notice class="px-1.5 py-1 text-panel-detail" message={error} />{/if}
+  {#if error}<Notice class="px-1.5 py-1 text-panel-detail" message={error.message} copy={error.detail} />{/if}
 </div>
 
 {#if picker?.mode === "subitems"}

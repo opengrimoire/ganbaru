@@ -1,54 +1,29 @@
 import type {
   ApprovalSubject,
   ChatPromptCatalogEntry,
-  ChatSendKey,
   ProjectWorkingFolderPathRead,
-  InteractionMode,
   JsonValue,
+  ModelChoiceOption,
   ModelOptionDefinition,
   ModelOptionSelection,
-  ProviderCapabilities,
   ProviderInstanceRead,
   ProviderModel,
   ProviderSessionState,
   RateLimitStatusEvent,
-  SafetyMode,
   SessionPermissionGrant,
   UserInputQuestion,
   VersionedJson,
 } from "$lib/chat/contracts";
 import { parseApprovalSubject, parseSessionPermissionGrant } from "$lib/chat/validation/events";
 import { readArray } from "$lib/utils/readers";
-import { compareCompanyModels, integrationCompany, modelCompany } from "./model-company";
+import { compareCompanyModels, modelCompany } from "./model-company";
 export { clipboardImageFiles } from "$lib/utils/clipboard-images";
 
 export const CHAT_IMAGE_LIMIT = 8;
 export const CHAT_IMAGE_BYTE_LIMIT = 20 * 1024 * 1024;
 export const CHAT_IMAGE_TOTAL_BYTE_LIMIT = 50 * 1024 * 1024;
-
-export type ComposerPrimaryAction = "send" | "stop" | "stopping" | "resolve_request";
-export type ComposerFollowupAction = "steer" | "queue" | "retain" | null;
-
-export interface ComposerActionState {
-  primary: ComposerPrimaryAction;
-  followup: ComposerFollowupAction;
-  sendEnabled: boolean;
-}
-
-export interface ComposerSelections {
-  workingFolderId: string | null;
-  providerInstanceId: string | null;
-  modelId: string | null;
-  providerManagedModel: boolean;
-  safetyMode: SafetyMode | null;
-  interactionMode: InteractionMode | null;
-  fullAccessTrusted: boolean;
-}
-
-export interface ComposerSelectionError {
-  field: "workspace" | "provider" | "model" | "safety" | "interaction" | "trust";
-  message: string;
-}
+/** Image types Chat accepts as attachments. */
+export const CHAT_IMAGE_CONTENT_TYPES: readonly string[] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 export interface DefaultProviderModelSelection {
   provider: ProviderInstanceRead;
@@ -62,33 +37,24 @@ export function isProviderAvailable(provider: ProviderInstanceRead): boolean {
   return provider.configuration.enabled && provider.lastProbe?.state === "healthy";
 }
 
-/** Orders usable providers by Ganbaru's model-company priority, with OpenAI first. */
-export function availableProvidersInDefaultOrder(
-  providers: readonly ProviderInstanceRead[],
-): ProviderInstanceRead[] {
-  return providers
-    .map((provider, index) => ({ provider, index }))
-    .filter(({ provider }) => isProviderAvailable(provider))
-    .sort((left, right) => (
-      integrationCompany(left.provider.configuration.familyId).order
-      - integrationCompany(right.provider.configuration.familyId).order
-      || left.index - right.index
-    ))
-    .map(({ provider }) => provider);
-}
+/** Model ids that route to whatever the provider decides instead of naming a model. */
+const PROVIDER_ROUTE_MODEL_IDS: ReadonlySet<string> = new Set(["auto", "default"]);
 
-/** Selects the provider's `default` model, otherwise its strongest visible built-in model. */
+/**
+ * Selects the catalog's recommended model when it is listed, otherwise the strongest
+ * built-in model of the first listed company.
+ */
 export function recommendedProviderModel(
   provider: ProviderInstanceRead,
-  candidates: readonly ProviderModel[] = configuredVisibleModels(provider),
+  candidates: readonly ProviderModel[] = listedModels(provider),
 ): ProviderModel | null {
-  const selectable = candidates.filter((model) => (
-    model.availability === "available" || model.availability === "stale"
+  const pool = candidates.filter((model) => (
+    (model.availability === "available" || model.availability === "stale")
+    && !PROVIDER_ROUTE_MODEL_IDS.has(model.id.toLowerCase())
   ));
-  const builtIn = selectable.filter((model) => !model.custom);
-  const pool = builtIn.length > 0 ? builtIn : selectable;
-  const providerDefault = pool.find((model) => model.id === "default");
-  if (providerDefault) return providerDefault;
+  const recommendedModelId = provider.modelCatalog?.recommendedModelId ?? null;
+  const recommended = pool.find((model) => model.id === recommendedModelId);
+  if (recommended) return recommended;
   const first = pool[0];
   if (!first) return null;
   const company = modelCompany(provider.configuration.familyId, first);
@@ -100,7 +66,10 @@ export function recommendedProviderModel(
   ))[0] ?? first;
 }
 
-/** Resolves default model options, preferring Medium for reasoning when supported. */
+/**
+ * Resolves default model options. The effort is `medium` when the model offers it, else its highest effort, and every
+ * other option keeps the provider default.
+ */
 export function defaultModelOptions(
   definitions: readonly ModelOptionDefinition[],
 ): ModelOptionSelection[] {
@@ -113,10 +82,9 @@ export function defaultModelOptions(
         }
         break;
       case "choice": {
-        const medium = modelOptionRole(definition) === "effort"
-          ? definition.options.find((option) => option.value.toLowerCase() === "medium")?.value ?? null
-          : null;
-        const value = medium ?? definition.defaultValue;
+        const value = modelOptionRole(definition) === "effort"
+          ? defaultEffortValue(definition.options) ?? definition.defaultValue
+          : definition.defaultValue;
         if (value !== null) options.push({ key: definition.key, value: { kind: "choice", value } });
         break;
       }
@@ -138,6 +106,11 @@ export function defaultModelOptions(
     }
   }
   return options;
+}
+
+/** The effort a model starts on: `medium` when offered, else the last and highest choice, or `null` without choices. */
+export function defaultEffortValue(choices: readonly ModelChoiceOption[]): string | null {
+  return choices.find((choice) => choice.value.toLowerCase() === "medium")?.value ?? choices.at(-1)?.value ?? null;
 }
 
 /** Copies model options without retaining reactive collection proxies. */
@@ -173,18 +146,31 @@ export function copyVersionedJson(value: VersionedJson): VersionedJson {
   };
 }
 
-/** Resolves a ready initial provider and model while honoring a healthy folder preference. */
+/**
+ * Reports whether this device discovered models for `provider`. Only a provider without them
+ * runs on the model configured in its own tool, since a catalog always yields a named model.
+ */
+export function providerHasCatalogModels(provider: ProviderInstanceRead | null): boolean {
+  return (provider?.modelCatalog?.models.length ?? 0) > 0;
+}
+
+/**
+ * Resolves a ready initial provider and model while honoring a healthy folder preference.
+ *
+ * @param providers Provider instances in picker order, whose first ready entry is the default.
+ * @param preferredProviderId The folder's preferred provider, used while it is ready.
+ */
 export function resolveDefaultProviderModel(
   providers: readonly ProviderInstanceRead[],
   preferredProviderId: string | null = null,
 ): DefaultProviderModelSelection | null {
-  const available = availableProvidersInDefaultOrder(providers);
+  const available = providers.filter(isProviderAvailable);
   const provider = available.find((entry) => (
     entry.configuration.instanceId === preferredProviderId
   )) ?? available[0];
   if (!provider) return null;
   const model = recommendedProviderModel(provider);
-  const providerManaged = model === null && (provider.modelCatalog?.models.length ?? 0) === 0;
+  const providerManaged = model === null && !providerHasCatalogModels(provider);
   return {
     provider,
     model,
@@ -193,13 +179,9 @@ export function resolveDefaultProviderModel(
   };
 }
 
-/** Lists non-deprecated models allowed by the provider visibility setting; an empty setting allows all. */
-function configuredVisibleModels(provider: ProviderInstanceRead): ProviderModel[] {
-  const visibleIds = provider.configuration.visibleModelIds;
-  return provider.modelCatalog?.models.filter((model) => (
-    model.availability !== "deprecated"
-    && (visibleIds.length === 0 || visibleIds.includes(model.id))
-  )) ?? [];
+/** Lists the catalog models that are not deprecated. */
+function listedModels(provider: ProviderInstanceRead): ProviderModel[] {
+  return provider.modelCatalog?.models.filter((model) => model.availability !== "deprecated") ?? [];
 }
 
 /** Classifies a known model option as the effort, speed, or other control. */
@@ -222,13 +204,6 @@ function copyJsonValue(value: JsonValue): JsonValue {
   return value;
 }
 
-export function interactionModeForPrompt(
-  text: string,
-  current: InteractionMode | null,
-): InteractionMode {
-  return /^\/plan(?:\s|$)/i.test(text.trimStart()) ? "plan" : current ?? "build";
-}
-
 export interface ComposerTokenTrigger {
   kind: "mention" | "skill" | "command";
   query: string;
@@ -246,22 +221,51 @@ export interface ContextMeterRead {
 export interface ComposerRateLimitWindow {
   id: string;
   label: string;
-  usedPercent: number;
+  /**
+   * Share of the window used, 0 to 100, or `null` when the provider reported the window within its limit without a
+   * share, as a Claude turn does until a usage read supplies one.
+   */
+  usedPercent: number | null;
   windowDurationMinutes: number | null;
   resetsAtSeconds: number | null;
+  /** Whether the window meters the whole account rather than one model. */
+  accountWide: boolean;
 }
 
+/** Limit id of the main Codex allowance. */
+const CODEX_ACCOUNT_LIMIT_ID = "codex";
+/** Window lengths of the Claude limit types that meter the whole account, in minutes. */
+const CLAUDE_ACCOUNT_LIMIT_MINUTES: Readonly<Record<string, number>> = {
+  five_hour: 300,
+  seven_day: 10_080,
+};
+/** Window lengths of the Claude limit types that meter one model family, in minutes. */
+const CLAUDE_MODEL_LIMIT_MINUTES: Readonly<Record<string, number>> = {
+  seven_day_opus: 10_080,
+  seven_day_sonnet: 10_080,
+};
+
+/**
+ * Lists the usage windows of every limit in a provider's rate limit status: the Codex
+ * `rateLimitsByLimitId` shape and the Claude `rateLimitsByType` shape.
+ *
+ * Windows without a readable usage share are skipped and percentages are clamped to 0 to 100.
+ * A rejected Claude limit without a utilization reads as fully used.
+ */
 export function composerRateLimitWindows(
   status: RateLimitStatusEvent | null,
 ): ComposerRateLimitWindow[] {
   const root = readJsonRecord(status?.providerData?.value);
-  if (!root) return [];
-  const bucketRecords = readJsonRecord(root.rateLimitsByLimitId);
-  const buckets: [string, unknown][] = bucketRecords
-    ? Object.entries(bucketRecords)
-    : [[readJsonString(root.limitId) ?? "rate-limit", root]];
+  return [
+    ...codexRateLimitWindows(readJsonRecord(root?.rateLimitsByLimitId)),
+    ...claudeRateLimitWindows(readJsonRecord(root?.rateLimitsByType)),
+  ];
+}
+
+function codexRateLimitWindows(bucketRecords: Record<string, unknown> | null): ComposerRateLimitWindow[] {
+  if (!bucketRecords) return [];
   const windows: ComposerRateLimitWindow[] = [];
-  for (const [bucketId, bucketValue] of buckets) {
+  for (const [bucketId, bucketValue] of Object.entries(bucketRecords)) {
     const bucket = readJsonRecord(bucketValue);
     if (!bucket) continue;
     const bucketLabel = readJsonString(bucket.limitName) ?? readJsonString(bucket.limitId) ?? bucketId;
@@ -273,13 +277,45 @@ export function composerRateLimitWindows(
       windows.push({
         id: `${bucketId}:${windowName}`,
         label: duration === null ? bucketLabel : `${formatWindowDuration(duration)} ${bucketLabel}`,
-        usedPercent: Math.max(0, Math.min(100, usedPercent)),
+        usedPercent: clampPercent(usedPercent),
         windowDurationMinutes: duration,
         resetsAtSeconds: readJsonNumber(window.resetsAt),
+        accountWide: bucketId === CODEX_ACCOUNT_LIMIT_ID,
       });
     }
   }
   return windows;
+}
+
+function claudeRateLimitWindows(typeRecords: Record<string, unknown> | null): ComposerRateLimitWindow[] {
+  if (!typeRecords) return [];
+  const windows: ComposerRateLimitWindow[] = [];
+  for (const [limitType, entryValue] of Object.entries(typeRecords)) {
+    const entry = readJsonRecord(entryValue);
+    if (!entry) continue;
+    const utilization = readJsonNumber(entry.utilization);
+    const status = readJsonString(entry.status);
+    if (utilization === null && status === null) continue;
+    const usedPercent = utilization !== null ? utilization * 100 : status === "rejected" ? 100 : null;
+    const accountMinutes = CLAUDE_ACCOUNT_LIMIT_MINUTES[limitType];
+    const duration = accountMinutes ?? CLAUDE_MODEL_LIMIT_MINUTES[limitType] ?? null;
+    const modelName = limitType.replace(/^seven_day_/, "");
+    windows.push({
+      id: `claude:${limitType}`,
+      label: duration === null
+        ? limitType.replaceAll("_", " ")
+        : accountMinutes === undefined ? `${formatWindowDuration(duration)} ${modelName}` : formatWindowDuration(duration),
+      usedPercent: usedPercent === null ? null : clampPercent(usedPercent),
+      windowDurationMinutes: duration,
+      resetsAtSeconds: readJsonNumber(entry.resetsAt),
+      accountWide: accountMinutes !== undefined,
+    });
+  }
+  return windows;
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
 }
 
 function readJsonRecord(value: unknown): Record<string, unknown> | null {
@@ -296,7 +332,8 @@ function readJsonNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function formatWindowDuration(minutes: number): string {
+/** Formats a usage window length compactly, such as `5h` or `7d`. */
+export function formatWindowDuration(minutes: number): string {
   if (minutes >= 1_440 && minutes % 1_440 === 0) return `${minutes / 1_440}d`;
   if (minutes >= 60 && minutes % 60 === 0) return `${minutes / 60}h`;
   return `${minutes}m`;
@@ -319,33 +356,6 @@ export interface ApprovalDisplayRead {
   sessionGrants: SessionPermissionGrant[] | null;
 }
 
-const ACTIVE_SESSION_STATES: ProviderSessionState[] = [
-  "active",
-  "waiting_for_approval",
-  "waiting_for_user_input",
-];
-
-export function composerActionState(
-  sessionState: ProviderSessionState,
-  capabilities: ProviderCapabilities,
-  hasDraft: boolean,
-  hasPendingRequest: boolean,
-): ComposerActionState {
-  if (hasPendingRequest) return { primary: "resolve_request", followup: null, sendEnabled: false };
-  if (sessionState === "stopping") return { primary: "stopping", followup: null, sendEnabled: false };
-  if (ACTIVE_SESSION_STATES.includes(sessionState)) {
-    const followup = !hasDraft
-      ? null
-      : supports(capabilities, "steering")
-        ? "steer"
-        : supports(capabilities, "queued_follow_up")
-          ? "queue"
-          : "retain";
-    return { primary: "stop", followup, sendEnabled: false };
-  }
-  return { primary: "send", followup: null, sendEnabled: hasDraft && sessionState !== "starting" };
-}
-
 export function queuedFollowupDispatchReady(
   sessionState: ProviderSessionState,
   latestTurnState: string | null,
@@ -354,25 +364,6 @@ export function queuedFollowupDispatchReady(
   return sessionState === "stopped"
     && !["pending", "dispatching", "active", "waiting_for_approval", "waiting_for_user_input"]
       .includes(latestTurnState ?? "");
-}
-
-export function validateComposerSelections(
-  selections: ComposerSelections,
-  capabilities: ProviderCapabilities,
-): ComposerSelectionError[] {
-  const errors: ComposerSelectionError[] = [];
-  if (!selections.workingFolderId) errors.push({ field: "workspace", message: "Choose a workspace" });
-  if (!selections.providerInstanceId) errors.push({ field: "provider", message: "Choose a provider" });
-  if (!selections.modelId && !selections.providerManagedModel) errors.push({ field: "model", message: "Choose a model or provider-managed model" });
-  if (!selections.safetyMode) errors.push({ field: "safety", message: "Choose a safety mode" });
-  if (!selections.interactionMode) errors.push({ field: "interaction", message: "Choose Build or Plan" });
-  if (selections.interactionMode === "plan" && !supports(capabilities, "native_plan")) {
-    errors.push({ field: "interaction", message: "This provider does not support native Plan mode" });
-  }
-  if ((selections.safetyMode === "full_access" || selections.safetyMode === "custom") && !selections.fullAccessTrusted) {
-    errors.push({ field: "trust", message: "Confirm broad permission trust for this provider and workspace" });
-  }
-  return errors;
 }
 
 export function composerTokenTrigger(text: string, cursor: number): ComposerTokenTrigger | null {
@@ -394,20 +385,6 @@ export function composerTokenTrigger(text: string, cursor: number): ComposerToke
     query: match[3],
     start: before.length - match[3].length - 1,
     end: before.length,
-  };
-}
-
-export interface ComposerModeCommand {
-  mode: InteractionMode;
-  prompt: string;
-}
-
-export function composerModeCommand(text: string): ComposerModeCommand | null {
-  const match = /^\s*\/(plan|build)(?:\s+([\s\S]*))?$/i.exec(text);
-  if (!match) return null;
-  return {
-    mode: match[1].toLowerCase() === "plan" ? "plan" : "build",
-    prompt: match[2]?.trimStart() ?? "",
   };
 }
 
@@ -454,20 +431,6 @@ export function rankedModels(
         || fuzzyRank(`${left.displayName} ${left.id}`, normalized) - fuzzyRank(`${right.displayName} ${right.id}`, normalized)
         || left.displayName.localeCompare(right.displayName);
     });
-}
-
-export function validateModelOptions(
-  definitions: ModelOptionDefinition[],
-  selections: ModelOptionSelection[],
-): string[] {
-  const definitionsByKey = new Map(definitions.map((definition) => [definition.key, definition]));
-  const errors: string[] = [];
-  for (const selection of selections) {
-    const definition = definitionsByKey.get(selection.key);
-    if (!definition || definition.kind === "unknown") continue;
-    if (!optionMatchesDefinition(definition, selection)) errors.push(selection.key);
-  }
-  return errors;
 }
 
 export function composerModelSelection(
@@ -571,19 +534,13 @@ export function parseUserInputQuestions(value: VersionedJson): UserInputQuestion
   });
 }
 
-export function shouldSendComposerKey(event: Pick<KeyboardEvent, "key" | "shiftKey" | "ctrlKey" | "metaKey" | "isComposing">, sendKey: ChatSendKey): boolean {
-  if (event.isComposing || event.shiftKey || event.key !== "Enter") return false;
-  const modified = event.ctrlKey || event.metaKey;
-  return sendKey === "enter" ? !modified : modified;
-}
-
 export function validateImageFiles(
   files: Pick<File, "name" | "size" | "type">[],
   existingCount: number,
   existingBytes = 0,
 ): string | null {
   if (existingCount + files.length > CHAT_IMAGE_LIMIT) return `Attach up to ${CHAT_IMAGE_LIMIT} images`;
-  const unsupported = files.find((file) => !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type));
+  const unsupported = files.find((file) => !CHAT_IMAGE_CONTENT_TYPES.includes(file.type));
   if (unsupported) return `${unsupported.name} is not a supported image`;
   const oversized = files.find((file) => file.size > CHAT_IMAGE_BYTE_LIMIT);
   if (oversized) return `${oversized.name} exceeds the 20 MiB limit`;
@@ -592,17 +549,16 @@ export function validateImageFiles(
   return null;
 }
 
-/** Reports whether the selected provider and model can receive an image prompt. */
-export function supportsImagePrompt(
-  providerFamilyId: string | null,
-  model: ProviderModel | null,
-  capabilities: ProviderCapabilities,
-): boolean {
-  if (model?.capabilities.includes("images")) return true;
-  if (providerFamilyId === "codex" && model && !model.custom) return false;
-  return supports(capabilities, "images");
-}
-
+/**
+ * Lists the questions whose answers are incomplete or invalid.
+ *
+ * Attachments count as a free-form answer: they are allowed only where free-form text is, at
+ * most `CHAT_IMAGE_LIMIT` per answer, and they complete a required question.
+ *
+ * @param questions The questions the provider asked.
+ * @param answers The answers the user gave.
+ * @returns The ids of the questions to fix, in question order.
+ */
 export function validateUserInputAnswers(
   questions: UserInputQuestion[],
   answers: import("$lib/chat/contracts").UserInputAnswer[],
@@ -613,18 +569,17 @@ export function validateUserInputAnswers(
     const answer = byQuestion.get(question.id);
     const selected = answer?.selectedOptionIds ?? [];
     const freeForm = answer?.freeFormText?.trim() ?? "";
+    const attachments = answer?.attachmentIds ?? [];
     const optionIds = new Set(question.options.map((option) => option.id));
     const validSelection = selected.every((optionId) => optionIds.has(optionId))
       && (question.multiple || selected.length <= 1);
-    const validFreeForm = question.freeFormAllowed || freeForm.length === 0;
-    const complete = !question.required || selected.length > 0 || freeForm.length > 0;
+    const validFreeForm = question.freeFormAllowed
+      ? attachments.length <= CHAT_IMAGE_LIMIT
+      : freeForm.length === 0 && attachments.length === 0;
+    const complete = !question.required || selected.length > 0 || freeForm.length > 0 || attachments.length > 0;
     if (!validSelection || !validFreeForm || !complete) invalid.push(question.id);
   }
   return invalid;
-}
-
-function supports(capabilities: ProviderCapabilities, capability: string): boolean {
-  return capabilities.entries.some((entry) => entry.capability === capability && entry.supported);
 }
 
 function fuzzyMatch(value: string, query: string): boolean {
@@ -645,16 +600,3 @@ function fuzzyRank(value: string, query: string): number {
   return index === -1 ? 1_000 + normalized.length : 10 + index;
 }
 
-function optionMatchesDefinition(definition: ModelOptionDefinition, selection: ModelOptionSelection): boolean {
-  switch (definition.kind) {
-    case "boolean": return selection.value.kind === "boolean";
-    case "choice": return selection.value.kind === "choice" && definition.options.some((option) => option.value === selection.value.value);
-    case "multiple_choice": return selection.value.kind === "multiple_choice" && selection.value.value.every((value) => definition.options.some((option) => option.value === value));
-    case "integer_range": return selection.value.kind === "integer"
-      && selection.value.value >= definition.minimum
-      && selection.value.value <= definition.maximum
-      && (selection.value.value - definition.minimum) % definition.step === 0;
-    case "text": return selection.value.kind === "text" && (definition.allowEmpty || selection.value.value.length > 0);
-    case "unknown": return true;
-  }
-}

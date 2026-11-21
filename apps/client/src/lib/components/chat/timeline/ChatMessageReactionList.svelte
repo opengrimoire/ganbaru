@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { ChatMessageActionTarget } from "$lib/chat/timeline/message-action-target";
   import type { ChatMessageReaction } from "$lib/chat/timeline/organizational-message-model";
-  import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
+  import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/agents/participant-display";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import { formatList } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";

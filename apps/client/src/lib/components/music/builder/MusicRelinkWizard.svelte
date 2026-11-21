@@ -2,6 +2,7 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { musicErrorMessage } from "$lib/music/user-errors";
   import type { MusicSourceCollection } from "$lib/music/library/contracts";
   import type { MusicSourcesController } from "$lib/music/sources/controller.svelte";
   import MusicBuilderDialog from "./MusicBuilderDialog.svelte";
@@ -25,7 +26,7 @@
       const plan = await controller.planRelink(collection.localRootId!, replacementPath);
       step = plan.state === "ready" ? "review" : "choose";
     }
-    catch (cause) { error = cause instanceof Error ? cause.message : String(cause); step = "choose"; }
+    catch (cause) { error = musicErrorMessage(cause, t("music.errors.folderRelinkFailed")); step = "choose"; }
   }
 
   async function apply(): Promise<void> {
@@ -35,7 +36,7 @@
     try {
       await controller.applyRelink(Object.entries(decisions).flatMap(([entryId, itemId]) => itemId ? [{ entryId, itemId }] : []));
       onApplied();
-    } catch (cause) { error = cause instanceof Error ? cause.message : String(cause); step = "review"; }
+    } catch (cause) { error = musicErrorMessage(cause, t("music.errors.folderRelinkFailed")); step = "review"; }
   }
 
   async function close(): Promise<void> {

@@ -273,6 +273,12 @@ async fn rekey_memberships(transaction: &mut Transaction<'_, Sqlite>) -> MusicLi
                 SELECT * FROM music_playlist_memberships WHERE 0",
             "CREATE TEMP TABLE music_membership_rekey_skips AS
                 SELECT * FROM music_membership_skip_ranges WHERE 0",
+            // Each moved row updates its staged copy by key, so the staging tables are indexed
+            // to keep a large library's conversion linear.
+            "CREATE INDEX temp.music_membership_rekey_rows_id
+                ON music_membership_rekey_rows (id)",
+            "CREATE INDEX temp.music_membership_rekey_skips_membership
+                ON music_membership_rekey_skips (membership_id)",
         ],
         &[],
     )

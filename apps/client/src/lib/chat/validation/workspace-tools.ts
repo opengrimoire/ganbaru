@@ -1,5 +1,7 @@
 import {
+  CHAT_REVIEW_AUTHORED_PATHS_STATUSES,
   type ChatChangedFileRead,
+  type ChatCommitDraftContextRead,
   type ChatExecutionEnvironmentRead,
   type ChatReviewFileAction,
   type ChatReviewFileRead,
@@ -8,6 +10,7 @@ import {
   type ChatReviewSnapshotRead,
   type ChatReviewCommentRead,
   type ChatRestorePreviewRead,
+  type ChatRestoreWarningCode,
   type ChatRestoreResultRead,
   type ChatTerminalLayoutRead,
   type ChatTerminalPanelLayout,
@@ -43,7 +46,15 @@ import {
 const FILE_KINDS = ["file", "directory"] as const;
 const FILE_STATUSES = ["added", "modified", "deleted", "renamed", "type_changed", "unknown"] as const;
 const REVIEW_STATES = ["open", "resolved"] as const;
-const REVIEW_SOURCE_KINDS = ["working_tree", "checkpoint", "commit", "branch", "provider_turn", "change_request"] as const;
+const REVIEW_SOURCE_KINDS = [
+  "working_tree",
+  "checkpoint",
+  "commit",
+  "branch",
+  "provider_turn",
+  "change_request",
+  "assignment",
+] as const;
 const REVIEW_COMMENT_SOURCE_KINDS = ["file", ...REVIEW_SOURCE_KINDS] as const;
 const REVIEW_PATCH_STATES = ["complete", "partial", "binary", "oversized_hunk", "unavailable"] as const;
 const REVIEW_FRESHNESS = ["current", "outdated"] as const;
@@ -52,6 +63,7 @@ const HOSTED_SOURCE_CONTROL_KINDS = ["github", "gitlab", "azure_devops", "bitbuc
 const TERMINAL_PLACEMENTS = ["inspector", "bottom"] as const;
 const TERMINAL_SPLIT_DIRECTIONS = ["horizontal", "vertical"] as const;
 const WORKSPACE_OBSERVER_MODES = ["native", "polling", "unavailable"] as const;
+const RESTORE_WARNING_CODES = ["staging_restored", "provider_fork_required"] as const satisfies readonly ChatRestoreWarningCode[];
 
 const MAX_RELATIVE_PATH_CHARS = 4_096;
 const MAX_DIRECTORY_ENTRIES = 5_000;
@@ -65,6 +77,10 @@ const MAX_REVIEW_COMMENTS = 256;
 const MAX_REVIEW_SELECTION_CHARS = 1024 * 1024;
 const MAX_REVIEW_COMMENT_CHARS = 65_536;
 const MAX_REVIEW_METADATA_CHARS = 4_096;
+// Native draft context bounds: 64 KiB of patch (at most as many UTF-16 units), 200 paths, and 20 subjects.
+const MAX_DRAFT_CONTEXT_PATCH_CHARS = 64 * 1024;
+const MAX_DRAFT_CONTEXT_FILES = 200;
+const MAX_DRAFT_CONTEXT_SUBJECTS = 20;
 
 function array<T>(value: unknown, label: string, parse: (entry: unknown, label: string) => T): T[] {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
@@ -280,6 +296,8 @@ function parseReviewDiffSource(value: unknown, label = "reviewSource"): ReviewDi
         ),
         number: readNonNegativeSafeInteger(record.number, `${label}.number`),
       };
+    case "assignment":
+      return { kind, assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`) };
   }
 }
 
@@ -322,6 +340,7 @@ function parseReviewFile(value: unknown, label: string): ChatReviewFileRead {
       providerReported: readBoolean(flags.providerReported, `${label}.flags.providerReported`),
       gitObserved: readBoolean(flags.gitObserved, `${label}.flags.gitObserved`),
       readOnly: readBoolean(flags.readOnly, `${label}.flags.readOnly`),
+      authored: readBoolean(flags.authored, `${label}.flags.authored`),
     },
     capabilities: {
       stage: readBoolean(capabilities.stage, `${label}.capabilities.stage`),
@@ -383,6 +402,11 @@ export function parseChatReviewSnapshot(value: unknown): ChatReviewSnapshotRead 
     },
     preferredPatch: readNullable(record.preferredPatch, "reviewSnapshot.preferredPatch", parseReviewPatch),
     freshness: readEnum(record.freshness, REVIEW_FRESHNESS, "reviewSnapshot.freshness"),
+    authoredPaths: readEnum(
+      record.authoredPaths,
+      CHAT_REVIEW_AUTHORED_PATHS_STATUSES,
+      "reviewSnapshot.authoredPaths",
+    ),
   };
 }
 
@@ -421,7 +445,7 @@ export function parseChatTerminal(value: unknown, label = "terminal"): ChatTermi
   const record = readRecord(value, label);
   return {
     id: readIdentifier(record.id, `${label}.id`),
-    threadId: readIdentifier(record.threadId, `${label}.threadId`),
+    channelId: readIdentifier(record.channelId, `${label}.channelId`),
     workingFolderId: readIdentifier(record.workingFolderId, `${label}.workingFolderId`),
     name: readString(record.name, `${label}.name`),
     shell: readString(record.shell, `${label}.shell`),
@@ -448,7 +472,8 @@ function parseChatTerminalPanelLayout(value: unknown, label: string): ChatTermin
 export function parseChatTerminalLayout(value: unknown): ChatTerminalLayoutRead {
   const record = readRecord(value, "terminalLayout");
   return {
-    threadId: readIdentifier(record.threadId, "terminalLayout.threadId"),
+    channelId: readIdentifier(record.channelId, "terminalLayout.channelId"),
+    workingFolderId: readIdentifier(record.workingFolderId, "terminalLayout.workingFolderId"),
     schemaVersion: readNonNegativeSafeInteger(record.schemaVersion, "terminalLayout.schemaVersion"),
     groups: array(record.groups, "terminalLayout.groups", parseChatTerminalPanelLayout),
     updatedAt: readNullable(record.updatedAt, "terminalLayout.updatedAt", readUtcTimestamp),
@@ -495,7 +520,7 @@ export function parseChatRestorePreview(value: unknown): ChatRestorePreviewRead 
     files: array(record.files, "restorePreview.files", parseChangedFile),
     stagedChanges: readBoolean(record.stagedChanges, "restorePreview.stagedChanges"),
     providerRollback: readEnum(record.providerRollback, ["supported", "unsupported"] as const, "restorePreview.providerRollback"),
-    warnings: array(record.warnings, "restorePreview.warnings", readString),
+    warnings: array(record.warnings, "restorePreview.warnings", (entry, label) => readEnum(entry, RESTORE_WARNING_CODES, label)),
   };
 }
 
@@ -519,6 +544,28 @@ function parseGitChangedPath(value: unknown, label: string): GitChangedPathRead 
     worktreeStatus: readString(record.worktreeStatus, `${label}.worktreeStatus`),
     untracked: readBoolean(record.untracked, `${label}.untracked`),
     ignored: readBoolean(record.ignored, `${label}.ignored`),
+  };
+}
+
+/**
+ * Validates a draft context against the native bounds, so an oversized read is refused rather than embedded.
+ *
+ * @param value Untrusted command response.
+ * @returns The typed draft context.
+ */
+export function parseChatCommitDraftContext(value: unknown): ChatCommitDraftContextRead {
+  const record = readRecord(value, "commitDraftContext");
+  return {
+    stagedPaths: boundedArray(record.stagedPaths, "commitDraftContext.stagedPaths", MAX_DRAFT_CONTEXT_FILES, relativePath),
+    patch: boundedString(record.patch, "commitDraftContext.patch", MAX_DRAFT_CONTEXT_PATCH_CHARS),
+    patchTruncated: readBoolean(record.patchTruncated, "commitDraftContext.patchTruncated"),
+    omittedFiles: readNonNegativeSafeInteger(record.omittedFiles, "commitDraftContext.omittedFiles"),
+    recentSubjects: boundedArray(
+      record.recentSubjects,
+      "commitDraftContext.recentSubjects",
+      MAX_DRAFT_CONTEXT_SUBJECTS,
+      (entry, label) => boundedString(entry, label, MAX_REVIEW_METADATA_CHARS),
+    ),
   };
 }
 

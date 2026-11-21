@@ -61,6 +61,11 @@ pub(super) async fn handle_write_text_file(
     let result = (|| {
         let (workspace, session_id) = route_workspace(resources)?;
         require_acp_session(&request.session_id.to_string(), &session_id)?;
+        refuse_write_in_plan(resources)?;
+        if let Some(confinement) = resources.terminal_callbacks.confinement.as_deref() {
+            confinement.verify_write()?;
+        }
+        refuse_git_metadata_write(&workspace, &request.path)?;
         if request.content.len() as u64 > MAX_ACP_FILE_BYTES || request.content.contains('\0') {
             return Err(ChatError::validation(
                 "content",
@@ -69,6 +74,9 @@ pub(super) async fn handle_write_text_file(
         }
         let path = verified_write_path(&workspace, &request.path)?;
         atomic_write_text(&path, request.content.as_bytes())?;
+        if let Some(confinement) = resources.terminal_callbacks.confinement.as_deref() {
+            confinement.verify_git_metadata()?;
+        }
         serde_json::to_value(WriteTextFileResponse::new())
             .map_err(|_| protocol_error("ACP file write response"))
     })();
@@ -194,10 +202,7 @@ pub(super) async fn handle_terminal_kill(
         let terminal = resources
             .terminal_callbacks
             .terminal(&request.terminal_id.to_string())?;
-        terminal
-            .kill
-            .try_send(())
-            .map_err(|_| callback_permission_error())?;
+        terminal.terminate();
         serde_json::to_value(KillTerminalResponse::new())
             .map_err(|_| protocol_error("ACP terminal kill response"))
     })();
@@ -233,7 +238,7 @@ pub(super) async fn handle_terminal_release(
             .map_err(|_| driver_state_error())?
             .remove(&request.terminal_id.to_string())
             .ok_or_else(callback_permission_error)?;
-        let _ = terminal.kill.try_send(());
+        terminal.terminate();
         serde_json::to_value(ReleaseTerminalResponse::new())
             .map_err(|_| protocol_error("ACP terminal release response"))
     })();
@@ -262,17 +267,32 @@ pub(super) async fn create_acp_terminal(
         .and_then(|limit| usize::try_from(limit).ok())
         .unwrap_or(DEFAULT_ACP_TERMINAL_OUTPUT_BYTES)
         .clamp(1, MAX_ACP_TERMINAL_OUTPUT_BYTES);
-    let mut command = Command::new(&request.command);
+    let confinement = callbacks.confinement.clone();
+    let environment = request
+        .env
+        .iter()
+        .map(|value| (value.name.as_str(), value.value.as_str()))
+        .chain(TERMINAL_NONINTERACTIVE_ENVIRONMENT.iter().copied());
+    let mut command = match confinement.as_deref() {
+        None => {
+            let mut command = terminal_command(&request)?;
+            command.envs(environment);
+            command
+        }
+        Some(confinement) => {
+            let (program, arguments) = confined_invocation(&request);
+            confinement
+                .terminal_sandbox()?
+                .command(&program, &arguments, environment)?
+        }
+    };
     command
-        .args(&request.args)
         .current_dir(cwd)
-        .envs(request.env.iter().map(|value| (&value.name, &value.value)))
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "never")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    crate::process::configure_process_tree(&mut command);
     let mut child = command.spawn().map_err(|_| {
         ChatError::new(
             ChatErrorCode::DriverUnavailable,
@@ -280,8 +300,11 @@ pub(super) async fn create_acp_terminal(
             true,
         )
     })?;
-    let stdout = child.stdout.take().ok_or_else(callback_permission_error)?;
-    let stderr = child.stderr.take().ok_or_else(callback_permission_error)?;
+    let tree = Arc::new(crate::process::ProcessTree::claim_tokio(&mut child)?);
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        tree.terminate();
+        return Err(callback_permission_error());
+    };
     let terminal_id = format!(
         "ganbaru-acp-terminal-{}",
         NEXT_ACP_TERMINAL.fetch_add(1, Ordering::Relaxed)
@@ -293,45 +316,281 @@ pub(super) async fn create_acp_terminal(
         exit_status: None,
     }));
     let completed = Arc::new(Notify::new());
-    let (kill, mut kill_receiver) = mpsc::channel(1);
+    let (kill, kill_receiver) = mpsc::channel(1);
     let terminal = AcpTerminal {
         state: Arc::clone(&state),
         kill,
         completed: Arc::clone(&completed),
+        tree: Arc::clone(&tree),
     };
-    callbacks
-        .terminals
-        .lock()
-        .map_err(|_| driver_state_error())?
-        .insert(terminal_id.clone(), terminal);
-    let stdout_task = tokio::spawn(capture_terminal_output(stdout, Arc::clone(&state)));
-    let stderr_task = tokio::spawn(capture_terminal_output(stderr, Arc::clone(&state)));
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(40));
-        let status = loop {
-            tokio::select! {
-                _ = kill_receiver.recv() => {
-                    let _ = child.kill().await;
-                    break child.wait().await.ok();
-                }
-                _ = interval.tick() => match child.try_wait() {
-                    Ok(Some(status)) => break Some(status),
-                    Ok(None) => {}
-                    Err(_) => break None,
-                }
-            }
-        };
-        let _ = stdout_task.await;
-        let _ = stderr_task.await;
-        if let Ok(mut state) = state.lock() {
-            state.exit_status = Some(match status.and_then(|status| status.code()) {
-                Some(code) if code >= 0 => TerminalExitStatus::new().exit_code(code as u32),
-                _ => TerminalExitStatus::new().signal("terminated".to_string()),
-            });
+    match callbacks.terminals.lock() {
+        Ok(mut terminals) => {
+            terminals.insert(terminal_id.clone(), terminal);
         }
-        completed.notify_waiters();
-    });
+        Err(_) => {
+            tree.terminate();
+            return Err(driver_state_error());
+        }
+    }
+    let output_tasks = [
+        tokio::spawn(capture_terminal_output(stdout, Arc::clone(&state))),
+        tokio::spawn(capture_terminal_output(stderr, Arc::clone(&state))),
+    ];
+    tokio::spawn(supervise_terminal(
+        TerminalCommand { child, tree },
+        kill_receiver,
+        output_tasks,
+        state,
+        completed,
+        confinement,
+    ));
     Ok(terminal_id)
+}
+
+/// How a terminal request names the process it runs.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum TerminalInvocation<'a> {
+    /// `command` is one command line for the platform shell to parse.
+    Shell(&'a str),
+    /// `command` is a program that runs directly with these arguments.
+    Exec(&'a str, &'a [String]),
+}
+
+/// Chooses how a terminal request runs.
+///
+/// ACP makes `args` optional, and agents written against shell-backed clients (Grok among
+/// them) send a whole command line such as `/bin/bash -lc 'ls'` as `command` with no
+/// arguments. A request without arguments therefore runs through the platform shell, while a
+/// request with arguments keeps exec semantics, so its arguments are never reparsed.
+pub(super) fn terminal_invocation(request: &CreateTerminalRequest) -> TerminalInvocation<'_> {
+    if request.args.is_empty() {
+        TerminalInvocation::Shell(&request.command)
+    } else {
+        TerminalInvocation::Exec(&request.command, &request.args)
+    }
+}
+
+/// Builds the process for a terminal request without its working directory, environment, or
+/// pipes.
+fn terminal_command(request: &CreateTerminalRequest) -> ChatResult<Command> {
+    match terminal_invocation(request) {
+        TerminalInvocation::Exec(program, args) => {
+            let mut command = Command::new(program);
+            command.args(args);
+            Ok(command)
+        }
+        TerminalInvocation::Shell(line) => shell_command(line),
+    }
+}
+
+/// Runs `line` through `/bin/sh -c`, the shell POSIX guarantees.
+#[cfg(unix)]
+fn shell_command(line: &str) -> ChatResult<Command> {
+    let mut command = Command::new(POSIX_SHELL);
+    command.arg("-c").arg(line);
+    Ok(command)
+}
+
+/// Runs `line` through `cmd.exe /d /s /c`, passing it unescaped because `cmd.exe` does not
+/// follow `CommandLineToArgvW` quoting; `/s` strips only the surrounding quotes.
+#[cfg(windows)]
+fn shell_command(line: &str) -> ChatResult<Command> {
+    let shell = windows_command_shell(
+        std::env::var_os("ComSpec").as_deref(),
+        std::env::var_os("SystemRoot").as_deref(),
+    )
+    .ok_or_else(|| {
+        ChatError::new(
+            ChatErrorCode::DriverUnavailable,
+            "ACP terminal command could not be started because no command shell was found",
+            true,
+        )
+    })?;
+    let mut command = Command::new(shell);
+    command.raw_arg(format!("/d /s /c \"{line}\""));
+    Ok(command)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn shell_command(_line: &str) -> ChatResult<Command> {
+    Err(ChatError::new(
+        ChatErrorCode::CapabilityUnsupported,
+        "ACP terminal command lines need a platform shell",
+        true,
+    ))
+}
+
+/// Resolves the Windows command shell by absolute path, because `CreateProcessW` completes a
+/// bare application name from the current directory. Uses `ComSpec` when it is absolute,
+/// otherwise `cmd.exe` in the system directory under `SystemRoot`.
+#[cfg(any(windows, test))]
+pub(super) fn windows_command_shell(
+    comspec: Option<&std::ffi::OsStr>,
+    system_root: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    comspec
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            system_root
+                .map(|root| PathBuf::from(root).join("System32").join("cmd.exe"))
+                .filter(|path| path.is_absolute())
+        })
+}
+
+/// Records the exit of a terminal command, then holds its process tree until the terminal is
+/// killed or released or its session stops.
+///
+/// On Unix the command stays unreaped until then, so its process group ID cannot be reused
+/// while kill, release, or session stop may still signal the group to stop background
+/// descendants. The tree is retired before the reap, so no signal follows it.
+async fn supervise_terminal(
+    mut command: TerminalCommand,
+    mut kill: mpsc::Receiver<()>,
+    output_tasks: [JoinHandle<()>; 2],
+    state: Arc<Mutex<AcpTerminalState>>,
+    completed: Arc<Notify>,
+    confinement: Option<Arc<AcpCallbackConfinement>>,
+) {
+    let (exit_code, kill_requested) =
+        wait_terminal_exit(&mut command.child, &command.tree, &mut kill).await;
+    // Background descendants can hold the pipes open after the command exits, so the exit
+    // status is recorded without waiting for them to close.
+    let _ = tokio::time::timeout(ACP_TERMINAL_OUTPUT_DRAIN, async {
+        for task in output_tasks {
+            let _ = task.await;
+        }
+    })
+    .await;
+    if let Ok(mut state) = state.lock() {
+        state.exit_status = Some(match exit_code.and_then(|code| u32::try_from(code).ok()) {
+            Some(code) => TerminalExitStatus::new().exit_code(code),
+            None => TerminalExitStatus::new().signal("terminated".to_string()),
+        });
+    }
+    // A changed Git metadata digest trips the guard, which ends the session; the error itself
+    // is reported by the router.
+    let verify_git_metadata = || {
+        if let Some(confinement) = confinement.as_deref() {
+            let _ = confinement.verify_git_metadata();
+        }
+    };
+    verify_git_metadata();
+    completed.notify_waiters();
+    if !kill_requested {
+        let _ = kill.recv().await;
+    }
+    command.tree.terminate();
+    command.tree.retire();
+    let _ = command.child.wait().await;
+    // Background descendants may write after the command itself exited.
+    verify_git_metadata();
+}
+
+/// The program and arguments of a confined terminal request: exec requests as sent, and command
+/// lines through the POSIX shell, which the sandbox executes from the system.
+fn confined_invocation(request: &CreateTerminalRequest) -> (String, Vec<String>) {
+    match terminal_invocation(request) {
+        TerminalInvocation::Exec(program, arguments) => (program.to_string(), arguments.to_vec()),
+        TerminalInvocation::Shell(line) => (
+            POSIX_SHELL.to_string(),
+            vec!["-c".to_string(), line.to_string()],
+        ),
+    }
+}
+
+/// Refuses a file write whose path names a Git directory or gitfile, because Git metadata can
+/// name commands that later Git processes run.
+pub(super) fn refuse_git_metadata_write(workspace: &Path, requested: &Path) -> ChatResult<()> {
+    let relative = verified_relative_path(workspace, requested)?;
+    let names_git_metadata = relative.components().any(|component| {
+        ganbaru_chat_contracts::protected_paths::component_is_git_metadata(
+            &component.as_os_str().to_string_lossy(),
+        )
+    });
+    if names_git_metadata {
+        return Err(ChatError::new(
+            ChatErrorCode::Permission,
+            "acp_git_metadata_write_refused: agents may not write Git metadata",
+            true,
+        ));
+    }
+    Ok(())
+}
+
+/// A terminal command and its process tree.
+///
+/// Dropping it retires the tree before the child field drops, so a task the runtime drops
+/// cannot leave an armed tree whose command Tokio then reaps in the background.
+struct TerminalCommand {
+    child: tokio::process::Child,
+    tree: Arc<crate::process::ProcessTree>,
+}
+
+impl Drop for TerminalCommand {
+    fn drop(&mut self) {
+        self.tree.retire();
+    }
+}
+
+/// Waits for the command to exit without reaping it, stopping its tree first when the
+/// terminal is killed. Returns the exit code, if any, and whether a kill arrived.
+#[cfg(unix)]
+async fn wait_terminal_exit(
+    child: &mut tokio::process::Child,
+    tree: &crate::process::ProcessTree,
+    kill: &mut mpsc::Receiver<()>,
+) -> (Option<i32>, bool) {
+    let mut exit = match crate::process::watch_exit_unreaped(child) {
+        Ok(exit) => exit,
+        Err(_) => {
+            tree.retire();
+            return wait_terminal_exit_reaped(child, tree, kill).await;
+        }
+    };
+    let mut kill_requested = false;
+    let result = tokio::select! {
+        result = &mut exit => result,
+        _ = kill.recv() => {
+            kill_requested = true;
+            tree.terminate();
+            let _ = child.start_kill();
+            (&mut exit).await
+        }
+    };
+    match result {
+        Ok(Ok(code)) => (code, kill_requested),
+        // The command may already be reaped, so its group ID is no longer reserved.
+        Ok(Err(_)) | Err(_) => {
+            tree.retire();
+            (None, kill_requested)
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_terminal_exit(
+    child: &mut tokio::process::Child,
+    tree: &crate::process::ProcessTree,
+    kill: &mut mpsc::Receiver<()>,
+) -> (Option<i32>, bool) {
+    wait_terminal_exit_reaped(child, tree, kill).await
+}
+
+/// Waits for the command to exit and reaps it. On Unix the tree must be retired first.
+async fn wait_terminal_exit_reaped(
+    child: &mut tokio::process::Child,
+    tree: &crate::process::ProcessTree,
+    kill: &mut mpsc::Receiver<()>,
+) -> (Option<i32>, bool) {
+    tokio::select! {
+        status = child.wait() => (status.ok().and_then(|status| status.code()), false),
+        _ = kill.recv() => {
+            tree.terminate();
+            let _ = child.kill().await;
+            (child.wait().await.ok().and_then(|status| status.code()), true)
+        }
+    }
 }
 
 pub(super) async fn capture_terminal_output<R: tokio::io::AsyncRead + Unpin>(
@@ -339,13 +598,59 @@ pub(super) async fn capture_terminal_output<R: tokio::io::AsyncRead + Unpin>(
     state: Arc<Mutex<AcpTerminalState>>,
 ) {
     let mut buffer = [0u8; 8 * 1024];
+    let mut stream = TerminalStreamDecoder::default();
     loop {
         let read = match reader.read(&mut buffer).await {
             Ok(0) | Err(_) => break,
             Ok(read) => read,
         };
-        let Ok(mut state) = state.lock() else { break };
-        append_terminal_bytes(&mut state, &buffer[..read]);
+        let Ok(mut state) = state.lock() else { return };
+        stream.append(&mut state, &buffer[..read]);
+    }
+    if let Ok(mut state) = state.lock() {
+        stream.finish(&mut state);
+    }
+}
+
+/// The bytes of one terminal stream that end in an incomplete UTF-8 character.
+///
+/// Stdout and stderr share one output buffer, so a character split across two reads of one
+/// stream is held back until its last byte arrives instead of being interleaved with the other
+/// stream's bytes and decoded as replacement characters.
+#[derive(Default)]
+pub(super) struct TerminalStreamDecoder {
+    pending: Vec<u8>,
+}
+
+impl TerminalStreamDecoder {
+    /// Appends every complete character of `bytes`, keeping an incomplete trailing one pending.
+    pub(super) fn append(&mut self, state: &mut AcpTerminalState, bytes: &[u8]) {
+        self.pending.extend_from_slice(bytes);
+        let complete = complete_utf8_prefix(&self.pending);
+        append_terminal_bytes(state, &self.pending[..complete]);
+        self.pending.drain(..complete);
+    }
+
+    /// Appends the bytes still pending when the stream ended; they decode as replacement
+    /// characters because the character never completed.
+    pub(super) fn finish(&mut self, state: &mut AcpTerminalState) {
+        append_terminal_bytes(state, &self.pending);
+        self.pending.clear();
+    }
+}
+
+/// The length of `bytes` without a trailing UTF-8 sequence that more bytes could still complete.
+/// Invalid sequences count as complete, so they decode as replacement characters right away.
+fn complete_utf8_prefix(bytes: &[u8]) -> usize {
+    let mut offset = 0;
+    loop {
+        match std::str::from_utf8(&bytes[offset..]) {
+            Ok(_) => return bytes.len(),
+            Err(error) => match error.error_len() {
+                Some(invalid) => offset += error.valid_up_to() + invalid,
+                None => return offset + error.valid_up_to(),
+            },
+        }
     }
 }
 
@@ -353,9 +658,18 @@ pub(super) fn append_terminal_bytes(state: &mut AcpTerminalState, bytes: &[u8]) 
     state.output.extend_from_slice(bytes);
     let excess = state.output.len().saturating_sub(state.output_limit);
     if excess > 0 {
-        state.output.drain(..excess);
+        // Dropping the start of a character would leave its continuation bytes behind.
+        let boundary = state.output[excess..]
+            .iter()
+            .position(|byte| !is_utf8_continuation(*byte))
+            .map_or(state.output.len(), |position| excess + position);
+        state.output.drain(..boundary);
         state.truncated = true;
     }
+}
+
+fn is_utf8_continuation(byte: u8) -> bool {
+    byte & 0b1100_0000 == 0b1000_0000
 }
 
 pub(super) fn terminal_output_response(terminal: &AcpTerminal) -> ChatResult<Value> {
@@ -367,7 +681,7 @@ pub(super) fn terminal_output_response(terminal: &AcpTerminal) -> ChatResult<Val
 }
 
 pub(super) fn validate_terminal_command(request: &CreateTerminalRequest) -> ChatResult<()> {
-    if request.command.is_empty()
+    if request.command.trim().is_empty()
         || request.command.len() > 4_096
         || request.command.chars().any(|character| character == '\0')
         || request.args.len() > 10_000
@@ -392,7 +706,34 @@ pub(super) fn validate_terminal_command(request: &CreateTerminalRequest) -> Chat
             "ACP terminal command is invalid",
         ));
     }
+    if let Some(variable) = request
+        .env
+        .iter()
+        .find(|value| is_denied_terminal_variable(&value.name))
+    {
+        return Err(ChatError::new(
+            ChatErrorCode::Permission,
+            format!(
+                "acp_terminal_environment_refused: ACP terminals cannot set {}",
+                variable.name
+            ),
+            true,
+        ));
+    }
     Ok(())
+}
+
+/// Whether a terminal environment variable could load code into the command's processes.
+fn is_denied_terminal_variable(name: &str) -> bool {
+    ACP_TERMINAL_ENVIRONMENT_DENYLIST
+        .iter()
+        .any(|denied| name.eq_ignore_ascii_case(denied))
+        || ACP_TERMINAL_ENVIRONMENT_DENYLIST_PREFIXES
+            .iter()
+            .any(|prefix| {
+                name.get(..prefix.len())
+                    .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+            })
 }
 
 pub(super) fn verified_directory(workspace: &Path, requested: &Path) -> ChatResult<PathBuf> {
@@ -408,6 +749,24 @@ pub(super) fn verified_directory(workspace: &Path, requested: &Path) -> ChatResu
 pub(super) fn route_workspace(resources: &CursorRouterResources) -> ChatResult<(PathBuf, String)> {
     let route = resources.route.lock().map_err(|_| driver_state_error())?;
     Ok((route.workspace.clone(), route.provider_thread_id.clone()))
+}
+
+/// Refuses agent file writes while the turn runs in Plan mode, the read-only interaction mode.
+pub(super) fn refuse_write_in_plan(resources: &CursorRouterResources) -> ChatResult<()> {
+    let route = resources.route.lock().map_err(|_| driver_state_error())?;
+    plan_write_refusal(route.modes.interaction_mode)
+}
+
+/// The refusal for a file write in `interaction_mode`, if any.
+pub(super) fn plan_write_refusal(interaction_mode: InteractionMode) -> ChatResult<()> {
+    if interaction_mode == InteractionMode::Plan {
+        return Err(ChatError::new(
+            ChatErrorCode::Permission,
+            "acp_write_refused_in_plan: Plan mode does not allow file writes",
+            true,
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn require_acp_session(actual: &str, expected: &str) -> ChatResult<()> {

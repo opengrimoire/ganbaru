@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { en } from "$lib/i18n/messages/en";
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +15,9 @@ import type {
 } from "$lib/chat/contracts";
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatReplyThreadPanel from "./ChatReplyThreadPanel.svelte";
+
+const writeTextToClipboard = vi.hoisted(() => vi.fn<(value: string) => Promise<void>>());
+vi.mock("$lib/utils/clipboard", () => ({ writeTextToClipboard }));
 
 class ResizeObserverMock implements ResizeObserver {
   constructor(_callback: ResizeObserverCallback) {}
@@ -34,7 +38,7 @@ const localParticipant: ChatParticipantRead = {
 
 const agentParticipant: ChatParticipantRead = {
   id: "participant:atlas",
-  kind: "ai_teammate",
+  kind: "ai_agent",
   displayName: "Atlas",
   avatar: { schemaVersion: 1, value: {} },
   revision: 1,
@@ -46,7 +50,7 @@ function message(
   author: ChatParticipantRead,
   markdown: string,
   position: number,
-  agentRunId: string | null = author.kind === "ai_teammate" ? "run:test" : null,
+  agentRunId: string | null = author.kind === "ai_agent" ? "run:test" : null,
 ): ChatMessageRead {
   return {
     itemId,
@@ -67,6 +71,7 @@ function message(
     references: [],
     replyThread: null,
     orderKey: `c${String(position).padStart(3, "0")}`,
+    awaitingDelivery: false,
     editedAt: null,
     createdAt: `2026-08-04T17:0${position}:00.000Z`,
   };
@@ -79,12 +84,12 @@ const run: ChatAgentRunRead = {
   workingFolderId: "folder:test",
   executionEnvironmentId: "environment:test",
   scratchGenerationId: null,
-  teammatePolicyRevisionId: "policy:test",
-  effort: "medium",
   providerExecutionTurnId: "turn:test",
   providerExecutionThreadId: "provider-thread:test",
   state: "completed",
   runOrdinal: 1,
+  attemptReason: "fresh",
+  handoffReason: null,
   createdAt: "2026-08-04T17:00:30.000Z",
   updatedAt: "2026-08-04T17:01:00.000Z",
 };
@@ -126,6 +131,7 @@ function exactTimelinePage(threadId: string, turnId: string, markdown: string): 
       activityId: `answer:${turnId}`,
       turnId,
       sequenceAnchor: 2,
+      changeSequence: 2,
       kind: "message",
       data: {
         schemaVersion: 1,
@@ -147,6 +153,7 @@ function exactTimelinePage(threadId: string, turnId: string, markdown: string): 
       startedAt: "2026-08-04T17:00:30.000Z",
       completedAt: "2026-08-04T17:01:00.000Z",
       stopReason: null,
+      errorCode: null,
       modelId: null,
       modelOptions: [],
       modes: { safetyMode: "ask_for_approval", interactionMode: "build" },
@@ -156,6 +163,7 @@ function exactTimelinePage(threadId: string, turnId: string, markdown: string): 
     previousCursor: null,
     nextCursor: null,
     threadRevision: 1,
+    changeCursor: 0,
   };
 }
 
@@ -166,12 +174,14 @@ const page: ChatReplyThreadPageRead = {
     lastActivityAt: "2026-08-04T17:01:00.000Z",
     participants: [agentParticipant],
     unread: false,
+    unseenFailure: false,
     workState: "ready_for_review",
   },
   rootMessage: message("root:test", localParticipant, "Original request", 0),
   replies: [message("reply:test", agentParticipant, "Projected answer", 1)],
   assignment: null,
   agentRuns: [run],
+  delegatedChildren: [],
   previousCursor: null,
   revision: 1,
 };
@@ -188,6 +198,7 @@ describe("ChatReplyThreadPanel", () => {
 
   beforeEach(() => {
     vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+    vi.spyOn(chatApi, "listChatSecretRequests").mockResolvedValue([]);
     vi.stubGlobal("CSS", { escape: (value: string) => value });
     vi.stubGlobal("matchMedia", vi.fn(() => ({
       matches: false,
@@ -320,7 +331,7 @@ describe("ChatReplyThreadPanel", () => {
     });
 
     await vi.waitFor(() => {
-      expect(target?.querySelector('[role="alert"]')?.textContent).toContain("The execution could not open");
+      expect(target?.querySelector('[role="alert"]')?.textContent).toContain(en.chatErrors.actions.workAction);
     });
     expect(target.querySelector("[data-notice-dismiss]")).toBeNull();
 
@@ -336,7 +347,7 @@ describe("ChatReplyThreadPanel", () => {
     await tick();
 
     const remaining = [...target.querySelectorAll('[role="alert"]')];
-    expect(remaining.map((alert) => alert.textContent)).toEqual([expect.stringContaining("The execution could not open")]);
+    expect(remaining.map((alert) => alert.textContent)).toEqual([expect.stringContaining(en.chatErrors.actions.workAction)]);
     expect(target.querySelector('[data-message-item-id="root:test"]')).not.toBeNull();
   });
 
@@ -401,6 +412,234 @@ describe("ChatReplyThreadPanel", () => {
     expect(target.querySelector(".agent-badge")).toBeNull();
   });
 
+  it("names the agent and a localized reason when its run fails before any output", async () => {
+    const diagnostic = "The provider did not authenticate its internal host tools in time";
+    const failedRun: ChatAgentRunRead = { ...run, state: "failed" };
+    const unstartedRun: ChatAgentRunRead = {
+      ...run,
+      id: "run:unstarted",
+      providerExecutionThreadId: null,
+      providerExecutionTurnId: "turn:unstarted",
+      state: "cancelled",
+      createdAt: "2026-08-04T17:03:30.000Z",
+    };
+    const failedPage: ChatReplyThreadPageRead = { ...page, replies: [], agentRuns: [failedRun, unstartedRun] };
+    const userOnly = exactTimelinePage(failedRun.providerExecutionThreadId ?? "", failedRun.providerExecutionTurnId, "Hidden request");
+    const failedTimeline: ChatTimelinePageRead = {
+      ...userOnly,
+      items: [{
+        activityId: "request:failed",
+        turnId: failedRun.providerExecutionTurnId,
+        sequenceAnchor: 1,
+        changeSequence: 1,
+        kind: "message",
+        data: {
+          schemaVersion: 1,
+          value: {
+            role: "user",
+            markdown: "Hidden request",
+            streamingState: "complete",
+            providerItemId: null,
+            metadata: null,
+            createdAt: "2026-08-04T17:00:30.000Z",
+            updatedAt: "2026-08-04T17:00:30.000Z",
+          },
+        },
+      }],
+      turns: userOnly.turns.map((turn) => ({ ...turn, state: "failed", stopReason: diagnostic, errorCode: "timeout" })),
+    };
+    chat.openReplyThreadId = failedPage.thread.id;
+    chat.replyThread = failedPage;
+    chat.replyThreadPages = [failedPage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "selectAssignmentExecution").mockResolvedValue();
+    vi.spyOn(chatApi, "readChatTimelineTurn").mockResolvedValue(failedTimeline);
+    vi.spyOn(chatApi, "readChatThreadShell").mockImplementation(async (threadId) => threadShell(threadId));
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+
+    await vi.waitFor(() => {
+      expect(target?.querySelector('[data-run-outcome="failed"]')).not.toBeNull();
+    });
+    const failure = target.querySelector('[data-run-outcome="failed"] .notice-message');
+    expect(failure?.textContent).toBe(`${en.chat.runs.outcome.failedBeforeOutput("Atlas")} ${en.chatErrors.codes.timeout}`);
+    expect(target.textContent).not.toContain(diagnostic);
+    expect(target.textContent).not.toContain("Hidden request");
+    expect(target.querySelector('[data-run-outcome="stopped"]')?.textContent)
+      .toBe(en.chat.runs.outcome.stoppedBeforeOutput("Atlas"));
+    expect(target.querySelectorAll(".chat-execution-timeline")).toHaveLength(1);
+  });
+
+  it("shows a failure at the bottom of the agent's message with Retry and the technical detail behind copy", async () => {
+    const diagnostic = "Provider turn timed out after 600 seconds";
+    const failedRun: ChatAgentRunRead = { ...run, providerExecutionThreadId: null, state: "failed" };
+    const assignment = {
+      id: run.assignmentId,
+      replyThreadId: page.thread.id,
+      agent: agentParticipant,
+      triggeringMessageItemId: "root:test",
+      previousAssignmentId: null,
+      state: "failed",
+      stateReason: "timeout",
+      revision: 3,
+      settledAt: "2026-08-04T17:02:00.000Z",
+      createdAt: "2026-08-04T17:00:00.000Z",
+      updatedAt: "2026-08-04T17:02:00.000Z",
+      review: null,
+      latestRunProviderThreadId: null,
+      modelSelection: { providerManagedModel: true, modelId: null, modelOptions: [] },
+      instructions: "",
+      modelLabel: null,
+      delegation: null,
+    } satisfies ChatReplyThreadPageRead["assignment"];
+    const failureMessage: ChatMessageRead = {
+      ...message("failure:test", agentParticipant, diagnostic, 2),
+      richContent: {
+        schemaVersion: 1,
+        value: {
+          type: "agent_update",
+          updateKind: "failure",
+          assignmentId: assignment.id,
+          agentRunId: failedRun.id,
+          payload: { code: "timeout", safeDetails: null },
+        },
+      },
+    };
+    const failedPage: ChatReplyThreadPageRead = {
+      ...page,
+      replies: [message("progress:test", agentParticipant, "Looking at the build", 1), failureMessage],
+      assignment,
+      agentRuns: [failedRun],
+    };
+    chat.openReplyThreadId = failedPage.thread.id;
+    chat.replyThread = failedPage;
+    chat.replyThreadPages = [failedPage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "selectAssignmentExecution").mockResolvedValue();
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    const retry = vi.spyOn(chat, "retryAssignment").mockResolvedValue();
+    writeTextToClipboard.mockResolvedValue();
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+
+    await vi.waitFor(() => expect(target?.querySelector("[data-chat-failure]")).not.toBeNull());
+    const failure = target.querySelector<HTMLElement>("[data-chat-failure]");
+    const failureEntry = failure?.closest<HTMLElement>("[data-message-item-id]");
+    expect(failureEntry?.dataset.messageItemId).toBe("failure:test");
+    expect(failure?.querySelector(".notice-message")?.textContent)
+      .toBe(`${en.chat.runs.outcome.failedAfterOutput("Atlas")} ${en.chatErrors.codes.timeout}`);
+    expect(target.textContent).not.toContain(diagnostic);
+    expect(target.textContent).not.toContain("The agent stopped because of an error.");
+    expect(target.querySelector('[data-run-outcome="failed"]')).toBeNull();
+    expect(target.querySelectorAll("[data-notice-retry]")).toHaveLength(1);
+
+    failure?.querySelector<HTMLButtonElement>("[data-notice-copy]")?.click();
+    await vi.waitFor(() => expect(writeTextToClipboard).toHaveBeenCalledWith(`timeout: ${diagnostic}`));
+    failure?.querySelector<HTMLButtonElement>("[data-notice-retry]")?.click();
+    await vi.waitFor(() => expect(retry).toHaveBeenCalledWith(assignment.id));
+  });
+
+  it("closes a working run with a Stop working control that cancels only its assignment", async () => {
+    const startingRun: ChatAgentRunRead = {
+      ...run,
+      id: "run:starting",
+      assignmentId: "assignment:starting",
+      providerExecutionThreadId: null,
+      providerExecutionTurnId: "turn:starting",
+      state: "starting",
+    };
+    const workingPage: ChatReplyThreadPageRead = { ...page, replies: [], agentRuns: [startingRun] };
+    chat.openReplyThreadId = workingPage.thread.id;
+    chat.replyThread = workingPage;
+    chat.replyThreadPages = [workingPage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "selectAssignmentExecution").mockResolvedValue();
+    vi.spyOn(chatApi, "readChatThreadShell").mockImplementation(async (threadId) => threadShell(threadId));
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    const cancel = vi.spyOn(chat, "cancelAssignment").mockResolvedValue();
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+
+    await vi.waitFor(() => {
+      expect(target?.querySelector('[data-action="stop-run"]')).not.toBeNull();
+    });
+    const stop = target.querySelector<HTMLButtonElement>('[data-action="stop-run"]');
+    expect(stop?.textContent).toBe(en.chat.runs.stopWorking);
+    expect(stop?.title).toContain("Atlas");
+    stop?.click();
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith("assignment:starting"));
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(target.querySelector("[data-run-outcome]")).toBeNull();
+  });
+
+  it("shows the state of work another linked device runs and stops it from the thread", async () => {
+    const remoteWork = {
+      id: "assignment:remote",
+      replyThreadId: page.thread.id,
+      agent: agentParticipant,
+      triggeringMessageItemId: "root:test",
+      previousAssignmentId: null,
+      state: "working",
+      stateReason: null,
+      revision: 2,
+      settledAt: null,
+      createdAt: "2026-08-04T17:00:00.000Z",
+      updatedAt: "2026-08-04T17:01:00.000Z",
+      review: null,
+      latestRunProviderThreadId: null,
+      modelSelection: { providerManagedModel: true, modelId: null, modelOptions: [] },
+      instructions: "",
+      modelLabel: null,
+      delegation: null,
+    } satisfies ChatReplyThreadPageRead["assignment"];
+    const remotePage: ChatReplyThreadPageRead = { ...page, replies: [], assignment: remoteWork, agentRuns: [] };
+    chat.openReplyThreadId = remotePage.thread.id;
+    chat.replyThread = remotePage;
+    chat.replyThreadPages = [remotePage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "selectAssignmentExecution").mockResolvedValue();
+    vi.spyOn(chatApi, "readChatThreadShell").mockImplementation(async (threadId) => threadShell(threadId));
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    const cancel = vi.spyOn(chat, "cancelAssignment").mockResolvedValue();
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+
+    await vi.waitFor(() => {
+      expect(target?.querySelector('[data-work-state="working"]')).not.toBeNull();
+    });
+    expect(target.querySelector('[data-work-state="working"] [role="status"]')?.textContent)
+      .toBe(en.chat.delegation.states.working);
+    const remoteWorkRow = target.querySelector('[data-work-state="working"]');
+    expect(remoteWorkRow?.querySelector("header strong")?.textContent).toContain("Atlas");
+    expect(remoteWorkRow?.querySelector("time")?.getAttribute("datetime")).toBe(remoteWork.createdAt);
+    const stop = target.querySelector<HTMLButtonElement>('[data-work-state="working"] [data-action="stop-run"]');
+    expect(stop?.title).toContain("Atlas");
+    stop?.click();
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith("assignment:remote"));
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it("exposes private scratch only when the reply thread has a scratch run", async () => {
     const scratchThreadId = "provider-thread:scratch";
     const scratchRun = {
@@ -443,5 +682,96 @@ describe("ChatReplyThreadPanel", () => {
       expect(target?.querySelector('button[aria-label="Inspect private scratch"]')).not.toBeNull();
       expect(target?.textContent).toContain("Scratch result");
     });
+  });
+
+  it("shows delegated work and where it came from, and fills the composer from a suggested answer", async () => {
+    const assignment = {
+      id: "assignment:test",
+      replyThreadId: page.thread.id,
+      agent: agentParticipant,
+      triggeringMessageItemId: "root:test",
+      previousAssignmentId: null,
+      state: "waiting_for_answer",
+      stateReason: null,
+      revision: 2,
+      settledAt: null,
+      createdAt: "2026-08-04T17:00:00.000Z",
+      updatedAt: "2026-08-04T17:01:00.000Z",
+      review: null,
+      latestRunProviderThreadId: null,
+      modelSelection: { providerManagedModel: true, modelId: null, modelOptions: [] },
+      instructions: "",
+      modelLabel: null,
+      delegation: {
+        parentAssignmentId: "assignment:parent",
+        parentReplyThreadId: "reply-thread:parent",
+        depth: 1,
+        objective: "Check the build",
+        expectedResult: "A short report",
+      },
+    } satisfies ChatReplyThreadPageRead["assignment"];
+    const question = {
+      ...message("question:test", agentParticipant, "Which branch?", 1),
+      richContent: {
+        schemaVersion: 1,
+        value: {
+          type: "agent_update",
+          updateKind: "question",
+          assignmentId: assignment.id,
+          agentRunId: "run:test",
+          payload: { question: "Which branch?", choices: ["main", "dev"], source: "host_tool" },
+        },
+      },
+    };
+    const delegatedPage: ChatReplyThreadPageRead = {
+      ...page,
+      replies: [question],
+      assignment,
+      agentRuns: [],
+      delegatedChildren: [{
+        assignmentId: "assignment:child",
+        parentAssignmentId: assignment.id,
+        replyThreadId: "reply-thread:child",
+        agent: agentParticipant,
+        objective: "Run the tests",
+        state: "working",
+        stateReason: null,
+        createdAt: "2026-08-04T17:02:00.000Z",
+      }],
+    };
+    chat.openReplyThreadId = delegatedPage.thread.id;
+    chat.replyThread = delegatedPage;
+    chat.replyThreadPages = [delegatedPage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    const openReplyThread = vi.spyOn(chat, "openReplyThread").mockResolvedValue();
+    const setDraft = vi.spyOn(chat, "setOrganizationalDraft");
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+    await tick();
+
+    const origin = target.querySelector<HTMLElement>("[data-delegation-origin]");
+    expect(origin?.textContent).toContain("Check the build");
+    expect(origin?.textContent).toContain("A short report");
+    origin?.querySelector("button")?.click();
+    expect(openReplyThread).toHaveBeenCalledWith("reply-thread:parent");
+
+    const child = target.querySelector<HTMLElement>('[data-delegated-child="assignment:child"]');
+    expect(child?.textContent).toContain("Run the tests");
+    expect(child?.textContent).toContain("Working");
+    child?.querySelector("button")?.click();
+    expect(openReplyThread).toHaveBeenCalledWith("reply-thread:child");
+
+    target.querySelectorAll<HTMLButtonElement>("[data-answer-choices] button")[1]?.click();
+    expect(setDraft).toHaveBeenCalledWith(`reply-thread:${delegatedPage.thread.id}`, expect.objectContaining({
+      normalizedMarkdown: "dev",
+      selectionStart: 3,
+      selectionEnd: 3,
+    }));
   });
 });

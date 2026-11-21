@@ -11,6 +11,7 @@
   import { parseChatTerminal, parseChatTerminalOutput } from "$lib/chat/validation";
   import {
     applyTerminalOutput,
+    replayStartState,
     TerminalOutputAcknowledger,
     terminalOutputByteLength,
     terminalErrorMessage,
@@ -18,6 +19,7 @@
     sanitizeTerminalPaste,
     terminalPasteNeedsConfirmation,
   } from "$lib/chat/workspace/terminal-model";
+  import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -37,7 +39,7 @@
   const preferences = getPreferences();
   const terminalIdentity = untrack(() => ({
     id: terminalRead.id,
-    threadId: terminalRead.threadId,
+    channelId: terminalRead.channelId,
     workingFolderId: terminalRead.workingFolderId,
   }));
   const notifyState = untrack(() => onState);
@@ -81,7 +83,7 @@
       import("@xterm/addon-fit"),
       chatApi.attachChatTerminal(
         terminalIdentity.id,
-        terminalIdentity.threadId,
+        terminalIdentity.channelId,
         terminalIdentity.workingFolderId,
         subscriptionId,
         outputChannel,
@@ -125,7 +127,7 @@
       terminal.loadAddon(fit);
       terminal.open(host);
       xterm = terminal;
-      outputState = { generation: snapshot.terminal.generation, lastSequence: 0 };
+      outputState = replayStartState(snapshot.terminal.generation, snapshot.scrollback);
       for (const chunk of snapshot.scrollback) applyChunk(chunk);
       flushLiveOutput();
       terminal.onData((data) => {
@@ -133,7 +135,7 @@
         claimResize();
         void chatApi.writeChatTerminal(
           terminalIdentity.id,
-          terminalIdentity.threadId,
+          terminalIdentity.channelId,
           terminalIdentity.workingFolderId,
           data,
         ).catch((reason: unknown) => { error = terminalMessage(reason); });
@@ -149,7 +151,7 @@
         if (!ownsResize()) return;
         void chatApi.resizeChatTerminal(
           terminalIdentity.id,
-          terminalIdentity.threadId,
+          terminalIdentity.channelId,
           terminalIdentity.workingFolderId,
           terminal.cols,
           terminal.rows,
@@ -260,11 +262,11 @@
     try {
       const snapshot = await chatApi.readChatTerminalSnapshot(
         terminalIdentity.id,
-        terminalIdentity.threadId,
+        terminalIdentity.channelId,
         terminalIdentity.workingFolderId,
       );
       xterm?.reset();
-      outputState = { generation: snapshot.terminal.generation, lastSequence: 0 };
+      outputState = replayStartState(snapshot.terminal.generation, snapshot.scrollback);
       for (const chunk of snapshot.scrollback) applyChunk(chunk);
       notifyState(snapshot.terminal);
     } finally {
@@ -281,14 +283,27 @@
     if (terminalPasteNeedsConfirmation(
       text,
       chat.settings?.configuration.behavior.confirmMultilineTerminalPaste ?? true,
-    ) && !window.confirm(t("chat.inspector.confirmMultilinePaste") + "\n\n" + text)) return;
+    )) {
+      void pasteAfterConfirmation(text);
+      return;
+    }
     xterm?.paste(text);
+  }
+
+  async function pasteAfterConfirmation(text: string): Promise<void> {
+    const target = xterm;
+    const confirmed = await requestConfirmation({
+      title: t("chat.inspector.confirmMultilinePaste"),
+      message: text,
+      confirmLabel: t("chat.inspector.confirmMultilinePasteAction"),
+    });
+    if (confirmed && target && xterm === target) target.paste(text);
   }
 
   function terminalMessage(reason: unknown): string {
     return terminalErrorMessage(
       reason,
-      t("common.viewLoadFailed", t("chat.inspector.terminal")),
+      t("chatErrors.actions.terminalAction"),
     );
   }
 

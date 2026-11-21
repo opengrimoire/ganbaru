@@ -470,8 +470,12 @@ pub(crate) fn scan_rollbacks(vault: &Path) -> Result<RollbackListing, String> {
             }),
         }
     }
-    listing.restorable.sort_by(|left, right| right.id.cmp(&left.id));
-    listing.unreadable.sort_by(|left, right| right.id.cmp(&left.id));
+    listing
+        .restorable
+        .sort_by(|left, right| right.id.cmp(&left.id));
+    listing
+        .unreadable
+        .sort_by(|left, right| right.id.cmp(&left.id));
     Ok(listing)
 }
 
@@ -835,9 +839,7 @@ pub(crate) fn dismiss_rollback(vault: &Path, id: &str) -> Result<(), String> {
 
 /// Lists the active vault's database rollbacks, newest first, with the copies that cannot be read.
 #[tauri::command]
-pub async fn vault_database_rollbacks(
-    app: tauri::AppHandle,
-) -> Result<RollbackListing, String> {
+pub async fn vault_database_rollbacks(app: tauri::AppHandle) -> Result<RollbackListing, String> {
     let (vault, _) = super::active_vault(&app)?;
     visible_rollbacks(&vault)
 }

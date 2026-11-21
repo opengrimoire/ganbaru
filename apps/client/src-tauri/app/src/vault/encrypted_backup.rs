@@ -567,7 +567,10 @@ fn staging_target_name(target: &Path) -> Result<&str, String> {
 
 /// The name of the folder a restore stages `target`'s replacement in.
 fn restore_staging_name(target: &Path) -> Result<String, String> {
-    Ok(format!("{RESTORE_STAGING_PREFIX}{}", staging_target_name(target)?))
+    Ok(format!(
+        "{RESTORE_STAGING_PREFIX}{}",
+        staging_target_name(target)?
+    ))
 }
 
 /// The prefix of the private folders an independent copy for `target` is staged in.

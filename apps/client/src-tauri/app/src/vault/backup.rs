@@ -528,13 +528,26 @@ pub(crate) fn observe_handoff_activation<R: Runtime>(
     staging: &Path,
     vault_id: &str,
 ) -> Result<ActivationDisk, String> {
+    let active = super::active_vault_path(app).ok();
+    observe_activation_at(target, staging, vault_id, active.as_deref())
+}
+
+/// Recovers the swap of `target` and reports what the activation of the copy staged at
+/// `staging` left there, given the canonical path of the vault in use, `None` when none is
+/// selected.
+pub(crate) fn observe_activation_at(
+    target: &Path,
+    staging: &Path,
+    vault_id: &str,
+    active: Option<&Path>,
+) -> Result<ActivationDisk, String> {
     let swap = swap_journal::recover(target)?;
     Ok(ActivationDisk {
         swap,
         staging: fs::symlink_metadata(staging).is_ok(),
         target_holds_vault: holds_vault(target, vault_id),
-        target_active: match (super::active_vault_path(app), fs::canonicalize(target)) {
-            (Ok(active), Ok(target)) => active == target,
+        target_active: match (active, fs::canonicalize(target)) {
+            (Some(active), Ok(target)) => active == target,
             _ => false,
         },
     })

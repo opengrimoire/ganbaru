@@ -732,3 +732,147 @@ async fn a_swap_refuses_folders_outside_the_target_parent() {
     assert_eq!(read_marker(&fixture.target).await, PREVIOUS_MARKER);
     assert!(!has_unfinished_swap(&fixture.target));
 }
+
+/// Settles an interrupted handoff activation of `fixture` from disk as the receiver does,
+/// with the target folder in use when `active` is set.
+fn settle_activation(
+    fixture: &Fixture,
+    vault_id: &str,
+    active: Option<&Path>,
+) -> crate::vault::handoff::receiver::ActivationResolution {
+    let disk = crate::vault::backup::observe_activation_at(
+        &fixture.target,
+        &fixture.staging,
+        vault_id,
+        active,
+    )
+    .unwrap();
+    crate::vault::handoff::receiver::resolve_activation(&disk)
+}
+
+#[tokio::test]
+async fn an_interrupted_handoff_activation_settles_from_each_crash_point_on_disk() {
+    use crate::vault::handoff::receiver::ActivationResolution;
+    // A crash point: the journal phase and renames it left, or `None` for no swap at all.
+    type CrashPoint = Option<(Phase, usize)>;
+    let cases: [(&str, CrashPoint, bool, ActivationResolution); 8] = [
+        ("never-swapped", None, false, ActivationResolution::Abandon),
+        (
+            "never-swapped-active",
+            None,
+            true,
+            ActivationResolution::Abandon,
+        ),
+        (
+            "before-renames",
+            Some((Phase::Swapping, 0)),
+            false,
+            ActivationResolution::Abandon,
+        ),
+        (
+            "between-renames",
+            Some((Phase::Swapping, 1)),
+            true,
+            ActivationResolution::Abandon,
+        ),
+        (
+            "renamed",
+            Some((Phase::Swapping, 2)),
+            false,
+            ActivationResolution::Select,
+        ),
+        (
+            "renamed-active",
+            Some((Phase::Swapping, 2)),
+            true,
+            ActivationResolution::Commit,
+        ),
+        (
+            "activated",
+            Some((Phase::Activated, 2)),
+            false,
+            ActivationResolution::Select,
+        ),
+        (
+            "activated-active",
+            Some((Phase::Activated, 2)),
+            true,
+            ActivationResolution::Commit,
+        ),
+    ];
+    for (name, crash, in_use, expected) in cases {
+        let fixture = Fixture::new(&format!("activation-{name}"), true).await;
+        let vault_id = fixture.staged_vault();
+        let active = fs::canonicalize(&fixture.target).unwrap();
+        if let Some((phase, renames)) = crash {
+            fixture.crash(
+                phase,
+                Replaced::SameVault { flagged: false },
+                &fixture.retained_rollback(),
+                renames,
+            );
+        }
+
+        let resolution = settle_activation(&fixture, &vault_id, in_use.then_some(&*active));
+
+        assert_eq!(resolution, expected, "{name}");
+        assert!(!has_unfinished_swap(&fixture.target), "{name}");
+        let marker = match &expected {
+            ActivationResolution::Abandon => PREVIOUS_MARKER,
+            _ => REPLACEMENT_MARKER,
+        };
+        assert_eq!(read_marker(&fixture.target).await, marker, "{name}");
+        if expected == ActivationResolution::Abandon {
+            assert_eq!(
+                read_marker(&fixture.staging).await,
+                REPLACEMENT_MARKER,
+                "{name}"
+            );
+        } else {
+            assert!(!fixture.staging.exists(), "{name}");
+        }
+        let _ = fs::remove_dir_all(&fixture.parent);
+    }
+}
+
+#[tokio::test]
+async fn an_activation_settles_as_abandoned_when_the_target_holds_another_vault() {
+    let fixture = Fixture::new("activation-other-vault", true).await;
+    swap(
+        &fixture.staging,
+        &fixture.target,
+        Replacement::SameVault { flagged: false },
+    )
+    .unwrap();
+    let active = fs::canonicalize(&fixture.target).unwrap();
+
+    assert_eq!(
+        settle_activation(&fixture, "another-vault", Some(&active)),
+        crate::vault::handoff::receiver::ActivationResolution::Abandon
+    );
+    let _ = fs::remove_dir_all(&fixture.parent);
+}
+
+#[tokio::test]
+async fn an_activation_whose_swap_stays_pending_decides_nothing_and_moves_nothing() {
+    let fixture = Fixture::new("activation-pending", true).await;
+    let vault_id = fixture.staged_vault();
+    let rollback = fixture.retained_rollback();
+    fixture.crash(
+        Phase::Activated,
+        Replaced::SameVault { flagged: false },
+        &rollback,
+        2,
+    );
+    fs::write(fixture.target.join(VAULT_MANIFEST_FILE), "not a marker").unwrap();
+
+    let resolution = settle_activation(&fixture, &vault_id, None);
+
+    assert!(matches!(
+        resolution,
+        crate::vault::handoff::receiver::ActivationResolution::Pending(_)
+    ));
+    assert!(has_unfinished_swap(&fixture.target));
+    assert_eq!(read_marker(&rollback).await, PREVIOUS_MARKER);
+    let _ = fs::remove_dir_all(&fixture.parent);
+}

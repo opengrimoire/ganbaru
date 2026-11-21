@@ -743,7 +743,7 @@ async fn flush_pending_acknowledgement(app: &tauri::AppHandle) -> Result<(), Str
 
 /// How an activation that stopped before recording its outcome ends.
 #[derive(Debug, PartialEq, Eq)]
-enum ActivationResolution {
+pub(in crate::vault) enum ActivationResolution {
     /// The swap of its target still needs recovery, so nothing is decided.
     Pending(String),
     /// The copy never took the target's place, or is gone, so the member keeps the readiness
@@ -758,7 +758,7 @@ enum ActivationResolution {
 /// Judges an interrupted activation from what it left on disk. The staged copy is renamed into
 /// the target as the activation's only move of it, so a staged copy that is still there proves
 /// the vault was never replaced.
-fn resolve_activation(disk: &ActivationDisk) -> ActivationResolution {
+pub(in crate::vault) fn resolve_activation(disk: &ActivationDisk) -> ActivationResolution {
     if let Recovery::Pending(reason) = &disk.swap {
         return ActivationResolution::Pending(reason.clone());
     }

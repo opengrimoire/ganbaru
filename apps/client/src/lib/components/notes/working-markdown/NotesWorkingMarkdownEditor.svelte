@@ -19,9 +19,19 @@
     NotesWorkingMarkdownFileRef,
   } from "$lib/notes/types";
   import {
+    isCurrentWorkingMarkdownRevision,
     isWorkingMarkdownDirty,
+    replaceWorkingMarkdownRevision,
+    startWorkingMarkdownRead,
     workingMarkdownRefreshDecision,
   } from "$lib/notes/working-markdown/editor";
+  import {
+    idleAsyncResource,
+    isAsyncResourceLoading,
+    isCurrentAsyncRequest,
+    resolveAsyncRequest,
+    type AsyncResource,
+  } from "$lib/utils/async-resource";
   import { cn } from "$lib/utils";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -36,14 +46,17 @@
   } = $props();
 
   const { t } = getLocalization();
-  let loadedFile = $state<NotesWorkingMarkdownFileRead | null>(null);
+  /** The loaded revision of the shown file; every write and refresh applies only while its base is still loaded. */
+  let fileDocument = $state.raw<AsyncResource<NotesWorkingMarkdownFileRead | null>>(idleAsyncResource(null));
+  /** The revision a save in flight started from. */
+  let saveBase = $state.raw<NotesWorkingMarkdownFileRead | null>(null);
   let remoteConflict = $state<NotesWorkingMarkdownFileRead | null>(null);
   let draft = $state("");
-  let loading = $state(false);
-  let saving = $state(false);
   let error = $state<NotesFailure | null>(null);
   let mode = $state<"edit" | "preview">("edit");
-  let loadGeneration = 0;
+  const loadedFile = $derived(fileDocument.data);
+  const loading = $derived(isAsyncResourceLoading(fileDocument));
+  const saving = $derived(saveBase !== null && saveBase === loadedFile);
   const dirty = $derived(isWorkingMarkdownDirty(loadedFile?.content ?? null, draft));
   const renderedHtml = $derived(renderChatMarkdown(draft));
 
@@ -67,63 +80,63 @@
   });
 
   onDestroy(() => {
-    loadGeneration += 1;
+    fileDocument = idleAsyncResource(null);
     onDirtyChange(false);
   });
 
   async function loadFile(workingFolderId: string, relativePath: string): Promise<void> {
-    const generation = ++loadGeneration;
-    loading = true;
+    const started = startWorkingMarkdownRead<NotesWorkingMarkdownFileRead>();
+    fileDocument = started.resource;
+    draft = "";
     error = null;
     remoteConflict = null;
     try {
       const result = await readNotesWorkingMarkdown(workingFolderId, relativePath);
-      if (generation !== loadGeneration) return;
-      loadedFile = result;
+      if (!isCurrentAsyncRequest(fileDocument, started.token)) return;
+      fileDocument = resolveAsyncRequest(fileDocument, started.token, result);
       draft = result.content;
     } catch (reason) {
-      if (generation !== loadGeneration) return;
-      loadedFile = null;
-      draft = "";
+      if (!isCurrentAsyncRequest(fileDocument, started.token)) return;
+      fileDocument = resolveAsyncRequest(fileDocument, started.token, null);
       error = notesFailure(reason, t("notes.workingMarkdown.loadFailed"));
-    } finally {
-      if (generation === loadGeneration) loading = false;
     }
   }
 
   async function save(): Promise<void> {
-    if (!loadedFile || !dirty || saving) return;
-    saving = true;
+    const base = loadedFile;
+    if (!base || loading || !dirty || saving) return;
+    const { workingFolderId, relativePath } = file;
+    saveBase = base;
     error = null;
     remoteConflict = null;
     try {
-      const result = await saveNotesWorkingMarkdown(
-        file.workingFolderId,
-        file.relativePath,
-        draft,
-        loadedFile.revision,
-      );
-      loadedFile = result;
+      const result = await saveNotesWorkingMarkdown(workingFolderId, relativePath, draft, base.revision);
+      const next = replaceWorkingMarkdownRevision(fileDocument, base, result);
+      if (!next) return;
+      fileDocument = next;
       draft = result.content;
     } catch (reason) {
+      if (!isCurrentWorkingMarkdownRevision(fileDocument, base)) return;
       error = notesFailure(reason, t("notes.workingMarkdown.saveFailed"));
-      await detectConflict();
+      await detectConflict(base, workingFolderId, relativePath);
     } finally {
-      saving = false;
+      if (saveBase === base) saveBase = null;
     }
   }
 
   async function refresh(): Promise<void> {
-    if (!loadedFile) {
+    const base = loadedFile;
+    if (!base) {
       await loadFile(file.workingFolderId, file.relativePath);
       return;
     }
     error = null;
     try {
       const remote = await readNotesWorkingMarkdown(file.workingFolderId, file.relativePath);
+      if (!isCurrentWorkingMarkdownRevision(fileDocument, base)) return;
       const decision = workingMarkdownRefreshDecision(
-        loadedFile.content,
-        loadedFile.revision,
+        base.content,
+        base.revision,
         draft,
         remote.revision,
       );
@@ -132,19 +145,24 @@
         return;
       }
       if (decision === "preserve_local") return;
-      loadedFile = remote;
+      fileDocument = idleAsyncResource(remote);
       draft = remote.content;
       remoteConflict = null;
     } catch (reason) {
+      if (!isCurrentWorkingMarkdownRevision(fileDocument, base)) return;
       error = notesFailure(reason, t("notes.workingMarkdown.loadFailed"));
     }
   }
 
-  async function detectConflict(): Promise<void> {
-    if (!loadedFile) return;
+  async function detectConflict(
+    base: NotesWorkingMarkdownFileRead,
+    workingFolderId: string,
+    relativePath: string,
+  ): Promise<void> {
     try {
-      const remote = await readNotesWorkingMarkdown(file.workingFolderId, file.relativePath);
-      if (remote.revision !== loadedFile.revision) remoteConflict = remote;
+      const remote = await readNotesWorkingMarkdown(workingFolderId, relativePath);
+      if (!isCurrentWorkingMarkdownRevision(fileDocument, base)) return;
+      if (remote.revision !== base.revision) remoteConflict = remote;
     } catch {
       // Preserve the original save error when the recovery read also fails.
     }
@@ -152,7 +170,7 @@
 
   function reloadRemote(): void {
     if (!remoteConflict) return;
-    loadedFile = remoteConflict;
+    fileDocument = idleAsyncResource(remoteConflict);
     draft = remoteConflict.content;
     remoteConflict = null;
     error = null;

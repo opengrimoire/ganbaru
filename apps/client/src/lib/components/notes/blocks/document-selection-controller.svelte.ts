@@ -187,6 +187,8 @@ export function createNotesDocumentSelectionController(options: DocumentSelectio
     const ids = options.readIds();
     if (!ids.includes(next.anchor.blockId) || !ids.includes(next.focus.blockId)) return;
     selectionRequestId += 1;
+    // Text typed for an earlier selection belongs to the replacement this new selection cancels.
+    replacementText = null;
     if (!keepKeyboardAnchor) resetVerticalNavigation();
     options.clearBlockSelection();
     if (next.anchor.blockId === next.focus.blockId && next.anchor.offset === next.focus.offset) {

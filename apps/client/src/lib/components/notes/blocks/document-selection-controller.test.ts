@@ -769,6 +769,24 @@ describe("Notes document selection", () => {
     h.destroy();
   });
 
+  it("types over a range selected again while an earlier replacement still loads", async () => {
+    const h = harness();
+    const missing = h.blocks.get(h.ids[2])!;
+    h.blocks.delete(missing.id);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    h.hydrate.mockImplementation(async () => { await gate; h.blocks.set(missing.id, missing); });
+    h.key(0, "a", { ctrlKey: true });
+    h.key(0, "X");
+    await vi.waitFor(() => expect(h.hydrate).toHaveBeenCalled());
+    h.key(0, "a", { ctrlKey: true });
+    h.key(0, "Y");
+    h.key(0, "Z");
+    release();
+    await vi.waitFor(() => expect(h.replace).toHaveBeenCalledExactlyOnceWith(h.ids, 0, Number.MAX_SAFE_INTEGER, "YZ", undefined, { anchor: { blockId: h.ids[0], offset: 0 }, focus: { blockId: h.ids[h.ids.length - 1], offset: Number.MAX_SAFE_INTEGER } }));
+    h.destroy();
+  });
+
   it("moves the caret across block edges and navigates to the complete document boundary", () => {
     const h = harness();
     window.getSelection()?.collapse(h.editor(1).firstChild, 0);

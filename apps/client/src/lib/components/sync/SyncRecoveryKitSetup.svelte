@@ -31,6 +31,8 @@
   let failure = $state("");
   let replacing = $state(false);
   let generation = 0;
+  /** Advances when the active vault changes, so an action started for the previous vault cannot report into this one. */
+  let vaultEpoch = 0;
 
   async function load(): Promise<void> {
     const expected = ++generation;
@@ -47,8 +49,10 @@
   onMount(() => {
     void load();
     return onActiveVaultIdentityChange(() => {
+      vaultEpoch += 1;
       kitState = null;
       failure = "";
+      replacing = false;
       void load();
     });
   });
@@ -58,11 +62,12 @@
     if (busy) return;
     busy = true;
     failure = "";
+    const epoch = vaultEpoch;
     try {
       await createSyncRecoveryKit();
     } catch (cause: unknown) {
       console.warn("recovery kit could not be created", cause);
-      failure = t("sync.kit.createFailed");
+      if (epoch === vaultEpoch) failure = t("sync.kit.createFailed");
     } finally {
       busy = false;
       await load();

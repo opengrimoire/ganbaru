@@ -401,7 +401,7 @@ describe("project identity and lifecycle actions", () => {
   function setup(projects: Project[]) {
     let snapshot: ProjectsSnapshot = {
       ...emptySnapshot(),
-      groups: [group("work", "a1"), group("home", "a2")],
+      groups: [group("work", "a1"), group("home", "a2"), group("archive", "a3")],
       projects,
     };
     vi.mocked(updateProject).mockImplementation(async (update: ProjectUpdate) => ({

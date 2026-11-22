@@ -110,7 +110,9 @@
     onSavingChange(mutating);
     return () => onSavingChange(false);
   });
-  let error = $state<NotesFailure | null>(null);
+  let error = $state.raw<NotesFailure | null>(null);
+  /** The failure a load more reported, so a reload that lands after it clears only that failure. */
+  let loadMoreFailure: NotesFailure | null = null;
   let selectedPanelRowId = $state<string | null>(null);
   let lastLoadSignature = $state("");
   let lastReloadKey = untrack(() => reloadKey);
@@ -160,7 +162,8 @@
       const loaded = await notesDatabaseSession.load(resource, () => getNotesDataSourceCalendarView(sourceId, scope), force);
       if (currentRequest !== requestId) return null;
       calendar = loaded;
-      error = null;
+      if (error === loadMoreFailure) error = null;
+      loadMoreFailure = null;
       if (selectedPanelRowId && !loaded.rows.some((row) => row.id === selectedPanelRowId)) {
         selectedPanelRowId = null;
       }
@@ -196,7 +199,10 @@
       calendar = { ...loaded, rows: mergeNotesDatabaseRows(current.rows, loaded.rows) };
       notesDatabaseSession.write(databaseResource("calendar", dataSourceId, viewScope()), calendar);
     } catch (caught) {
-      if (currentRequest === requestId && calendar === current) error = notesFailure(caught, t("notes.databaseCalendarFailed"));
+      if (currentRequest === requestId && calendar === current) {
+        error = notesFailure(caught, t("notes.databaseCalendarFailed"));
+        loadMoreFailure = error;
+      }
     } finally {
       if (currentRequest === requestId) loadingMore = false;
     }

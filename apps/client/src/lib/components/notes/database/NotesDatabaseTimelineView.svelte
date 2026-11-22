@@ -116,7 +116,9 @@
     onSavingChange(mutating);
     return () => onSavingChange(false);
   });
-  let error = $state<NotesFailure | null>(null);
+  let error = $state.raw<NotesFailure | null>(null);
+  /** The failure a load more reported, so a reload that lands after it clears only that failure. */
+  let loadMoreFailure: NotesFailure | null = null;
   let selectedPanelRowId = $state<string | null>(null);
   let lastLoadSignature = $state("");
   let lastReloadKey = untrack(() => reloadKey);
@@ -176,7 +178,8 @@
       const loaded = await notesDatabaseSession.load(resource, () => getNotesDataSourceTimelineView(sourceId, scope), force);
       if (currentRequest !== requestId) return null;
       timeline = loaded;
-      error = null;
+      if (error === loadMoreFailure) error = null;
+      loadMoreFailure = null;
       if (selectedPanelRowId && !loaded.rows.some((row) => row.id === selectedPanelRowId)) {
         selectedPanelRowId = null;
       }
@@ -212,7 +215,10 @@
       timeline = { ...loaded, rows: mergeNotesDatabaseRows(current.rows, loaded.rows) };
       notesDatabaseSession.write(databaseResource("timeline", dataSourceId, viewScope()), timeline);
     } catch (caught) {
-      if (currentRequest === requestId && timeline === current) error = notesFailure(caught, t("notes.databaseTimelineFailed"));
+      if (currentRequest === requestId && timeline === current) {
+        error = notesFailure(caught, t("notes.databaseTimelineFailed"));
+        loadMoreFailure = error;
+      }
     } finally {
       if (currentRequest === requestId) loadingMore = false;
     }

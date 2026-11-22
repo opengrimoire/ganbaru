@@ -108,7 +108,9 @@
     onSavingChange(mutating);
     return () => onSavingChange(false);
   });
-  let error = $state<NotesFailure | null>(null);
+  let error = $state.raw<NotesFailure | null>(null);
+  /** The failure a load more reported, so a reload that lands after it clears only that failure. */
+  let loadMoreFailure: NotesFailure | null = null;
   let selectedPanelRowId = $state<string | null>(null);
   let lastLoadSignature = $state("");
   let lastReloadKey = untrack(() => reloadKey);
@@ -156,7 +158,8 @@
       const loaded = await notesDatabaseSession.load(resource, () => getNotesDataSourceGalleryView(sourceId, scope), force);
       if (currentRequest !== requestId) return null;
       gallery = loaded;
-      error = null;
+      if (error === loadMoreFailure) error = null;
+      loadMoreFailure = null;
       if (selectedPanelRowId && !loaded.rows.some((row) => row.id === selectedPanelRowId)) {
         selectedPanelRowId = null;
       }
@@ -190,7 +193,10 @@
       gallery = { ...loaded, rows: mergeNotesDatabaseRows(current.rows, loaded.rows) };
       notesDatabaseSession.write(databaseResource("gallery", dataSourceId, viewScope()), gallery);
     } catch (caught) {
-      if (currentRequest === requestId && gallery === current) error = notesFailure(caught, t("notes.databaseGalleryFailed"));
+      if (currentRequest === requestId && gallery === current) {
+        error = notesFailure(caught, t("notes.databaseGalleryFailed"));
+        loadMoreFailure = error;
+      }
     } finally {
       if (currentRequest === requestId) loadingMore = false;
     }

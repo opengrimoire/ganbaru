@@ -106,7 +106,9 @@
     onSavingChange(mutating);
     return () => onSavingChange(false);
   });
-  let error = $state<NotesFailure | null>(null);
+  let error = $state.raw<NotesFailure | null>(null);
+  /** The failure a load more reported, so a reload that lands after it clears only that failure. */
+  let loadMoreFailure: NotesFailure | null = null;
   let selectedPanelRowId = $state<string | null>(null);
   let lastLoadSignature = $state("");
   let lastReloadKey = untrack(() => reloadKey);
@@ -158,7 +160,8 @@
       const loaded = await notesDatabaseSession.load(resource, () => getNotesDataSourceListView(sourceId, scope), force);
       if (currentRequest !== requestId) return null;
       list = loaded;
-      error = null;
+      if (error === loadMoreFailure) error = null;
+      loadMoreFailure = null;
       if (selectedPanelRowId && !loaded.rows.some((row) => row.id === selectedPanelRowId)) {
         selectedPanelRowId = null;
       }
@@ -192,7 +195,10 @@
       list = { ...loaded, rows: mergeNotesDatabaseRows(current.rows, loaded.rows) };
       notesDatabaseSession.write(databaseResource("list", dataSourceId, viewScope()), list);
     } catch (caught) {
-      if (currentRequest === requestId && list === current) error = notesFailure(caught, t("notes.databaseListFailed"));
+      if (currentRequest === requestId && list === current) {
+        error = notesFailure(caught, t("notes.databaseListFailed"));
+        loadMoreFailure = error;
+      }
     } finally {
       if (currentRequest === requestId) loadingMore = false;
     }

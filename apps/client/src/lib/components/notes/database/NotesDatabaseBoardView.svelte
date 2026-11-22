@@ -109,7 +109,9 @@
     onSavingChange(mutating);
     return () => onSavingChange(false);
   });
-  let error = $state<NotesFailure | null>(null);
+  let error = $state.raw<NotesFailure | null>(null);
+  /** The failure a load more reported, so a reload that lands after it clears only that failure. */
+  let loadMoreFailure: NotesFailure | null = null;
   let selectedPanelRowId = $state<string | null>(null);
   let lastLoadSignature = $state("");
   let lastReloadKey = untrack(() => reloadKey);
@@ -162,7 +164,8 @@
       const loaded = await notesDatabaseSession.load(resource, () => getNotesDataSourceBoardView(sourceId, scope), force);
       if (currentRequest !== requestId) return null;
       board = loaded;
-      error = null;
+      if (error === loadMoreFailure) error = null;
+      loadMoreFailure = null;
       if (selectedPanelRowId && !hasBoardRow(selectedPanelRowId, loaded.groups)) {
         selectedPanelRowId = null;
       }
@@ -196,7 +199,10 @@
       board = mergeNotesDatabaseBoardWindow(current, loaded);
       notesDatabaseSession.write(databaseResource("board", dataSourceId, viewScope()), board);
     } catch (caught) {
-      if (currentRequest === requestId && board === current) error = notesFailure(caught, t("notes.databaseBoardFailed"));
+      if (currentRequest === requestId && board === current) {
+        error = notesFailure(caught, t("notes.databaseBoardFailed"));
+        loadMoreFailure = error;
+      }
     } finally {
       if (currentRequest === requestId) loadingMore = false;
     }

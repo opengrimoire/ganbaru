@@ -239,11 +239,14 @@
     const endsAtMs = musicSnoozeEndsAt(duration, now, Intl.DateTimeFormat().resolvedOptions().timeZone);
     const previousSnoozes = scopeSnoozes;
     const isTurningOff = selectedSnooze === duration;
+    const generation = loadGeneration;
+    // A track change or close during the writes moves the panel on, so their outcome stays off the new panel.
+    const panelIsCurrent = () => generation === loadGeneration && itemId === targetItemId;
     busy = true;
     error = null;
     try {
       await Promise.all(previousSnoozes.map((entry) => removeMusicSnooze(entry.id)));
-      snoozes = snoozes.filter((entry) => !previousSnoozes.some((previous) => previous.id === entry.id));
+      if (panelIsCurrent()) snoozes = snoozes.filter((entry) => !previousSnoozes.some((previous) => previous.id === entry.id));
       if (isTurningOff) {
         refreshCurrentQueueSnooze(targetItemId);
         notifyMusicLibraryChanged();
@@ -264,10 +267,17 @@
         player.applyCurrentQueueSnooze(endsAtMs);
       }
       notifyMusicLibraryChanged();
-      close(false);
+      if (panelIsCurrent()) close(false);
     } catch (cause) {
+      if (!panelIsCurrent()) {
+        console.error("Could not snooze the previous track", cause);
+        return;
+      }
       error = musicErrorMessage(cause, localization.t("music.errors.snoozeFailed"));
-      try { snoozes = (await getMusicInspectorDetail(targetItemId)).snoozes; }
+      try {
+        const refreshed = (await getMusicInspectorDetail(targetItemId)).snoozes;
+        if (panelIsCurrent()) snoozes = refreshed;
+      }
       catch (refreshCause) { console.error("Could not refresh snoozes after a failed snooze", refreshCause); }
     } finally {
       busy = false;

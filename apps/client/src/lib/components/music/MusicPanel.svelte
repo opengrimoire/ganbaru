@@ -1042,7 +1042,7 @@
               >
                 <div class="flex flex-col">
                   <div class="shrink-0" aria-hidden="true" style={`height: ${renderedPlaylistWindow.topSpacerHeight}px;`}></div>
-                  {#each renderedPlaylistItems as item, offset}
+                  {#each renderedPlaylistItems as item, offset (renderedPlaylistWindow.startIndex + offset)}
                     {@const index = renderedPlaylistWindow.startIndex + offset}
                     {@const queueEntry = player.savedQueueEntries[index]}
                     {@const snoozed = queueEntry

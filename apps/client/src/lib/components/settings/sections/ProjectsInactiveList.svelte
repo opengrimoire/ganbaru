@@ -28,18 +28,34 @@
     const status = projectLifecycleLabel(project.status, t);
     return group ? t("settings.projectsInactive.detail", group.name, status) : status;
   }
-  let pendingProjectId = $state<string | null>(null);
+  /** Projects with an activation in flight; each settles on its own, so one finishing never frees another. */
+  let pendingProjectIds = $state.raw<ReadonlySet<string>>(new Set());
   let actionError = $state<string | null>(null);
 
+  /**
+   * Marks a project as busy while its activation runs, or frees it once that activation settles.
+   *
+   * @param projectId - The project.
+   * @param pending - Whether an activation for the project is in flight.
+   */
+  function setProjectPending(projectId: string, pending: boolean): void {
+    const next = new Set(pendingProjectIds);
+    if (pending) next.add(projectId);
+    else next.delete(projectId);
+    pendingProjectIds = next;
+  }
+
+  /** Makes a hidden or archived project active again and reports a failure under the heading. */
   async function activate(project: Project): Promise<void> {
-    pendingProjectId = project.id;
+    if (pendingProjectIds.has(project.id)) return;
+    setProjectPending(project.id, true);
     actionError = null;
     try {
       await projects.setProjectStatus(project, "active");
     } catch (error) {
       actionError = userErrorMessage(error, t("settings.projectsInactive.activateFailed", project.name));
     } finally {
-      pendingProjectId = null;
+      setProjectPending(project.id, false);
     }
   }
 
@@ -73,7 +89,7 @@
           <button
             type="button"
             class="inline-flex h-(--control-height) shrink-0 items-center justify-center rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 dark:bg-transparent"
-            disabled={pendingProjectId === project.id}
+            disabled={pendingProjectIds.has(project.id)}
             aria-label={t(project.status === "hidden" ? "settings.projectsInactive.showProject" : "settings.projectsInactive.restoreProject", project.name)}
             onclick={() => void activate(project)}
           >

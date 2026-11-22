@@ -68,7 +68,8 @@ export class MusicReviewAuditionController {
       try {
         const checkpoint = await this.player.suspendForReview();
         if (generation !== this.operationGeneration) {
-          await this.player.restoreAfterReview(checkpoint);
+          // A newer preview still suspending receives this same checkpoint, so only a closed audition restores it.
+          if (this.state.phase === "idle") await this.player.restoreAfterReview(checkpoint);
           return false;
         }
         this.dispatch({ type: "suspended", checkpoint });

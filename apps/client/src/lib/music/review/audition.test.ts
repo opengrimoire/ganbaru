@@ -138,6 +138,27 @@ describe("MusicReviewAuditionController interleavings", () => {
     expect(audition.active).toBe(false);
   });
 
+  it("keeps the checkpoint for a newer preview that started while the first one was still suspending", async () => {
+    let finishSuspend!: (value: MusicReviewPlaybackCheckpoint) => void;
+    player.suspendForReview.mockImplementationOnce(() => new Promise((resolve) => { finishSuspend = resolve; }));
+    const audition = new MusicReviewAuditionController();
+    const other = detail();
+    other.item = { ...other.item, id: "other-item" };
+
+    const first = audition.preview(detail(), bindings, true);
+    const second = audition.preview(other, bindings, true);
+    finishSuspend(checkpoint);
+
+    expect(await first).toBe(false);
+    expect(await second).toBe(true);
+    expect(player.restoreAfterReview).not.toHaveBeenCalled();
+    expect(audition.reviewItemId).toBe("other-item");
+
+    await audition.restore();
+    expect(player.restoreAfterReview).toHaveBeenCalledOnce();
+    expect(player.restoreAfterReview).toHaveBeenCalledWith(checkpoint);
+  });
+
   it("ends the audition when playback cannot be suspended", async () => {
     player.suspendForReview.mockRejectedValueOnce(new Error("busy"));
     const audition = new MusicReviewAuditionController();

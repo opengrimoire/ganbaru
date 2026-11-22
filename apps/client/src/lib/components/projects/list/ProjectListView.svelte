@@ -27,6 +27,7 @@
     projectCustomFieldUsesOptions,
   } from "$lib/projects/custom-fields";
   import {
+    PROJECT_TASK_LIST_SAMPLE_TIME,
     projectTaskListAutoColumnWidths,
     projectTaskListGridMinWidth,
     projectTaskListGridTemplate,
@@ -194,7 +195,12 @@
     customFieldCellLabel,
     customFieldOptionNames: (field) => customFieldOptions(field).map((option) => option.name),
     dependencyLabels: taskDependencyLabels,
+    dependencySampleLabels: [t("projects.list.blockedBy", 2), t("projects.list.blocks", 2)],
     scheduledLabel,
+    scheduledSampleLabels: [
+      t("projects.schedule.nextScheduled", `${localDateKey(new Date())} ${PROJECT_TASK_LIST_SAMPLE_TIME}`, 2),
+      t("projects.schedule.scheduledCount", 2),
+    ],
   });
   const taskListAutoColumnWidths = $derived(projectTaskListAutoColumnWidths(taskListContentInput));
 

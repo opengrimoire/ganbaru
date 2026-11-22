@@ -66,7 +66,11 @@ export interface ProjectTaskListGridInput {
   customFieldOptionNames?: (field: ProjectCustomField) => readonly string[];
   /** The dependency badges a task shows. */
   dependencyLabels?: (task: ProjectTask) => readonly string[];
+  /** Dependency badges with typical counts, which the default width fits. */
+  dependencySampleLabels?: readonly string[];
   scheduledLabel?: (taskId: string) => string | null;
+  /** Scheduled badges for a typical next session and session count, which the default width fits. */
+  scheduledSampleLabels?: readonly string[];
   /** Automatic widths from `projectTaskListAutoColumnWidths`, so resizing one column never refits every cell. */
   autoColumnWidths?: ProjectTaskListColumnWidths;
 }
@@ -129,7 +133,11 @@ const PROJECT_LIST_HEADER_MAX_REM = 16;
 const ESTIMATED_CHARACTER_REM: Record<ProjectTaskListTextStyle, number> = { cell: 0.42, badge: 0.36, badgeStrong: 0.37 };
 /** The name cell's chrome around its title. */
 const NAME_CHROME_REM = 1.35;
-const PROJECT_LIST_NAME_WIDTH = { min: 12, autoMin: 16, max: 21.5 };
+/** A late evening time, the widest in 12 hour and 24 hour formats, sized for when a date column shows times. */
+export const PROJECT_TASK_LIST_SAMPLE_TIME = "22:45";
+/** A typical three digit estimate the default estimate width fits. */
+const PROJECT_LIST_SAMPLE_ESTIMATE_MINUTES = 480;
+const PROJECT_LIST_NAME_WIDTH = { min: 12, default: PROJECT_LIST_HEADER_MAX_REM };
 /** Narrowest manual and automatic width of a non-name column; narrower content still shows its header in full. */
 const PROJECT_LIST_COLUMN_MIN_REM = 4;
 const PROJECT_LIST_MANUAL_MAX_REM = 64;
@@ -230,6 +238,13 @@ function projectTaskListManualWidth(
     : undefined;
 }
 
+/**
+ * Which cell values a width fits. Default widths of built-in columns fit what the column is expected to show in the
+ * project's configuration, locale, and formats, so adding, renaming, or editing a task never resizes them; custom
+ * fields hold free-form values and fit them too. Content fit, used by double-click, also fits every current value.
+ */
+type ProjectTaskListFitScope = "default" | "content";
+
 /** Dates on the 28th of every month of today's year, so the widest month name in the column's format fits. */
 function projectTaskListSampleDates(today: string | undefined): string[] {
   const year = today?.slice(0, 4);
@@ -240,13 +255,22 @@ function projectTaskListSampleDates(today: string | undefined): string[] {
 function projectTaskListDateContents(
   input: ProjectTaskListGridInput,
   column: "start" | "due",
+  scope: ProjectTaskListFitScope,
 ): ProjectTaskListCellContent[] {
+  const tasks = input.tasks ?? [];
+  const taskTime = (task: ProjectTask) => column === "start" ? task.startTime : task.dueTime;
+  const sampleTime = tasks.some((task) => taskTime(task) !== undefined) ? PROJECT_TASK_LIST_SAMPLE_TIME : undefined;
   const values = new Map<string, { date: string; time?: string }>();
-  for (const date of projectTaskListSampleDates(input.today)) values.set(date, { date });
-  for (const task of input.tasks ?? []) {
-    const date = column === "start" ? task.startDate : task.dueDate;
-    const time = column === "start" ? task.startTime : task.dueTime;
-    if (date) values.set(time ? `${date} ${time}` : date, { date, time });
+  for (const date of projectTaskListSampleDates(input.today)) {
+    values.set(date, { date });
+    if (sampleTime) values.set(`${date} ${sampleTime}`, { date, time: sampleTime });
+  }
+  if (scope === "content") {
+    for (const task of tasks) {
+      const date = column === "start" ? task.startDate : task.dueDate;
+      const time = taskTime(task);
+      if (date) values.set(time ? `${date} ${time}` : date, { date, time });
+    }
   }
   const texts = [
     input.emptyDateLabel?.(column) ?? "",
@@ -282,13 +306,23 @@ function projectTaskListCustomFieldContents(
   return [empty, ...values].map((text) => cellContent([text], "cell", iconRem + INPUT_CHROME_REM));
 }
 
-/** Everything a column's cells can show, which its automatic width must fit. */
-function projectTaskListColumnContents(input: ProjectTaskListGridInput, column: ProjectTaskListColumn): ProjectTaskListCellContent[] {
-  const tasks = input.tasks ?? [];
+/** Badges with their outlined chrome and the gaps between them, sitting side by side in one cell. */
+function badgeRow(labels: readonly string[]): ProjectTaskListCellContent {
+  const chrome = labels.length * OUTLINED_BADGE_CHROME_REM + Math.max(0, labels.length - 1) * BADGE_GAP_REM;
+  return cellContent(labels, "badge", chrome);
+}
+
+/** What a column's cells can show within a fit scope, which its width must fit. */
+function projectTaskListColumnContents(
+  input: ProjectTaskListGridInput,
+  column: ProjectTaskListColumn,
+  scope: ProjectTaskListFitScope,
+): ProjectTaskListCellContent[] {
+  const tasks = scope === "content" ? input.tasks ?? [] : [];
   if (column === "status") {
     return (input.statuses ?? []).map((status) => cellContent([status.name], "badgeStrong", STATUS_BADGE_CHROME_REM));
   }
-  if (column === "start" || column === "due") return projectTaskListDateContents(input, column);
+  if (column === "start" || column === "due") return projectTaskListDateContents(input, column, scope);
   if (column === "priority") {
     const labels = [
       ...(input.priorityLabels ?? []),
@@ -298,23 +332,23 @@ function projectTaskListColumnContents(input: ProjectTaskListGridInput, column: 
   }
   if (column === "assignee" || column === "reviewer") return [cellContent([], "cell", AVATAR_REM)];
   if (column === "estimate") {
-    return tasks
-      .filter((task) => task.estimateMinutes !== undefined)
-      .map((task) => cellContent(
-        [input.estimateLabel?.(task.estimateMinutes ?? 0) ?? String(task.estimateMinutes)],
-        "badge",
-        OUTLINED_BADGE_CHROME_REM,
-      ));
+    const estimateLabel = (minutes: number) => input.estimateLabel?.(minutes) ?? String(minutes);
+    return [
+      PROJECT_LIST_SAMPLE_ESTIMATE_MINUTES,
+      ...tasks.flatMap((task) => task.estimateMinutes === undefined ? [] : [task.estimateMinutes]),
+    ].map((minutes) => cellContent([estimateLabel(minutes)], "badge", OUTLINED_BADGE_CHROME_REM));
   }
   if (column === "scheduled") {
-    return tasks.map((task) => cellContent([input.scheduledLabel?.(task.id) ?? ""], "badge", OUTLINED_BADGE_CHROME_REM));
+    return [
+      ...(input.scheduledSampleLabels ?? []),
+      ...tasks.flatMap((task) => input.scheduledLabel?.(task.id) ?? []),
+    ].map((label) => badgeRow([label]));
   }
   if (column === "dependencies") {
-    return tasks.map((task) => {
-      const labels = input.dependencyLabels?.(task) ?? [];
-      const chrome = labels.length * OUTLINED_BADGE_CHROME_REM + Math.max(0, labels.length - 1) * BADGE_GAP_REM;
-      return cellContent(labels, "badge", chrome);
-    });
+    return [
+      badgeRow(input.dependencySampleLabels ?? []),
+      ...tasks.map((task) => badgeRow(input.dependencyLabels?.(task) ?? [])),
+    ];
   }
   const customFieldId = customFieldIdFromTaskListColumn(column);
   const customField = customFieldId ? input.customFields?.find((field) => field.id === customFieldId) : undefined;
@@ -325,6 +359,7 @@ function projectTaskListContentsWidthRem(input: ProjectTaskListGridInput, conten
   return contents.reduce((width, content) => Math.max(width, projectTaskListContentWidthRem(input, content)), 0);
 }
 
+/** Every title the name column shows, which only content fit reads; its default width ignores titles. */
 function projectTaskListNameContents(input: ProjectTaskListGridInput): ProjectTaskListCellContent[] {
   return [
     input.nameLabel ?? "Name",
@@ -334,18 +369,18 @@ function projectTaskListNameContents(input: ProjectTaskListGridInput): ProjectTa
   ].map((text) => cellContent([text], "cell", NAME_CHROME_REM - CELL_PADDING_REM - FIT_SLACK_REM));
 }
 
+/** The name column keeps one default width, as wide as the widest automatic header, since titles truncate or wrap. */
 function projectTaskListNameColumnWidth(input: ProjectTaskListGridInput, allowManualWidth = true): number {
   const manualWidth = projectTaskListManualWidth(input, "name");
   if (allowManualWidth && manualWidth !== undefined) return manualWidth;
   const autoWidth = input.autoColumnWidths?.name;
   if (autoWidth !== undefined) return autoWidth;
-  const contentWidth = projectTaskListContentsWidthRem(input, projectTaskListNameContents(input));
-  return roundProjectTaskListColumnWidthRem(Math.min(PROJECT_LIST_NAME_WIDTH.max, Math.max(PROJECT_LIST_NAME_WIDTH.autoMin, contentWidth)));
+  return PROJECT_LIST_NAME_WIDTH.default;
 }
 
 /**
  * Width of a list column. A manual width wins; otherwise the column fits its full header label (up to a cap) and
- * everything its cells can show (up to a per-column cap), so neither truncates in any language or font.
+ * what its cells are expected to show (up to a per-column cap), so neither truncates in any language or font.
  */
 export function projectTaskListColumnWidthRem(
   column: ProjectTaskListColumn,
@@ -361,7 +396,7 @@ export function projectTaskListColumnWidthRem(
     PROJECT_LIST_HEADER_MAX_REM,
     projectTaskListHeaderWidthRem(input, projectTaskListColumnLabel(input, column)),
   );
-  const contentWidth = Math.min(bounds.contentMax, projectTaskListContentsWidthRem(input, projectTaskListColumnContents(input, column)));
+  const contentWidth = Math.min(bounds.contentMax, projectTaskListContentsWidthRem(input, projectTaskListColumnContents(input, column, "default")));
   return roundProjectTaskListColumnWidthRem(Math.max(bounds.autoMin, headerWidth, contentWidth));
 }
 
@@ -383,7 +418,7 @@ export function projectTaskListContentFitColumnWidthRem(
     ? projectTaskListContentsWidthRem(input, projectTaskListNameContents(input))
     : Math.max(
       projectTaskListHeaderWidthRem(input, projectTaskListColumnLabel(input, column)),
-      projectTaskListContentsWidthRem(input, projectTaskListColumnContents(input, column)),
+      projectTaskListContentsWidthRem(input, projectTaskListColumnContents(input, column, "content")),
     );
   return clampProjectTaskListManualColumnWidth(column, width);
 }

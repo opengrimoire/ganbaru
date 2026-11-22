@@ -121,7 +121,7 @@ describe("project list column widths", () => {
     }))).toBeCloseTo(1 + flag + 6.5 + 0.25);
   });
 
-  it("fits the widest month and the empty placeholder of date columns", () => {
+  it("fits the widest month and the empty placeholder of date columns, ignoring individual task dates", () => {
     const input = measured({
       columns: ["due"],
       today: "2026-11-22",
@@ -132,12 +132,22 @@ describe("project list column widths", () => {
       },
     });
     expect(projectTaskListColumnWidthRem("due", input)).toBe(10.25);
+    expect(projectTaskListColumnWidthRem("due", { ...input, tasks: [task("task-a", { dueDate: "2026-06-21" })] })).toBe(10.25);
     expect(projectTaskListColumnWidthRem("due", { ...input, today: undefined })).toBe(6.75);
-    expect(projectTaskListColumnWidthRem("due", {
-      ...input,
-      today: undefined,
-      tasks: [task("task-a", { dueDate: "2026-06-21", dueTime: "12:30" })],
-    })).toBe(8.25);
+    const timed = { ...input, today: undefined, tasks: [task("task-a", { dueDate: "2026-06-21", dueTime: "12:30" })] };
+    expect(projectTaskListColumnWidthRem("due", timed)).toBe(6.75);
+    expect(projectTaskListDoubleClickColumnWidthRem("due", timed)).toBe(8.25);
+  });
+
+  it("reserves room for a late time once a task in the column has a time", () => {
+    const input = measured({
+      columns: ["due"],
+      today: "2026-11-22",
+      dateLabel: (_column, date, time) => time ? `Nov 28 ${time}` : "Nov 28",
+    });
+    expect(projectTaskListColumnWidthRem("due", input)).toBe(4.25);
+    expect(projectTaskListColumnWidthRem("due", { ...input, tasks: [task("task-a", { dueDate: "2026-06-21", dueTime: "09:00" })] }))
+      .toBe(1 + 6 + 0.25);
   });
 
   it("sizes custom field cells for what each field type shows", () => {
@@ -162,12 +172,13 @@ describe("project list column widths", () => {
     expect(projectTaskListColumnWidthRem("custom:notes", input)).toBe(14);
   });
 
-  it("fits both dependency badges side by side", () => {
+  it("fits typical dependency badges side by side whatever the current counts", () => {
     const badge = 0.75 + 2 / 15;
     expect(projectTaskListColumnWidthRem("dependencies", measured({
       columns: ["dependencies"],
       tasks: [task("task-a")],
-      dependencyLabels: () => ["Blocked by 2", "Blocks 1"],
+      dependencySampleLabels: ["Blocked by 2", "Blocks 2"],
+      dependencyLabels: () => ["Blocked by 1"],
     }))).toBeCloseTo(1 + 2 * badge + 0.25 + 10 + 0.25, 1);
   });
 
@@ -178,11 +189,12 @@ describe("project list column widths", () => {
     expect(projectTaskListGridMinWidth([])).toBe("21.5rem");
   });
 
-  it("sizes the name column from titles within its bounds", () => {
+  it("keeps the default name width whatever the titles, while double-click fits them", () => {
+    const long = measured({ columns: [], tasks: [task("t".repeat(36))] });
     expect(projectTaskListGridTemplate(measured({ columns: [], tasks: [task("Short")] }))).toBe("1.5rem 1.75rem 16rem 2.25rem");
-    expect(projectTaskListGridTemplate(measured({ columns: [], tasks: [task("t".repeat(36))] }))).toBe("1.5rem 1.75rem 19.35rem 2.25rem");
-    expect(projectTaskListNameTrackWidth(measured({ columns: [], tasks: [task("t".repeat(36))] }))).toBe("19.35rem");
-    expect(projectTaskListGridTemplate(measured({ columns: [], tasks: [task("t".repeat(80))] }))).toBe("1.5rem 1.75rem 21.5rem 2.25rem");
+    expect(projectTaskListGridTemplate(long)).toBe("1.5rem 1.75rem 16rem 2.25rem");
+    expect(projectTaskListNameTrackWidth(long)).toBe("16rem");
+    expect(projectTaskListDoubleClickColumnWidthRem("name", long)).toBeCloseTo(19.35);
   });
 
   it("reuses precomputed automatic widths and lets manual widths win over them", () => {

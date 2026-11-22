@@ -121,6 +121,7 @@ fn theme_write(id: &str, blend_canvas: &str) -> ganbaru_themes::UserThemeWrite {
         "blendCanvas": blend_canvas,
         "seedBlendCanvas": "#101010",
         "derivationEngineVersion": 2,
+        "seedDerivationEngineVersion": 2,
         "calendarDefaultMode": "app-canvas",
         "calendarDefaultCustom": "#202020",
         "seedCalendarDefaultMode": "app-canvas",

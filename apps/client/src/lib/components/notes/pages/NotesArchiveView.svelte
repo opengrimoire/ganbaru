@@ -16,7 +16,8 @@
   const { t } = localization;
   let search = $state("");
   let searchInitialized = false;
-  let restoringPageId = $state<string | null>(null);
+  /** Pages with an unarchive in flight; each row stays disabled until its own unarchive settles. */
+  let restoringPageIds = $state.raw<ReadonlySet<string>>(new Set());
   const filteredPages = $derived.by(() =>
     filterNotesPagesByTitle(notes.archivedPages, search, (page) =>
       notesPageTitle(page, t("notes.untitled"))
@@ -37,12 +38,16 @@
     return t("notes.metadataEdited", new Date(page.last_edited_time).toLocaleString(localization.locale));
   }
 
+  /** Unarchives one page while its row stays disabled, ignoring a repeat while that page is already restoring. */
   async function unarchivePage(page: NotesPage): Promise<void> {
-    restoringPageId = page.id;
+    if (restoringPageIds.has(page.id)) return;
+    restoringPageIds = new Set([...restoringPageIds, page.id]);
     try {
       await notes.unarchivePage(page.id);
     } finally {
-      restoringPageId = null;
+      const next = new Set(restoringPageIds);
+      next.delete(page.id);
+      restoringPageIds = next;
     }
   }
 </script>
@@ -103,7 +108,7 @@
             </div>
             <button
               class="flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-[0.8rem] text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={restoringPageId === page.id}
+              disabled={restoringPageIds.has(page.id)}
               aria-label={t("notes.unarchivePage", notesPageTitle(page, t("notes.untitled")))}
               onclick={() => {
                 void unarchivePage(page);

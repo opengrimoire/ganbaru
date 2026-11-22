@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import { normalizeContactsError, type Contact } from "$lib/api/contacts";
   import Select from "$lib/components/ui/Select.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -27,7 +27,11 @@
   let saving = $state(false);
   let error = $state<ContactsMutationErrorKey | null>(null);
   const durationOptions = $derived(CONTACT_TRUST_DURATIONS.map((value) => ({ value, label: t(`contacts.trust.duration.${value}`) })));
+  /** Set once this dialog closes, so a save that finishes later does not close a dialog opened after it. */
+  let closed = false;
+  onDestroy(() => { closed = true; });
 
+  /** Saves both grants at the contact's current revision and closes this dialog if it is still open. */
   async function save(): Promise<void> {
     if (saving) return;
     saving = true;
@@ -37,7 +41,7 @@
         { id: contact.id, expectedRevision: contact.revision },
         { inviteTrust: trustKindForDuration(invite), messageTrust: trustKindForDuration(message) },
       );
-      onClose();
+      if (!closed) onClose();
     } catch (cause: unknown) {
       error = contactsMutationErrorKey(normalizeContactsError(cause).code);
     } finally {

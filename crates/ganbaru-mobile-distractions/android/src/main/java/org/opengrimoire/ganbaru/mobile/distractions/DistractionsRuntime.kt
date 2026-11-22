@@ -35,7 +35,7 @@ private const val PHASE_ACTIVE_KEY = "phaseActive"
 private const val PHASE_RUN_ID_KEY = "phaseRunId"
 private const val PHASE_KIND_KEY = "phaseKind"
 private const val PHASE_RUNNING_KEY = "phaseRunning"
-private const val PHASE_MANUAL_PAUSE_KEY = "phaseManualPause"
+private const val PHASE_PAUSE_LIFTS_BLOCKING_KEY = "phasePauseLiftsBlocking"
 private const val PHASE_VALID_UNTIL_KEY = "phaseValidUntil"
 private const val NOTIFICATION_TIMESTAMPS_KEY = "notificationTimestamps"
 private const val COMBINED_USAGE_BASELINES_KEY = "combinedUsageBaselines"
@@ -175,7 +175,7 @@ internal object DistractionsRuntimeStore {
     runId: String,
     phase: String,
     running: Boolean,
-    manualPause: Boolean,
+    pauseLiftsBlocking: Boolean,
     validUntilEpochMs: Long,
   ): Boolean {
     if (runId.isBlank() || runId.length > 128
@@ -190,7 +190,7 @@ internal object DistractionsRuntimeStore {
       .putString(PHASE_RUN_ID_KEY, runId)
       .putString(PHASE_KIND_KEY, phase)
       .putBoolean(PHASE_RUNNING_KEY, running)
-      .putBoolean(PHASE_MANUAL_PAUSE_KEY, manualPause)
+      .putBoolean(PHASE_PAUSE_LIFTS_BLOCKING_KEY, pauseLiftsBlocking)
       .putLong(PHASE_VALID_UNTIL_KEY, validUntilEpochMs)
       .commit()) { "Distractions phase state could not be persisted" }
     return true
@@ -202,7 +202,7 @@ internal object DistractionsRuntimeStore {
       .remove(PHASE_RUN_ID_KEY)
       .remove(PHASE_KIND_KEY)
       .remove(PHASE_RUNNING_KEY)
-      .remove(PHASE_MANUAL_PAUSE_KEY)
+      .remove(PHASE_PAUSE_LIFTS_BLOCKING_KEY)
       .remove(PHASE_VALID_UNTIL_KEY)
       .commit()) { "Distractions phase state could not be cleared" }
   }
@@ -218,7 +218,7 @@ internal object DistractionsRuntimeStore {
       runId = intent.getStringExtra("runId").orEmpty(),
       phase = intent.getStringExtra("phase").orEmpty(),
       running = intent.getBooleanExtra("running", false),
-      manualPause = intent.getBooleanExtra("manualPause", false),
+      pauseLiftsBlocking = intent.getBooleanExtra("pauseLiftsBlocking", false),
       validUntilEpochMs = intent.getLongExtra("validUntilEpochMs", 0L),
     )
   }
@@ -231,7 +231,7 @@ internal object DistractionsRuntimeStore {
       runId = prefs.getString(PHASE_RUN_ID_KEY, null),
       phase = prefs.getString(PHASE_KIND_KEY, null),
       running = prefs.getBoolean(PHASE_RUNNING_KEY, false),
-      manualPause = prefs.getBoolean(PHASE_MANUAL_PAUSE_KEY, false),
+      pauseLiftsBlocking = prefs.getBoolean(PHASE_PAUSE_LIFTS_BLOCKING_KEY, false),
       validUntilEpochMs = prefs.getLong(PHASE_VALID_UNTIL_KEY, 0L),
     )
   }

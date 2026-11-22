@@ -6,6 +6,8 @@ use ganbaru_pomodoro::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::distractions::focus_pause::FocusPhaseHold;
+
 const MAX_TEXT_UTF16_UNITS: usize = 160;
 const MILLIS_PER_SECOND: i64 = 1000;
 
@@ -76,6 +78,9 @@ struct AcceptedNotification {
     is_running: bool,
     /// Whether the notification may offer Resume: only a manual pause, which Resume ends.
     is_resumable: bool,
+    /// Whether the distraction blocker's pause setting lifts phase blocking now, computed by the
+    /// shared rule so Android only applies it.
+    pause_lifts_blocking: bool,
     remaining_seconds: i64,
     total_seconds: i64,
     config_json: String,
@@ -152,6 +157,7 @@ fn accepted_notification(
             remaining_ms,
             running,
             resumable: snapshot.mode == FocusMode::ManualPause,
+            pause_lifts_blocking: FocusPhaseHold::of(snapshot.mode).pause_lifts_blocking(),
         },
         copy,
     )
@@ -164,6 +170,7 @@ struct NotificationTiming {
     remaining_ms: i64,
     running: bool,
     resumable: bool,
+    pause_lifts_blocking: bool,
 }
 
 fn notification_payload(
@@ -202,6 +209,7 @@ fn notification_payload(
         generated_at_epoch_ms: timing.now,
         is_running: timing.running,
         is_resumable: timing.resumable,
+        pause_lifts_blocking: timing.pause_lifts_blocking,
         remaining_seconds,
         total_seconds,
         config_json: serde_json::to_string(&run.configuration)
@@ -248,6 +256,7 @@ fn completion_notification(
             remaining_ms: 0,
             running: false,
             resumable: false,
+            pause_lifts_blocking: false,
         },
         copy,
     )

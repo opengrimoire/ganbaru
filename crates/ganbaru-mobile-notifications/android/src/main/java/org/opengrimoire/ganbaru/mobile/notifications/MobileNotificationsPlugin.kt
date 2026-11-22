@@ -81,6 +81,7 @@ internal class PomodoroNotificationStateArgs {
   var generatedAtEpochMs: Long = 0
   var isRunning: Boolean = false
   var isResumable: Boolean = false
+  var pauseLiftsBlocking: Boolean = false
   var remainingSeconds: Int = 0
   var totalSeconds: Int = 0
   lateinit var configJson: String
@@ -611,6 +612,7 @@ private fun PomodoroNotificationStateArgs.toProjection(): PomodoroNotificationPr
     generatedAtEpochMs = generatedAtEpochMs,
     isRunning = isRunning,
     isResumable = isResumable,
+    pauseLiftsBlocking = pauseLiftsBlocking,
     remainingSeconds = remainingSeconds,
     totalSeconds = totalSeconds,
     configJson = configJson,
@@ -649,6 +651,7 @@ private fun PomodoroNotificationProjection.toResponse(): JSObject = JSObject().a
   put("generatedAtEpochMs", generatedAtEpochMs)
   put("isRunning", isRunning)
   put("isResumable", isResumable)
+  put("pauseLiftsBlocking", pauseLiftsBlocking)
   put("remainingSeconds", remainingSeconds)
   put("totalSeconds", totalSeconds)
   put("configJson", configJson)

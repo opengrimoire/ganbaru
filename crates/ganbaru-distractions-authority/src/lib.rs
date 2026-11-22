@@ -68,6 +68,12 @@ impl PauseReason {
         matches!(self, Self::Idle | Self::Suspend)
     }
 
+    /// Whether the `pauseDuringFocusPause` setting lifts phase blocking during this pause: only a pause
+    /// the user chose, since strict pauses keep blocking.
+    pub fn lifts_phase_blocking(self) -> bool {
+        !self.is_strict()
+    }
+
     /// Phase recorded on a block event while the phase is paused for this reason.
     pub fn block_event_phase(self) -> &'static str {
         match self {
@@ -127,10 +133,10 @@ impl RuntimeAuthority {
         let Some(active) = self.active_phase() else {
             return false;
         };
-        let manual_pause = active
+        let lifted = active
             .pause_reason
-            .is_some_and(|reason| !reason.is_strict());
-        if manual_pause && settings.pause_during_focus_pause {
+            .is_some_and(PauseReason::lifts_phase_blocking);
+        if lifted && settings.pause_during_focus_pause {
             return false;
         }
         settings.blocks_phase(active.phase)

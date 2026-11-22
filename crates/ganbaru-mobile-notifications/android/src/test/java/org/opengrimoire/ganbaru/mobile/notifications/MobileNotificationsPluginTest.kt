@@ -150,7 +150,7 @@ class MobileNotificationsPluginTest {
   private fun projection(): PomodoroNotificationProjection = PomodoroNotificationProjection(
     runId = "run-a", eventId = "event-a", eventTitle = "Focus", eventDate = "2026-09-06",
     eventEndsAtEpochMs = 10_000, generatedAtEpochMs = 1_000, isRunning = true, isResumable = false,
-    remainingSeconds = 4, totalSeconds = 4, configJson = "{}",
+    pauseLiftsBlocking = false, remainingSeconds = 4, totalSeconds = 4, configJson = "{}",
     phases = listOf(PomodoroNotificationPhase("phase-a", "focus", 1, 1_000, 5_000)),
     copy = PomodoroNotificationCopy(
       "Focus", "Focus", "Alerts", "Alerts", "Focus", "Short break", "Long break", "Paused", "Resume focus",

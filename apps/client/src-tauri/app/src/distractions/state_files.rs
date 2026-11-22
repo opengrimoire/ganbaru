@@ -1,5 +1,5 @@
 use super::*;
-use ganbaru_distractions::contracts::{ActivePhase, BlockingPhase, PauseReason, RuntimeAuthority};
+use ganbaru_distractions::contracts::{ActivePhase, BlockingPhase, RuntimeAuthority};
 use std::io::{Read, Write};
 
 static STATE_WRITE_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -125,15 +125,12 @@ fn accepted_phase(
     valid_until: i64,
     now_ms: i64,
 ) -> Option<ActivePhase> {
-    use ganbaru_pomodoro::{FocusMode, FocusPhase};
-    let pause_reason = match effect.mode {
-        FocusMode::Running => None,
-        FocusMode::ManualPause => Some(PauseReason::Manual),
-        FocusMode::IdlePause => Some(PauseReason::Idle),
-        FocusMode::Suspended => Some(PauseReason::Suspend),
-        FocusMode::Stopped | FocusMode::IdleFailed | FocusMode::ReturnWait | FocusMode::Expired => {
-            return None;
-        }
+    use super::focus_pause::FocusPhaseHold;
+    use ganbaru_pomodoro::FocusPhase;
+    let pause_reason = match FocusPhaseHold::of(effect.mode) {
+        FocusPhaseHold::Running => None,
+        FocusPhaseHold::Paused(reason) => Some(reason),
+        FocusPhaseHold::Released => return None,
     };
     effect.segment_id.as_ref()?;
     if valid_until <= now_ms {

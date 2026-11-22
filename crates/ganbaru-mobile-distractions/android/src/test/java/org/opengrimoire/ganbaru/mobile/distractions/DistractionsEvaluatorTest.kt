@@ -77,7 +77,7 @@ class DistractionsEvaluatorTest {
   fun strictPausesKeepBlockingLikeDesktop() {
     assertTrue(DistractionsEvaluator.isBlockedBySchedule(
       schedule,
-      phase(phase = "focus", running = false, manualPause = false),
+      phase(phase = "focus", running = false, pauseLiftsBlocking = false),
       "com.google.android.youtube",
       NOW,
     ))
@@ -170,14 +170,14 @@ class DistractionsEvaluatorTest {
   private fun phase(
     phase: String,
     running: Boolean = true,
-    manualPause: Boolean = !running,
+    pauseLiftsBlocking: Boolean = !running,
     validUntilEpochMs: Long = NOW + 60_000L,
   ) = PomodoroPhaseState(
     active = true,
     runId = "run-1",
     phase = phase,
     running = running,
-    manualPause = manualPause,
+    pauseLiftsBlocking = pauseLiftsBlocking,
     validUntilEpochMs = validUntilEpochMs,
   )
 

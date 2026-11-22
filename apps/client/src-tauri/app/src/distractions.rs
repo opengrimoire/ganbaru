@@ -24,6 +24,7 @@ use tauri::{Manager, Runtime};
 #[cfg(any(target_os = "android", all(test, not(target_os = "ios"))))]
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) mod android;
+pub(crate) mod focus_pause;
 #[cfg(desktop)]
 mod authorization;
 #[cfg(desktop)]

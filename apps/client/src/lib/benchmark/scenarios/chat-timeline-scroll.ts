@@ -75,8 +75,12 @@ export const chatTimelineScrollScenario: BenchmarkScenario = {
     }
   },
 
-  async seed(dataset: BenchmarkDatasetProfile): Promise<BenchmarkSeedHandle> {
-    return seedChatTimelineDataset(dataset);
+  async seed(
+    dataset: BenchmarkDatasetProfile,
+    _context: BenchmarkScenarioContext,
+    signal: AbortSignal,
+  ): Promise<BenchmarkSeedHandle> {
+    return seedChatTimelineDataset(dataset, signal);
   },
 
   async cleanup(_seedHandle: BenchmarkSeedHandle): Promise<void> {

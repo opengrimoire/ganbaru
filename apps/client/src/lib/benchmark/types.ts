@@ -417,11 +417,13 @@ export interface BenchmarkScenario extends BenchmarkScenarioMetadata {
   ): Promise<void | BenchmarkMetric[]>;
   /**
    * Seed the dense dataset. Called once between the baseline pass and
-   * the restart. Returns a handle that `cleanup()` can use to undo.
+   * the restart. Returns a handle that `cleanup()` can use to undo. Stops
+   * between write batches with an `AbortError` once `signal` aborts.
    */
   seed(
     dataset: BenchmarkDatasetProfile,
     context: BenchmarkScenarioContext,
+    signal: AbortSignal,
   ): Promise<BenchmarkSeedHandle>;
   /**
    * Undo whatever `seed()` created. Runs on summary close, on cancel, and

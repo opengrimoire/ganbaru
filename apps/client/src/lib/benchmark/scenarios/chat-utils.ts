@@ -46,9 +46,13 @@ export function chatBenchmarkThreadId(dataset: ChatTimelineDatasetProfile): stri
   return `benchmark-${benchmarkDatasetId(dataset)}`;
 }
 
-/** Seeds one Chat timeline dataset into the benchmark database. */
-export async function seedChatTimelineDataset(dataset: BenchmarkDatasetProfile): Promise<BenchmarkSeedHandle> {
+/** Seeds one Chat timeline dataset into the benchmark database, failing with an `AbortError` once `signal` aborts. */
+export async function seedChatTimelineDataset(
+  dataset: BenchmarkDatasetProfile,
+  signal: AbortSignal,
+): Promise<BenchmarkSeedHandle> {
   const chatDataset = requireChatTimelineDataset(dataset);
+  signal.throwIfAborted();
   const summary = await invoke<ChatTimelineSeedSummary>("benchmark_seed_chat_timeline", {
     request: { threadId: chatBenchmarkThreadId(chatDataset), shape: chatDataset.shape },
   });

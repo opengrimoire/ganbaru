@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { mount, tick, unmount } from "svelte";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type {
   ChatAssignmentInputRead,
   ChatFollowupRouting,
@@ -485,6 +485,22 @@ describe("ChatMessageComposer", () => {
     await vi.waitFor(() => expect(edit).toHaveBeenCalledOnce());
     expect(edit.mock.calls[0]?.[1].normalizedMarkdown).toBe("Atlas use production");
     await vi.waitFor(() => expect(imageTool()?.disabled).toBe(false));
+  });
+
+  it("explains an image pick that fails instead of dropping the failure", async () => {
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([]);
+    const pick = vi.spyOn(chatApi, "pickChatImages").mockRejectedValue(new Error("dialog failed"));
+    const selectedWorkingFolderId = chat.selectedWorkingFolderId;
+    chat.selectedWorkingFolderId = "folder:images";
+    onTestFinished(() => { chat.selectedWorkingFolderId = selectedWorkingFolderId; });
+    const root = mountActiveWork();
+    const imageTool = root.querySelector<HTMLButtonElement>('button[aria-label="Attach images"]');
+    expect(imageTool?.disabled).toBe(false);
+
+    imageTool?.click();
+
+    await vi.waitFor(() => expect(pick).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(root.querySelector(".composer-error")?.textContent).toContain(en.chatErrors.actions.fileAction));
   });
 
   it("summarizes the running work's latest plan above the composer until every step is done", async () => {

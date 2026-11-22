@@ -1530,14 +1530,19 @@
       imageInput?.click();
       return;
     }
-    const imported = await chatApi.pickChatImages(
-      workingFolderId,
-      Array.from({ length: available }, () => crypto.randomUUID()),
-      t("chat.composer.attachImages"),
-    );
-    rememberAttachments(imported);
-    attachmentIds = [...attachmentIds, ...imported.map((attachment) => attachment.id)];
-    persist();
+    error = null;
+    try {
+      const imported = await chatApi.pickChatImages(
+        workingFolderId,
+        Array.from({ length: available }, () => crypto.randomUUID()),
+        t("chat.composer.attachImages"),
+      );
+      rememberAttachments(imported);
+      attachmentIds = [...attachmentIds, ...imported.map((attachment) => attachment.id)];
+      persist();
+    } catch (cause: unknown) {
+      error = chatErrorMessage(cause, t("chatErrors.actions.fileAction"));
+    }
   }
 
   function clearComposerAfterDelivery(): void {

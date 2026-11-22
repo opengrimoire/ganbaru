@@ -30,9 +30,17 @@
 
   const { t } = getLocalization();
   let scope = $state<NotesDataSourceCsvExportScope>("view");
+  /** The last export's outcome with the view and scope it exported, so another view never shows it. */
+  type ExportOutcome =
+    | { target: string; status: "saved"; result: NotesDataSourceCsvExportSaveResult }
+    | { target: string; status: "failed"; error: NotesFailure };
+
   let exporting = $state(false);
-  let error = $state<NotesFailure | null>(null);
-  let result = $state<NotesDataSourceCsvExportSaveResult | null>(null);
+  let outcome = $state.raw<ExportOutcome | null>(null);
+  const exportTarget = $derived(JSON.stringify([dataSourceId, databaseId, viewId, scope]));
+  const currentOutcome = $derived(outcome?.target === exportTarget ? outcome : null);
+  const error = $derived(currentOutcome?.status === "failed" ? currentOutcome.error : null);
+  const result = $derived(currentOutcome?.status === "saved" ? currentOutcome.result : null);
 
   const roundTripDiagnostics = $derived(
     result?.export?.diagnostics.map((diagnostic) =>
@@ -77,17 +85,18 @@
 
   async function runExport(): Promise<void> {
     if (disabled || exporting) return;
+    const target = exportTarget;
     exporting = true;
-    error = null;
-    result = null;
+    outcome = null;
     try {
-      result = await saveNotesDataSourceCsv(dataSourceId, {
+      const saved = await saveNotesDataSourceCsv(dataSourceId, {
         database_id: databaseId,
         view_id: viewId,
         scope,
       });
+      outcome = { target, status: "saved", result: saved };
     } catch (caught) {
-      error = notesFailure(caught, t("notes.databaseCsvExportFailed"));
+      outcome = { target, status: "failed", error: notesFailure(caught, t("notes.databaseCsvExportFailed")) };
     } finally {
       exporting = false;
     }
@@ -112,7 +121,7 @@
             { value: "all", label: t("notes.databaseCsvExportScopeAll") }]}
           onChange={(nextValue) => {
             scope = nextValue === "all" ? "all" : "view";
-            result = null;
+            outcome = null;
           }}
           triggerProps={{ "onkeydown": (event) => event.stopPropagation() }}
         />

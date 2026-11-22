@@ -89,4 +89,18 @@ describe("Projects selection", () => {
     expect(secondary.selectedProjectId).toBe("project-3");
     expect(primary.selectedProjectId).toBe("project-4");
   });
+
+  it("clears a load failure once a quiet reload brings the workspace back", async () => {
+    const { getProjects } = await import("./projects.svelte");
+    const projects = getProjects();
+    await projects.ensureLoaded();
+    vi.mocked(refreshProjectsWorkspace)
+      .mockRejectedValueOnce(new Error("Disk busy"))
+      .mockImplementation(async (projectId) => workspace(projectId ?? "project-1"));
+    await expect(projects.load("project-2")).rejects.toThrow("Disk busy");
+    expect(projects.loadError).toBe("Disk busy");
+
+    notifyProjectsSyncChanged();
+    await vi.waitFor(() => expect(projects.loadError).toBeNull());
+  });
 });

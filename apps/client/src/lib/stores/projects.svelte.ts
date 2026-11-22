@@ -371,6 +371,7 @@ async function loadWorkspace(projectId: string | null, quiet: boolean, pane: Pro
       }
     }
     applyLoadedSnapshot(response.snapshot, resolvedProjectId);
+    loadError = null;
     if (quiet) {
       restoreTaskDetails(details, resolvedProjectId);
       taskMutationRevision += 1;

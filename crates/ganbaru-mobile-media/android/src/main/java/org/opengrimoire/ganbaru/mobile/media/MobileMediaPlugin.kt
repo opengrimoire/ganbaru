@@ -208,8 +208,11 @@ class MobileMediaPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun pickMediaTree(invoke: Invoke) {
+    if (pendingTreePick != null) {
+      invoke.reject("A music folder picker is already active")
+      return
+    }
     try {
-      require(pendingTreePick == null) { "A music folder picker is already active" }
       val args = invoke.parseArgs(TreePickArgs::class.java)
       validateScanLimits(args.maxFiles, args.maxDepth)
       pendingTreePick = PendingTreePick(args.maxFiles, args.maxDepth)

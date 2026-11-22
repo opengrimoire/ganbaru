@@ -229,14 +229,13 @@ internal object DocumentTextCodec {
 @TauriPlugin
 class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
   private val pendingDocumentRead = PendingPicker<PendingDocumentRead>("A document picker is already active")
-  private var pendingVaultTreeCopy: PendingVaultTreeCopy? = null
-  private var pendingDocumentCopy: PendingDocumentCopy? = null
-  private var pendingDocumentSave: PendingDocumentSave? = null
+  private val pendingVaultTreeCopy = PendingPicker<PendingVaultTreeCopy>("A folder import is already active")
+  private val pendingDocumentCopy = PendingPicker<PendingDocumentCopy>("A document import is already active")
+  private val pendingDocumentSave = PendingPicker<PendingDocumentSave>("A document save is already active")
 
   @Command
   fun pickVaultTreeToPath(invoke: Invoke) {
     try {
-      require(pendingVaultTreeCopy == null) { "A folder import is already active" }
       val args = invoke.parseArgs(PickVaultTreeToPathArgs::class.java)
       require(args.maxFiles > 0) { "Folder entry limit must be positive" }
       require(args.maxBytes > 0) { "Folder size limit must be positive" }
@@ -245,25 +244,24 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
         File(activity.applicationInfo.dataDir),
         args.destinationPath,
       )
-      pendingVaultTreeCopy = PendingVaultTreeCopy(
+      pendingVaultTreeCopy.begin(invoke.id, PendingVaultTreeCopy(
         destination,
         VaultTreeCopyLimits(args.maxFiles, args.maxBytes, args.maxDepth),
-      )
+      ))
       val pickerIntent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         putExtra(DocumentsContract.EXTRA_INITIAL_URI, primaryStorageRootUri())
       }
       startActivityForResult(invoke, pickerIntent, "pickVaultTreeToPathResult")
     } catch (error: Exception) {
-      pendingVaultTreeCopy = null
+      pendingVaultTreeCopy.release(invoke.id)
       invoke.reject(error.message ?: "Failed to open folder picker")
     }
   }
 
   @ActivityCallback
   fun pickVaultTreeToPathResult(invoke: Invoke, result: ActivityResult) {
-    val pending = pendingVaultTreeCopy
-    pendingVaultTreeCopy = null
+    val pending = pendingVaultTreeCopy.take(invoke.id)
     if (result.resultCode == Activity.RESULT_CANCELED) {
       invoke.resolve(JSObject().apply { put("displayName", null) })
       return
@@ -496,7 +494,6 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun pickDocumentToPath(invoke: Invoke) {
     try {
-      require(pendingDocumentCopy == null) { "A document import is already active" }
       val args = invoke.parseArgs(PickDocumentToPathArgs::class.java)
       require(args.maxBytes > 0) { "Document size limit must be positive" }
       require(args.mimeTypes.isNotEmpty()) { "At least one document MIME type is required" }
@@ -505,12 +502,12 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
         File(activity.applicationInfo.dataDir),
         args.destinationPath,
       )
-      pendingDocumentCopy = PendingDocumentCopy(
+      pendingDocumentCopy.begin(invoke.id, PendingDocumentCopy(
         destination,
         args.maxBytes,
         args.acceptedExtensions,
         args.documentKind.trim(),
-      )
+      ))
       val pickerIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
         addCategory(Intent.CATEGORY_OPENABLE)
         type = if (args.mimeTypes.size == 1) args.mimeTypes.single() else "*/*"
@@ -520,15 +517,14 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
       }
       startActivityForResult(invoke, pickerIntent, "pickDocumentToPathResult")
     } catch (error: Exception) {
-      pendingDocumentCopy = null
+      pendingDocumentCopy.release(invoke.id)
       invoke.reject(error.message ?: "Failed to open document picker")
     }
   }
 
   @ActivityCallback
   fun pickDocumentToPathResult(invoke: Invoke, result: ActivityResult) {
-    val pending = pendingDocumentCopy
-    pendingDocumentCopy = null
+    val pending = pendingDocumentCopy.take(invoke.id)
     if (result.resultCode == Activity.RESULT_CANCELED) {
       invoke.resolve(JSObject().apply { put("displayName", null) })
       return
@@ -613,7 +609,6 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun saveUtf8Document(invoke: Invoke) {
     try {
-      require(pendingDocumentSave == null) { "A document save is already active" }
       val args = invoke.parseArgs(SaveUtf8DownloadArgs::class.java)
       val bytes = args.contents.toByteArray(Charsets.UTF_8)
       require(args.maxBytes > 0) { "Document size limit must be positive" }
@@ -624,7 +619,7 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
         args.mimeType,
         args.documentKind,
       )
-      pendingDocumentSave = PendingDocumentSave(bytes)
+      pendingDocumentSave.begin(invoke.id, PendingDocumentSave(bytes))
       val pickerIntent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
         addCategory(Intent.CATEGORY_OPENABLE)
         type = args.mimeType
@@ -633,15 +628,14 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
       }
       startActivityForResult(invoke, pickerIntent, "saveUtf8DocumentResult")
     } catch (error: Exception) {
-      pendingDocumentSave = null
+      pendingDocumentSave.release(invoke.id)
       invoke.reject(error.message ?: "Failed to open document picker")
     }
   }
 
   @ActivityCallback
   fun saveUtf8DocumentResult(invoke: Invoke, result: ActivityResult) {
-    val pending = pendingDocumentSave
-    pendingDocumentSave = null
+    val pending = pendingDocumentSave.take(invoke.id)
     if (result.resultCode == Activity.RESULT_CANCELED) {
       invoke.resolve(JSObject().apply { put("saved", false) })
       return

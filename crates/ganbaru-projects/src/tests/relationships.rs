@@ -273,3 +273,68 @@ fn task_event_link_refuses_a_new_task_past_the_per_event_bound() {
         assert_eq!(count, MAX_TASK_LINKS_PER_EVENT as i64);
     });
 }
+
+/// SQLite `GLOB` pattern for the `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` timestamps every Projects writer stores, so
+/// `updated_at` values compare and sort chronologically as text.
+const ISO_MILLIS_TIMESTAMP_GLOB: &str =
+    "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z";
+
+#[test]
+fn task_scheduling_stamps_task_and_assigned_event_in_the_shared_timestamp_format() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        sqlx::query(
+            "INSERT INTO calendar_events (id, title, start_time, end_time)
+             VALUES ('event-a', 'Focus block', '2026-06-12T15:00:00Z', '2026-06-12T16:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let revision: i64 =
+            sqlx::query_scalar("SELECT revision FROM project_tasks WHERE id = 'task-a'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        let snapshot = crate::scheduling::read(
+            &mut tx,
+            "project-a",
+            &[crate::scheduling::ScheduleTaskSelection {
+                id: "task-a".to_string(),
+                revision,
+            }],
+        )
+        .await
+        .unwrap();
+        let writes = snapshot
+            .tasks
+            .into_iter()
+            .map(|task| crate::scheduling::ScheduledTaskWrite {
+                task,
+                event_id: "event-a".to_string(),
+                date: "2026-06-12".to_string(),
+            })
+            .collect();
+        crate::scheduling::write(&mut tx, writes).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let task_stamp_matches: bool =
+            sqlx::query_scalar("SELECT updated_at GLOB ? FROM project_tasks WHERE id = 'task-a'")
+                .bind(ISO_MILLIS_TIMESTAMP_GLOB)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let event_stamp_matches: bool = sqlx::query_scalar(
+            "SELECT updated_at GLOB ? FROM calendar_events WHERE id = 'event-a'",
+        )
+        .bind(ISO_MILLIS_TIMESTAMP_GLOB)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(task_stamp_matches);
+        assert!(event_stamp_matches);
+    });
+}

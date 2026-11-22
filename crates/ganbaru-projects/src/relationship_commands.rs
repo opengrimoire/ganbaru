@@ -261,7 +261,7 @@ pub(super) async fn link_task_event_with_project_assignment(
         }
         Some(_) => {}
         None => {
-            sqlx::query("UPDATE calendar_events SET project_id = ?, updated_at = datetime('now') WHERE id = ?")
+            sqlx::query("UPDATE calendar_events SET project_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
                 .bind(&task_project_id)
                 .bind(&link.event_id)
                 .execute(&mut **tx)

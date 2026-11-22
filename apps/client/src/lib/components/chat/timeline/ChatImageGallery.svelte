@@ -39,6 +39,8 @@
   let zoom = $state(1);
   let previewDialog: HTMLDivElement | undefined = $state();
   let previewReturnFocus: HTMLElement | null = null;
+  /** Names the latest preview request, so a slow read cannot open over a later choice or after a close. */
+  let previewRequest: symbol | null = null;
   let destroyed = false;
   const imageRequests = new Map<string, Promise<string>>();
   const activeImage = $derived(images.find((image: ChatImageGalleryItem) => image.id === activeImageId) ?? null);
@@ -75,11 +77,14 @@
 
   async function openPreview(imageId: string): Promise<void> {
     previewReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const request = Symbol("image preview");
+    previewRequest = request;
     try {
       await loadImage(imageId);
     } catch {
       return;
     }
+    if (previewRequest !== request || destroyed) return;
     activeImageId = imageId;
     zoom = 1;
     await tick();
@@ -87,6 +92,7 @@
   }
 
   function closePreview(): void {
+    previewRequest = null;
     activeImageId = null;
     zoom = 1;
     const target = previewReturnFocus;

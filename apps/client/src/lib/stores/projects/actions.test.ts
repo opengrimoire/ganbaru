@@ -385,8 +385,8 @@ describe("project identity and lifecycle actions", () => {
 
   const dates = { createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
 
-  function group(id: string, orderKey: string, hidden = false): ProjectGroup {
-    return { id, name: id, icon: "lucide:folder", orderKey, collapsed: false, hiddenAt: hidden ? dates.createdAt : undefined, ...dates };
+  function group(id: string, orderKey: string): ProjectGroup {
+    return { id, name: id, icon: "lucide:folder", orderKey, collapsed: false, ...dates };
   }
 
   function project(overrides: Partial<Project> = {}): Project {
@@ -401,7 +401,7 @@ describe("project identity and lifecycle actions", () => {
   function setup(projects: Project[]) {
     let snapshot: ProjectsSnapshot = {
       ...emptySnapshot(),
-      groups: [group("work", "a1"), group("home", "a2"), group("archive", "a3", true)],
+      groups: [group("work", "a1"), group("home", "a2")],
       projects,
     };
     vi.mocked(updateProject).mockImplementation(async (update: ProjectUpdate) => ({
@@ -458,10 +458,10 @@ describe("project identity and lifecycle actions", () => {
     expect(vi.mocked(updateProject).mock.calls[0]?.[0]).toMatchObject({ id: "project-1", groupId: "home", placement: { kind: "end" } });
   });
 
-  it("refuses hidden groups", async () => {
+  it("refuses groups that are not loaded", async () => {
     const launch = project();
     const { actions } = setup([launch]);
-    await expect(actions.moveProjectToGroup(launch, "archive")).rejects.toThrow("not available");
+    await expect(actions.moveProjectToGroup(launch, "removed")).rejects.toThrow("not available");
     expect(updateProject).not.toHaveBeenCalled();
   });
 

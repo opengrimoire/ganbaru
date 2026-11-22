@@ -147,8 +147,6 @@ export interface ProjectGroup {
   color?: EventColor;
   orderKey: string;
   collapsed: boolean;
-  hiddenAt?: string;
-  archivedAt?: string;
   createdAt: string;
   updatedAt: string;
 }

@@ -176,8 +176,7 @@ table 96 project_groups replicated key id rule any
   group 2 register icon:trimmed_text(1..=500) icon_byte_size:optional_integer(1..=3145728)
   group 3 register color:optional_integer(0..=31)
   group 4 position order_key:order_key
-  group 5 coupled hidden_at:optional_timestamp archived_at:optional_timestamp
-  group 6 max updated_at:timestamp
+  group 5 max updated_at:timestamp
   check icon,icon_byte_size within 2
 table 97 projects replicated key id rule any
   group 0 immutable created_at:timestamp

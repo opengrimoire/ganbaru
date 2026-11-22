@@ -104,10 +104,8 @@ pub mod group_group {
     pub const COLOR: GroupId = group_id(3);
     /// `order_key`.
     pub const ORDER: GroupId = group_id(4);
-    /// `hidden_at` and `archived_at`.
-    pub const LIFECYCLE: GroupId = group_id(5);
     /// `updated_at`.
-    pub const UPDATED: GroupId = group_id(6);
+    pub const UPDATED: GroupId = group_id(5);
 }
 
 /// Project field groups.
@@ -703,15 +701,6 @@ pub const GROUPS: TableSpec = TableSpec {
         ),
         register(group_group::COLOR, "color", &[optional_color("color")]),
         order(group_group::ORDER),
-        group(
-            group_group::LIFECYCLE,
-            "lifecycle",
-            MergeKind::Coupled,
-            &[
-                optional_timestamp("hidden_at"),
-                optional_timestamp("archived_at"),
-            ],
-        ),
         updated(group_group::UPDATED),
     ],
     local_columns: &[COLLAPSED],

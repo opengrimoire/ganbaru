@@ -62,8 +62,6 @@ pub struct ProjectGroupRow {
     pub(crate) color: Option<i64>,
     pub(crate) order_key: String,
     pub(crate) collapsed: i64,
-    pub(crate) hidden_at: Option<String>,
-    pub(crate) archived_at: Option<String>,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
 }
@@ -74,8 +72,6 @@ impl_sqlite_from_row!(ProjectGroupRow {
     color,
     order_key,
     collapsed,
-    hidden_at,
-    archived_at,
     created_at,
     updated_at,
 });

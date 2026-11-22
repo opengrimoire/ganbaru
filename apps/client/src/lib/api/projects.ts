@@ -94,8 +94,6 @@ interface ProjectGroupRow {
   color: number | null;
   order_key: string;
   collapsed: number;
-  hidden_at: string | null;
-  archived_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -483,8 +481,6 @@ function mapGroup(row: ProjectGroupRow): ProjectGroup {
     color: optionalNumber(row.color),
     orderKey: row.order_key,
     collapsed: row.collapsed !== 0,
-    hiddenAt: optionalText(row.hidden_at),
-    archivedAt: optionalText(row.archived_at),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

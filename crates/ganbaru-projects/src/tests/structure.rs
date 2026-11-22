@@ -578,3 +578,35 @@ fn a_section_cannot_be_hidden_and_archived_at_once() {
         assert!(both.is_err());
     });
 }
+
+#[test]
+fn a_group_carries_no_lifecycle_of_its_own() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('project_groups')")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(!columns.iter().any(|name| name == "hidden_at"));
+        assert!(!columns.iter().any(|name| name == "archived_at"));
+
+        let mutation = reorder_groups(
+            &pool,
+            ProjectGroupReorder {
+                group_ids: sqlx::query_scalar(
+                    "SELECT id FROM project_groups ORDER BY order_key, id",
+                )
+                .fetch_all(&pool)
+                .await
+                .unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+        let group = serde_json::to_value(&mutation.groups[0]).unwrap();
+        assert!(group.get("hidden_at").is_none());
+        assert!(group.get("archived_at").is_none());
+    });
+}

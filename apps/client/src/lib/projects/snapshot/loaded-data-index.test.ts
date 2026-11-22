@@ -55,7 +55,6 @@ function nestedFixture(): ProjectsSnapshot {
     groups: [
       { id: "group-b", name: "B", icon: "lucide:folder", orderKey: "2000", collapsed: false, createdAt, updatedAt },
       { id: "group-a", name: "A", icon: "lucide:folder", orderKey: "1000", collapsed: false, createdAt, updatedAt },
-      { id: "group-hidden", name: "Hidden", icon: "lucide:folder", orderKey: "0500", collapsed: false, hiddenAt: updatedAt, createdAt, updatedAt },
     ],
     projects: [
       project("project-b", "group-a", "archived", "0500"),
@@ -218,7 +217,7 @@ function compareEverySelector(snapshot: ProjectsSnapshot): void {
   expect(ids(indexed.subtasksForTaskIncludingArchived(snapshot, taskId))).toEqual(ids(allSubtasks));
   expect(ids(indexed.projectsForGroup(snapshot, groupId))).toEqual(ids(projects.filter((value) => value.status === "active")));
   expect(ids(indexed.projectsForGroupIncludingInactive(snapshot, groupId))).toEqual(ids(projects));
-  expect(ids(indexed.visibleGroups(snapshot))).toEqual(ids(snapshot.groups.filter((value) => !value.hiddenAt && !value.archivedAt).sort(byOrder)));
+  expect(ids(indexed.visibleGroups(snapshot))).toEqual(ids([...snapshot.groups].sort(byOrder)));
   expect(indexed.defaultSection(snapshot, projectId)).toBe(activeSections[0]);
   expect(indexed.defaultStatus(snapshot, projectId)).toBe(statuses.find((value) => value.name.toLowerCase() === "to do") ?? statuses.find((value) => value.category === "not_started") ?? statuses[0]);
   expect(indexed.doneStatus(snapshot, projectId)).toBe(statuses.find((value) => value.terminal));

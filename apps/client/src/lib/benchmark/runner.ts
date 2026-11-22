@@ -138,6 +138,23 @@ export function createRunner(getEventCount: () => number) {
 }
 
 /**
+ * Tail of the state file operation queue. Writes and clears run one at a time in call order, so a clear issued by a
+ * cancel always lands after a write that a step started before the cancel, and that write can never resurrect a run.
+ */
+let stateFileQueue: Promise<void> = Promise.resolve();
+
+/** Runs `operation` after every earlier state file operation settles, whatever their outcome. */
+export function enqueueStateFileOperation(operation: () => Promise<void>): Promise<void> {
+  const result = stateFileQueue.then(operation, operation);
+  stateFileQueue = result.catch(() => undefined);
+  return result;
+}
+
+function writeStateFile(json: string): Promise<void> {
+  return enqueueStateFileOperation(() => invoke<void>("write_benchmark_state", { json }));
+}
+
+/**
  * Persist `phase-a-pending` state, written right after the user confirms.
  * The next cold boot opens the isolated benchmark DB (because
  * `vaultMode === "benchmark"`) and the benchmark runner store resumes the
@@ -170,7 +187,7 @@ export async function persistPhaseAPending(opts: {
     benchmarkDatasets: opts.benchmarkDatasets,
     startupRuns: opts.startupRuns,
   };
-  await invoke("write_benchmark_state", { json: JSON.stringify(state) });
+  await writeStateFile(JSON.stringify(state));
 }
 
 /**
@@ -213,13 +230,11 @@ export async function persistPhaseBPending(opts: {
     datasetPhases: opts.datasetPhases,
     startupRuns: opts.startupRuns,
   };
-  await invoke("write_benchmark_state", { json: JSON.stringify(state) });
+  await writeStateFile(JSON.stringify(state));
 }
 
 export async function persistBenchmarkState(state: BenchmarkState): Promise<void> {
-  await invoke("write_benchmark_state", {
-    json: JSON.stringify({ ...state, updatedAt: new Date().toISOString() }),
-  });
+  await writeStateFile(JSON.stringify({ ...state, updatedAt: new Date().toISOString() }));
 }
 
 /** Trigger the relaunch. The Rust command never returns; do not await. */
@@ -286,5 +301,5 @@ async function discardStaleArtifacts(): Promise<void> {
 }
 
 export async function clearPersistedState(): Promise<void> {
-  await invoke("clear_benchmark_state");
+  await enqueueStateFileOperation(() => invoke<void>("clear_benchmark_state"));
 }

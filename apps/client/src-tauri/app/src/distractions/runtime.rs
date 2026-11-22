@@ -441,6 +441,39 @@ struct Pending {
     device_id: String,
     rows: Vec<DistractionsUsageSampleRow>,
 }
+
+/// The outcome of retrying the unflushed interval batch before an observation.
+#[derive(Debug)]
+enum SpoolRetry {
+    /// The spool holds every earlier interval, so accounting may produce the next batch.
+    Accepted,
+    /// The batch stays unflushed. Accounting produces no further batch, because the receipt
+    /// names only the last one, while enforcement and the usage read that drains the spool run.
+    Held(String),
+}
+
+impl SpoolRetry {
+    fn of(result: Result<(), String>) -> Self {
+        match result {
+            Ok(()) => Self::Accepted,
+            Err(error) => Self::Held(error),
+        }
+    }
+
+    fn accounts(&self) -> bool {
+        matches!(self, Self::Accepted)
+    }
+
+    /// Reports an enforcement failure first, then a held batch.
+    fn into_result(self, enforced: Result<(), String>) -> Result<(), String> {
+        enforced?;
+        match self {
+            Self::Accepted => Ok(()),
+            Self::Held(error) => Err(error),
+        }
+    }
+}
+
 struct Owner {
     app: tauri::AppHandle,
     control: Arc<Control>,
@@ -486,8 +519,14 @@ impl Owner {
         }
     }
 
+    /// A batch the spool refuses never holds back enforcement; its error still reaches `tick`.
     async fn observe(&mut self) -> Result<(), String> {
-        self.flush_pending().await?;
+        let retry = SpoolRetry::of(self.flush_pending().await);
+        let enforced = self.observe_after_retry(retry.accounts()).await;
+        retry.into_result(enforced)
+    }
+
+    async fn observe_after_retry(&mut self, accounts: bool) -> Result<(), String> {
         let generation = self.control.generation.load(Ordering::Acquire);
         if self.control.current(generation).is_err() {
             self.accounting.clear();
@@ -601,20 +640,27 @@ impl Owner {
                 .as_deref()
                 .ok_or("desktop interval session is unavailable")?
         );
-        let rows = self
-            .accounting
-            .observe(context.observation.clone(), &identity)?;
-        if rows.len() > MAX_PENDING_INTERVALS {
-            return Err("desktop intervals exceed the pending limit".into());
-        }
-        if !rows.is_empty() {
-            self.pending = Some(Pending {
-                vault_id: context.vault_id.clone(),
-                device_id: context.device_id.clone(),
-                rows,
-            });
-            self.flush_pending().await?;
-        }
+        let late = if accounts {
+            let rows = self
+                .accounting
+                .observe(context.observation.clone(), &identity)?;
+            if rows.len() > MAX_PENDING_INTERVALS {
+                return Err("desktop intervals exceed the pending limit".into());
+            }
+            if rows.is_empty() {
+                SpoolRetry::Accepted
+            } else {
+                self.pending = Some(Pending {
+                    vault_id: context.vault_id.clone(),
+                    device_id: context.device_id.clone(),
+                    rows,
+                });
+                SpoolRetry::of(self.flush_pending().await)
+            }
+        } else {
+            self.accounting.clear();
+            SpoolRetry::Accepted
+        };
         if let Ok(mut foreground) = self.foreground.lock() {
             *foreground = (context.observation.monotonic, context.foreground.clone());
         }
@@ -642,7 +688,7 @@ impl Owner {
             projection,
         }) = settled
         else {
-            return self.enforce(context, Vec::new()).await;
+            return late.into_result(self.enforce(context, Vec::new()).await);
         };
         publish(&self.app, Some(generation), || {
             let runtime = self.app.state::<RuntimeState>();
@@ -657,7 +703,7 @@ impl Owner {
             self.republish_limit_state(generation, projection.limit_state.clone())
                 .await;
         }
-        self.enforce(context, projection.totals).await
+        late.into_result(self.enforce(context, projection.totals).await)
     }
 
     /// Keeps closes authorized on the last good totals after a failed read. A failed write is
@@ -948,6 +994,24 @@ mod tests {
         let config = crate::distractions::limits_or_phase_only(&limits("video.example.com"));
         assert!(config.enabled);
         assert_eq!(config.items.len(), 1);
+    }
+
+    #[test]
+    fn a_refused_spool_batch_holds_accounting_but_not_enforcement() {
+        let held = SpoolRetry::of(Err("the Distractions usage spool is full".into()));
+        assert!(!held.accounts());
+        assert_eq!(
+            held.into_result(Ok(())),
+            Err("the Distractions usage spool is full".to_string())
+        );
+        let held = SpoolRetry::of(Err("spool".into()));
+        assert_eq!(
+            held.into_result(Err("enforce".into())),
+            Err("enforce".to_string())
+        );
+        let accepted = SpoolRetry::of(Ok(()));
+        assert!(accepted.accounts());
+        assert_eq!(accepted.into_result(Ok(())), Ok(()));
     }
 
     #[test]

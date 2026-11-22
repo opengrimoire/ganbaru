@@ -258,6 +258,49 @@ describe("Notes query controllers", () => {
     await write;
   });
 
+  it("keeps the newly selected page's aliases when an alias write for the previous page finishes late", async () => {
+    const { createNotesLinksController } = await import("./links.svelte");
+    let selectedPageId = "page-a";
+    let finishWrite: (aliases: NotesPageAlias[]) => void = () => undefined;
+    backend.addAlias.mockImplementationOnce(() => new Promise((resolve) => { finishWrite = resolve; }));
+    const controller = createNotesLinksController({
+      readSelectedPageId: () => selectedPageId,
+      readSelectedProjectId: () => null,
+      readAllPages: () => [],
+      reloadSelectedPage: async () => undefined,
+      scheduleVisibleMetadataRefresh: () => undefined,
+    });
+    const write = controller.addPageAlias("Old page alias");
+    selectedPageId = "page-b";
+    const reads = Promise.all([
+      controller.reloadPageAliases(),
+      controller.reloadBacklinks(),
+      controller.reloadUnresolvedLinks(),
+    ]);
+    const aliasCall = lastCall(backend.aliases.next);
+    const backlinkCall = lastCall(backend.backlinks.next);
+    const unresolvedCall = lastCall(backend.unresolved.next);
+    finishWrite([{
+      object: "page_alias",
+      id: "alias-a",
+      page_id: "page-a",
+      alias: "Old page alias",
+      normalized_alias: "old page alias",
+      created_time: "2026-07-03T00:00:00.000Z",
+      last_edited_time: "2026-07-03T00:00:00.000Z",
+    }]);
+    await write;
+    expect(controller.aliases).toEqual([]);
+    expect(controller.aliasesLoading).toBe(true);
+    backend.aliases.resolve(aliasCall, []);
+    backend.backlinks.resolve(backlinkCall, []);
+    backend.unresolved.resolve(unresolvedCall, []);
+    await reads;
+    expect(controller.aliasesLoading).toBe(false);
+    expect(controller.backlinksLoading).toBe(false);
+    expect(controller.unresolvedLoading).toBe(false);
+  });
+
   it("keeps changed and removed pages current when a destination read finishes late", async () => {
     const { createNotesLinksController } = await import("./links.svelte");
     const stale = destinationPage("page-a", "old-folder");

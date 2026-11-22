@@ -105,25 +105,34 @@ export function createNotesLinksController(context: NotesLinksControllerContext)
     const pageId = context.readSelectedPageId();
     const content = alias.trim();
     if (!pageId || !content) return;
-    aliases.replace(await addNotesPageAlias(pageId, { id: crypto.randomUUID(), alias: content }));
-    await Promise.all([unresolved.reload(pageId), backlinks.reload(pageId)]);
+    const next = await addNotesPageAlias(pageId, { id: crypto.randomUUID(), alias: content });
+    await showAliasWrite(pageId, next);
   }
 
   async function deleteAlias(aliasId: string): Promise<void> {
     const pageId = context.readSelectedPageId();
     if (!pageId) return;
-    aliases.replace(await deleteNotesPageAlias(pageId, aliasId));
+    const next = await deleteNotesPageAlias(pageId, aliasId);
+    await showAliasWrite(pageId, next);
+  }
+
+  /** Shows an alias write and the links it changes, unless another page was selected while it ran. */
+  async function showAliasWrite(pageId: string, next: readonly NotesPageAlias[]): Promise<void> {
+    if (pageId !== context.readSelectedPageId()) return;
+    aliases.replace(next);
     await Promise.all([unresolved.reload(pageId), backlinks.reload(pageId)]);
   }
 
   async function resolveUnresolvedLink(linkId: string, targetPageId: string): Promise<void> {
     const targetId = targetPageId.trim();
     if (!targetId) return;
-    unresolved.replace(await resolveNotesUnresolvedLink(linkId, { target_page_id: targetId }));
     const sourcePageId = context.readSelectedPageId();
+    const next = await resolveNotesUnresolvedLink(linkId, { target_page_id: targetId });
+    const sourceStillShown = sourcePageId !== null && sourcePageId === context.readSelectedPageId();
+    if (sourceStillShown) unresolved.replace(next);
     await Promise.all([
       reloadDestinations(),
-      sourcePageId ? context.reloadSelectedPage(sourcePageId) : Promise.resolve(),
+      sourceStillShown ? context.reloadSelectedPage(sourcePageId) : Promise.resolve(),
     ]);
     context.scheduleVisibleMetadataRefresh();
   }

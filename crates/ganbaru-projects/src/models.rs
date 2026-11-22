@@ -911,6 +911,8 @@ pub struct ProjectSectionCreate {
     pub(crate) placement: OrderPlacement,
 }
 
+/// A section field edit. Hiding, archiving, and restoring go through
+/// [`crate::lifecycle::set_section_lifecycle`], so an edit leaves the lifecycle as it is.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectSectionUpdate {
@@ -919,8 +921,6 @@ pub struct ProjectSectionUpdate {
     #[serde(default)]
     pub(crate) placement: Option<OrderPlacement>,
     pub(crate) collapsed: bool,
-    pub(crate) hidden_at: Option<String>,
-    pub(crate) archived_at: Option<String>,
 }
 
 #[derive(Deserialize)]

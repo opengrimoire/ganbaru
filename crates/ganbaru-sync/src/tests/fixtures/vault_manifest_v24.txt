@@ -218,6 +218,7 @@ table 100 project_sections replicated key id rule any
   group 2 position order_key:order_key
   group 3 coupled hidden_at:optional_timestamp archived_at:optional_timestamp
   group 4 max updated_at:timestamp
+  check hidden_at,archived_at within 3
 table 101 project_statuses replicated key id rule any
   group 0 immutable project_id:row_key->97:cascade created_at:timestamp
   group 1 register name:trimmed_text(1..=1000)

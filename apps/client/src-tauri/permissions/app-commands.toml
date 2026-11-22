@@ -656,6 +656,7 @@ commands.allow = [
   "projects_update_priority",
   "projects_update_project",
   "projects_update_section",
+  "projects_set_section_lifecycle",
   "projects_update_status",
   "projects_update_tag",
   "projects_update_task",

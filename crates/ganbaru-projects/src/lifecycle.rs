@@ -5,7 +5,7 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 
 use super::models::ProjectsMutationRows;
-use super::mutations::project_mutation;
+use super::mutations::{project_mutation, section_mutation};
 use super::validation::require_non_empty;
 
 /// Where a project or section sits in its visibility lifecycle.
@@ -78,4 +78,54 @@ pub async fn set_project_lifecycle(
         });
     }
     project_mutation(pool, &change.project_id).await
+}
+
+/// A requested section lifecycle move, refused when the section no longer has `expected`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionLifecycleChange {
+    pub section_id: String,
+    pub expected: Lifecycle,
+    pub next: Lifecycle,
+}
+
+/// Moves a section to `change.next`, guarded on the state the caller last read. A section is
+/// hidden while `hidden_at` is set and archived while `archived_at` is set, never both, so the
+/// move stamps the time it entered a hidden or archived state and clears the other one.
+pub async fn set_section_lifecycle(
+    pool: &SqlitePool,
+    change: SectionLifecycleChange,
+) -> Result<ProjectsMutationRows, String> {
+    require_non_empty(&change.section_id, "section_id")?;
+    let next = change.expected.transition(change.next)?;
+    let result = sqlx::query(
+        "UPDATE project_sections
+         SET hidden_at = CASE WHEN ?1 = 'hidden' THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') END,
+             archived_at = CASE WHEN ?1 = 'archived' THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') END,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?2
+           AND CASE WHEN archived_at IS NOT NULL THEN 'archived'
+                    WHEN hidden_at IS NOT NULL THEN 'hidden'
+                    ELSE 'active' END = ?3",
+    )
+    .bind(next.as_str())
+    .bind(&change.section_id)
+    .bind(change.expected.as_str())
+    .execute(pool)
+    .await
+    .map_err(|e| format!("update project section lifecycle: {e}"))?;
+    if result.rows_affected() == 0 {
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM project_sections WHERE id = ?)")
+                .bind(&change.section_id)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| format!("load project section lifecycle: {e}"))?;
+        return Err(if exists {
+            "the section lifecycle changed since it was read".to_string()
+        } else {
+            "project section not found".to_string()
+        });
+    }
+    section_mutation(pool, &change.section_id).await
 }

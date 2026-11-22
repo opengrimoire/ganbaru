@@ -975,6 +975,10 @@ pub const SECTIONS: TableSpec = TableSpec {
         updated(section_group::UPDATED),
     ],
     local_columns: &[COLLAPSED],
+    resolutions: &[within(
+        &["hidden_at", "archived_at"],
+        section_group::LIFECYCLE,
+    )],
     triggers: &[
         applier_visible("project_sections_order_key_insert"),
         applier_visible("project_sections_order_key_update"),

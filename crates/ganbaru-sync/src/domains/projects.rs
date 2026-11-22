@@ -545,6 +545,15 @@ fn validate_status_kind(value: &Value) -> Result<(), AdapterError> {
     }
 }
 
+/// A section is hidden or archived, never both, as the table CHECK.
+fn validate_section_lifecycle(value: &Value) -> Result<(), AdapterError> {
+    let [hidden_at, archived_at] = fields(value, "project section lifecycle")?;
+    match (hidden_at, archived_at) {
+        (Field::Null, _) | (_, Field::Null) => Ok(()),
+        _ => Err(AdapterError("project section lifecycle")),
+    }
+}
+
 fn validate_task(group: GroupId, value: &Value) -> Result<(), AdapterError> {
     if group == task_group::SECTION_PLACE {
         let [section, _] = fields(value, "project task section")?;
@@ -679,6 +688,9 @@ impl DomainAdapter for ProjectsAdapter {
             PROJECTS_TABLE => validate_project(group, value),
             FOLDERS_TABLE => validate_folder(group, value),
             STATUSES_TABLE if group == status_group::KIND => validate_status_kind(value),
+            SECTIONS_TABLE if group == section_group::LIFECYCLE => {
+                validate_section_lifecycle(value)
+            }
             PRIORITIES_TABLE if group == priority_group::IDENTITY => {
                 required_identity(value, "project priority identity")
             }
@@ -1400,5 +1412,26 @@ mod tests {
                 "{invalid:?} should be held invalid"
             );
         }
+    }
+
+    #[test]
+    fn section_lifecycle_mirrors_the_table_check() {
+        let adapter = ProjectsAdapter;
+        let at = || text("2026-11-22T00:00:00.000Z");
+        for valid in [
+            value(vec![Field::Null, Field::Null]),
+            value(vec![at(), Field::Null]),
+            value(vec![Field::Null, at()]),
+        ] {
+            adapter
+                .validate(SECTIONS_TABLE, section_group::LIFECYCLE, &valid)
+                .unwrap();
+        }
+        let both = value(vec![at(), at()]);
+        assert!(
+            adapter
+                .validate(SECTIONS_TABLE, section_group::LIFECYCLE, &both)
+                .is_err()
+        );
     }
 }

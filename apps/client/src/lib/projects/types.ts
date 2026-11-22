@@ -765,13 +765,19 @@ export interface ProjectSectionCreate {
   placement?: ProjectOrderPlacement;
 }
 
+/** A section field edit; hiding, archiving, and restoring use {@link SectionLifecycleChange}. */
 export interface ProjectSectionUpdate {
   id: string;
   name: string;
   placement?: ProjectOrderPlacement;
   collapsed: boolean;
-  hiddenAt: string | null;
-  archivedAt: string | null;
+}
+
+/** A section lifecycle move, refused by Rust when the section no longer has `expected`. */
+export interface SectionLifecycleChange {
+  sectionId: string;
+  expected: ProjectLifecycleStatus;
+  next: ProjectLifecycleStatus;
 }
 
 export interface ProjectStatusCreate {

@@ -277,6 +277,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             projects::project_commands::projects_delete_project,
             projects::structure_commands::projects_create_section,
             projects::structure_commands::projects_update_section,
+            projects::structure_commands::projects_set_section_lifecycle,
             projects::structure_commands::projects_create_status,
             projects::structure_commands::projects_update_status,
             projects::structure_commands::projects_delete_status,

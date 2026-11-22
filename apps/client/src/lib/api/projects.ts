@@ -51,6 +51,7 @@ import type {
   ProjectSection,
   ProjectSectionCreate,
   ProjectSectionUpdate,
+  SectionLifecycleChange,
   ProjectStatus,
   ProjectStatusCreate,
   ProjectStatusUpdate,
@@ -1062,6 +1063,12 @@ export async function createProjectSection(section: ProjectSectionCreate): Promi
 export async function updateProjectSection(section: ProjectSectionUpdate): Promise<ProjectMutation> {
   const dbUrl = await ensureDbUrl();
   return invokeProjectMutation("projects_update_section", { dbUrl, section });
+}
+
+/** Hides, archives, or restores a section; Rust refuses the move when the section left `expected`. */
+export async function setProjectSectionLifecycle(change: SectionLifecycleChange): Promise<ProjectMutation> {
+  const dbUrl = await ensureDbUrl();
+  return invokeProjectMutation("projects_set_section_lifecycle", { dbUrl, change });
 }
 
 export async function createProjectStatus(status: ProjectStatusCreate): Promise<ProjectMutation> {

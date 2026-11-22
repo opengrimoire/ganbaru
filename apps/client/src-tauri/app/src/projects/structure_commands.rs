@@ -1,3 +1,4 @@
+use ganbaru_projects::lifecycle::{self, SectionLifecycleChange};
 use ganbaru_projects::structure_commands;
 use ganbaru_projects::{
     GroupProjectReorder, ProjectGroupCreate, ProjectGroupReorder, ProjectGroupUpdate,
@@ -73,6 +74,17 @@ pub async fn projects_update_section<R: Runtime>(
 ) -> Result<ProjectsMutationRows, String> {
     let pool = connect_sqlite(app, db_url).await?;
     structure_commands::update_section(&pool, section).await
+}
+
+/// Hides, archives, or restores a section, refused when it left the state the caller read.
+#[tauri::command]
+pub async fn projects_set_section_lifecycle<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    change: SectionLifecycleChange,
+) -> Result<ProjectsMutationRows, String> {
+    let pool = connect_sqlite(app, db_url).await?;
+    lifecycle::set_section_lifecycle(&pool, change).await
 }
 
 #[tauri::command]

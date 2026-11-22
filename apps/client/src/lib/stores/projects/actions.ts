@@ -38,6 +38,7 @@ import {
   reorderProjectGroups,
   setProjectGroupCollapsed,
   setProjectLifecycle,
+  setProjectSectionLifecycle,
   unlinkProjectTaskEvent,
   unlinkProjectTaskTag,
   updateProject as updateProjectBackend,
@@ -71,6 +72,7 @@ import { normalizeProjectName } from "$lib/projects/text";
 import { mergeReorderedSubset } from "$lib/utils/sidebar-order";
 import { adjacentPlacement, compareProjectOrder, provisionalOrderKeys } from "$lib/projects/order";
 import { projectHasLockedSystemIdentity } from "$lib/projects/system-defaults";
+import { sectionLifecycleChange } from "$lib/projects/section-lifecycle";
 import { PROJECT_LIST_PRESENTATION_KEY, type ProjectListPresentation } from "$lib/projects/list/presentation";
 import { PROJECT_VIEW_QUERY_PREFERENCE_KEY, serializeProjectViewQuery, type ProjectViewQuery } from "$lib/projects/view-query";
 import { applyProjectMutation } from "$lib/projects/snapshot/mutations";
@@ -483,7 +485,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
 
   async function updateSection(
     section: ProjectSection,
-    patch: Partial<Pick<ProjectSection, "name" | "collapsed" | "hiddenAt" | "archivedAt">> & PlacementPatch,
+    patch: Partial<Pick<ProjectSection, "name" | "collapsed">> & PlacementPatch,
   ): Promise<void> {
     const nextName = normalizeProjectName(patch.name ?? section.name);
     if (!nextName) return;
@@ -491,25 +493,22 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       updateProjectSection(sectionUpdatePayload(section, { ...patch, name: nextName })));
   }
 
+  async function setSectionLifecycle(section: ProjectSection, next: ProjectLifecycleStatus): Promise<void> {
+    const change = sectionLifecycleChange(section, next);
+    if (!change) return;
+    await commitMutation(`section:${section.id}`, () => setProjectSectionLifecycle(change));
+  }
+
   async function hideSection(section: ProjectSection): Promise<void> {
-    await updateSection(section, {
-      hiddenAt: new Date().toISOString(),
-      archivedAt: undefined,
-    });
+    await setSectionLifecycle(section, "hidden");
   }
 
   async function archiveSection(section: ProjectSection): Promise<void> {
-    await updateSection(section, {
-      hiddenAt: undefined,
-      archivedAt: new Date().toISOString(),
-    });
+    await setSectionLifecycle(section, "archived");
   }
 
   async function restoreSection(section: ProjectSection): Promise<void> {
-    await updateSection(section, {
-      hiddenAt: undefined,
-      archivedAt: undefined,
-    });
+    await setSectionLifecycle(section, "active");
   }
 
   /** Create a status, optionally retaining an identity allocated by a settings draft. */

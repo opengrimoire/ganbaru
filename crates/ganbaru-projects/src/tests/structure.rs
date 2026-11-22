@@ -469,3 +469,112 @@ fn reordering_ungrouped_projects_leaves_grouped_ones_alone() {
         assert_eq!(grouped_key_after, grouped_key);
     });
 }
+
+async fn section_lifecycle_columns(pool: &SqlitePool) -> (Option<String>, Option<String>) {
+    sqlx::query_as("SELECT hidden_at, archived_at FROM project_sections WHERE id = 'section-a'")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn a_section_edit_keeps_a_hidden_section_hidden() {
+    use crate::lifecycle::{Lifecycle, SectionLifecycleChange, set_section_lifecycle};
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        set_section_lifecycle(
+            &pool,
+            SectionLifecycleChange {
+                section_id: "section-a".to_string(),
+                expected: Lifecycle::Active,
+                next: Lifecycle::Hidden,
+            },
+        )
+        .await
+        .unwrap();
+        let edit: crate::models::ProjectSectionUpdate = serde_json::from_value(serde_json::json!({
+            "id": "section-a",
+            "name": "Renamed",
+            "collapsed": true,
+            "hiddenAt": null,
+            "archivedAt": null,
+        }))
+        .unwrap();
+
+        let mutation = crate::structure_commands::update_section(&pool, edit)
+            .await
+            .unwrap();
+
+        assert_eq!(mutation.sections[0].name, "Renamed");
+        let (hidden_at, archived_at) = section_lifecycle_columns(&pool).await;
+        assert!(hidden_at.is_some());
+        assert!(archived_at.is_none());
+    });
+}
+
+#[test]
+fn a_section_lifecycle_move_applies_only_from_the_expected_state() {
+    use crate::lifecycle::{Lifecycle, SectionLifecycleChange, set_section_lifecycle};
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        let change = |expected, next| SectionLifecycleChange {
+            section_id: "section-a".to_string(),
+            expected,
+            next,
+        };
+
+        set_section_lifecycle(&pool, change(Lifecycle::Active, Lifecycle::Hidden))
+            .await
+            .unwrap();
+        let (hidden_at, archived_at) = section_lifecycle_columns(&pool).await;
+        assert!(hidden_at.is_some() && archived_at.is_none());
+
+        let stale =
+            set_section_lifecycle(&pool, change(Lifecycle::Active, Lifecycle::Archived)).await;
+        assert_eq!(
+            stale.err().as_deref(),
+            Some("the section lifecycle changed since it was read")
+        );
+        assert_eq!(section_lifecycle_columns(&pool).await, (hidden_at, None));
+
+        set_section_lifecycle(&pool, change(Lifecycle::Hidden, Lifecycle::Archived))
+            .await
+            .unwrap();
+        let (hidden_at, archived_at) = section_lifecycle_columns(&pool).await;
+        assert!(hidden_at.is_none() && archived_at.is_some());
+
+        set_section_lifecycle(&pool, change(Lifecycle::Archived, Lifecycle::Active))
+            .await
+            .unwrap();
+        assert_eq!(section_lifecycle_columns(&pool).await, (None, None));
+
+        let missing = set_section_lifecycle(
+            &pool,
+            SectionLifecycleChange {
+                section_id: "section-missing".to_string(),
+                expected: Lifecycle::Active,
+                next: Lifecycle::Hidden,
+            },
+        )
+        .await;
+        assert_eq!(missing.err().as_deref(), Some("project section not found"));
+    });
+}
+
+#[test]
+fn a_section_cannot_be_hidden_and_archived_at_once() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        let both = sqlx::query(
+            "UPDATE project_sections
+             SET hidden_at = '2026-11-22T00:00:00.000Z', archived_at = '2026-11-22T00:00:00.000Z'
+             WHERE id = 'section-a'",
+        )
+        .execute(&pool)
+        .await;
+        assert!(both.is_err());
+    });
+}

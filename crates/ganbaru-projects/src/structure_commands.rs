@@ -357,15 +357,11 @@ pub async fn update_section(
         "UPDATE project_sections
          SET name = ?,
              collapsed = ?,
-             hidden_at = ?,
-             archived_at = ?,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
     .bind(section.name.trim())
     .bind(if section.collapsed { 1_i64 } else { 0_i64 })
-    .bind(&section.hidden_at)
-    .bind(&section.archived_at)
     .bind(&section.id)
     .execute(&mut *tx)
     .await

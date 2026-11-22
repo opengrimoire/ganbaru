@@ -703,8 +703,9 @@
       notes.clearPageTitleDraft(page.id);
       return;
     }
-    await notes.renamePage(page.id, title);
-    notes.clearPageTitleDraft(page.id);
+    const pageId = page.id;
+    await notes.renamePage(pageId, title);
+    notes.clearSavedPageTitleDraft(pageId, title);
   }
 
   function handleTitleInput(event: Event): void {

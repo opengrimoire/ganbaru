@@ -339,6 +339,11 @@ export function createNotesEditorStore(
     pageSession.clearTitleDraft(pageId);
   }
 
+  /** Forgets a page title draft once its saved title lands, unless the draft changed meanwhile. */
+  function clearSavedPageTitleDraft(pageId: string, savedTitle: string): void {
+    pageSession.clearSavedTitleDraft(pageId, savedTitle);
+  }
+
   function pageTitleDraftForPage(pageId: string): string | null {
     return pageSession.titleDraftForPage(pageId);
   }
@@ -2291,6 +2296,7 @@ export function createNotesEditorStore(
     redoNotesEdit,
     setPageTitleDraft,
     clearPageTitleDraft,
+    clearSavedPageTitleDraft,
     reconcileDatabaseTitle,
     updateBlockText, updateBlockRichText,
     insertPageMention,

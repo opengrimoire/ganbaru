@@ -99,6 +99,24 @@ describe("MusicReviewController", () => {
     expect(api.removeMusicMemberships).toHaveBeenCalledExactlyOnceWith({ membershipIds: ["native-membership"] });
   });
 
+  it("shows a membership save failure only on the item whose save failed", async () => {
+    const library = new MusicLibraryController(emptyLibraryApi, () => 2);
+    const inspector = new MusicBuilderInspectorController();
+    inspector.detail = detail();
+    const summary = playlist();
+    library.playlistSummaries = [summary];
+    const review = new MusicReviewController(library, inspector, () => 2, () => "membership");
+    api.upsertMusicMemberships.mockRejectedValueOnce(new Error("save failed"));
+
+    await review.toggleMembership(summary);
+    expect(review.membershipErrors.playlist).toBeTruthy();
+
+    const other = detail();
+    other.item.id = "other";
+    inspector.detail = other;
+    expect(review.membershipErrors).toEqual({});
+  });
+
   it("keeps the requested next tree item selected while refreshing review state", async () => {
     const library = new MusicLibraryController(emptyLibraryApi, () => 2);
     const inspector = new MusicBuilderInspectorController();

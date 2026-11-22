@@ -24,7 +24,8 @@ export class MusicReviewController {
   creatingPlaylist = $state(false);
   createError = $state<string | null>(null);
   membershipBusy = $state<Set<string>>(new Set());
-  membershipErrors = $state<Record<string, string>>({});
+  /** Membership save errors by playlist, kept with the item they belong to so they never show on another item. */
+  private membershipErrorState = $state.raw<{ itemId: string | null; errors: Record<string, string> }>({ itemId: null, errors: {} });
   /** Native membership keys for optimistic rows, which keep their client key until the inspector reloads. */
   private readonly persistedMembershipIds = new Map<string, string>();
 
@@ -39,6 +40,12 @@ export class MusicReviewController {
     return this.persistedMembershipIds.get(id) ?? id;
   }
 
+  /** Membership save errors by playlist for the inspected item. */
+  get membershipErrors(): Record<string, string> {
+    const state = this.membershipErrorState;
+    return state.itemId !== null && state.itemId === this.inspector.detail?.item.id ? state.errors : {};
+  }
+
   membershipFor(playlistId: string): MusicPlaylistMembership | null {
     return this.inspector.detail?.memberships.find((membership) => membership.playlistId === playlistId) ?? null;
   }
@@ -48,7 +55,7 @@ export class MusicReviewController {
     if (!detail) return;
     const existing = this.membershipFor(playlist.id);
     this.setMembershipBusy(playlist.id, true);
-    this.membershipErrors = { ...this.membershipErrors, [playlist.id]: "" };
+    this.setMembershipError(detail.item.id, playlist.id, "");
     try {
       if (existing) {
         const write = { ...existing, expectedVersion: null as number | null };
@@ -103,7 +110,7 @@ export class MusicReviewController {
         if (receipt && entry) entry.version = receipt.version;
       }
     } catch (error) {
-      this.recordMembershipError(playlist.id, error);
+      this.recordMembershipError(detail.item.id, playlist.id, error);
     } finally {
       this.setMembershipBusy(playlist.id, false);
     }
@@ -133,7 +140,7 @@ export class MusicReviewController {
       });
       membership.version = receipts[0]?.version ?? membership.version;
     } catch (error) {
-      this.recordMembershipError(membership.playlistId, error);
+      this.recordMembershipError(membership.itemId, membership.playlistId, error);
     } finally {
       this.setMembershipBusy(membership.playlistId, false);
     }
@@ -277,10 +284,18 @@ export class MusicReviewController {
     this.membershipBusy = next;
   }
 
-  private recordMembershipError(playlistId: string, error: unknown): void {
+  private recordMembershipError(itemId: string, playlistId: string, error: unknown): void {
     const failure = localizedMusicError(error, "music.errors.membershipSaveFailed");
     this.library.error = failure;
-    this.membershipErrors = { ...this.membershipErrors, [playlistId]: failure.message };
+    // A failure that lands after another item was opened leaves that item's errors alone.
+    if (itemId === this.inspector.detail?.item.id) this.setMembershipError(itemId, playlistId, failure.message);
+  }
+
+  /** Sets one playlist's membership error for `itemId`, dropping errors that belong to another item. */
+  private setMembershipError(itemId: string, playlistId: string, message: string): void {
+    const current = this.membershipErrorState;
+    const errors = current.itemId === itemId ? current.errors : {};
+    this.membershipErrorState = { itemId, errors: { ...errors, [playlistId]: message } };
   }
 }
 

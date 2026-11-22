@@ -172,6 +172,12 @@ private class PendingDocumentSave(
   val bytes: ByteArray,
 )
 
+private data class PendingDocumentRead(
+  val maxBytes: Long,
+  val acceptedExtensions: List<String>,
+  val documentKind: String,
+)
+
 private data class PendingDocumentCopy(
   val destination: File,
   val maxBytes: Long,
@@ -222,9 +228,7 @@ internal object DocumentTextCodec {
 
 @TauriPlugin
 class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
-  private var pendingReadLimit: Long? = null
-  private var pendingReadExtensions: List<String> = emptyList()
-  private var pendingReadDocumentKind = "document"
+  private val pendingDocumentRead = PendingPicker<PendingDocumentRead>("A document picker is already active")
   private var pendingVaultTreeCopy: PendingVaultTreeCopy? = null
   private var pendingDocumentCopy: PendingDocumentCopy? = null
   private var pendingDocumentSave: PendingDocumentSave? = null
@@ -389,9 +393,10 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
       require(args.acceptedExtensions.isNotEmpty()) { "At least one document extension is required" }
       require(args.mimeTypes.isNotEmpty()) { "At least one document MIME type is required" }
       require(args.documentKind.isNotBlank()) { "Document kind is required" }
-      pendingReadLimit = args.maxBytes
-      pendingReadExtensions = args.acceptedExtensions
-      pendingReadDocumentKind = args.documentKind.trim()
+      pendingDocumentRead.begin(
+        invoke.id,
+        PendingDocumentRead(args.maxBytes, args.acceptedExtensions, args.documentKind.trim()),
+      )
 
       val pickerIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
         addCategory(Intent.CATEGORY_OPENABLE)
@@ -424,24 +429,18 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
           try {
             startProvider(invoke, pickerIntent, providers[index])
           } catch (error: Exception) {
-            pendingReadLimit = null
-            pendingReadExtensions = emptyList()
-            pendingReadDocumentKind = "document"
+            pendingDocumentRead.release(invoke.id)
             invoke.reject(error.message ?: "Failed to open document provider")
           }
           dialog.dismiss()
         }
         .setOnCancelListener {
-          pendingReadLimit = null
-          pendingReadExtensions = emptyList()
-          pendingReadDocumentKind = "document"
+          pendingDocumentRead.release(invoke.id)
           invoke.resolve(JSObject().apply { put("contents", null) })
         }
         .show()
     } catch (error: Exception) {
-      pendingReadLimit = null
-      pendingReadExtensions = emptyList()
-      pendingReadDocumentKind = "document"
+      pendingDocumentRead.release(invoke.id)
       invoke.reject(error.message ?: "Failed to open document picker")
     }
   }
@@ -460,18 +459,13 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
 
   @ActivityCallback
   fun pickUtf8DocumentResult(invoke: Invoke, result: ActivityResult) {
-    val maxBytes = pendingReadLimit
-    val acceptedExtensions = pendingReadExtensions
-    val documentKind = pendingReadDocumentKind
-    pendingReadLimit = null
-    pendingReadExtensions = emptyList()
-    pendingReadDocumentKind = "document"
+    val pending = pendingDocumentRead.take(invoke.id)
 
     if (result.resultCode == Activity.RESULT_CANCELED) {
       invoke.resolve(JSObject().apply { put("contents", null) })
       return
     }
-    if (result.resultCode != Activity.RESULT_OK || maxBytes == null) {
+    if (result.resultCode != Activity.RESULT_OK || pending == null) {
       invoke.reject("Failed to select document")
       return
     }
@@ -486,12 +480,12 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
         requireForeignPickerResult(uri)
         val displayName = resolveOpenableDisplayName(uri)
           ?: throw IllegalArgumentException("The selected document has no file name")
-        require(DocumentTextCodec.hasAllowedExtension(displayName, acceptedExtensions)) {
-          "Select a supported $documentKind file"
+        require(DocumentTextCodec.hasAllowedExtension(displayName, pending.acceptedExtensions)) {
+          "Select a supported ${pending.documentKind} file"
         }
         val stream = activity.contentResolver.openInputStream(uri)
           ?: throw IllegalStateException("The selected document could not be opened")
-        val contents = DocumentTextCodec.readUtf8(stream, maxBytes)
+        val contents = DocumentTextCodec.readUtf8(stream, pending.maxBytes)
         invoke.resolve(JSObject().apply { put("contents", contents) })
       } catch (error: Exception) {
         invoke.reject(error.message ?: "Failed to read selected document")

@@ -253,4 +253,38 @@ describe("MusicBulkEditController", () => {
     expect(controller.initialCounts).toEqual({});
     expect(controller.states).toEqual({ all: "unchecked", empty: "unchecked" });
   });
+
+  it("keeps a playlist created during a selection change checked once the new selection loads", async () => {
+    const library = { refreshSummariesAfterMutation: vi.fn(async () => true) } as unknown as MusicLibraryController;
+    const controller = new MusicBulkEditController(library, () => 100, () => "created");
+    await controller.open(["item-1"], [summary("all")]);
+    let resolveMatrix!: (value: Array<{ itemId: string; playlistId: string; weight: "normal" }>) => void;
+    getMusicMembershipMatrix.mockImplementationOnce(() => new Promise((resolve) => { resolveMatrix = resolve; }));
+
+    const loading = controller.open(["item-1", "item-2"], [summary("all")], true);
+    expect(await controller.createPlaylistAndSelect("Late", "music")).toBe("created");
+    resolveMatrix([]);
+    expect(await loading).toBe(true);
+
+    expect(controller.states.created).toBe("checked");
+    expect(controller.membershipsChanged).toBe(true);
+  });
+
+  it("creates a playlist without checking it in an edit that started over meanwhile", async () => {
+    let finishRefresh!: (value: boolean) => void;
+    const library = {
+      refreshSummariesAfterMutation: vi.fn(() => new Promise<boolean>((resolve) => { finishRefresh = resolve; })),
+    } as unknown as MusicLibraryController;
+    const controller = new MusicBulkEditController(library, () => 100, () => "created");
+    await controller.open(["item-1"], [summary("all")]);
+
+    const creating = controller.createPlaylistAndSelect("Late", "music");
+    await vi.waitFor(() => expect(library.refreshSummariesAfterMutation).toHaveBeenCalledOnce());
+    await controller.open(["item-9"], [summary("all")]);
+    finishRefresh(true);
+
+    expect(await creating).toBe("created");
+    expect(controller.states.created).toBeUndefined();
+    expect(controller.touchedPlaylistIds.has("created")).toBe(false);
+  });
 });

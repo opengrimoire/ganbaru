@@ -19,6 +19,8 @@ export class MusicBulkEditController {
   createError = $state<string | null>(null);
   selectionStale = $state(false);
   private openGeneration = 0;
+  /** Changes when the edit starts over, so a playlist created for the earlier edit is not checked in the next one. */
+  private intentGeneration = 0;
 
   constructor(
     private readonly library: MusicLibraryController,
@@ -59,7 +61,10 @@ export class MusicBulkEditController {
   ): Promise<boolean> {
     const nextItemIds = [...new Set(itemIds)];
     const generation = ++this.openGeneration;
-    if (!preserveIntent) this.touchedPlaylistIds = new Set();
+    if (!preserveIntent) {
+      this.intentGeneration += 1;
+      this.touchedPlaylistIds = new Set();
+    }
     this.itemIds = nextItemIds;
     this.search = "";
     this.error = null;
@@ -72,13 +77,16 @@ export class MusicBulkEditController {
       const counts: Record<string, number> = {};
       for (const entry of matrix) counts[entry.playlistId] = (counts[entry.playlistId] ?? 0) + 1;
       this.initialCounts = counts;
-      this.states = Object.fromEntries(playlists.map((playlist) => {
-        const retained = preserveIntent && this.touchedPlaylistIds.has(playlist.id)
-          ? this.states[playlist.id]
+      const playlistIds = new Set(playlists.map((playlist) => playlist.id));
+      // A playlist created while this read ran may be missing from the summaries it was given.
+      if (preserveIntent) for (const playlistId of this.touchedPlaylistIds) playlistIds.add(playlistId);
+      this.states = Object.fromEntries([...playlistIds].map((playlistId) => {
+        const retained = preserveIntent && this.touchedPlaylistIds.has(playlistId)
+          ? this.states[playlistId]
           : undefined;
-        if (retained) return [playlist.id, retained];
-        const count = counts[playlist.id] ?? 0;
-        return [playlist.id, count === 0 ? "unchecked" : count === nextItemIds.length ? "checked" : "mixed"];
+        if (retained) return [playlistId, retained];
+        const count = counts[playlistId] ?? 0;
+        return [playlistId, count === 0 ? "unchecked" : count === nextItemIds.length ? "checked" : "mixed"];
       }));
       return true;
     } catch (error) {
@@ -115,6 +123,7 @@ export class MusicBulkEditController {
     this.creatingPlaylist = true;
     this.createError = null;
     const playlistId = this.id();
+    const intent = this.intentGeneration;
     try {
       await createMusicPlaylist({
         id: playlistId,
@@ -129,12 +138,13 @@ export class MusicBulkEditController {
       if (!await this.library.refreshSummariesAfterMutation()) {
         throw this.library.error ?? new Error("The new playlist could not be loaded.");
       }
+      if (intent !== this.intentGeneration) return playlistId;
       this.initialCounts = { ...this.initialCounts, [playlistId]: 0 };
       this.states = { ...this.states, [playlistId]: "checked" };
       this.touchedPlaylistIds = new Set([...this.touchedPlaylistIds, playlistId]);
       return playlistId;
     } catch (error) {
-      this.createError = musicErrorMessage(error, translate("music.errors.playlistCreateFailed"));
+      if (intent === this.intentGeneration) this.createError = musicErrorMessage(error, translate("music.errors.playlistCreateFailed"));
       return null;
     } finally {
       this.creatingPlaylist = false;
@@ -348,6 +358,7 @@ export class MusicBulkEditController {
 
   clear(): void {
     this.openGeneration += 1;
+    this.intentGeneration += 1;
     this.itemIds = [];
     this.states = {};
     this.initialCounts = {};

@@ -323,6 +323,9 @@
     tabController.cancelDrag();
     tabController.closeRename();
     loadedKey = key;
+    // A review still resolving or an error shown belongs to the previous scope's panel.
+    reviewOpenRequest += 1;
+    error = null;
     panelState = placementSession().read(key);
   });
 

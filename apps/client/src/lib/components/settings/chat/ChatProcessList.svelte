@@ -9,16 +9,35 @@
   import { formatDateTime, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization, type TranslationKey } from "$lib/i18n/translator.svelte";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import {
+    asyncResourceError,
+    failAsyncRequest,
+    idleAsyncResource,
+    isAsyncResourceLoading,
+    resolveAsyncRequest,
+    startAsyncRequest,
+    type AsyncResource,
+  } from "$lib/utils/async-resource";
 
   /** Lists the running Chat processes on this device and stops one process group after confirmation. */
   let { refreshKey = 0 }: { refreshKey?: number } = $props();
 
   const localization = getLocalization();
   const { t } = localization;
-  let processes = $state<ChatProcessListRead | null>(null);
-  let busy = $state(false);
-  let error = $state<string | null>(null);
-  let status = $state<string | null>(null);
+  /** The process list; a newer refresh supersedes one in flight, so a requested refresh is never dropped. */
+  let list = $state.raw<AsyncResource<ChatProcessListRead | null>>(idleAsyncResource(null));
+  /** The stop in flight, or the outcome of the last stop. */
+  let stopState = $state.raw<StopState>({ phase: "idle" });
+  const processes = $derived(list.data);
+  const busy = $derived(isAsyncResourceLoading(list) || stopState.phase === "stopping");
+  const error = $derived(stopState.phase === "failed" ? stopState.error : asyncResourceError(list));
+  const status = $derived(stopState.phase === "stopped" ? stopState.message : null);
+
+  type StopState =
+    | { readonly phase: "idle" }
+    | { readonly phase: "stopping" }
+    | { readonly phase: "stopped"; readonly message: string }
+    | { readonly phase: "failed"; readonly error: string };
 
   const PURPOSE_LABELS: Record<ChatProcessPurpose, TranslationKey> = {
     session: "settings.chat.behavior.processPurposeSession",
@@ -40,36 +59,37 @@
   }
 
   async function refresh(): Promise<void> {
-    if (busy) return;
-    busy = true;
-    error = null;
+    const started = startAsyncRequest(list);
+    list = started.resource;
     try {
-      processes = await chatApi.listChatProcesses();
+      const next = await chatApi.listChatProcesses();
+      list = resolveAsyncRequest(list, started.token, next);
     } catch (cause: unknown) {
-      error = errorMessage(cause);
-    } finally {
-      busy = false;
+      list = failAsyncRequest(list, started.token, errorMessage(cause));
     }
   }
 
+  /** Refreshes on request, dismissing the error of an earlier stop. */
+  function refreshByUser(): void {
+    if (stopState.phase === "failed") stopState = { phase: "idle" };
+    void refresh();
+  }
+
   async function stop(record: ChatProcessRecord): Promise<void> {
-    if (busy || record.startTime === null) return;
+    const startTime = record.startTime;
+    if (busy || startTime === null) return;
     const confirmed = await requestConfirmation({
       message: t("settings.chat.behavior.stopProcessConfirm", record.executableName, pidLabel(record.pid)),
       confirmLabel: t("settings.chat.behavior.stopProcess"),
       danger: true,
     });
-    if (!confirmed) return;
-    busy = true;
-    error = null;
-    status = null;
+    if (!confirmed || busy) return;
+    stopState = { phase: "stopping" };
     try {
-      await chatApi.stopChatProcess(record.pid, record.startTime);
-      status = t("settings.chat.behavior.processStopped", record.executableName);
+      await chatApi.stopChatProcess(record.pid, startTime);
+      stopState = { phase: "stopped", message: t("settings.chat.behavior.processStopped", record.executableName) };
     } catch (cause: unknown) {
-      error = errorMessage(cause);
-    } finally {
-      busy = false;
+      stopState = { phase: "failed", error: errorMessage(cause) };
     }
     await refresh();
   }
@@ -89,7 +109,7 @@
       <h2 class="text-[0.866667rem] font-semibold text-foreground">{t("settings.chat.behavior.processList")}</h2>
       <p class="mt-0.5 text-[0.8rem] text-muted-foreground">{t("settings.chat.behavior.processesDescription")}</p>
     </div>
-    <button type="button" class={SETTINGS_ICON_BUTTON_CLASS} disabled={busy} aria-label={t("settings.chat.behavior.refreshProcesses")} title={t("settings.chat.behavior.refreshProcesses")} onclick={() => void refresh()}><RotateCw size={13} aria-hidden="true" /></button>
+    <button type="button" class={SETTINGS_ICON_BUTTON_CLASS} disabled={busy} aria-label={t("settings.chat.behavior.refreshProcesses")} title={t("settings.chat.behavior.refreshProcesses")} onclick={refreshByUser}><RotateCw size={13} aria-hidden="true" /></button>
   </div>
   {#if error}<Notice class="px-1 text-[0.733333rem]" message={error} />{/if}
   {#if status}<p role="status" class="px-1 text-[0.8rem] text-action-confirm-signal">{status}</p>{/if}

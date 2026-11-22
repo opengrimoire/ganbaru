@@ -631,13 +631,49 @@ async fn blocking<T: Send + 'static>(
 /// The active vault as a restore sees it.
 struct ActiveVault {
     root: PathBuf,
+    /// Whether this device is linked now, as the link status reports it.
+    linked: bool,
+    database: ActiveDatabase,
+}
+
+impl ActiveVault {
+    /// What its database holds, `None` when the database is lost.
+    fn opened(&self) -> Option<&OpenedVault> {
+        match &self.database {
+            ActiveDatabase::Open(opened) => Some(opened.as_ref()),
+            ActiveDatabase::Lost => None,
+        }
+    }
+}
+
+/// What a restore could read from the active vault's database.
+enum ActiveDatabase {
+    /// The database opened.
+    Open(Box<OpenedVault>),
+    /// The marker records data that the missing or empty database no longer holds, so nothing
+    /// in the vault vouches for a backup and the vault is replaced only as another vault, which
+    /// keeps the lost folder.
+    Lost,
+}
+
+/// The sync state read from an active vault whose database opened.
+struct OpenedVault {
     summary: LinkSummary,
     /// The recovery key and charter its sync state names.
     keys: RestoreKeys,
-    /// Whether this device is linked now, as the link status reports it.
-    linked: bool,
     /// The active space's key of the backup's epoch, when this installation holds it.
     epoch_key: Option<SpaceKey>,
+}
+
+/// Maps the open of the active vault's database to `None` when the vault refused to open because
+/// its database is lost, so a backup can still be restored over it. Every other failure stays an
+/// error, so a damaged database is never treated as gone.
+fn opened_or_lost<T>(opened: Result<T, String>) -> Result<Option<T>, String> {
+    match opened {
+        Ok(pool) => Ok(Some(pool)),
+        Err(error) if error == super::VAULT_DATABASE_MISSING => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// Reads the active vault's link summary and, for a backup of its space, the epoch key.
@@ -660,7 +696,14 @@ async fn active_vault_with(
     let root = super::active_vault_path(app)?;
     let vault_id = super::active_vault_id(app)?;
     let device_id = super::ensure_device_id(app)?;
-    let pool = crate::db::connect_vault(app).await?;
+    let linked = device_linked(app)?;
+    let Some(pool) = opened_or_lost(crate::db::connect_vault(app).await)? else {
+        return Ok(Some(ActiveVault {
+            root,
+            linked,
+            database: ActiveDatabase::Lost,
+        }));
+    };
     let mut conn = pool
         .acquire()
         .await
@@ -676,10 +719,12 @@ async fn active_vault_with(
     };
     Ok(Some(ActiveVault {
         root,
-        summary,
-        keys,
-        linked: device_linked(app)?,
-        epoch_key,
+        linked,
+        database: ActiveDatabase::Open(Box::new(OpenedVault {
+            summary,
+            keys,
+            epoch_key,
+        })),
     }))
 }
 
@@ -958,7 +1003,11 @@ pub async fn vault_inspect_backup(app: tauri::AppHandle) -> Result<BackupInspect
         if let Err(reason) = refuse_linked_active(active.as_ref()) {
             return Ok(BackupInspection::Refused { reason });
         }
-        let needs_kit = active.and_then(|active| active.epoch_key).is_none();
+        let needs_kit = active
+            .as_ref()
+            .and_then(ActiveVault::opened)
+            .and_then(|opened| opened.epoch_key.as_ref())
+            .is_none();
         hold_pending(Some(PendingBackup {
             token: token.clone(),
             source,
@@ -1062,7 +1111,10 @@ async fn restore_pending(
         .map_err(|error| RestoreError::from_file(error, false))?;
     let active = active_vault_for(app, &header).await?;
     refuse_linked_active(active.as_ref())?;
-    let epoch_key = active.as_ref().and_then(|active| active.epoch_key.clone());
+    let epoch_key = active
+        .as_ref()
+        .and_then(ActiveVault::opened)
+        .and_then(|opened| opened.epoch_key.clone());
     let unlock = Unlock::choose(kit, epoch_key)?;
     let with_kit = unlock.with_kit();
     let opener = unlock.opener();
@@ -1145,8 +1197,9 @@ async fn stage_and_plan(
 ) -> Result<(VaultInfo, RestorePlacement), RestoreError> {
     let info = stage_restored_vault(archive, staging, origin).await?;
     let (backup, staged_keys) = read_staged_state(staging, &info.vault_id, device_id).await?;
-    let trusted = origin.trusts(active.map(|active| &active.keys), &staged_keys);
-    let placement = plan_restore(active.map(|active| &active.summary), &backup, trusted);
+    let opened = active.and_then(ActiveVault::opened);
+    let trusted = origin.trusts(opened.map(|opened| &opened.keys), &staged_keys);
+    let placement = plan_restore(opened.map(|opened| &opened.summary), &backup, trusted);
     Ok((info, placement))
 }
 
@@ -1324,8 +1377,9 @@ async fn place_restored_backup(
     active: Option<&ActiveVault>,
 ) -> Result<(VaultInfo, RestorePlacement), RestoreError> {
     if let Some(active) = active
-        && origin.space() == Some(&active.summary.space)
-        && active.summary.other_devices == 0
+        && let Some(opened) = active.opened()
+        && origin.space() == Some(&opened.summary.space)
+        && opened.summary.other_devices == 0
     {
         let target = &active.root;
         let staging = restore_staging_path(target)?;

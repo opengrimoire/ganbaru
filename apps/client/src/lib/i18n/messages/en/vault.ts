@@ -216,7 +216,7 @@ export const dataFolderError = {
   lostDatabase:
     "This folder's data is missing, so it wasn't opened to avoid starting over empty. Choose another folder or import a copy.",
   lostDatabaseMobile:
-    "Ganbaru's data on this phone is missing, so it wasn't opened to avoid starting over empty; restore an earlier copy below if one is listed.",
+    "Ganbaru's data on this phone is missing, so it wasn't opened to avoid starting over empty; restore a backup file or an earlier copy listed below.",
 } as const;
 
 export const language = {

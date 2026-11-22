@@ -57,7 +57,8 @@ async function applyPreVaultLanguagePreference(): Promise<void> {
 
 /**
  * Mounts the startup error for a vault that could not open. Android keeps its one vault in private storage, so a
- * vault whose database is gone recovers by restoring one of its rollback copies in place; nothing is removed.
+ * vault whose database is gone recovers by restoring one of its rollback copies in place or a backup file, which
+ * replaces it as another vault and keeps its folder; nothing is removed.
  */
 async function mountMobileVaultError(error: unknown) {
   const { default: MobileVaultErrorView } = await import(

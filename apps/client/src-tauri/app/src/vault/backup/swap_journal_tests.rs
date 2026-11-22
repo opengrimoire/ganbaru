@@ -876,3 +876,43 @@ async fn an_activation_whose_swap_stays_pending_decides_nothing_and_moves_nothin
     assert_eq!(read_marker(&rollback).await, PREVIOUS_MARKER);
     let _ = fs::remove_dir_all(&fixture.parent);
 }
+
+/// The paths under `root` whose file name is `name`.
+fn files_named(root: &Path, name: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(folder) = pending.pop() {
+        for entry in fs::read_dir(&folder).unwrap().flatten() {
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(path);
+            } else if entry.file_name() == name {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+#[tokio::test]
+async fn another_vault_replacing_one_whose_database_is_lost_keeps_its_files() {
+    for empty_database in [false, true] {
+        let fixture = Fixture::new("swap-lost-database", false).await;
+        crate::vault::record_vault_data(&fixture.target, true).unwrap();
+        if empty_database {
+            fs::write(database_path(&fixture.target), b"").unwrap();
+        } else {
+            fs::remove_file(database_path(&fixture.target)).unwrap();
+        }
+        assert!(crate::vault::refuse_lost_database(&fixture.target).is_err());
+
+        swap(&fixture.staging, &fixture.target, Replacement::OtherVault).unwrap();
+
+        assert_eq!(read_marker(&fixture.target).await, REPLACEMENT_MARKER);
+        let assets = files_named(&fixture.parent, "kept.bin");
+        assert_eq!(assets.len(), 1, "empty database: {empty_database}");
+        assert_eq!(fs::read(&assets[0]).unwrap(), fixture.asset);
+        assert_eq!(files_named(&fixture.parent, "README.md").len(), 1);
+        assert_eq!(fixture.kept_whole().is_some(), !empty_database);
+    }
+}

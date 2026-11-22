@@ -376,11 +376,53 @@ async fn active_vault(vault: &Path, vault_id: &str, device_id: &str) -> ActiveVa
     let (summary, keys) = read_staged_state(vault, vault_id, device_id).await.unwrap();
     ActiveVault {
         root: vault.to_path_buf(),
-        summary,
-        keys,
         linked: false,
-        epoch_key: None,
+        database: ActiveDatabase::Open(Box::new(OpenedVault {
+            summary,
+            keys,
+            epoch_key: None,
+        })),
     }
+}
+
+#[test]
+fn only_a_lost_database_reads_as_a_lost_active_vault() {
+    assert_eq!(opened_or_lost(Ok(7)), Ok(Some(7)));
+    assert_eq!(
+        opened_or_lost::<()>(Err(crate::vault::VAULT_DATABASE_MISSING.to_string())),
+        Ok(None)
+    );
+    let damaged = "run database migrations: file is not a database".to_string();
+    assert_eq!(opened_or_lost::<()>(Err(damaged.clone())), Err(damaged));
+}
+
+#[tokio::test]
+async fn a_backup_of_a_vault_whose_database_is_lost_restores_as_an_independent_copy() {
+    let root = unique_test_path("lost-active");
+    let vault = root.join("Ganbaru");
+    let device = "device-a";
+    let vault_id = founded_vault(&vault, 0x42).await;
+    let honest = root.join("honest.zip");
+    archive_vault_with(&vault, &honest, "", "").await;
+    let lost = ActiveVault {
+        root: vault.clone(),
+        linked: false,
+        database: ActiveDatabase::Lost,
+    };
+    let origin = ArchiveOrigin::BackupFile {
+        space: SpaceId::personal(&vault_id),
+        opened_by: Some(kit(0x42)),
+    };
+
+    let (info, placement) =
+        stage_and_plan(device, &honest, &root.join("staging"), origin, Some(&lost))
+            .await
+            .unwrap();
+
+    assert_eq!(info.vault_id, vault_id);
+    assert_eq!(placement, RestorePlacement::IndependentCopy);
+    assert!(lost.opened().is_none());
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]

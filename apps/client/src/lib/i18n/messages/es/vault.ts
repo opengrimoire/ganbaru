@@ -224,7 +224,7 @@ export const dataFolderError = {
   lostDatabase:
     "Faltan los datos de esta carpeta, así que no se abrió para no empezar de cero. Elige otra carpeta o importa una copia.",
   lostDatabaseMobile:
-    "Faltan los datos de Ganbaru en este teléfono, así que no se abrieron para no empezar de cero; restaura una copia anterior de abajo si aparece alguna.",
+    "Faltan los datos de Ganbaru en este teléfono, así que no se abrieron para no empezar de cero; restaura un archivo de copia o una copia anterior de abajo.",
 } as const satisfies MessageShape<typeof enDataFolderError>;
 
 export const language = {

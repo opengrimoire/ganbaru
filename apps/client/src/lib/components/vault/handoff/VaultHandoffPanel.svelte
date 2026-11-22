@@ -200,7 +200,8 @@
   const errorShownInPlace = $derived(
     error !== null
       && (!status
-        || (!status.linked && platform === "desktop" && presentation === "onboarding" && !invitation)),
+        || (!status.linked && platform === "desktop" && presentation === "onboarding" && !invitation)
+        || (status.linked && presentation === "onboarding" && bootstrapReplicaOnLink && !status.replicaReady)),
   );
 
   function fail(cause: unknown): void {
@@ -415,27 +416,45 @@
     error = null;
     codeError = null;
     notice = null;
+    let linked: PairingStatus | null = null;
     try {
       const deviceLabel = await readSuggestedDeviceLabel();
       enrollmentCode = await readEnrollmentCode(encoded);
       await enrollWithDesktop(encoded, deviceLabel);
-      const next = await loadStatus();
-      if (
-        platform === "android"
-        && presentation === "onboarding"
-        && bootstrapReplicaOnLink
-        && !next.replicaReady
-      ) {
-        const outcome = await requestVaultBootstrap();
-        if (outcome.inProgress) throw new Error("initial linked vault activation is already running");
-        await loadStatus();
-      }
+      linked = await loadStatus();
       codeDialogVisible = false;
       codeError = null;
     } catch (cause) {
       codeError = formatPairingCodeError(cause, t);
     } finally {
       enrollmentCode = null;
+      finishHandoffAction(started);
+    }
+    if (linked && needsLinkedVaultCopy(linked)) await copyLinkedVault();
+  }
+
+  /** Whether this phone is linked during onboarding but still waits for its first copy of the vault. */
+  function needsLinkedVaultCopy(current: PairingStatus): boolean {
+    return platform === "android"
+      && presentation === "onboarding"
+      && bootstrapReplicaOnLink
+      && current.linked
+      && !current.replicaReady;
+  }
+
+  /**
+   * Copies the linked vault onto this phone during onboarding. A failure shows in place of the loader with a retry, and a
+   * copy that is already running is left to the status poll.
+   */
+  async function copyLinkedVault(): Promise<void> {
+    const started = startHandoffAction("bootstrap");
+    error = null;
+    try {
+      const outcome = await requestVaultBootstrap();
+      if (!outcome.inProgress) await loadStatus();
+    } catch (cause) {
+      fail(cause);
+    } finally {
       finishHandoffAction(started);
     }
   }
@@ -569,6 +588,10 @@
     if (presentation === "control") void loadServer();
     if (presentation === "onboarding" && platform === "desktop" && desktopQrAvailable) void loadQrCode();
     const prepareOnboarding = (): void => {
+      if (status && needsLinkedVaultCopy(status) && busy === null) {
+        void copyLinkedVault();
+        return;
+      }
       if (presentation !== "onboarding" || status?.linked || platform !== "desktop") return;
       if (!invitation) void showInvitation();
     };
@@ -769,7 +792,19 @@
     {/if}
     {#if presentation === "onboarding" && status.linked}
       {#if bootstrapReplicaOnLink && !status.replicaReady}
-        {@render onboardingLoader()}
+        {#if error && busy === null}
+          <div class="flex min-h-56">
+            <Notice
+              layout="fill"
+              class="text-sm"
+              message={error}
+              retryLabel={t("vaultHandoff.retry")}
+              onRetry={() => (busy !== null ? undefined : copyLinkedVault())}
+            />
+          </div>
+        {:else}
+          {@render onboardingLoader()}
+        {/if}
       {:else}
         <LinkedDeviceSuccess
           device={status.peerLabel ?? t(platform === "android" ? "vaultHandoff.desktopDevice" : "vaultHandoff.androidDevice")}

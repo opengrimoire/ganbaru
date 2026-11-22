@@ -123,4 +123,49 @@ describe("QuickNoteEditorModal", () => {
     flushSync();
     expect(titleInput().value).toBe("Typed during reload");
   });
+
+  it("reports a failed conflict reload and keeps the edits and the conflict actions", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.mocked(updateQuickNote).mockRejectedValue(new QuickNoteWriteError("revision_conflict", "conflict"));
+    vi.mocked(getQuickNote).mockRejectedValue(new Error("rebase read failed"));
+    component = mount(QuickNoteEditorModal, {
+      target,
+      props: {
+        note,
+        tags: [],
+        defaultTagId: null,
+        defaultColor: 0,
+        untaggedColor: 0,
+        onCreateTag: () => Promise.reject(new Error("unused")),
+        theme: lightTheme,
+        onClose: () => undefined,
+        onSaved: () => undefined,
+        onArchive: () => undefined,
+        onUnarchive: () => undefined,
+        onTrash: () => undefined,
+        onRestore: () => undefined,
+        onDelete: () => undefined,
+      },
+    });
+    flushSync();
+
+    typeTitle("Local title");
+    buttonWithText("Close").click();
+    await vi.advanceTimersByTimeAsync(0);
+    flushSync();
+
+    let failReload: (error: Error) => void = () => undefined;
+    vi.mocked(getQuickNote).mockImplementation(() => new Promise<QuickNote>((_resolve, reject) => { failReload = reject; }));
+    buttonWithText("Reload").click();
+    flushSync();
+    expect(buttonWithText("Reload").disabled).toBe(true);
+
+    failReload(new Error("read failed"));
+    await vi.advanceTimersByTimeAsync(0);
+    flushSync();
+    expect(target.textContent).toContain("The note could not be reloaded");
+    expect(buttonWithText("Reload").disabled).toBe(false);
+    expect(buttonWithText("Save as copy")).toBeTruthy();
+    expect(titleInput().value).toBe("Local title");
+  });
 });

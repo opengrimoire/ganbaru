@@ -80,6 +80,7 @@ export const quickNotes = {
     retry: "Reintentar guardado",
     conflict: "Esta nota cambió en otra ventana o en otro dispositivo",
     reload: "Recargar",
+    reloadFailed: "No se pudo recargar la nota",
     saveCopy: "Guardar como copia",
     titleLimit: (count: number) => `Límite del título: ${count} caracteres`,
     bodyLimit: (count: number) => `Límite del contenido: ${count} caracteres`,

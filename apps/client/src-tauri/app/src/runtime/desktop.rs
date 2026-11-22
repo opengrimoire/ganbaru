@@ -658,7 +658,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             music::soundscape::music_soundscape_set_levels,
             music::soundscape::music_soundscape_recover,
             music::soundscape::music_soundscape_snapshot,
-            tray::update_music_tray,
             force_quit,
             reset_database,
             benchmark::read_benchmark_state,

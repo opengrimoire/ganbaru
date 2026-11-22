@@ -253,6 +253,7 @@ const RUST_ONLY_COMMANDS: &[&str] = &[
     "focus_idle_status",
     "show_distractions_desktop_block_notification",
     "show_distractions_desktop_limit_notification",
+    "update_music_tray",
 ];
 
 /// Permissions that would let a webview create windows or webviews outside Rust validation.

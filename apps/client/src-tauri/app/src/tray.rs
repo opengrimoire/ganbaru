@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use std::sync::{
     LazyLock, Mutex, MutexGuard, PoisonError,
     atomic::{AtomicBool, Ordering},
@@ -160,9 +159,8 @@ struct PomodoroTrayUpdate {
     activity: TrayFocusActivity,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicTrayUpdate {
+#[derive(Debug)]
+struct MusicTrayUpdate {
     status: String,
     title: Option<String>,
     can_play_pause: bool,
@@ -759,9 +757,9 @@ pub(crate) async fn reconcile_committed_focus(
     .await
 }
 
-/// Update the Music section of the shared tray menu.
-#[tauri::command]
-pub fn update_music_tray(app: AppHandle, update: MusicTrayUpdate) -> Result<(), String> {
+/// Updates the Music section of the shared tray menu. Only committed native Music state reaches
+/// it, through [`publish_music_session`].
+fn update_music_tray(app: &AppHandle, update: MusicTrayUpdate) -> Result<(), String> {
     let music = music_tray_state(update);
     lock_tray(&TRAY_STATE).music = music;
     // Retain one queued refresh and read the displayed Focus context on the main
@@ -797,7 +795,7 @@ pub(crate) fn publish_music_session(
     session: &crate::music::session::SessionProjection,
 ) -> Result<(), String> {
     update_music_tray(
-        app.clone(),
+        app,
         MusicTrayUpdate {
             status: session.status.as_str().into(),
             title: session

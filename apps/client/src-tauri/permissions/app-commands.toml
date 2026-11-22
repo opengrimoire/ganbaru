@@ -749,7 +749,6 @@ commands.allow = [
   "themes_reset_token_to_seed",
   "themes_resolve_conflict",
   "toggle_devtools",
-  "update_music_tray",
   "updater_install_context",
   "updates_check",
   "updates_install",

@@ -61,27 +61,44 @@
       : selectedIds.filter((id) => id !== assignmentId);
   }
 
-  async function open(item: ChatReviewQueueItemRead): Promise<void> {
+  /** Counts item openings; only the newest one may open the review panel, close the rail, or show its failure. */
+  let navigation = 0;
+
+  /**
+   * Starts opening an item and returns a check that stays true until a later opening starts, so an earlier opening
+   * that finishes late cannot open its changes over the item the person chose after it.
+   */
+  function startNavigation(): () => boolean {
+    navigation += 1;
+    const current = navigation;
     actionError = null;
+    return () => current === navigation;
+  }
+
+  /** Opens the reply thread of an item. */
+  async function open(item: ChatReviewQueueItemRead): Promise<void> {
+    const isCurrent = startNavigation();
     try {
       await chat.openReviewItem(item);
-      onOpened?.();
+      if (isCurrent()) onOpened?.();
     } catch (error: unknown) {
-      actionError = chatErrorMessage(error, t("chatErrors.actions.reviewQueueAction"));
+      if (isCurrent()) actionError = chatErrorMessage(error, t("chatErrors.actions.reviewQueueAction"));
     }
   }
 
   /** Opens the reply thread of a review, then the whole change set of its work in the review panel. */
   async function reviewChanges(item: ChatReviewQueueItemRead): Promise<void> {
-    actionError = null;
+    const isCurrent = startNavigation();
     try {
       await chat.openReviewItem(item);
+      if (!isCurrent()) return;
       const detail = await chat.assignmentReviewDetail(item.assignmentId);
       await tick();
+      if (!isCurrent()) return;
       paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-open-review", { detail }));
       onOpened?.();
     } catch (error: unknown) {
-      actionError = chatErrorMessage(error, t("chatErrors.actions.reviewQueueAction"));
+      if (isCurrent()) actionError = chatErrorMessage(error, t("chatErrors.actions.reviewQueueAction"));
     }
   }
 

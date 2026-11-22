@@ -35,8 +35,8 @@
   let conflict = $state<ThemeConflict | null>(null);
   let loading = $state(true);
   let busy = $state(false);
-  let message = $state("");
-  let messageKind = $state<"resolved" | "loadFailed" | "resolveFailed">("resolveFailed");
+  /** The notice under the versions: why the last load or resolve failed, or that the conflict was already resolved. */
+  let notice = $state<"resolved" | "loadFailed" | "resolveFailed" | null>(null);
   let loadGeneration = 0;
 
   function swatches(version: ThemeConflictVersion): string[] {
@@ -61,16 +61,16 @@
       const next = await getThemeConflict(id);
       if (expected !== loadGeneration) return;
       conflict = next;
-      message = "";
+      notice = null;
     } catch (cause: unknown) {
       if (expected !== loadGeneration) return;
       if (cause instanceof ThemeConflictError && cause.code === "resolved") {
         conflict = { id, versions: [] };
+        notice = null;
         return;
       }
       console.warn("theme conflict could not be loaded", cause);
-      message = t("theme.conflict.loadFailed");
-      messageKind = "loadFailed";
+      notice = "loadFailed";
     } finally {
       if (expected === loadGeneration) loading = false;
     }
@@ -79,17 +79,15 @@
   async function resolve(choice: ThemeConflictChoice): Promise<void> {
     if (busy) return;
     busy = true;
-    message = "";
+    notice = null;
     try {
       await onResolve(choice);
     } catch (cause: unknown) {
       if (cause instanceof ThemeConflictError && cause.code === "resolved") {
-        message = t("theme.conflict.resolved");
-        messageKind = "resolved";
+        notice = "resolved";
       } else {
         console.warn("theme conflict could not be resolved", cause);
-        message = t("theme.conflict.failed");
-        messageKind = "resolveFailed";
+        notice = "resolveFailed";
       }
     } finally {
       busy = false;
@@ -139,13 +137,13 @@
       </div>
     </div>
   {/each}
-  {#if message}
+  {#if notice}
     <Notice
-      {message}
-      icon={messageKind === "resolved" ? Info : undefined}
-      role={messageKind === "resolved" ? "status" : "alert"}
+      message={notice === "resolved" ? t("theme.conflict.resolved") : notice === "loadFailed" ? t("theme.conflict.loadFailed") : t("theme.conflict.failed")}
+      icon={notice === "resolved" ? Info : undefined}
+      role={notice === "resolved" ? "status" : "alert"}
       copy={false}
-      onRetry={messageKind === "loadFailed" ? () => load(themeId) : undefined}
+      onRetry={notice === "loadFailed" ? () => load(themeId) : undefined}
     />
   {/if}
 </section>

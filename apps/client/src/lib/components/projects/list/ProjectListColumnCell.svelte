@@ -353,21 +353,13 @@
     return trigger?.closest<HTMLElement>(".collection-cell") ?? trigger;
   }
 
-  /**
-   * Watch a panel and its content root. A panel capped by its own max height stops resizing when its content grows,
-   * such as a month with six week rows, so only the content root reports the growth that must lift the cap.
-   */
-  function observePanelSize(observer: ResizeObserver, node: HTMLElement): void {
-    observer.observe(node);
-    if (node.firstElementChild) observer.observe(node.firstElementChild);
-  }
-
   function positionPanel(
     node: HTMLElement,
     anchor: HTMLElement | undefined,
     options: {
       fallbackWidth: number;
       minHeight: number;
+      /** A fixed panel height to plan for instead of the measured content. */
       preferredHeight?: number;
       applyNodeMaxHeight?: boolean;
       maxHeightProperty?: string;
@@ -381,10 +373,10 @@
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
     const usableViewportHeight = Math.max(0, viewportHeight - FLOATING_PANEL_MARGIN * 2);
-    // The max height applies to the border box while scrollHeight leaves out the borders, so add them back.
+    // scrollHeight leaves out the borders that the border-box height includes.
     const frameHeight = node.offsetHeight - node.clientHeight;
-    const preferredHeight = Math.min(
-      options.preferredHeight ?? Math.max(node.scrollHeight + frameHeight, node.offsetHeight, options.minHeight),
+    const contentHeight = Math.min(
+      options.preferredHeight ?? Math.max(node.scrollHeight + frameHeight, options.minHeight),
       usableViewportHeight,
     );
     const minimumHeight = Math.min(options.minHeight, usableViewportHeight);
@@ -400,27 +392,26 @@
     const aboveBottom = triggerRect.top - gap;
     const belowSpace = Math.max(0, viewportHeight - FLOATING_PANEL_MARGIN - belowTop);
     const aboveSpace = Math.max(0, aboveBottom - FLOATING_PANEL_MARGIN);
-    const preferBelow = belowSpace >= preferredHeight || belowSpace >= aboveSpace;
-    const availableHeight = preferBelow ? belowSpace : aboveSpace;
-    const maxHeight = Math.max(
-      minimumHeight,
-      Math.min(preferredHeight, availableHeight || usableViewportHeight),
-    );
+    const preferBelow = belowSpace >= contentHeight || belowSpace >= aboveSpace;
+    const availableHeight = Math.max(minimumHeight, (preferBelow ? belowSpace : aboveSpace) || usableViewportHeight);
+    // The cap is the free space, never the measured content, so the panel keeps its natural height whenever it fits.
+    const maxHeight = options.preferredHeight === undefined ? availableHeight : Math.min(contentHeight, availableHeight);
+    const renderedHeight = Math.min(contentHeight, maxHeight);
     const unclampedTop = preferBelow
       ? belowTop
-      : aboveBottom - maxHeight;
+      : aboveBottom - renderedHeight;
     const top = Math.max(
       FLOATING_PANEL_MARGIN,
       Math.min(
         unclampedTop,
-        viewportHeight - FLOATING_PANEL_MARGIN - maxHeight,
+        viewportHeight - FLOATING_PANEL_MARGIN - renderedHeight,
       ),
     );
 
     node.style.left = `${Math.round(left)}px`;
     node.style.top = `${Math.round(top)}px`;
     if (options.applyNodeMaxHeight ?? true) {
-      node.style.maxHeight = `${Math.ceil(maxHeight)}px`;
+      node.style.maxHeight = `${Math.floor(maxHeight)}px`;
       node.style.overflowY = "auto";
     }
     if (options.maxHeightProperty) {
@@ -439,7 +430,7 @@
 
     const frame = requestAnimationFrame(updatePosition);
     const resizeObserver = new ResizeObserver(updatePosition);
-    observePanelSize(resizeObserver, node);
+    resizeObserver.observe(node);
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", updatePosition, true);
 
@@ -489,7 +480,7 @@
 
     const frame = requestAnimationFrame(updatePosition);
     const resizeObserver = new ResizeObserver(updatePosition);
-    observePanelSize(resizeObserver, node);
+    resizeObserver.observe(node);
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", updatePosition, true);
 
@@ -759,7 +750,7 @@
           aria-label={dateLabel}
           use:positionDatePickerPanel
         >
-          <div>{@render dateMenuContent()}</div>
+          {@render dateMenuContent()}
         </div>
       {/if}
   {:else if column === "scheduled"}

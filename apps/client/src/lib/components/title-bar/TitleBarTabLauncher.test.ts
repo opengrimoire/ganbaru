@@ -328,6 +328,50 @@ describe("Tab launcher", () => {
     expect(surface().querySelector("input:not([type=search])")).toBeNull();
   });
 
+  it("keeps a form opened after a cancelled group save when that save settles", async () => {
+    let finishSave: (groupId: string | undefined) => void = () => undefined;
+    let failSave: (error: Error) => void = () => undefined;
+    projects.addGroup
+      .mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve; }))
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { failSave = reject; }));
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    press(surface(), "2");
+    await tick();
+
+    async function submitGroupThenOpenProjectForm(): Promise<void> {
+      button("New group").click();
+      await tick();
+      const input = surface().querySelector<HTMLInputElement>("input:not([type=search])");
+      if (!input) throw new Error("Expected the group name field");
+      input.value = "Fresh";
+      input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      input.form?.requestSubmit();
+      await tick();
+      press(input, "Escape");
+      await tick();
+      button("New project").click();
+      await tick();
+    }
+
+    await submitGroupThenOpenProjectForm();
+    finishSave("fresh");
+    await vi.waitFor(() => expect(projects.addGroup).toHaveBeenCalledTimes(1));
+    await tick();
+    await tick();
+    expect(surface().querySelector("input:not([type=search])")).not.toBeNull();
+    expect(surface().querySelector("[data-highlighted]")?.textContent).not.toContain("Fresh");
+
+    press(surface().querySelector("input:not([type=search])") ?? surface(), "Escape");
+    await tick();
+    await submitGroupThenOpenProjectForm();
+    failSave(new Error("disk full"));
+    await vi.waitFor(() => expect(errorLog).toHaveBeenCalled());
+    await tick();
+    expect(surface().querySelector("input:not([type=search])")).not.toBeNull();
+    expect(surface().querySelector("[role=alert]")).toBeNull();
+    errorLog.mockRestore();
+  });
+
   it("cancels an open create form on Escape before going back a level", async () => {
     press(surface(), "2");
     await tick();

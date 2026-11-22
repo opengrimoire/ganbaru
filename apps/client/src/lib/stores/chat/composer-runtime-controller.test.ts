@@ -144,6 +144,32 @@ describe("ChatComposerRuntimeController sending", () => {
     expect(controller.draftThreadId).toBeNull();
   });
 
+  it("keeps the text of a failed send out of a draft the user switched to meanwhile", async () => {
+    const options = controllerOptions();
+    const controller = new ChatComposerRuntimeController(options);
+    await controller.bind("working-folder-1", "thread-1");
+    const sent = deferred<SendChatTurnResult>();
+    api.sendTurn.mockReturnValueOnce(sent.promise);
+
+    const sending = controller.send();
+    await vi.waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(1));
+    api.readDraft.mockResolvedValueOnce({
+      ...composerDraft(),
+      id: "draft-2",
+      threadId: "thread-2",
+      text: "Other draft",
+      sentSnapshot: { schemaVersion: 1, value: { text: "Earlier prompt", richContent: null, attachmentIds: [], mentions: [] } },
+    });
+    await controller.bind("working-folder-1", "thread-2");
+    sent.reject(new Error("Provider unavailable"));
+    await expect(sending).rejects.toThrow("Provider unavailable");
+
+    expect(controller.composer.threadId).toBe("thread-2");
+    expect(controller.composer.text).toBe("Other draft");
+    const savedSent = api.saveDraft.mock.calls.map(([draft]) => draft).filter((draft) => draft.id === "draft-1");
+    expect(savedSent.at(-1)?.sentSnapshot?.value).toMatchObject({ text: "Run the tests" });
+  });
+
   it("rejects pasted or dropped images beyond the attachment limit before importing", async () => {
     const controller = new ChatComposerRuntimeController(controllerOptions());
     await controller.bind("working-folder-1", "thread-1");

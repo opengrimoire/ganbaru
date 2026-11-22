@@ -296,6 +296,7 @@ export class ChatComposerRuntimeController {
         sourceThreadId: threadId,
       },
     };
+    const sentDraftId = this.composer.draftId;
     this.composerController.markSent();
     let result: Awaited<ReturnType<typeof chatApi.sendChatTurn>>;
     try {
@@ -329,8 +330,11 @@ export class ChatComposerRuntimeController {
       });
     } catch (error: unknown) {
       this.pendingUserMessage = null;
-      this.composerController.restoreSentSnapshot();
-      await this.composerController.flush();
+      // Another draft shown meanwhile must not receive this text; the sent draft keeps it in its stored sent snapshot.
+      if (this.composer.draftId === sentDraftId) {
+        this.composerController.restoreSentSnapshot();
+        await this.composerController.flush();
+      }
       throw error;
     }
     this.options.upsertThread(result.thread);

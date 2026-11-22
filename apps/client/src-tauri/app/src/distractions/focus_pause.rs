@@ -22,9 +22,10 @@ impl FocusPhaseHold {
             FocusMode::ManualPause => Self::Paused(PauseReason::Manual),
             FocusMode::IdlePause => Self::Paused(PauseReason::Idle),
             FocusMode::Suspended => Self::Paused(PauseReason::Suspend),
-            FocusMode::Stopped | FocusMode::IdleFailed | FocusMode::ReturnWait | FocusMode::Expired => {
-                Self::Released
-            }
+            FocusMode::Stopped
+            | FocusMode::IdleFailed
+            | FocusMode::ReturnWait
+            | FocusMode::Expired => Self::Released,
         }
     }
 

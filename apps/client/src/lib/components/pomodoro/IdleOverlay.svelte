@@ -21,11 +21,25 @@
   let elapsed = $state(0);
   let overlayVisibleAtMs = Date.now();
   let tickIntervalId: ReturnType<typeof setInterval> | null = null;
-  let wasFullscreen = false;
+  /**
+   * The main window takeover: `none` until the overlay first paints, `taken` once the window was asked to go
+   * fullscreen, with the entry still settling, and `released` after the window was handed back exactly once.
+   */
+  type WindowTakeover =
+    | { readonly phase: "none" }
+    | { readonly phase: "taken"; readonly entry: Promise<boolean> }
+    | { readonly phase: "released" };
+  let takeover: WindowTakeover = { phase: "none" };
   const VISIBILITY_RETRY_MS = 5000;
 
-  async function enterFullscreen() {
+  /**
+   * Makes the main window fullscreen and always on top.
+   *
+   * @returns Whether the window was already fullscreen before the overlay.
+   */
+  async function enterFullscreen(): Promise<boolean> {
     const appWindow = getCurrentWindow();
+    let wasFullscreen = false;
     try {
       wasFullscreen = await appWindow.isFullscreen();
       await appWindow.setAlwaysOnTop(true);
@@ -34,9 +48,15 @@
     } catch (e) {
       console.warn("Failed to enter fullscreen for idle overlay:", e);
     }
+    return wasFullscreen;
   }
 
-  async function exitFullscreen() {
+  /**
+   * Restores the main window after the overlay's own fullscreen entry finished.
+   *
+   * @param wasFullscreen - Whether the window was fullscreen before the overlay.
+   */
+  async function exitFullscreen(wasFullscreen: boolean): Promise<void> {
     const appWindow = getCurrentWindow();
     try {
       if (!wasFullscreen) {
@@ -48,8 +68,22 @@
     }
   }
 
+  /** Takes over the main window once. */
+  function takeWindow(): void {
+    if (takeover.phase !== "none") return;
+    takeover = { phase: "taken", entry: enterFullscreen() };
+  }
+
+  /** Hands the main window back once, after its takeover finished, whichever of resume or unmount comes first. */
+  function releaseWindow(): Promise<void> {
+    if (takeover.phase !== "taken") return Promise.resolve();
+    const { entry } = takeover;
+    takeover = { phase: "released" };
+    return entry.then(exitFullscreen);
+  }
+
   function handleResume() {
-    void Promise.resolve(onResume()).then(exitFullscreen).catch((error: unknown) => {
+    void Promise.resolve(onResume()).then(releaseWindow).catch((error: unknown) => {
       console.error("Native Focus resume failed:", error);
     });
   }
@@ -97,7 +131,7 @@
       elapsed = idleSeconds;
       painted = true;
       void reportVisibility();
-      if (!nativeOverlay) void enterFullscreen();
+      if (!nativeOverlay) takeWindow();
     });
 
     tickIntervalId = setInterval(() => {
@@ -121,6 +155,7 @@
       cancelPaintSideEffects();
       window.removeEventListener("keydown", handleKeydown, true);
       if (tickIntervalId !== null) clearInterval(tickIntervalId);
+      void releaseWindow();
     };
   });
 </script>

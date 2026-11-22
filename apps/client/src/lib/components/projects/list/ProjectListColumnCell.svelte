@@ -343,6 +343,14 @@
     return undefined;
   }
 
+  /**
+   * The element a cell panel opens against. A primary trigger's hit area is its whole cell, while the trigger element
+   * itself can be a collapsed or shorter box in the middle of the cell, so panels align to the cell edges instead.
+   */
+  function cellAnchor(trigger: HTMLElement | undefined): HTMLElement | undefined {
+    return trigger?.closest<HTMLElement>(".collection-cell") ?? trigger;
+  }
+
   function positionPanel(
     node: HTMLElement,
     anchor: HTMLElement | undefined,
@@ -406,7 +414,7 @@
 
   function positionDatePickerPanel(node: HTMLElement) {
     function updatePosition(): void {
-      positionPanel(node, dateTriggerEl, {
+      positionPanel(node, cellAnchor(dateTriggerEl), {
         fallbackWidth: DATE_PICKER_PANEL_WIDTH,
         minHeight: DATE_PICKER_PANEL_MIN_HEIGHT,
       });
@@ -452,10 +460,10 @@
     };
   }
 
-  /** Place a fixed menu beside its trigger so the list scroller never clips it. */
+  /** Place a fixed menu beside its trigger's cell so the list scroller never clips it. */
   function positionCellMenu(node: HTMLElement, anchor: HTMLElement | undefined) {
     function updatePosition(): void {
-      positionPanel(node, anchor, {
+      positionPanel(node, cellAnchor(anchor), {
         fallbackWidth: Math.max(180, anchor?.offsetWidth ?? 0),
         minHeight: 48,
       });

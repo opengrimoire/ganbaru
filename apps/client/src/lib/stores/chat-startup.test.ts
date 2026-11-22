@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as chatApi from "$lib/api/chat";
 import * as workingFolderApi from "$lib/api/project-working-folders";
-import type { ChatChannelRead, ChatMessageRead, ChatSettingsRead } from "$lib/chat/contracts";
+import type { ChatChannelRead, ChatMessageRead, ChatMessageSearchResultRead, ChatSettingsRead } from "$lib/chat/contracts";
 import { readLastChatChannelId } from "$lib/chat/channel-sections";
 import { setActiveVaultIdentity } from "$lib/vault/active-vault";
 import { getChat, getChatStore, resetChatForVault } from "./chat.svelte";
@@ -455,6 +455,25 @@ describe("Chat reply thread tabs", () => {
     expect(chat.openReplyThreadId).toBe("reply-thread");
     await toThread;
     expect(chatApi.readChatChannelPage).toHaveBeenCalledTimes(pageReads);
+  });
+
+  it("opens the newest search result when an earlier one finishes its project selection after it", async () => {
+    await chat.ensureLoaded();
+    const searchResult = (channelId: string, projectId: string) => ({
+      projectId, channelId, channelName: channelId, conversationId: `conversation-${channelId}`, replyThreadId: null,
+      messageItemId: `message-${channelId}`, anchorCursor: "c001", authorParticipantId: null, authorKind: null,
+      authorDisplayName: "User", excerpt: "Saved", createdAt: "2026-09-22T12:00:00Z",
+    }) as ChatMessageSearchResultRead;
+    const earlierProject = deferred<undefined>();
+    projects.selectProject.mockImplementationOnce(() => earlierProject.promise);
+
+    const earlier = chat.openMessageSearchResult(searchResult("elsewhere", "other-project"));
+    await chat.openMessageSearchResult(searchResult("other", "project"));
+    earlierProject.resolve(undefined);
+    await earlier;
+
+    expect(chat.selectedChannelId).toBe("other");
+    expect(chat.messageAnchorId).toBe("message-other");
   });
 
   /** Shows the general channel with a working folder and a provider thread of its project selected. */

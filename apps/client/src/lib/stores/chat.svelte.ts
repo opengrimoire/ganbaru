@@ -264,6 +264,8 @@ export class ChatStore {
   private channelSelectionRequest = 0;
   /** The latest channel selection that finished or failed; another value means a selection is still loading. */
   private settledChannelSelectionRequest = 0;
+  /** Bumped by each search result or review item opened, so only the newest one continues past its reads. */
+  private placeNavigationRequest = 0;
   /** The reply thread each channel had open when it was left, in memory for this app session. */
   private readonly openReplyThreadByChannel = new Map<ChatChannelId, ChatReplyThreadId>();
   private channelReadPromise: { channelId: ChatChannelId; promise: Promise<void> } | null = null;
@@ -1109,10 +1111,8 @@ export class ChatStore {
   }
 
   async openMessageSearchResult(result: ChatMessageSearchResultRead): Promise<void> {
-    this.messageAnchorId = null;
-    await this.projects.selectProject(result.projectId);
-    await this.loadProjectChannels(result.projectId);
-    await this.selectChannel(result.channelId);
+    const isCurrent = await this.openPlaceChannel(result);
+    if (!isCurrent()) return;
     if (result.replyThreadId) {
       this.openReplyThreadId = result.replyThreadId;
       this.rememberChannelReplyThread(result.replyThreadId);
@@ -1121,7 +1121,7 @@ export class ChatStore {
     } else {
       await this.communicationController.loadChannelAtCursor(result.channelId, result.anchorCursor);
     }
-    this.messageAnchorId = result.messageItemId;
+    if (isCurrent()) this.messageAnchorId = result.messageItemId;
   }
 
   clearMessageAnchor(messageItemId: string): void {
@@ -1268,11 +1268,32 @@ export class ChatStore {
   private async openAssignmentReplyThread(
     target: Pick<ChatReviewQueueItemRead, "projectId" | "channelId" | "replyThreadId">,
   ): Promise<void> {
+    const isCurrent = await this.openPlaceChannel(target);
+    if (isCurrent()) await this.openReplyThread(target.replyThreadId);
+  }
+
+  /**
+   * Selects the project and channel of a place a person opened, such as a search result. Another place opened while
+   * the reads run supersedes this one, and so does another channel selected after this one selected its channel; the
+   * project selection before that may itself select a remembered channel, which this navigation then replaces.
+   *
+   * @param target - The project and channel to show.
+   * @returns A check of whether this navigation is still the current one, for the steps that follow.
+   */
+  private async openPlaceChannel(
+    target: Pick<ChatReviewQueueItemRead, "projectId" | "channelId">,
+  ): Promise<() => boolean> {
+    const navigation = ++this.placeNavigationRequest;
+    const isNewest = () => navigation === this.placeNavigationRequest;
     this.messageAnchorId = null;
     await this.projects.selectProject(target.projectId);
+    if (!isNewest()) return isNewest;
     await this.loadProjectChannels(target.projectId);
-    await this.selectChannel(target.channelId);
-    await this.openReplyThread(target.replyThreadId);
+    if (!isNewest()) return isNewest;
+    const selection = this.selectChannel(target.channelId);
+    const channelRequest = this.channelSelectionRequest;
+    await selection;
+    return () => isNewest() && channelRequest === this.channelSelectionRequest;
   }
 
   /**

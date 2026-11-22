@@ -8,6 +8,15 @@
     ChatScratchReclaimRow,
   } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import {
+    asyncResourceError,
+    failAsyncRequest,
+    idleAsyncResource,
+    isAsyncResourceLoading,
+    resolveAsyncRequest,
+    startAsyncRequest,
+    type AsyncResource,
+  } from "$lib/utils/async-resource";
   import type ChatScratchManagerComponent from "./ChatScratchManager.svelte";
   import { SETTINGS_ICON_BUTTON_CLASS, SETTINGS_SECONDARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -21,9 +30,12 @@
    */
   const localization = getLocalization();
   const { t } = localization;
-  let report = $state<ChatScratchReclaimReportRead | null>(null);
-  let busy = $state(false);
-  let error = $state<string | null>(null);
+  /** The report; a newer refresh, such as the one after a review closes, supersedes one in flight. */
+  let reportResource = $state.raw<AsyncResource<ChatScratchReclaimReportRead | null>>(idleAsyncResource(null));
+  let reviewError = $state<string | null>(null);
+  const report = $derived(reportResource.data);
+  const busy = $derived(isAsyncResourceLoading(reportResource));
+  const error = $derived(reviewError ?? asyncResourceError(reportResource));
   let ScratchManager = $state<typeof ChatScratchManagerComponent | null>(null);
   let reviewing = $state<ChatScratchReclaimRow | null>(null);
 
@@ -53,26 +65,25 @@
   }
 
   async function refresh(): Promise<void> {
-    if (busy) return;
-    busy = true;
-    error = null;
+    reviewError = null;
+    const started = startAsyncRequest(reportResource);
+    reportResource = started.resource;
     try {
-      report = await chatApi.readChatScratchReclaimReport();
+      const next = await chatApi.readChatScratchReclaimReport();
+      reportResource = resolveAsyncRequest(reportResource, started.token, next);
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
-    } finally {
-      busy = false;
+      reportResource = failAsyncRequest(reportResource, started.token, chatErrorMessage(cause));
     }
   }
 
   async function review(row: ChatScratchReclaimRow): Promise<void> {
     if (reviewing) return;
-    error = null;
+    reviewError = null;
     try {
       ScratchManager ??= (await import("./ChatScratchManager.svelte")).default;
       reviewing = row;
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      reviewError = chatErrorMessage(cause);
     }
   }
 

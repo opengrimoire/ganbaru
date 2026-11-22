@@ -6,19 +6,20 @@ use super::transport::{
     CodexInboundMessage, CodexRpcClient, CodexRpcFailure, OVERSIZED_MESSAGE_ERROR,
 };
 use crate::events::*;
+use crate::live_session::{ConnectionKill, LiveSessionLifecycle};
 use crate::models::*;
 use crate::process::systemd_scope::{memory_limit_warning, reached_memory_limit};
 use crate::{DriverOperationContext, ProviderEventSink};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
+/// How long a failed session waits for the app-server to exit after it is force stopped.
+const SESSION_FAILURE_FORCE_STOP: Duration = Duration::from_secs(2);
 const MAX_REQUEST_TEXT_BYTES: usize = 64 * 1024;
 const MAX_QUESTIONS: usize = 16;
 const MAX_OPTIONS_PER_QUESTION: usize = 32;
@@ -75,8 +76,9 @@ pub struct CodexRouterResources {
     pub pending_requests: PendingCodexRequests,
     pub sink: Arc<dyn ProviderEventSink>,
     pub provider_thread_sender: watch::Sender<Option<String>>,
-    pub expected_shutdown: Arc<AtomicBool>,
-    pub terminal_error: Arc<Mutex<Option<ChatError>>>,
+    pub lifecycle: LiveSessionLifecycle,
+    /// Stops the provider process when the session fails.
+    pub kill: ConnectionKill,
     pub organizational: bool,
     /// Tells whether the resource scope's memory ceiling stopped the provider; `None` when unscoped.
     pub memory_limit: Option<crate::process::systemd_scope::MemoryLimitWatch>,
@@ -89,7 +91,7 @@ impl CodexRouterResources {
             route: Arc::clone(&self.route),
             normalizer: Arc::clone(&self.normalizer),
             sink: Arc::clone(&self.sink),
-            expected_shutdown: Arc::clone(&self.expected_shutdown),
+            lifecycle: self.lifecycle.clone(),
         }
     }
 }
@@ -805,10 +807,27 @@ async fn resolve_provider_cleared_request(
     resources.sink.emit(event).await
 }
 
+/// Ends the session when the app-server stream closes: a stop the driver began reports the
+/// session stopped, and any other close fails it.
 async fn route_closed(resources: &CodexRouterResources) {
     cancel_capacity_retry(resources);
-    let expected = resources.expected_shutdown.load(Ordering::Acquire);
-    if !expected && reached_memory_limit(resources.memory_limit.as_ref()).await {
+    if resources.lifecycle.is_stopping() {
+        let event = resources
+            .route
+            .lock()
+            .map_err(|_| router_state_error())
+            .and_then(|state| {
+                session_state_event(
+                    resources,
+                    &state,
+                    ProviderSessionState::Stopped,
+                    "Codex session stopped",
+                )
+            });
+        let _ = emit_events(&resources.sink, event.map(|event| vec![event])).await;
+        return;
+    }
+    if reached_memory_limit(resources.memory_limit.as_ref()).await {
         let warning = resources
             .route
             .lock()
@@ -825,48 +844,36 @@ async fn route_closed(resources: &CodexRouterResources) {
             });
         let _ = emit_events(&resources.sink, warning.map(|event| vec![event])).await;
     }
-    let event = resources
-        .route
-        .lock()
-        .map_err(|_| router_state_error())
-        .and_then(|state| {
-            let previous = state.running_session_state();
-            let closed_state = if expected {
-                ProviderSessionState::Stopped
-            } else {
-                ProviderSessionState::Failed
-            };
-            resources.normalizer.event(
-                &state,
-                "transport/closed",
-                None,
-                None,
-                None,
-                CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
-                    session_id: resources.normalizer.session_id(),
-                    previous_state: previous,
-                    state: closed_state,
-                    reason: Some(if expected {
-                        "Codex session stopped".to_string()
-                    } else {
-                        "Codex app-server stream closed".to_string()
-                    }),
-                }),
-            )
-        });
-    let result = emit_events(&resources.sink, event.map(|event| vec![event])).await;
-    if !expected {
-        let error = result.err().unwrap_or_else(|| {
-            ChatError::new(
-                ChatErrorCode::TransportUnavailable,
-                "Codex app-server stream closed unexpectedly",
-                true,
-            )
-        });
-        if let Ok(mut terminal) = resources.terminal_error.lock() {
-            *terminal = Some(error);
-        }
-    }
+    let error = ChatError::new(
+        ChatErrorCode::TransportUnavailable,
+        "Codex app-server stream closed unexpectedly",
+        true,
+    );
+    fail_session(resources, error, "Codex app-server stream closed", |_| {
+        Ok(None)
+    })
+    .await;
+}
+
+fn session_state_event(
+    resources: &CodexRouterResources,
+    state: &CodexRouteState,
+    next: ProviderSessionState,
+    reason: &str,
+) -> ChatResult<CanonicalRuntimeEvent> {
+    resources.normalizer.event(
+        state,
+        "transport/closed",
+        None,
+        None,
+        None,
+        CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
+            session_id: resources.normalizer.session_id(),
+            previous_state: state.running_session_state(),
+            state: next,
+            reason: Some(reason.to_string()),
+        }),
+    )
 }
 
 /// Ends the session after Codex sent a line over the byte bound: records the protocol error,
@@ -903,15 +910,22 @@ async fn route_failed(resources: &CodexRouterResources, error: ChatError) {
     .await;
 }
 
-/// Cancels the armed capacity retry, emits `lead` when there is one and then the failed
-/// session state with `reason`, and keeps `error` as the terminal error. An emit failure is
-/// kept instead, since the timeline then never learned of the failure.
+/// The one fail transition of a live Codex session.
+///
+/// Only the first failure of a running session acts; a failure while the driver stops the
+/// session is the stop's own consequence. The winner cancels the armed capacity retry, emits
+/// `lead` when there is one and then the failed session state with `reason`, and stops the
+/// app-server so it does not outlive the session. `error` stays the session's failure, unless
+/// the emit fails, since the timeline then never learned of the failure.
 async fn fail_session(
     resources: &CodexRouterResources,
     error: ChatError,
     reason: &str,
     lead: impl FnOnce(&CodexRouteState) -> ChatResult<Option<CanonicalRuntimeEvent>>,
 ) {
+    if !resources.lifecycle.fail(error) {
+        return;
+    }
     cancel_capacity_retry(resources);
     let events = resources
         .route
@@ -919,26 +933,14 @@ async fn fail_session(
         .map_err(|_| router_state_error())
         .and_then(|state| {
             let lead = lead(&state)?;
-            let previous = state.running_session_state();
-            let closed = resources.normalizer.event(
-                &state,
-                "transport/closed",
-                None,
-                None,
-                None,
-                CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
-                    session_id: resources.normalizer.session_id(),
-                    previous_state: previous,
-                    state: ProviderSessionState::Failed,
-                    reason: Some(reason.to_string()),
-                }),
-            )?;
-            Ok(lead.into_iter().chain([closed]).collect())
+            let failed =
+                session_state_event(resources, &state, ProviderSessionState::Failed, reason)?;
+            Ok(lead.into_iter().chain([failed]).collect())
         });
-    let result = emit_events(&resources.sink, events).await;
-    if let Ok(mut terminal) = resources.terminal_error.lock() {
-        *terminal = Some(result.err().unwrap_or(error));
+    if let Err(emit_error) = emit_events(&resources.sink, events).await {
+        resources.lifecycle.replace_failure(emit_error);
     }
+    let _ = resources.kill.kill(SESSION_FAILURE_FORCE_STOP).await;
 }
 
 fn take_pending(

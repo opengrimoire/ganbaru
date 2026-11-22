@@ -10,9 +10,10 @@ use super::organizational::{
 use super::protocol::{
     control_error, control_success, organizational_permission_error, protocol_error,
 };
-use super::transport::{ClaudeConnectionKill, ClaudeInboundMessage, ClaudeJsonlClient};
+use super::transport::{ClaudeInboundMessage, ClaudeJsonlClient};
 use crate::confinement::ShellSandbox;
 use crate::events::*;
+use crate::live_session::ConnectionKill;
 use crate::models::*;
 use crate::process::systemd_scope::{memory_limit_warning, reached_memory_limit};
 use serde_json::{Map, Value, json};
@@ -61,7 +62,7 @@ pub struct RoutedClaudeRequest {
 pub struct ClaudeRouterResources {
     pub client: ClaudeJsonlClient,
     /// Stops the process when routing fails, so a session the router left cannot keep running.
-    pub kill: ClaudeConnectionKill,
+    pub kill: ConnectionKill,
     pub inbound: mpsc::Receiver<ClaudeInboundMessage>,
     pub normalizer: Arc<ClaudeEventNormalizer>,
     pub route: Arc<Mutex<ClaudeRouteState>>,

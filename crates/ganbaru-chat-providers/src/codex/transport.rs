@@ -1,6 +1,7 @@
 //! Bounded JSONL JSON-RPC transport for Codex app-server.
 
 use crate::DriverOperationContext;
+use crate::live_session::{ConnectionKill, ProcessSlot, WriterShutdown};
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use crate::process::ProviderProcessHandle;
 use crate::response_map::{ResponseMap, ResponseSlotRefusal};
@@ -228,24 +229,24 @@ pub struct CodexRpcConnection {
     inbound: Option<mpsc::Receiver<CodexInboundMessage>>,
     reader_task: JoinHandle<()>,
     writer_task: JoinHandle<()>,
-    writer_shutdown: Option<oneshot::Sender<()>>,
-    process: Option<ProviderProcessHandle>,
+    writer_shutdown: WriterShutdown,
+    process: ProcessSlot,
 }
 
 impl CodexRpcConnection {
     /// Process ID of the provider process, while the connection still owns it.
     pub fn process_id(&self) -> Option<u32> {
         self.process
-            .as_ref()
-            .and_then(ProviderProcessHandle::process_id)
+            .with(ProviderProcessHandle::process_id)
+            .flatten()
     }
 
     /// Watch that tells whether the resource scope's memory ceiling stopped the provider; `None`
     /// when the provider is not scoped.
     pub fn memory_limit_watch(&self) -> Option<crate::process::systemd_scope::MemoryLimitWatch> {
         self.process
-            .as_ref()
-            .and_then(ProviderProcessHandle::memory_limit_watch)
+            .with(ProviderProcessHandle::memory_limit_watch)
+            .flatten()
     }
 
     pub fn from_process(mut process: ProviderProcessHandle) -> ChatResult<Self> {
@@ -290,13 +291,18 @@ impl CodexRpcConnection {
             inbound: Some(inbound),
             reader_task,
             writer_task,
-            writer_shutdown: Some(writer_shutdown),
-            process,
+            writer_shutdown: WriterShutdown::new(writer_shutdown),
+            process: ProcessSlot::new(process),
         }
     }
 
     pub fn client(&self) -> CodexRpcClient {
         self.client.clone()
+    }
+
+    /// A handle that stops the provider process from a task that does not own the connection.
+    pub fn kill_handle(&self) -> ConnectionKill {
+        ConnectionKill::new(self.writer_shutdown.clone(), self.process.clone())
     }
 
     pub fn take_inbound(&mut self) -> ChatResult<mpsc::Receiver<CodexInboundMessage>> {
@@ -314,14 +320,9 @@ impl CodexRpcConnection {
         graceful_deadline: Duration,
         force_deadline: Duration,
     ) -> ChatResult<()> {
-        if let Some(shutdown) = self.writer_shutdown.take() {
-            let _ = shutdown.send(());
-        }
+        self.writer_shutdown.signal();
         let _ = tokio::time::timeout(graceful_deadline, &mut self.writer_task).await;
-        let process_result = match self.process.as_mut() {
-            Some(process) => process.stop(graceful_deadline, force_deadline).await,
-            None => Ok(()),
-        };
+        let process_result = self.process.stop(graceful_deadline, force_deadline).await;
         let _ = tokio::time::timeout(force_deadline, &mut self.reader_task).await;
         if !self.writer_task.is_finished() {
             self.writer_task.abort();
@@ -336,9 +337,7 @@ impl CodexRpcConnection {
 
 impl Drop for CodexRpcConnection {
     fn drop(&mut self) {
-        if let Some(shutdown) = self.writer_shutdown.take() {
-            let _ = shutdown.send(());
-        }
+        self.writer_shutdown.signal();
         self.writer_task.abort();
         self.reader_task.abort();
         self.client.pending.close(CodexRpcFailure::Closed);

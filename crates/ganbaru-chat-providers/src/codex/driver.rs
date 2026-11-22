@@ -12,6 +12,7 @@ use crate::events::{
     SessionConfiguredEvent, SessionExitedEvent, SessionStartedEvent, TurnCompletedEvent,
     TurnStartedEvent,
 };
+use crate::live_session::LiveSessionLifecycle;
 use crate::models::*;
 use crate::process::{ProviderProcessConfig, spawn_provider_process};
 use crate::{DriverFuture, DriverOperationContext, ProviderDriver, ProviderEventSink};
@@ -21,7 +22,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -83,8 +84,7 @@ struct CodexLiveSession {
     pending_requests: PendingCodexRequests,
     normalizer: Arc<CodexEventNormalizer>,
     sink: Arc<dyn ProviderEventSink>,
-    expected_shutdown: Arc<AtomicBool>,
-    terminal_error: Arc<Mutex<Option<ChatError>>>,
+    lifecycle: LiveSessionLifecycle,
     session_id: ProviderSessionId,
     workspace: PathBuf,
     effective_model: String,
@@ -97,7 +97,7 @@ struct CodexLiveSession {
 
 impl Drop for CodexLiveSession {
     fn drop(&mut self) {
-        self.expected_shutdown.store(true, Ordering::Release);
+        self.lifecycle.begin_stop();
         if let Ok(mut state) = self.route.lock()
             && let Some(retry) = state.capacity_retry.take()
         {
@@ -192,12 +192,7 @@ impl CodexProviderDriver {
                 false,
             ));
         }
-        if let Some(error) = live
-            .terminal_error
-            .lock()
-            .map_err(|_| driver_state_error())?
-            .clone()
-        {
+        if let Some(error) = live.lifecycle.failure() {
             return Err(error);
         }
         Ok(live)
@@ -996,7 +991,7 @@ impl ProviderDriver for CodexProviderDriver {
                     false,
                 ));
             }
-            live.expected_shutdown.store(true, Ordering::Release);
+            live.lifecycle.begin_stop();
             let _ = interrupt_live_turn(&mut live, context).await;
             live.sink.flush().await?;
             let state = live.route.lock().map_err(|_| driver_state_error())?.clone();

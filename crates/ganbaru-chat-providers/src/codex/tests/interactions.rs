@@ -297,13 +297,13 @@ fn command_approvals_show_the_command_and_its_working_directory() {
 }
 
 #[test]
-fn a_request_the_router_cannot_route_fails_the_session_and_keeps_the_error() {
+fn a_request_the_router_cannot_route_fails_the_session_stops_codex_and_keeps_the_error() {
     crate::test_block_on(async {
         let (client_reader, mut server_writer) = tokio::io::duplex(4096);
-        let (_server_reader, client_writer) = tokio::io::duplex(4096);
+        let (mut server_reader, client_writer) = tokio::io::duplex(4096);
         let mut connection = CodexRpcConnection::from_test_io(client_reader, client_writer);
         let sink = Arc::new(RecordingSink::default());
-        let terminal_error = Arc::new(Mutex::new(None));
+        let lifecycle = LiveSessionLifecycle::default();
         let (provider_thread_sender, _provider_thread) = tokio::sync::watch::channel(None);
         let router = super::super::session::spawn_codex_router(
             super::super::session::CodexRouterResources {
@@ -321,8 +321,8 @@ fn a_request_the_router_cannot_route_fails_the_session_and_keeps_the_error() {
                 pending_requests: Arc::new(Mutex::new(HashMap::new())),
                 sink: sink.clone(),
                 provider_thread_sender,
-                expected_shutdown: Arc::new(AtomicBool::new(false)),
-                terminal_error: Arc::clone(&terminal_error),
+                lifecycle: lifecycle.clone(),
+                kill: connection.kill_handle(),
                 organizational: false,
                 memory_limit: None,
             },
@@ -354,11 +354,15 @@ fn a_request_the_router_cannot_route_fails_the_session_and_keeps_the_error() {
             )),
             "an unrecoverable error settles the turn and its work assignment"
         );
-        let kept = terminal_error
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("the error is kept");
+        let kept = lifecycle.failure().expect("the error is kept");
         assert_eq!(kept.code, ChatErrorCode::Protocol);
+        let mut remaining = Vec::new();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            server_reader.read_to_end(&mut remaining),
+        )
+        .await
+        .expect("the failed session closes the app-server input")
+        .unwrap();
     });
 }

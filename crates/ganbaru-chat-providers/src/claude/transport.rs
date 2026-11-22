@@ -1,12 +1,13 @@
 //! Bounded JSONL transport for Claude Code's bidirectional SDK protocol.
 
 use crate::DriverOperationContext;
+use crate::live_session::{ConnectionKill, ProcessSlot, WriterShutdown};
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use crate::process::ProviderProcessHandle;
 use crate::response_map::{ResponseMap, ResponseSlotRefusal};
 use serde_json::{Value, json};
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -138,9 +139,6 @@ impl ClaudeJsonlClient {
     }
 }
 
-type WriterShutdown = Arc<Mutex<Option<oneshot::Sender<()>>>>;
-type ProcessSlot = Arc<Mutex<Option<ProviderProcessHandle>>>;
-
 pub struct ClaudeJsonlConnection {
     client: ClaudeJsonlClient,
     inbound: Option<mpsc::Receiver<ClaudeInboundMessage>>,
@@ -150,46 +148,20 @@ pub struct ClaudeJsonlConnection {
     process: ProcessSlot,
 }
 
-/// Stops a connection's process from a task that does not own the connection.
-///
-/// The router holds one so a failed authority check ends the provider without waiting for
-/// the driver. Whichever of this handle and [`ClaudeJsonlConnection::stop`] runs first takes
-/// the process; the other finds the slot empty.
-#[derive(Clone)]
-pub struct ClaudeConnectionKill {
-    writer_shutdown: WriterShutdown,
-    process: ProcessSlot,
-}
-
-impl ClaudeConnectionKill {
-    /// Closes the writer and force stops the process without a graceful wait.
-    pub async fn kill(&self, force_deadline: Duration) -> ChatResult<()> {
-        signal_writer_shutdown(&self.writer_shutdown);
-        match take_process(&self.process) {
-            Some(mut process) => process.stop(Duration::ZERO, force_deadline).await,
-            None => Ok(()),
-        }
-    }
-}
-
 impl ClaudeJsonlConnection {
     /// Process ID of the provider process, while the connection still owns it.
     pub fn process_id(&self) -> Option<u32> {
         self.process
-            .lock()
-            .ok()?
-            .as_ref()
-            .and_then(ProviderProcessHandle::process_id)
+            .with(ProviderProcessHandle::process_id)
+            .flatten()
     }
 
     /// Watch that tells whether the resource scope's memory ceiling stopped the provider; `None`
     /// when the provider is not scoped or was already stopped.
     pub fn memory_limit_watch(&self) -> Option<crate::process::systemd_scope::MemoryLimitWatch> {
         self.process
-            .lock()
-            .ok()?
-            .as_ref()
-            .and_then(ProviderProcessHandle::memory_limit_watch)
+            .with(ProviderProcessHandle::memory_limit_watch)
+            .flatten()
     }
 
     pub fn from_process(mut process: ProviderProcessHandle) -> ChatResult<Self> {
@@ -232,8 +204,8 @@ impl ClaudeJsonlConnection {
             inbound: Some(inbound),
             reader_task,
             writer_task,
-            writer_shutdown: Arc::new(Mutex::new(Some(writer_shutdown))),
-            process: Arc::new(Mutex::new(process)),
+            writer_shutdown: WriterShutdown::new(writer_shutdown),
+            process: ProcessSlot::new(process),
         }
     }
 
@@ -241,11 +213,8 @@ impl ClaudeJsonlConnection {
         self.client.clone()
     }
 
-    pub fn kill_handle(&self) -> ClaudeConnectionKill {
-        ClaudeConnectionKill {
-            writer_shutdown: Arc::clone(&self.writer_shutdown),
-            process: Arc::clone(&self.process),
-        }
+    pub fn kill_handle(&self) -> ConnectionKill {
+        ConnectionKill::new(self.writer_shutdown.clone(), self.process.clone())
     }
 
     pub fn take_inbound(&mut self) -> ChatResult<mpsc::Receiver<ClaudeInboundMessage>> {
@@ -259,10 +228,8 @@ impl ClaudeJsonlConnection {
     }
 
     pub fn diagnostic(&self) -> ChatResult<Option<String>> {
-        let process = self.process.lock().map_err(|_| connection_state_error())?;
-        process
-            .as_ref()
-            .map(|process| process.diagnostic().map(|value| value.text))
+        self.process
+            .with(|process| process.diagnostic().map(|value| value.text))
             .transpose()
     }
 
@@ -271,12 +238,9 @@ impl ClaudeJsonlConnection {
         graceful_deadline: Duration,
         force_deadline: Duration,
     ) -> ChatResult<()> {
-        signal_writer_shutdown(&self.writer_shutdown);
+        self.writer_shutdown.signal();
         let _ = tokio::time::timeout(graceful_deadline, &mut self.writer_task).await;
-        let process_result = match take_process(&self.process) {
-            Some(mut process) => process.stop(graceful_deadline, force_deadline).await,
-            None => Ok(()),
-        };
+        let process_result = self.process.stop(graceful_deadline, force_deadline).await;
         let _ = tokio::time::timeout(force_deadline, &mut self.reader_task).await;
         if !self.writer_task.is_finished() {
             self.writer_task.abort();
@@ -291,7 +255,7 @@ impl ClaudeJsonlConnection {
 
 impl Drop for ClaudeJsonlConnection {
     fn drop(&mut self) {
-        signal_writer_shutdown(&self.writer_shutdown);
+        self.writer_shutdown.signal();
         self.reader_task.abort();
         self.writer_task.abort();
         self.client.pending.close(ClaudeTransportFailure::Closed);
@@ -496,28 +460,4 @@ pub(super) async fn write_messages<W>(
     }
     let _ = writer.shutdown().await;
     pending.close(ClaudeTransportFailure::Closed);
-}
-
-fn signal_writer_shutdown(shutdown: &WriterShutdown) {
-    let sender = shutdown.lock().ok().and_then(|mut slot| slot.take());
-    if let Some(sender) = sender {
-        let _ = sender.send(());
-    }
-}
-
-/// Takes the process out of its slot so no lock is held while it stops. A poisoned slot is
-/// still emptied, because the process must stop either way.
-fn take_process(slot: &ProcessSlot) -> Option<ProviderProcessHandle> {
-    match slot.lock() {
-        Ok(mut process) => process.take(),
-        Err(poisoned) => poisoned.into_inner().take(),
-    }
-}
-
-fn connection_state_error() -> ChatError {
-    ChatError::new(
-        ChatErrorCode::Internal,
-        "Claude connection state is unavailable",
-        false,
-    )
 }

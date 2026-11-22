@@ -9,10 +9,10 @@ use super::normalizer::{CodexEventNormalizer, CodexRouteState};
 use super::protocol::{TurnStartResponse, decode_response};
 use super::transport::CodexRpcClient;
 use crate::events::*;
+use crate::live_session::LiveSessionLifecycle;
 use crate::models::*;
 use crate::{DriverCancellation, DriverOperationContext, ProviderEventSink};
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -73,7 +73,7 @@ pub(super) struct CodexRetryResources {
     pub route: Arc<Mutex<CodexRouteState>>,
     pub normalizer: Arc<CodexEventNormalizer>,
     pub sink: Arc<dyn ProviderEventSink>,
-    pub expected_shutdown: Arc<AtomicBool>,
+    pub lifecycle: LiveSessionLifecycle,
 }
 
 /// Starts the next retry when `params` is a capacity failure of the active turn and retries
@@ -243,7 +243,7 @@ async fn abandon_started_retry(
     retry: &CodexCapacityRetry,
     provider_turn_id: String,
 ) {
-    if resources.expected_shutdown.load(Ordering::Acquire) {
+    if !resources.lifecycle.is_running() {
         return;
     }
     let context = DriverOperationContext {
@@ -288,7 +288,7 @@ fn retry_is_current_in(
     retry: &CodexCapacityRetry,
 ) -> bool {
     !retry.cancellation.is_cancelled()
-        && !resources.expected_shutdown.load(Ordering::Acquire)
+        && resources.lifecycle.is_running()
         && state.active_chat_turn_id.as_ref() == Some(chat_turn)
 }
 

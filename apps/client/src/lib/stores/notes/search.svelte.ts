@@ -22,7 +22,10 @@ const NO_SEARCH_PAGES: NotesSearchPages = { results: [], nextCursor: null };
 /** Own Notes search pagination and stale-result rejection. */
 export function createNotesSearchController() {
   let resource = $state<AsyncResource<NotesSearchPages>>(idleAsyncResource(NO_SEARCH_PAGES));
+  const results = $derived(resource.data.results);
+  const hasMore = $derived(resource.data.nextCursor !== null);
   const loading = $derived(isAsyncResourceLoading(resource));
+  const error = $derived(asyncResourceError(resource));
   let includeResolvedComments = $state(false);
   let activeQuery = "";
   let activePageSize = 20;
@@ -82,10 +85,10 @@ export function createNotesSearchController() {
   }
 
   return {
-    get results(): NotesSearchResult[] { return resource.data.results; },
-    get hasMore(): boolean { return resource.data.nextCursor !== null; },
+    get results(): NotesSearchResult[] { return results; },
+    get hasMore(): boolean { return hasMore; },
     get loading(): boolean { return loading; },
-    get error(): string | null { return asyncResourceError(resource); },
+    get error(): string | null { return error; },
     get includeResolvedComments(): boolean { return includeResolvedComments; },
     search,
     loadMoreSearchResults: loadMore,

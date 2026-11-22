@@ -276,6 +276,25 @@ describe("Notes query controllers", () => {
     expect(controller.error).toContain("offline");
   });
 
+  it("clears a failed later page's error once a retry starts", async () => {
+    const { createNotesSearchController } = await import("./search.svelte");
+    const controller = createNotesSearchController();
+    const first = controller.search("tasks");
+    backend.search.resolve(lastCall(backend.search.next), { results: [searchResult("a")], next_cursor: "next" });
+    await first;
+    const failed = controller.loadMoreSearchResults();
+    backend.search.reject(lastCall(backend.search.next), new Error("offline"));
+    await failed;
+    expect(controller.error).toContain("offline");
+
+    const retry = controller.loadMoreSearchResults();
+    expect(controller.error).toBeNull();
+    backend.search.resolve(lastCall(backend.search.next), { results: [searchResult("b")], next_cursor: null });
+    await retry;
+    expect(controller.error).toBeNull();
+    expect(controller.results.map((result) => result.id)).toEqual(["a", "b"]);
+  });
+
   it("ends a running search when the query is cleared", async () => {
     const { createNotesSearchController } = await import("./search.svelte");
     const controller = createNotesSearchController();

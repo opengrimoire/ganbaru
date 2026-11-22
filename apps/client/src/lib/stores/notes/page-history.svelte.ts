@@ -73,6 +73,9 @@ export function createNotesPageHistoryController(
   context: NotesPageHistoryControllerContext,
 ): NotesPageHistoryController {
   let snapshots = $state<AsyncResource<NotesPageHistorySnapshot[]>>(idleAsyncResource([]));
+  const snapshotList = $derived(snapshots.data);
+  const snapshotsLoading = $derived(isAsyncResourceLoading(snapshots));
+  const snapshotsError = $derived(asyncResourceError(snapshots));
   let version = $state<NotesLoadedPage | null>(null);
   let versionSnapshotId: string | null = null;
   let versionLoading = $state(false);
@@ -255,13 +258,13 @@ export function createNotesPageHistoryController(
 
   return {
     get snapshots() {
-      return snapshots.data;
+      return snapshotList;
     },
     get snapshotsLoading() {
-      return isAsyncResourceLoading(snapshots);
+      return snapshotsLoading;
     },
     get snapshotsError() {
-      return asyncResourceError(snapshots);
+      return snapshotsError;
     },
     get version() {
       return version;

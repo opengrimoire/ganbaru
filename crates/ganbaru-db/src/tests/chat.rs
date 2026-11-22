@@ -1280,6 +1280,90 @@ fn working_folder_tool_schema_tracks_restore_invalidation_and_exact_cleanup() {
 }
 
 #[test]
+fn a_checkpoint_carries_an_invalidation_time_exactly_when_it_is_invalid() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project(&pool).await;
+        insert_working_folder(&pool, "folder-1", "project-1").await;
+        insert_thread(&pool, "thread-1", "folder-1", "project-1").await;
+        let oid = "a".repeat(40);
+        let insert =
+            |turn_count: i64, status: &'static str, invalidated_at: Option<&'static str>| {
+                sqlx::query(
+                    "INSERT INTO chat_checkpoints
+                    (id, thread_id, turn_count, repository_identity, hidden_ref_name,
+                     git_object_id, status, created_at, invalidated_at)
+                 VALUES (?, 'thread-1', ?, 'repository-1', ?, ?, ?, ?, ?)",
+                )
+                .bind(format!("checkpoint-{turn_count}"))
+                .bind(turn_count)
+                .bind(format!("refs/ganbaru/chat/checkpoint-{turn_count}"))
+                .bind(oid.clone())
+                .bind(status)
+                .bind(NOW)
+                .bind(invalidated_at)
+            };
+
+        for (turn_count, status, invalidated_at) in [
+            (0, "capturing", None),
+            (1, "available", None),
+            (2, "invalid", Some(NOW)),
+            (3, "cleanup_pending", Some(NOW)),
+            (4, "cleanup_failed", None),
+        ] {
+            insert(turn_count, status, invalidated_at)
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("{status} {invalidated_at:?}: {error}"));
+        }
+        for (turn_count, status, invalidated_at) in [
+            (10, "capturing", Some(NOW)),
+            (11, "available", Some(NOW)),
+            (12, "invalid", None),
+        ] {
+            assert!(
+                insert(turn_count, status, invalidated_at)
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "{status} {invalidated_at:?} should be rejected"
+            );
+        }
+
+        let update = |sql: &'static str| sqlx::query(sql).execute(&pool);
+        assert!(
+            update("UPDATE chat_checkpoints SET status = 'invalid' WHERE id = 'checkpoint-1'")
+                .await
+                .is_err(),
+            "an invalidation must record its time"
+        );
+        assert!(
+            update(
+                "UPDATE chat_checkpoints SET invalidated_by_checkpoint_id = 'checkpoint-0'
+                 WHERE id = 'checkpoint-1'"
+            )
+            .await
+            .is_err(),
+            "an available checkpoint names no invalidating checkpoint"
+        );
+        update(
+            "UPDATE chat_checkpoints
+             SET status = 'invalid', invalidated_at = '2026-11-21T00:00:00Z',
+                 invalidated_by_checkpoint_id = 'checkpoint-0'
+             WHERE id = 'checkpoint-1'",
+        )
+        .await
+        .expect("a timed invalidation should apply");
+        assert!(
+            update("UPDATE chat_checkpoints SET invalidated_at = NULL WHERE id = 'checkpoint-1'")
+                .await
+                .is_err(),
+            "an invalid checkpoint keeps its invalidation time"
+        );
+    });
+}
+
+#[test]
 fn working_folder_project_identity_and_delete_policies_are_explicit() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;

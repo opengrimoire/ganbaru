@@ -2360,7 +2360,13 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("chat_user_input_drafts", &[]),
         device("chat_pending_requests", &[]),
         device("chat_worktrees", &[]),
-        device("chat_checkpoints", &[]),
+        device(
+            "chat_checkpoints",
+            &[
+                applier_visible("chat_checkpoints_invalidation_agrees_insert"),
+                applier_visible("chat_checkpoints_invalidation_agrees_update"),
+            ],
+        ),
         device(
             "chat_turns",
             &[

@@ -52,6 +52,8 @@
   let previewRequest = $state.raw<HistoryRequest<"tree" | "page">>({ phase: "idle" });
   let restorePlan = $state<NotesProjectHistoryRestorePlan | null>(null);
   let restoring = $state(false);
+  /** Cleared once the modal closes, so a restore finishing afterwards does not close a history opened since. */
+  let mounted = true;
   const loadingVersions = $derived(versionsRequest.phase === "loading" && versionsRequest.kind === "reset");
   const versionsBusy = $derived(versionsRequest.phase === "loading");
   const loadingPreview = $derived(previewRequest.phase === "loading");
@@ -166,7 +168,7 @@
     try {
       await restoreNotesProjectHistoryVersion(projectId, plan.versionId);
       onRestored();
-      onClose();
+      if (mounted) onClose();
     } catch (cause) {
       error = notesFailure(cause, t("notes.projectHistoryRestoreFailed"));
     } finally {
@@ -183,6 +185,7 @@
   onMount(() => {
     void loadVersions(true);
     return () => {
+      mounted = false;
       versionsRequest = { phase: "idle" };
       previewRequest = { phase: "idle" };
     };

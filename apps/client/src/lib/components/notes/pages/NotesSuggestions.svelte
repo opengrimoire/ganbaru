@@ -23,6 +23,7 @@
   let proposedDraft = $state("");
   let lastDraftKey = $state("");
   let actionBusyId = $state<string | null>(null);
+  let savingDraft = $state(false);
   const draft = $derived(notes.activeSuggestionDraft);
   const openSuggestionCount = $derived(openNotesSuggestionCount(notes.suggestions));
   const panelOpen = $derived(embedded || open);
@@ -66,12 +67,18 @@
       : t("notes.loadSuggestionsFailed");
   }
 
+  /** Saves the open draft once, ignoring further saves while one is in flight. */
   async function saveSuggestionDraft(): Promise<void> {
     const currentDraft = draft;
-    if (!currentDraft || proposedDraft === currentDraft.original_text) return;
-    await notes.createSuggestion(proposedDraft);
-    proposedDraft = "";
-    lastDraftKey = "";
+    if (savingDraft || !currentDraft || proposedDraft === currentDraft.original_text) return;
+    savingDraft = true;
+    try {
+      await notes.createSuggestion(proposedDraft);
+      proposedDraft = "";
+      lastDraftKey = "";
+    } finally {
+      savingDraft = false;
+    }
   }
 
   async function runSuggestionAction(
@@ -166,7 +173,7 @@
             <button
               class="rounded-md bg-primary px-2.5 py-1.5 text-[0.8rem] font-medium text-primary-foreground disabled:opacity-50"
               type="button"
-              disabled={proposedDraft === draft.original_text}
+              disabled={savingDraft || proposedDraft === draft.original_text}
               onclick={() => {
                 void saveSuggestionDraft();
               }}

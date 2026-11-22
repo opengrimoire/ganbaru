@@ -46,6 +46,7 @@
     type TabStripSlot,
   } from "$lib/workspace-tabs/strip-drag";
   import TitleBarTabLauncher from "./TitleBarTabLauncher.svelte";
+  import { TabDepartures } from "./tab-departures.svelte";
   import {
     TAB_WINDOW_DRAG_MIME,
     dragEndedOutsideWindow,
@@ -143,8 +144,15 @@
   let settlingId = $state<string | null>(null);
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
   /** This window's tab dropped elsewhere, kept out of the strip while it moves to its new window. */
-  let departingId = $state<string | null>(null);
-  let departureTimer: ReturnType<typeof setTimeout> | undefined;
+  const departures = new TabDepartures<TabOrigin | null>({
+    timeoutMs: TAB_ARRIVAL_TIMEOUT_MS,
+    release: (id, origin, remove) => {
+      slideLayout(() => {
+        remove();
+        if (tabs.holds(id)) restoreTab(id, origin);
+      }, null);
+    },
+  });
   /** Hover highlights stay off from a drag's start until the pointer moves after it, so tabs a drag slides under the pointer do not light up. */
   let hoverHeld = $state(false);
   /**
@@ -270,7 +278,7 @@
     const element = tabElements[tabs.activeTabId];
     const parent = element?.parentElement;
     // A tab kept off the strip on its way to another window, or already gone there, has no slot to mark.
-    const away = tabs.activeTabId === departingId || !tabs.holds(tabs.activeTabId);
+    const away = departures.has(tabs.activeTabId) || !tabs.holds(tabs.activeTabId);
     if (!element || !parent || element.offsetParent === null || away) {
       indicatorStyle = "";
       return;
@@ -291,7 +299,7 @@
     void tabs.activeTabId;
     void tabs.tabs;
     void activeOnly;
-    void departingId;
+    void departures.ids;
     // The indicator comes back once tabs stop moving, already under the active tab.
     if (!tabsDrawHighlight) updateIndicator();
     scheduleIndicatorUpdate();
@@ -664,7 +672,7 @@
     const lifted = offBar;
     const origin = nativeDrag?.origin ?? null;
     tabs.finishDrag(held.id, { accepted: true, screen });
-    if (lifted) holdDeparture(held.id, tabs.detach(held.id, screen), origin);
+    if (lifted) departures.hold(held.id, tabs.detach(held.id, screen), origin);
     else settle(held.id);
     endDrag();
   }
@@ -674,28 +682,6 @@
     clearTimeout(settleTimer);
     settlingId = id;
     settleTimer = setTimeout(() => { settlingId = null; }, TAB_SLIDE_MS);
-  }
-
-  /**
-   * Keep a tab that left by drag out of the strip until it is gone, so it never shows here again on its way
-   * out. When its `move` fails, or it has not gone in time, it comes back in front at `origin`.
-   */
-  function holdDeparture(id: string, move: Promise<void> | null, origin: TabOrigin | null): void {
-    clearTimeout(departureTimer);
-    departingId = id;
-    const release = () => {
-      clearTimeout(departureTimer);
-      if (departingId !== id) return;
-      slideLayout(() => {
-        departingId = null;
-        if (tabs.holds(id)) restoreTab(id, origin);
-      }, null);
-    };
-    departureTimer = setTimeout(release, TAB_ARRIVAL_TIMEOUT_MS);
-    void move?.catch((error: unknown) => {
-      console.error("Failed to move tab to a new window:", error);
-      release();
-    });
   }
 
   /** End a drag that started on one of this window's tabs, as the platform reports it on that tab. */
@@ -751,7 +737,7 @@
     }
     const canTearOff = tabs.detachBlock(id) === null;
     if (end.accepted || (away && canTearOff)) {
-      if (canTearOff) holdDeparture(id, end.accepted ? null : tabs.tearOff(id, end.screen), origin);
+      if (canTearOff) departures.hold(id, end.accepted ? null : tabs.tearOff(id, end.screen), origin);
       endDrag();
       return;
     }
@@ -792,16 +778,14 @@
 
   $effect(() => () => {
     clearTimeout(settleTimer);
-    clearTimeout(departureTimer);
+    departures.dispose();
   });
 
   $effect(() => {
-    // The departing tab has gone to its new window.
-    if (departingId !== null && !tabs.tabs.some((tab) => tab.id === departingId)) {
-      untrack(() => {
-        clearTimeout(departureTimer);
-        departingId = null;
-      });
+    // Departing tabs that have gone to their new window.
+    const present = new Set(tabs.tabs.map((tab) => tab.id));
+    if (departures.ids.some((id) => !present.has(id))) {
+      untrack(() => departures.forgetGone((id) => present.has(id)));
     }
   });
 
@@ -952,7 +936,7 @@
       {@const fullLabel = workspaceTabFullLabel(tab, t)}
       {@const source = nativeDrag?.tab.id === tab.id}
       {@const moving = arriving || heldId === tab.id}
-      {@const lifted = !arriving && (!tabs.holds(tab.id) || (moving && draggedTabLifted) || departingId === tab.id)}
+      {@const lifted = !arriving && (!tabs.holds(tab.id) || (moving && draggedTabLifted) || departures.has(tab.id))}
       {@const settling = settlingId === tab.id}
       {@const hovered = hoveredTabId === tab.id}
       {@const side = splitSide(tab.id)}

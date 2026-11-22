@@ -51,17 +51,20 @@ export function getCalendars() {
       calendars = rows.map(mapRow);
     },
 
+    /** Flip a calendar's visibility, then show the value that was written rather than flipping again. */
     async toggleVisibility(id: string) {
       const calendar = calendars.find((c) => c.id === id);
       if (!calendar) return;
+      const visible = !calendar.visible;
       await invoke("calendar_set_visibility", {
         dbUrl: dbUrl(),
         id,
-        visible: !calendar.visible,
+        visible,
         updatedAt: nowIso(),
       });
+      // Overlapping toggles read the same starting value, so flipping on each reply would contradict the stored value.
       calendars = calendars.map((c) =>
-        c.id === id ? { ...c, visible: !c.visible } : c,
+        c.id === id ? { ...c, visible } : c,
       );
     },
 

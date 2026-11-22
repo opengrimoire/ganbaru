@@ -9,7 +9,6 @@ fn project_update_rejects_blank_automation_default_ids() {
         icon: "lucide:folder".to_string(),
         color: None,
         placement: None,
-        status: "active".to_string(),
         default_event_name: None,
         default_event_time_mode: "timed".to_string(),
         default_event_duration_minutes: Some(60),
@@ -45,7 +44,6 @@ fn project_update_rejects_blank_default_event_name() {
         icon: "lucide:folder".to_string(),
         color: None,
         placement: None,
-        status: "active".to_string(),
         default_event_name: Some(" ".to_string()),
         default_event_time_mode: "timed".to_string(),
         default_event_duration_minutes: Some(60),
@@ -80,7 +78,6 @@ fn valid_project_update() -> ProjectUpdate {
         icon: "lucide:folder".to_string(),
         color: None,
         placement: None,
-        status: "active".to_string(),
         default_event_name: None,
         default_event_time_mode: "timed".to_string(),
         default_event_duration_minutes: Some(60),
@@ -377,5 +374,75 @@ fn delete_project_refuses_built_in_routine_projects() {
                 .await
                 .unwrap();
         assert_eq!(remaining, 1);
+    });
+}
+
+#[test]
+fn a_project_edit_keeps_a_hidden_project_hidden() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        sqlx::query("UPDATE projects SET status = 'hidden' WHERE id = 'project-a'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let project = ProjectUpdate {
+            music_assignments: None,
+            music_assignments_updated_at: None,
+            ..valid_project_update()
+        };
+
+        let mutation =
+            super::super::project_commands::update_project(&pool, &std::env::temp_dir(), project)
+                .await
+                .unwrap();
+
+        assert_eq!(mutation.projects[0].name, "Renamed project");
+        assert_eq!(mutation.projects[0].status, "hidden");
+    });
+}
+
+#[test]
+fn a_project_lifecycle_move_applies_only_from_the_expected_state() {
+    use crate::lifecycle::{Lifecycle, ProjectLifecycleChange, set_project_lifecycle};
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        let change = |expected, next| ProjectLifecycleChange {
+            project_id: "project-a".to_string(),
+            expected,
+            next,
+        };
+
+        let archived = set_project_lifecycle(&pool, change(Lifecycle::Active, Lifecycle::Archived))
+            .await
+            .unwrap();
+        assert_eq!(archived.projects[0].status, "archived");
+
+        let stale =
+            set_project_lifecycle(&pool, change(Lifecycle::Active, Lifecycle::Hidden)).await;
+        assert_eq!(
+            stale.err().as_deref(),
+            Some("the project status changed since it was read")
+        );
+        let unchanged =
+            set_project_lifecycle(&pool, change(Lifecycle::Archived, Lifecycle::Archived)).await;
+        assert!(unchanged.is_err());
+        let missing = set_project_lifecycle(
+            &pool,
+            ProjectLifecycleChange {
+                project_id: "project-missing".to_string(),
+                expected: Lifecycle::Active,
+                next: Lifecycle::Hidden,
+            },
+        )
+        .await;
+        assert_eq!(missing.err().as_deref(), Some("project not found"));
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM projects WHERE id = 'project-a'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "archived");
     });
 }

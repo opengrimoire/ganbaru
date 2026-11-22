@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applyProjectDependencyCascade, type ProjectDependencyCascadePreview } from "$lib/api/project-cascade";
-import { applyProjectTaskBulk, createProjectCustomField, createProjectPriority, createProjectStatus, createProjectTag, deleteProjectCustomField, linkProjectTaskEvent, reorderGroupProjects, reorderProjectGroups, reorderProjectItem, updateProject, updateProjectTask } from "$lib/api/projects";
+import { applyProjectTaskBulk, createProjectCustomField, createProjectPriority, createProjectStatus, createProjectTag, deleteProjectCustomField, linkProjectTaskEvent, reorderGroupProjects, reorderProjectGroups, reorderProjectItem, setProjectLifecycle, updateProject, updateProjectTask } from "$lib/api/projects";
 import { createProjectStoreActions } from "./actions";
 import { createProjectStoreSelectors } from "./selectors";
 import actionSource from "./actions.ts?raw";
 import type {
   Project,
   ProjectGroup,
+  ProjectLifecycleChange,
   ProjectMutation,
   ProjectsSnapshot,
   ProjectTask,
@@ -18,6 +19,7 @@ vi.mock("$lib/api/projects", async (importOriginal) => ({
   ...await importOriginal<typeof import("$lib/api/projects")>(),
   updateProjectTask: vi.fn(),
   updateProject: vi.fn(),
+  setProjectLifecycle: vi.fn(),
   applyProjectTaskBulk: vi.fn(),
   createProjectCustomField: vi.fn(),
   reorderProjectItem: vi.fn(),
@@ -405,7 +407,15 @@ describe("project identity and lifecycle actions", () => {
     vi.mocked(updateProject).mockImplementation(async (update: ProjectUpdate) => ({
       changed: { ...emptySnapshot(), projects: [{
         ...projects.find((entry) => entry.id === update.id)!,
-        name: update.name, groupId: update.groupId, status: update.status,
+        name: update.name, groupId: update.groupId,
+      }] },
+      removals: [],
+      calendarEventProjectAssignments: [],
+    }));
+    vi.mocked(setProjectLifecycle).mockImplementation(async (change: ProjectLifecycleChange) => ({
+      changed: { ...emptySnapshot(), projects: [{
+        ...projects.find((entry) => entry.id === change.projectId)!,
+        status: change.next,
       }] },
       removals: [],
       calendarEventProjectAssignments: [],
@@ -462,7 +472,19 @@ describe("project identity and lifecycle actions", () => {
     await expect(actions.moveProjectToGroup(sleep, "home")).rejects.toThrow("keeps its name and group");
     expect(updateProject).not.toHaveBeenCalled();
     await actions.setProjectStatus(sleep, "hidden");
-    expect(vi.mocked(updateProject).mock.calls[0]?.[0]).toMatchObject({ id: "project-routine-sleep", status: "hidden", name: "Sleep" });
+    expect(setProjectLifecycle).toHaveBeenCalledExactlyOnceWith({ projectId: "project-routine-sleep", expected: "active", next: "hidden" });
+    expect(updateProject).not.toHaveBeenCalled();
+  });
+
+  it("moves a project lifecycle from the status the caller read", async () => {
+    const launch = project({ status: "hidden" });
+    const { actions, readSnapshot } = setup([launch]);
+    await actions.setProjectStatus(launch, "hidden", "archived");
+    expect(setProjectLifecycle).toHaveBeenCalledExactlyOnceWith({ projectId: "project-1", expected: "archived", next: "hidden" });
+    expect(readSnapshot().projects[0]?.status).toBe("hidden");
+    vi.mocked(setProjectLifecycle).mockClear();
+    await actions.setProjectStatus(launch, "hidden");
+    expect(setProjectLifecycle).not.toHaveBeenCalled();
   });
 
   it("writes a reordered subset of groups into the full custom order before the backend answers", async () => {

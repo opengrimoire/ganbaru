@@ -17,6 +17,7 @@ pub mod emojis;
 mod history;
 pub mod icons;
 pub mod keys;
+pub mod lifecycle;
 pub mod managed_folders;
 mod models;
 mod mutations;

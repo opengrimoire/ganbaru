@@ -148,7 +148,6 @@ export function projectUpdatePayload(project: Project, patch: Partial<Project> &
     icon: merged.icon,
     color: merged.color ?? null,
     ...placementField(patch.placement),
-    status: merged.status,
     defaultEventName: merged.defaultEventName,
     defaultEventTimeMode: merged.defaultEventTimeMode,
     defaultEventDurationMinutes: merged.defaultEventDurationMinutes,

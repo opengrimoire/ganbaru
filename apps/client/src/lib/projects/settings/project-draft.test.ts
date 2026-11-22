@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   projectDraftDirty,
   projectDraftFromProject,
+  projectLifecycleChangeFromDraft,
   projectUpdateFromDraft,
   type ProjectDraft,
 } from "./project-draft";
@@ -170,8 +171,29 @@ describe("projectUpdateFromDraft", () => {
         name: "Comer",
         placement: undefined,
         icon: "lucide:utensils",
-        status: "hidden",
       },
+    });
+    expect(result.ok && "status" in result.value).toBe(false);
+    expect(projectLifecycleChangeFromDraft(currentProject.id, draft)).toEqual({
+      projectId: "project-routine-eat",
+      expected: "active",
+      next: "hidden",
+    });
+  });
+
+  it("asks for a lifecycle move from the opened status only when the status changed", () => {
+    const opened = projectDraftFromProject(project({ status: "hidden" }));
+    expect(projectLifecycleChangeFromDraft("project-1", opened)).toBeNull();
+
+    const refreshed = project({ status: "archived" });
+    expect(projectDraftDirty(refreshed, opened)).toBe(false);
+
+    const shown = updateDraft(opened, { status: "active" });
+    expect(projectDraftDirty(refreshed, shown)).toBe(true);
+    expect(projectLifecycleChangeFromDraft("project-1", shown)).toEqual({
+      projectId: "project-1",
+      expected: "hidden",
+      next: "active",
     });
   });
 

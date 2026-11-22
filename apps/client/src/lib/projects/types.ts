@@ -723,6 +723,13 @@ export interface ProjectCreate {
   defaultIdleThresholdMinutes: FocusIdleThresholdMinutes;
 }
 
+/** A project lifecycle move, refused by Rust when the project no longer has `expected`. */
+export interface ProjectLifecycleChange {
+  projectId: string;
+  expected: ProjectLifecycleStatus;
+  next: ProjectLifecycleStatus;
+}
+
 export interface ProjectUpdate {
   id: string;
   /** The group the project moves to or stays in, or `null` for outside every group. */
@@ -731,7 +738,6 @@ export interface ProjectUpdate {
   icon: string;
   color: EventColor | null;
   placement?: ProjectOrderPlacement;
-  status: ProjectLifecycleStatus;
   defaultEventName: string | null;
   defaultEventTimeMode: ProjectDefaultEventTimeMode;
   defaultEventDurationMinutes: number | null;

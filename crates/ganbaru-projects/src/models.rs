@@ -867,6 +867,8 @@ pub struct ProjectCreate {
     pub(crate) default_idle_threshold_minutes: i64,
 }
 
+/// A project field edit. The lifecycle status moves only through
+/// [`crate::lifecycle::set_project_lifecycle`], so an edit leaves it as it is.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectUpdate {
@@ -878,7 +880,6 @@ pub struct ProjectUpdate {
     pub(crate) color: Option<i64>,
     #[serde(default)]
     pub(crate) placement: Option<OrderPlacement>,
-    pub(crate) status: String,
     pub(crate) default_event_name: Option<String>,
     pub(crate) default_event_time_mode: String,
     pub(crate) default_event_duration_minutes: Option<i64>,

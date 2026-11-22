@@ -40,6 +40,7 @@ import type {
   ProjectTag,
   ProjectTagCreate,
   ProjectTagUpdate,
+  ProjectLifecycleChange,
   ProjectLinkableEvent,
   ProjectMutation,
   ProjectMutationRemoval,
@@ -1031,6 +1032,12 @@ export async function createProject(project: ProjectCreate): Promise<ProjectMuta
 export async function updateProject(project: ProjectUpdate): Promise<ProjectMutation> {
   const dbUrl = await ensureDbUrl();
   return invokeProjectMutation("projects_update_project", { dbUrl, project });
+}
+
+/** Moves a project between active, hidden, and archived; Rust refuses it when the project left `change.expected`. */
+export async function setProjectLifecycle(change: ProjectLifecycleChange): Promise<ProjectMutation> {
+  const dbUrl = await ensureDbUrl();
+  return invokeProjectMutation("projects_set_project_lifecycle", { dbUrl, change });
 }
 
 export async function updateProjectNotesSettings(

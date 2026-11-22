@@ -37,6 +37,7 @@ import {
   reorderGroupProjects,
   reorderProjectGroups,
   setProjectGroupCollapsed,
+  setProjectLifecycle,
   unlinkProjectTaskEvent,
   unlinkProjectTaskTag,
   updateProject as updateProjectBackend,
@@ -443,10 +444,18 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     await updateProject(projectUpdatePayload(project, { groupId, placement: { kind: "end" } }));
   }
 
-  /** Sets whether a project is active, hidden, or archived. */
-  async function setProjectStatus(project: Project, status: ProjectLifecycleStatus): Promise<void> {
-    if (status === project.status) return;
-    await updateProject(projectUpdatePayload(project, { status }));
+  /**
+   * Sets whether a project is active, hidden, or archived. `expected` is the status the caller
+   * read, so a move based on a stale read is refused instead of overwriting a newer one.
+   */
+  async function setProjectStatus(
+    project: Project,
+    status: ProjectLifecycleStatus,
+    expected: ProjectLifecycleStatus = project.status,
+  ): Promise<void> {
+    if (status === expected) return;
+    await commitMutation(`project:${project.id}`, () =>
+      setProjectLifecycle({ projectId: project.id, expected, next: status }));
   }
 
   /** Sets the color new events in a project start with. */

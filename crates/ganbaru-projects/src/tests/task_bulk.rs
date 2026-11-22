@@ -67,7 +67,9 @@ fn a_field_edit_without_an_archive_value_keeps_an_archived_task_archived() {
         }))
         .unwrap();
 
-        let mutation = crate::task_commands::update_task(&pool, edit).await.unwrap();
+        let mutation = crate::task_commands::update_task(&pool, edit)
+            .await
+            .unwrap();
 
         assert_eq!(mutation.tasks[0].title, "Renamed");
         assert_eq!(mutation.tasks[0].archived_at, archived.archived_at);

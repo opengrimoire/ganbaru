@@ -643,6 +643,7 @@ commands.allow = [
   "projects_save_working_folder_file_copy",
   "projects_search_linkable_events",
   "projects_set_group_collapsed",
+  "projects_set_project_lifecycle",
   "projects_unbind_working_folder",
   "projects_unlink_task_event",
   "projects_unlink_task_tag",

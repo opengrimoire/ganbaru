@@ -123,7 +123,7 @@ crates/
   ganbaru-sync/: Tauri-free sync engine with the domain manifest registry and domain adapters, capture triggers, sealing, apply and merge, conflicts, recovery, the authorization record store with chain selection and contests, removal exclusion and late changes, fork evidence, and the simulation harness
   ganbaru-sync-replica/: Tauri-free replica sync with commit-signaling vault access, installation device and writer keys and record, the proposal outbox, quarantine, the peer book, anchor pin, and discovery keys, carry-forward, recovery offers, LAN hub, member, and client exchange of operations, authorization records, and managed assets, the relay client pass, managed asset collection, whole-vault archives, encrypted backup files, the pinned TLS listeners, and the sync service loop over a host trait
   ganbaru-server/: self-hosted `ganbaru-server` binary: relay mode stores sealed records and asset chunks it cannot open, and anchor mode runs one vault as an always-on enrolled replica
-  ganbaru-themes/: Tauri-free user theme persistence, seed resets, upgrade dismissals, row validation, and sync conflict resolution and recovery
+  ganbaru-themes/: Tauri-free user theme persistence, fixed seeds, upgrade dismissals, row validation, and sync conflict resolution and recovery
   ganbaru-native-messaging/: ganbaru-native-messaging browser host binary
   ganbaru-linking-firewall/: root-run Linux helper binary for the device linking firewall rules, installed under /usr/lib/ganbaru/ and named by the PolicyKit policy
   ganbaru-sandbox/: Linux helper binary and library that confine Chat agent processes with Landlock and seccomp, installed under /usr/lib/ganbaru/

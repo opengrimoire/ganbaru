@@ -258,6 +258,13 @@ fn a_request_the_router_cannot_route_fails_the_session_and_keeps_the_error() {
             CanonicalEvent::SessionStateChanged(changed)
                 if changed.state == ProviderSessionState::Failed
         )));
+        assert!(
+            sink.events().iter().any(|event| matches!(
+                &event.event,
+                CanonicalEvent::RuntimeError(error) if !error.recoverable
+            )),
+            "an unrecoverable error settles the turn and its work assignment"
+        );
         let kept = terminal_error
             .lock()
             .unwrap()

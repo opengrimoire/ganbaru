@@ -887,12 +887,19 @@ async fn route_oversized(resources: &CodexRouterResources, byte_length: usize) {
     .await;
 }
 
-/// Ends the session after a message could not be routed: marks it failed with the error and
-/// keeps that error as the terminal error, so the turn does not stay running and later
-/// commands report why.
+/// Ends the session after a message could not be routed: reports an unrecoverable error, which
+/// settles the turn and its work assignment, marks the session failed, and keeps the error as
+/// the terminal error so later commands report why.
 async fn route_failed(resources: &CodexRouterResources, error: ChatError) {
     let reason = error.message.clone();
-    fail_session(resources, error, &reason, |_: &CodexRouteState| Ok(None)).await;
+    let lead_error = error.clone();
+    fail_session(resources, error, &reason, |state: &CodexRouteState| {
+        resources
+            .normalizer
+            .route_failed_event(state, &lead_error)
+            .map(Some)
+    })
+    .await;
 }
 
 /// Cancels the armed capacity retry, emits `lead` when there is one and then the failed

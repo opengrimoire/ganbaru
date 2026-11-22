@@ -368,6 +368,27 @@ impl CodexEventNormalizer {
         )
     }
 
+    /// The runtime error for a message the router could not route, which ends the session.
+    pub fn route_failed_event(
+        &self,
+        state: &CodexRouteState,
+        error: &ChatError,
+    ) -> ChatResult<CanonicalRuntimeEvent> {
+        self.event(
+            state,
+            "transport/route",
+            None,
+            None,
+            None,
+            CanonicalEvent::RuntimeError(RuntimeErrorEvent {
+                code: "codex_unroutable_message".to_string(),
+                message: error.message.clone(),
+                recoverable: false,
+                safe_details: None,
+            }),
+        )
+    }
+
     pub fn request_event(
         &self,
         state: &CodexRouteState,

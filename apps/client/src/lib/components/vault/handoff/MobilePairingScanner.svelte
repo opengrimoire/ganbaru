@@ -1,10 +1,13 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { PairingCameraScanner, type QrFrameDecoder } from "$lib/vault/pairing-camera";
 
-  /** Rear-camera scanner; the decoder decides which QR payload family it accepts (pairing by default). */
+  /**
+   * Rear-camera scanner; the decoder decides which QR payload family it accepts (pairing by default). While
+   * `disabled` is set it pauses between frames and resumes once it clears, keeping the camera running.
+   */
   let {
     disabled = false,
     decode,
@@ -25,15 +28,30 @@
   let scanner: PairingCameraScanner | null = null;
   let ready = $state(false);
   let stopped = false;
+  /** Whether a scan was due while `disabled` was set, so clearing it schedules the next one. */
+  let paused = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Schedules the next frame scan, or pauses until `disabled` clears. */
   function scheduleScan(): void {
-    if (stopped || disabled) return;
-    timer = setTimeout(() => void scan(), 180);
+    if (stopped) return;
+    if (disabled) {
+      paused = true;
+      return;
+    }
+    timer = setTimeout(() => {
+      timer = null;
+      void scan();
+    }, 180);
   }
 
+  /** Scans one frame and hands a decoded payload to `onInvitation`, or schedules the next frame. */
   async function scan(): Promise<void> {
-    if (!scanner || stopped || disabled) return;
+    if (!scanner || stopped) return;
+    if (disabled) {
+      paused = true;
+      return;
+    }
     try {
       const invitation = await scanner.scanFrame();
       stopped = true;
@@ -44,11 +62,21 @@
     }
   }
 
+  /** Stops scanning and releases the camera. */
   function stop(): void {
     stopped = true;
     if (timer) clearTimeout(timer);
     scanner?.stop();
   }
+
+  $effect(() => {
+    if (disabled) return;
+    untrack(() => {
+      if (!paused) return;
+      paused = false;
+      scheduleScan();
+    });
+  });
 
   onMount(() => {
     scanner = new PairingCameraScanner(video, decode);

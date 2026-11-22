@@ -106,6 +106,8 @@
   let observerStatus = $state<ChatWorkspaceObserverStatusRead | null>(null);
   let error = $state<string | null>(null);
   let loadedScope = "";
+  /** Bumped on every scope change, so a read from an earlier visit to the same scope is told apart. */
+  let scopeRevision = 0;
   let selectedPathSyncKey = "";
   let treeRequestId = 0;
   let visibleTreeRefreshRequestId = 0;
@@ -201,6 +203,7 @@
     const scope = `${workspace ?? ""}:${chat.selectedThreadId ?? ""}:${executionEnvironmentId ?? ""}`;
     if (scope === loadedScope) return;
     loadedScope = scope;
+    scopeRevision += 1;
     selectedPathSyncKey = "";
     treeRequestId += 1;
     pendingWorkspaceChange = null;
@@ -295,20 +298,32 @@
     }
   }
 
+  /**
+   * Lists a directory being expanded. Only a scope change discards the listing: a tree refresh during the read covers
+   * only directories that were already loaded, so it never replaces this one. A listing read before the ignored files
+   * toggle changed is read again.
+   */
   async function loadDirectory(path: string): Promise<void> {
     const workspace = workingFolderId;
     if (!workspace || childrenByDirectory[path] || loadingPaths.includes(path)) return;
-    const requestId = treeRequestId;
+    const revision = scopeRevision;
+    const showIgnored = includeIgnored;
+    let reread = false;
     loadingPaths = [...loadingPaths, path];
     try {
-      const result = await chatApi.listProjectWorkingFolderDirectory(workspace, path, includeIgnored, folderEnvironmentId);
-      if (requestId !== treeRequestId || workspace !== workingFolderId) return;
+      const result = await chatApi.listProjectWorkingFolderDirectory(workspace, path, showIgnored, folderEnvironmentId);
+      if (revision !== scopeRevision) return;
+      if (showIgnored !== includeIgnored) {
+        reread = true;
+        return;
+      }
       childrenByDirectory = { ...childrenByDirectory, [path]: result.entries };
     } catch (reason: unknown) {
-      if (requestId === treeRequestId) error = message(reason);
+      if (revision === scopeRevision) error = message(reason);
     } finally {
-      loadingPaths = loadingPaths.filter((entry) => entry !== path);
+      if (revision === scopeRevision) loadingPaths = loadingPaths.filter((entry) => entry !== path);
     }
+    if (reread && expandedPaths.includes(path)) await loadDirectory(path);
   }
 
   async function refreshLoadedDirectories(

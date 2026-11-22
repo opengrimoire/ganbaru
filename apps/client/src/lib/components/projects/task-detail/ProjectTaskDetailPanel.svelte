@@ -137,7 +137,8 @@
   let detailBlockerReason = $state("");
   let detailChangeReason = $state("");
   let detailMilestone = $state(false);
-  let detailSaving = $state(false);
+  /** The task a save, archive, or restore runs for, named by a token so a superseded run cannot end a later one. */
+  let detailSave = $state.raw<{ readonly targetId: string; readonly token: symbol } | null>(null);
   let detailError = $state<string | null>(null);
   let detailScrollContainer: HTMLDivElement | undefined = $state();
   let discardCloseConfirmOpen = $state(false);
@@ -170,6 +171,9 @@
 
   const selectedTask = $derived(taskId ? projects.taskById(taskId) : undefined);
   const draftMode = $derived(!taskId && draftProjectId !== null);
+  /** The task the panel shows, or the draft's own id while a new task is composed. */
+  const detailTargetId = $derived(selectedTask?.id ?? (draftMode ? draftTaskId : null));
+  const detailSaving = $derived(detailSave !== null && detailSave.targetId === detailTargetId);
   const draftTask = $derived(
     draftMode && draftProjectId
       ? projectTaskDraftPreview({
@@ -843,6 +847,26 @@
     };
   }
 
+  /**
+   * Whether the panel still shows the task a write started for, so a write that settles after another task opened in
+   * the panel leaves that task's drafts and error alone.
+   */
+  function stillShowing(targetId: string | null): boolean {
+    return targetId !== null && detailTargetId === targetId;
+  }
+
+  /** Marks a save, archive, or restore as running for a task and returns the token that ends it. */
+  function beginDetailSave(targetId: string): symbol {
+    const token = Symbol("project task detail save");
+    detailSave = { targetId, token };
+    return token;
+  }
+
+  /** Ends the run the token names, unless a later run replaced it. */
+  function endDetailSave(token: symbol): void {
+    if (detailSave?.token === token) detailSave = null;
+  }
+
   async function attachExistingTag(task: ProjectTask, tag: ProjectTag): Promise<void> {
     detailError = null;
     if (draftMode) {
@@ -850,11 +874,12 @@
       tagDraft = "";
       return;
     }
+    const shown = detailTargetId;
     try {
       await projects.linkTaskTag(task.id, tag.id);
-      tagDraft = "";
+      if (stillShowing(shown)) tagDraft = "";
     } catch (error) {
-      detailError = userErrorMessage(error, t("projects.detail.tagSaveFailed"));
+      if (stillShowing(shown)) detailError = userErrorMessage(error, t("projects.detail.tagSaveFailed"));
     }
   }
 
@@ -878,11 +903,12 @@
       tagDraft = "";
       return;
     }
+    const shown = detailTargetId;
     try {
       await projects.addAndLinkTaskTag(task, name);
-      tagDraft = "";
+      if (stillShowing(shown)) tagDraft = "";
     } catch (error) {
-      detailError = userErrorMessage(error, t("projects.detail.tagSaveFailed"));
+      if (stillShowing(shown)) detailError = userErrorMessage(error, t("projects.detail.tagSaveFailed"));
     }
   }
 
@@ -892,10 +918,11 @@
       draftRelations = removeProjectTaskDraftTag(draftRelations, tag.id);
       return;
     }
+    const shown = detailTargetId;
     try {
       await projects.unlinkTaskTag(task.id, tag.id);
     } catch (error) {
-      detailError = userErrorMessage(error, t("projects.detail.tagSaveFailed"));
+      if (stillShowing(shown)) detailError = userErrorMessage(error, t("projects.detail.tagSaveFailed"));
     }
   }
 
@@ -929,10 +956,11 @@
       draftRelations = { ...draftRelations, parentTaskId: null };
       return;
     }
+    const shown = detailTargetId;
     try {
       await projects.promoteSubtask(task);
     } catch (error) {
-      detailError = userErrorMessage(error, t("projects.detail.promoteFailed"));
+      if (stillShowing(shown)) detailError = userErrorMessage(error, t("projects.detail.promoteFailed"));
     }
   }
 
@@ -945,11 +973,12 @@
       parentTaskSearch = "";
       return;
     }
+    const shown = detailTargetId;
     try {
       await projects.demoteTaskToSubtask(task, parentTask);
-      parentTaskSearch = "";
+      if (stillShowing(shown)) parentTaskSearch = "";
     } catch (error) {
-      detailError = userErrorMessage(error, t("projects.detail.demoteFailed"));
+      if (stillShowing(shown)) detailError = userErrorMessage(error, t("projects.detail.demoteFailed"));
     }
   }
 
@@ -965,11 +994,12 @@
       dependencySearch = "";
       return;
     }
+    const shown = detailTargetId;
     try {
       await projects.addTaskDependency(blockingTask.id, blockedTask.id);
-      dependencySearch = "";
+      if (stillShowing(shown)) dependencySearch = "";
     } catch (error) {
-      detailError = userErrorMessage(error, t("projects.detail.dependencySaveFailed"));
+      if (stillShowing(shown)) detailError = userErrorMessage(error, t("projects.detail.dependencySaveFailed"));
     }
   }
 
@@ -983,10 +1013,11 @@
       };
       return;
     }
+    const shown = detailTargetId;
     try {
       await projects.removeTaskDependency(dependencyId);
     } catch (error) {
-      detailError = userErrorMessage(error, t("projects.detail.dependencySaveFailed"));
+      if (stillShowing(shown)) detailError = userErrorMessage(error, t("projects.detail.dependencySaveFailed"));
     }
   }
 
@@ -998,11 +1029,12 @@
       }
       return true;
     }
+    const shown = detailTargetId;
     try {
       await projects.linkTaskEvent(task.id, event.id, "scheduled");
       return true;
     } catch (error) {
-      detailError = userErrorMessage(error, t("projects.detail.eventLinkSaveFailed"));
+      if (stillShowing(shown)) detailError = userErrorMessage(error, t("projects.detail.eventLinkSaveFailed"));
       return false;
     }
   }
@@ -1016,35 +1048,36 @@
       };
       return;
     }
+    const shown = detailTargetId;
     try {
       await projects.unlinkTaskEvent(task.id, event.id);
     } catch (error) {
-      detailError = userErrorMessage(error, t("projects.detail.eventLinkSaveFailed"));
+      if (stillShowing(shown)) detailError = userErrorMessage(error, t("projects.detail.eventLinkSaveFailed"));
     }
   }
 
   async function archiveTaskFromDetail(task: ProjectTask): Promise<void> {
     detailError = null;
-    detailSaving = true;
+    const token = beginDetailSave(task.id);
     try {
       await projects.archiveTasks([task]);
     } catch (error) {
-      detailError = userErrorMessage(error, t("projects.detail.archiveFailed"));
+      if (stillShowing(task.id)) detailError = userErrorMessage(error, t("projects.detail.archiveFailed"));
     } finally {
-      detailSaving = false;
+      endDetailSave(token);
     }
   }
 
   async function restoreTaskFromDetail(task: ProjectTask): Promise<void> {
     detailError = null;
-    detailSaving = true;
+    const token = beginDetailSave(task.id);
     onShowArchivedTasks();
     try {
       await projects.restoreTasks([task]);
     } catch (error) {
-      detailError = userErrorMessage(error, t("projects.detail.restoreFailed"));
+      if (stillShowing(task.id)) detailError = userErrorMessage(error, t("projects.detail.restoreFailed"));
     } finally {
-      detailSaving = false;
+      endDetailSave(token);
     }
   }
 
@@ -1066,7 +1099,7 @@
     const relations = draftRelationsWithTitleDrafts();
     let created: ProjectTask | undefined;
     const errors: string[] = [];
-    detailSaving = true;
+    const token = beginDetailSave(draftTaskId);
     detailError = null;
     try {
       created = await projects.addTask(
@@ -1082,7 +1115,7 @@
     } catch (error) {
       if (!created) {
         detailError = userErrorMessage(error, t("projects.tasks.createFailed"));
-        detailSaving = false;
+        endDetailSave(token);
         return;
       }
       // The task exists, so keep the unsaved fields on it for a retry with Save changes.
@@ -1091,7 +1124,7 @@
       errors.push(detailSaveErrorMessage(error));
     }
     if (!created) {
-      detailSaving = false;
+      endDetailSave(token);
       return;
     }
     const relationFailures = await applyProjectTaskDraftRelations({
@@ -1100,7 +1133,7 @@
       customFieldValues: customFieldValues.values,
       writer: draftRelationWriter(),
     });
-    detailSaving = false;
+    endDetailSave(token);
     if (relationFailures.length > 0) {
       console.warn("[projects] draft relation writes failed", relationFailures);
       errors.push(t("projects.detail.draftRelationsFailed"));
@@ -1165,16 +1198,18 @@
       return;
     }
     if (!selectedTask) return;
-    detailSaving = true;
+    const task = selectedTask;
+    const token = beginDetailSave(task.id);
     detailError = null;
     try {
-      await projects.updateTask(selectedTask, patch.patch);
+      await projects.updateTask(task, patch.patch);
+      if (!stillShowing(task.id)) return;
       detailChangeReason = "";
-      detailDraftUpdatedAt = selectedTask.updatedAt;
+      detailDraftUpdatedAt = selectedTask?.updatedAt ?? task.updatedAt;
     } catch (error) {
-      detailError = detailSaveErrorMessage(error);
+      if (stillShowing(task.id)) detailError = detailSaveErrorMessage(error);
     } finally {
-      detailSaving = false;
+      endDetailSave(token);
     }
   }
 </script>

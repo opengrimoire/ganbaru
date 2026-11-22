@@ -69,7 +69,6 @@
   let saving = $state(false);
   let savingImage = $state(false);
   let saveError = $state<string | null>(null);
-  let saved = $state(false);
 
   const normalizedDisplayName = $derived(normalizeProfileDisplayName(draftDisplayName));
   const normalizedFullName = $derived(normalizeProfileFullName(draftFullName));
@@ -129,7 +128,6 @@
 
   async function saveIdentity(): Promise<void> {
     saveError = null;
-    saved = false;
     const displayName = normalizeProfileDisplayName(draftDisplayName);
     if (!displayName.ok) {
       saveError = displayName.reason === "too_long"
@@ -163,7 +161,6 @@
       draftDisplayName = displayName.value;
       draftFullName = fullName.value;
       if (pictureChanged) await savePicture();
-      saved = true;
     } catch (error) {
       console.warn("Profile could not be saved:", error);
       saveError = userErrorMessage(error, t("settings.profileIdentity.saveFailed"));
@@ -207,7 +204,6 @@
 
   function markPictureEdited(): void {
     saveError = null;
-    saved = false;
   }
 
   /** Pick a picture, then crop it before it enters the draft. */
@@ -296,7 +292,6 @@
       draftDisplayName = preferences.profileDisplayName;
       draftFullName = preferences.profileFullName;
       saveError = null;
-      saved = false;
     }
   }
 </script>
@@ -327,7 +322,6 @@
           oninput={(event) => {
             draftDisplayName = event.currentTarget.value;
             saveError = null;
-            saved = false;
           }}
         />
       </div>
@@ -352,7 +346,6 @@
           oninput={(event) => {
             draftFullName = event.currentTarget.value;
             saveError = null;
-            saved = false;
           }}
         />
       </div>

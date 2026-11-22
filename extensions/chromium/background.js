@@ -1,4 +1,5 @@
 import { HOST_NAME } from "./host-config.js";
+import { createActiveUsageTracker } from "./active-usage.js";
 import { decisionUrl, hostFromUrl, isSupportedPageUrl } from "./page-url.js";
 
 const STATUS_STORAGE_KEY = "status";
@@ -170,26 +171,23 @@ async function recordUsageInterval(usage, endedAt) {
   }
 }
 
-async function refreshActiveUsage({ forceFlush = false } = {}) {
-  const now = Date.now();
-  const usage = await readActiveUsage();
-  const target = await queryTrackableFocusedTab();
+const activeUsageTracker = createActiveUsageTracker({
+  readActiveUsage,
+  writeActiveUsage,
+  clearActiveUsage,
+  queryTarget: queryTrackableFocusedTab,
+  recordInterval: recordUsageInterval,
+  now: () => Date.now(),
+});
 
-  if (!usage) {
-    if (target) await writeActiveUsage({ ...target, startedAtMs: now });
-    return;
-  }
-
-  const sameHost = target?.host === usage.host;
-  if (forceFlush || !sameHost) {
-    await recordUsageInterval(usage, now);
-    if (target) {
-      await writeActiveUsage({ ...target, startedAtMs: now });
-    } else {
-      await clearActiveUsage();
-    }
-    return;
-  }
+/**
+ * Starts or finishes the focused website interval after a tab, window, or idle change.
+ *
+ * @param {{ forceFlush?: boolean }} [options] Whether to report the running interval even when the host is unchanged.
+ * @returns {Promise<void>}
+ */
+function refreshActiveUsage(options = {}) {
+  return activeUsageTracker.refresh(options);
 }
 
 function blockedPageStore() {

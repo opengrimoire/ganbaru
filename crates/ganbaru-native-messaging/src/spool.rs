@@ -106,7 +106,8 @@ async fn connect(path: &Path) -> Result<SqlitePool, String> {
             started_at_ms INTEGER NOT NULL,
             elapsed_seconds INTEGER NOT NULL,
             local_date TEXT NOT NULL,
-            created_at_ms INTEGER NOT NULL
+            created_at_ms INTEGER NOT NULL,
+            claimed INTEGER NOT NULL DEFAULT 0 CHECK (claimed IN (0, 1))
         );
         CREATE TABLE IF NOT EXISTS pending_block_events (
             event_id TEXT PRIMARY KEY,
@@ -240,11 +241,14 @@ async fn spool_block_event(
     Ok(())
 }
 
+/// Merges each source and day of the unclaimed pending samples into one sample and returns the
+/// pending count afterwards. Rows the app has claimed for a drain may already be in the vault
+/// journal under their own ids, so they stay untouched.
 async fn compact(pool: &SqlitePool, vault_id: &str, device_id: &str) -> Result<i64, String> {
     let compacted_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM (
             SELECT 1 FROM pending_usage_samples
-            WHERE vault_id = ? AND device_id = ?
+            WHERE vault_id = ? AND device_id = ? AND claimed = 0
             GROUP BY source_type, source_key, local_date
          )",
     )
@@ -256,7 +260,7 @@ async fn compact(pool: &SqlitePool, vault_id: &str, device_id: &str) -> Result<i
     let overlong_group_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM (
             SELECT 1 FROM pending_usage_samples
-            WHERE vault_id = ? AND device_id = ?
+            WHERE vault_id = ? AND device_id = ? AND claimed = 0
             GROUP BY source_type, source_key, local_date
             HAVING SUM(elapsed_seconds) > 86400
          )",
@@ -280,7 +284,7 @@ async fn compact(pool: &SqlitePool, vault_id: &str, device_id: &str) -> Result<i
                 MIN(started_at_ms) AS started_at_ms, SUM(elapsed_seconds) AS elapsed_seconds,
                 local_date, MAX(created_at_ms) AS created_at_ms
          FROM pending_usage_samples
-         WHERE vault_id = ? AND device_id = ?
+         WHERE vault_id = ? AND device_id = ? AND claimed = 0
          GROUP BY vault_id, device_id, source_type, source_key, local_date",
     )
     .bind(vault_id)
@@ -288,28 +292,93 @@ async fn compact(pool: &SqlitePool, vault_id: &str, device_id: &str) -> Result<i
     .execute(&mut *transaction)
     .await
     .map_err(|e| format!("aggregate Distractions spool: {e}"))?;
-    sqlx::query("DELETE FROM pending_usage_samples WHERE vault_id = ? AND device_id = ?")
-        .bind(vault_id)
-        .bind(device_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|e| format!("replace Distractions spool: {e}"))?;
-    sqlx::query("INSERT INTO pending_usage_samples SELECT * FROM compacted_usage_samples")
-        .execute(&mut *transaction)
-        .await
-        .map_err(|e| format!("store compacted Distractions spool: {e}"))?;
+    sqlx::query(
+        "DELETE FROM pending_usage_samples WHERE vault_id = ? AND device_id = ? AND claimed = 0",
+    )
+    .bind(vault_id)
+    .bind(device_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|e| format!("replace Distractions spool: {e}"))?;
+    sqlx::query(
+        "INSERT INTO pending_usage_samples
+            (sample_id, vault_id, device_id, source_type, source_key, display_name,
+             started_at_ms, elapsed_seconds, local_date, created_at_ms)
+         SELECT sample_id, vault_id, device_id, source_type, source_key, display_name,
+                started_at_ms, elapsed_seconds, local_date, created_at_ms
+         FROM compacted_usage_samples",
+    )
+    .execute(&mut *transaction)
+    .await
+    .map_err(|e| format!("store compacted Distractions spool: {e}"))?;
     sqlx::query("DROP TABLE compacted_usage_samples")
         .execute(&mut *transaction)
         .await
         .map_err(|e| format!("finish Distractions spool compaction: {e}"))?;
+    let pending_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pending_usage_samples WHERE vault_id = ? AND device_id = ?",
+    )
+    .bind(vault_id)
+    .bind(device_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|e| format!("count compacted Distractions spool: {e}"))?;
     transaction
         .commit()
         .await
         .map_err(|e| format!("commit Distractions spool compaction: {e}"))?;
-    Ok(compacted_count)
+    Ok(pending_count)
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path, label: &str) -> Result<T, String> {
     let bytes = std::fs::read(path).map_err(|error| format!("read {label}: {error}"))?;
     serde_json::from_slice(&bytes).map_err(|error| format!("parse {label}: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{compact, connect};
+
+    #[test]
+    fn compaction_merges_only_unclaimed_samples() {
+        let path = std::env::temp_dir().join(format!(
+            "ganbaru-host-spool-compaction-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        crate::block_on(async {
+            let pool = connect(&path).await.unwrap();
+            sqlx::raw_sql(
+                "INSERT INTO pending_usage_samples
+                    (sample_id, vault_id, device_id, source_type, source_key, display_name,
+                     started_at_ms, elapsed_seconds, local_date, created_at_ms, claimed)
+                 VALUES
+                    ('a', 'v', 'd', 'website', 'example.com', NULL, 1, 12, '2026-06-10', 1, 1),
+                    ('b', 'v', 'd', 'website', 'example.com', NULL, 2, 18, '2026-06-10', 2, 1),
+                    ('c', 'v', 'd', 'website', 'example.com', NULL, 3, 30, '2026-06-10', 3, 0),
+                    ('e', 'v', 'd', 'website', 'example.com', NULL, 4, 5, '2026-06-10', 4, 0)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            assert_eq!(compact(&pool, "v", "d").await.unwrap(), 3);
+            let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+                "SELECT sample_id, elapsed_seconds, claimed FROM pending_usage_samples
+                 ORDER BY sample_id",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                rows,
+                [
+                    ("a".to_string(), 12, 1),
+                    ("b".to_string(), 18, 1),
+                    ("c".to_string(), 35, 0)
+                ]
+            );
+            pool.close().await;
+        });
+        let _ = std::fs::remove_file(&path);
+    }
 }

@@ -49,7 +49,9 @@ async fn vault_pool() -> SqlitePool {
 async fn pending(path: &Path) -> Vec<DistractionsUsageSampleRow> {
     let pool = open_spool(path).await.unwrap();
     let mut connection = pool.acquire().await.unwrap();
-    let rows = read_pending(&mut connection, VAULT, DEVICE).await.unwrap();
+    let rows = read_pending(&mut connection, VAULT, DEVICE, false)
+        .await
+        .unwrap();
     drop(connection);
     pool.close().await;
     rows
@@ -509,6 +511,63 @@ async fn a_block_event_ingested_during_an_open_run_publishes_when_the_run_closes
         ["block-1"],
         "closing the run publishes its block events"
     );
+    vault.close().await;
+    remove(&path);
+}
+
+/// Commits a drain to the journal while its spool cleanup fails, as a crash or a concurrent
+/// host write between the two commits would leave it.
+async fn drain_without_cleanup(path: &Path, vault: &SqlitePool) {
+    let spool = open_spool(path).await.unwrap();
+    sqlx::raw_sql(
+        "CREATE TRIGGER reject_cleanup BEFORE DELETE ON pending_usage_samples
+         BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END",
+    )
+    .execute(&spool)
+    .await
+    .unwrap();
+    spool.close().await;
+    assert!(
+        drain_at(path, vault, VAULT, DEVICE, &window())
+            .await
+            .is_err()
+    );
+    let spool = open_spool(path).await.unwrap();
+    sqlx::query("DROP TRIGGER reject_cleanup")
+        .execute(&spool)
+        .await
+        .unwrap();
+    spool.close().await;
+}
+
+async fn journal_total(pool: &SqlitePool) -> i64 {
+    journal(pool).await.iter().map(|(_, seconds)| seconds).sum()
+}
+
+#[tokio::test]
+async fn compaction_after_a_committed_drain_does_not_count_its_samples_twice() {
+    let path = temporary_spool("compaction-after-drain");
+    let vault = vault_pool().await;
+    enqueue_native_samples_at(
+        &path,
+        VAULT,
+        DEVICE,
+        &[sample("one", 12), sample("two", 18)],
+    )
+    .await
+    .unwrap();
+    drain_without_cleanup(&path, &vault).await;
+    let spool = open_spool(&path).await.unwrap();
+    let mut transaction = spool.begin().await.unwrap();
+    compact_pending(&mut transaction, VAULT, DEVICE)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    spool.close().await;
+    drain_at(&path, &vault, VAULT, DEVICE, &window())
+        .await
+        .unwrap();
+    assert_eq!(journal_total(&vault).await, 30);
     vault.close().await;
     remove(&path);
 }

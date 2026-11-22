@@ -1197,3 +1197,41 @@ fn a_frame_the_router_cannot_read_fails_the_session_and_stops_the_agent() {
         );
     });
 }
+
+#[test]
+fn an_agent_that_exits_during_a_prompt_fails_the_session_once() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("exit-prompt");
+        let state = Arc::new(AcpFixtureState::default());
+        let (mut driver, sink, snapshot) =
+            started_fixture_session(&workspace, FixtureScenario::ExitDuringPrompt, &state).await;
+
+        driver
+            .send_turn(send_request(&snapshot.session_id), &context("send"))
+            .await
+            .unwrap();
+        wait_for_event(&sink, |event| {
+            matches!(
+                event,
+                CanonicalEvent::SessionStateChanged(changed)
+                    if changed.state == ProviderSessionState::Failed
+            )
+        })
+        .await;
+
+        let aborted = sink
+            .events()
+            .into_iter()
+            .filter_map(|event| match event.event {
+                CanonicalEvent::TurnAborted(aborted) => Some(aborted.reason),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(aborted.len(), 1);
+        assert!(
+            aborted[0].contains("transport closed"),
+            "the session failure interrupts the turn: {}",
+            aborted[0]
+        );
+    });
+}

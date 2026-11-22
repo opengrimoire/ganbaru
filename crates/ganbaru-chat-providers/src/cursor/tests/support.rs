@@ -239,6 +239,8 @@ pub enum FixtureScenario {
     RefuseFirstPrompt,
     /// A `session/prompt` is answered with a line that is not JSON.
     MalformedDuringPrompt,
+    /// The agent exits when it receives a `session/prompt`.
+    ExitDuringPrompt,
 }
 
 impl FixtureScenario {
@@ -497,6 +499,7 @@ async fn run_fixture<R, W>(
                     write_result(&mut writer, id, json!({ "stopReason": "end_turn" })).await;
                 }
             }
+            "session/prompt" if scenario == FixtureScenario::ExitDuringPrompt => break,
             "session/prompt" if scenario == FixtureScenario::MalformedDuringPrompt => {
                 writer.write_all(b"not json\n").await.unwrap();
                 writer.flush().await.unwrap();

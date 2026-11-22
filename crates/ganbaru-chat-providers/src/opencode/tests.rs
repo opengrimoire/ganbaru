@@ -1690,3 +1690,54 @@ fn a_question_asked_outside_a_turn_is_a_notice_queued_for_rejection() {
     });
     assert!(normalizer.normalize(&mut state, echo).unwrap().is_empty());
 }
+
+/// A provider error such as a usage limit fails only the running turn; the session stays
+/// running for the next turn.
+#[test]
+fn a_provider_error_fails_only_the_running_turn() {
+    let normalizer = OpenCodeEventNormalizer::new(
+        ProviderInstanceId::new("opencode-instance").unwrap(),
+        ChatThreadId::new("thread-fixture").unwrap(),
+        ProviderSessionId::new("local-session-fixture").unwrap(),
+    );
+    let mut state = OpenCodeRouteState::new(
+        "ses_fixture".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+    );
+    state.active_turn_id = Some(ChatTurnId::new("turn-one").unwrap());
+
+    let events = normalizer
+        .normalize(
+            &mut state,
+            serde_json::json!({
+                "type": "session.error",
+                "properties": {
+                    "sessionID": "ses_fixture",
+                    "error": { "name": "APIError", "data": {}, "message": "Usage limit reached" },
+                },
+            }),
+        )
+        .unwrap();
+
+    let completed = events
+        .iter()
+        .find_map(|event| match &event.event {
+            CanonicalEvent::TurnCompleted(completed) => Some(completed),
+            _ => None,
+        })
+        .expect("the provider error settles the turn");
+    assert_eq!(completed.state, ChatTurnState::Failed);
+    assert_eq!(
+        completed.stop_reason.as_deref(),
+        Some("Usage limit reached")
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.event, CanonicalEvent::SessionStateChanged(_)))
+    );
+    assert!(state.active_turn_id.is_none());
+}

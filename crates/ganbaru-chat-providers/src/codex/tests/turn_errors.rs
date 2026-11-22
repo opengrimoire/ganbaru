@@ -380,6 +380,14 @@ fn usage_limit_never_retries() {
         assert!(limited.limited);
         assert_eq!(limited.detail.as_deref(), Some("Fixture failure"));
         assert_eq!(completed_turns(&sink)[0].state, ChatTurnState::Failed);
+        assert!(
+            !sink.events().into_iter().any(|event| matches!(
+                event.event,
+                CanonicalEvent::SessionStateChanged(changed)
+                    if changed.state == ProviderSessionState::Failed
+            )),
+            "a usage limit ends only its turn"
+        );
     });
 }
 

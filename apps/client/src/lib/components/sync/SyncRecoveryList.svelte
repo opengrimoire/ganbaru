@@ -27,11 +27,19 @@
 
   const localization = getLocalization();
   const { t } = localization;
+  /**
+   * The one feedback line: the outcome of an action or copy, or a failed load, which offers a retry and clears once a
+   * later load succeeds.
+   */
+  type RecoveryNotice =
+    | { readonly kind: "none" }
+    | { readonly kind: "done"; readonly message: string }
+    | { readonly kind: "failed"; readonly message: string }
+    | { readonly kind: "loadFailed" };
+
   let entries = $state<SyncRecoveryEntry[]>([]);
   let busyKey = $state<string | null>(null);
-  let message = $state("");
-  let failed = $state(false);
-  let loadFailed = $state(false);
+  let notice = $state.raw<RecoveryNotice>({ kind: "none" });
   let loadGeneration = 0;
 
   const actionClass = $derived(mobileLayout ? `${buttonClass} min-h-12` : buttonClass);
@@ -46,38 +54,41 @@
       const next = await listSyncRecovery();
       if (expected !== loadGeneration) return;
       entries = next;
-      loadFailed = false;
+      if (notice.kind === "loadFailed") notice = { kind: "none" };
     } catch (cause: unknown) {
       if (expected !== loadGeneration) return;
       console.warn("sync recovery entries could not be loaded", cause);
-      failed = true;
-      loadFailed = true;
-      message = t("sync.recovery.loadFailed");
+      notice = { kind: "loadFailed" };
     }
   }
 
+  /** Reloads the entries from the failed load notice. */
   function retryLoad(): Promise<void> {
-    message = "";
-    failed = false;
+    notice = { kind: "none" };
     return load();
   }
 
+  /** Restores or discards one entry, then reloads the list. */
   async function act(entry: SyncRecoveryEntry, restore: boolean): Promise<void> {
     if (busyKey) return;
     busyKey = entryKey(entry);
-    message = "";
-    failed = false;
+    notice = { kind: "none" };
     const target = { table: entry.table, rowKey: entry.rowKey };
     try {
       if (restore) await restoreSyncRecovery(target);
       else await discardSyncRecovery(target);
       if (restore) syncPresentations.notifyChanged([entry.table]);
-      message = restore ? syncPresentations.recoveryRestored(t, entry.table) : t("sync.recovery.discarded");
+      notice = {
+        kind: "done",
+        message: restore ? syncPresentations.recoveryRestored(t, entry.table) : t("sync.recovery.discarded"),
+      };
       await load();
     } catch (cause: unknown) {
       console.warn("sync recovery action failed", cause);
-      failed = true;
-      message = restore ? syncPresentations.recoveryRestoreFailed(t, entry.table) : t("sync.recovery.discardFailed");
+      notice = {
+        kind: "failed",
+        message: restore ? syncPresentations.recoveryRestoreFailed(t, entry.table) : t("sync.recovery.discardFailed"),
+      };
       await load();
     } finally {
       busyKey = null;
@@ -86,16 +97,13 @@
 
   /** Copies the text of a deleted row the offer may not bring back. */
   async function copyUnseen(text: SyncRecoveryText): Promise<void> {
-    message = "";
-    failed = false;
-    loadFailed = false;
+    notice = { kind: "none" };
     try {
       await writeTextToClipboard(text.title && text.preview ? `${text.title}\n\n${text.preview}` : text.title || text.preview);
-      message = t("sync.recovery.copied");
+      notice = { kind: "done", message: t("sync.recovery.copied") };
     } catch (cause: unknown) {
       console.warn("sync recovery text could not be copied", cause);
-      failed = true;
-      message = t("sync.recovery.copyFailed");
+      notice = { kind: "failed", message: t("sync.recovery.copyFailed") };
     }
   }
 
@@ -162,11 +170,11 @@
       </div>
     </div>
   {/each}
-  {#if message}
-    {#if failed}
-      <Notice class="px-1 text-[0.8rem] leading-5" {message} copy={false} onRetry={loadFailed ? retryLoad : undefined} />
-    {:else}
-      <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{message}</p>
-    {/if}
+  {#if notice.kind === "loadFailed"}
+    <Notice class="px-1 text-[0.8rem] leading-5" message={t("sync.recovery.loadFailed")} copy={false} onRetry={retryLoad} />
+  {:else if notice.kind === "failed"}
+    <Notice class="px-1 text-[0.8rem] leading-5" message={notice.message} copy={false} />
+  {:else if notice.kind === "done"}
+    <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{notice.message}</p>
   {/if}
 </div>

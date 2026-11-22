@@ -240,8 +240,9 @@ pub async fn vault_kept_folders(app: tauri::AppHandle) -> Result<Vec<KeptVaultFo
         .map_err(|error| format!("kept vault folder worker failed: {error}"))?
 }
 
-/// Sets the vault whose database is lost aside whole and starts a new empty vault in its place,
-/// as the vault Android created for this device. A linked phone is refused before anything moves.
+/// Sets the vault whose database is lost aside whole and starts a new empty vault in its place.
+/// It is not recorded as a starter vault, so a first link backs it up like any other vault. A
+/// linked phone is refused before anything moves.
 #[cfg(target_os = "android")]
 #[tauri::command]
 pub async fn vault_start_new_after_lost_database(
@@ -268,10 +269,6 @@ pub async fn vault_start_new_after_lost_database(
     .await
     .map_err(|error| format!("new vault worker failed: {error}"))??;
     super::select_reserved_vault(&app, &info, transition).await?;
-    super::update_app_state(&app, |state| {
-        state.starter_vault_id = Some(info.vault_id.clone());
-        Ok(())
-    })?;
     Ok(info)
 }
 

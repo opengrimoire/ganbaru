@@ -211,6 +211,10 @@
   const threadFullSurface = $derived(layout.replyThreadPresentation === "main");
   const threadColumnOpen = $derived(layout.replyThreadPresentation === "column");
   let loadError = $state<string | null>(null);
+  /** The failure of the latest project selection sync; a newer selection replaces it. */
+  let projectSyncError = $state<string | null>(null);
+  let projectSyncRequest = 0;
+  const workspaceLoadError = $derived(loadError ?? projectSyncError);
   let initialLoadingVisible = $state(false);
   let layoutError = $state<string | null>(null);
   let politeAnnouncement = $state("");
@@ -316,9 +320,11 @@
     const projectId = projects.selectedProjectId;
     if (chat.loading) return;
     untrack(() => {
+      const request = ++projectSyncRequest;
+      projectSyncError = null;
       void chat.syncProjectSelection(projectId).catch((error: unknown) => {
-        if (projects.selectedProjectId === projectId) {
-          loadError = chatErrorMessage(error, t("chatErrors.actions.loadChat"));
+        if (request === projectSyncRequest && projects.selectedProjectId === projectId) {
+          projectSyncError = chatErrorMessage(error, t("chatErrors.actions.loadChat"));
         }
       });
     });
@@ -1073,6 +1079,7 @@
     try {
       await chat.reload();
       loadError = null;
+      projectSyncError = null;
     } catch (error: unknown) {
       loadError = chatErrorMessage(error, t("chatErrors.actions.loadChat"));
       throw error;
@@ -1173,8 +1180,8 @@
     </div>
   {/if}
   <main class="main-shell relative flex min-w-0 flex-col">
-        {#if loadError}
-          <div class="min-h-0 flex-1 text-sm"><Notice layout="fill" message={loadError} onRetry={retryWorkspaceLoad} /></div>
+        {#if workspaceLoadError}
+          <div class="min-h-0 flex-1 text-sm"><Notice layout="fill" message={workspaceLoadError} onRetry={retryWorkspaceLoad} /></div>
         {:else if chat.channelArchiveOpen}
           <ChatChannelArchive />
         {:else if chat.selectedChannel}

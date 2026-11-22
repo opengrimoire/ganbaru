@@ -4,6 +4,8 @@
 //!
 //! The recovery seed waits in the device key store only until the user confirms saving its kit;
 //! the vault database keeps the kit's two public keys, which found the charter at first link.
+//! The kit commands hold [`ganbaru_sync_replica::authority::RECOVERY_KIT_LOCK`], which founding
+//! and the service's kit replacements take too, so each sees a kit the others finished with.
 
 use std::sync::Arc;
 
@@ -19,10 +21,6 @@ use super::service::blocking;
 
 /// Longest last group a confirmation accepts, as typed, with room for separators and spaces.
 pub(crate) const MAX_TYPED_GROUP_CHARS: usize = 16;
-
-/// Serializes the kit commands, so a confirmation never forgets a seed another command just
-/// replaced.
-pub(crate) static KIT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The recovery kit of the active vault.
 #[derive(Clone, Serialize)]

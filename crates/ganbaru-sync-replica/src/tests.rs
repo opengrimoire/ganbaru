@@ -22,6 +22,7 @@ use tokio::sync::Notify;
 mod assets;
 mod backup;
 mod exchange;
+mod founding;
 mod keys;
 mod outbox;
 mod peers;

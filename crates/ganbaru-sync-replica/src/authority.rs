@@ -3,6 +3,7 @@
 //! the engine.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use super::keys::KitKeys;
 use super::outbox::{Outbox, OutboxEntry, is_final};
@@ -10,6 +11,7 @@ use super::writer::{
     SelectedHead, SequencedCheck, SyncKey, SyncKeyStore, WriterRecord, ensure_device_key,
     sequenced_check,
 };
+use crate::service::blocking;
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_handoff::discovery::DiscoveryKey;
 use ganbaru_handoff::protocol::{
@@ -27,7 +29,7 @@ use ganbaru_sync_contracts::{
     SignedCharter, SignedProposal, SpaceId, VersionVector, sign_charter, sign_device_proposal,
     sign_proposal,
 };
-use sqlx::SqliteConnection;
+use sqlx::{SqliteConnection, SqlitePool};
 
 /// The keys an anchor founds a space with: its device key, the admin key it signs proposals
 /// with, and the public keys of the recovery kit, whose admin key the charter names and whose
@@ -37,6 +39,13 @@ pub struct AnchorKeys {
     pub admin: AdminKeyPair,
     pub recovery: RecoveryPublicKeys,
 }
+
+/// Serializes every step that reads or replaces the vault's recovery kit, its seed in the key
+/// store and its public keys in the vault database: the kit commands, kit regeneration and
+/// rotation, and founding the charter that names the kit. Without it, a kit the user creates
+/// while the vault first links could differ from the kit the charter names. Holders never await
+/// the sync service loop while they hold it, because the loop takes it too.
+pub static RECOVERY_KIT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Reads the anchor keys of a vault, creating each missing one once. Only founding a charter
 /// calls this. `stored_kit` is the kit the vault database keeps, as for a kit created before the
@@ -163,6 +172,52 @@ pub async fn ensure_charter(
         .await
         .map_err(|error| format!("install sync charter: {error}"))?;
     Ok(charter)
+}
+
+/// Founds the space of the vault `vault_id` with the recovery kit it keeps, or with the kit
+/// that waits unsaved in `keys`, or with a new kit, and returns the charter, which may be one
+/// installed meanwhile. The vault database keeps the founding kit's public keys.
+///
+/// The whole read, seed, store, and charter sequence holds [`RECOVERY_KIT_LOCK`], so a kit the
+/// user creates meanwhile either lands before it, and founds the charter, or after it, and is
+/// refused because the charter names a kit. The caller holds no pool connection, because a
+/// kit command holding the lock waits for one.
+pub async fn found_with_recovery_kit(
+    engine: &Engine,
+    pool: &SqlitePool,
+    ctx: &SpaceContext,
+    keys: Arc<dyn SyncKeyStore>,
+    vault_id: &str,
+    founding: &Founding<'_>,
+) -> Result<SignedCharter, String> {
+    let _kit = RECOVERY_KIT_LOCK.lock().await;
+    let stored = {
+        let mut conn = acquire(pool).await?;
+        ganbaru_sync::local::recovery_kit_keys(&mut conn)
+            .await
+            .map_err(|error| format!("read the sync recovery kit: {error}"))?
+    };
+    let vault = vault_id.to_string();
+    let mut anchor = blocking(move || ensure_anchor_keys(keys.as_ref(), &vault, stored)).await?;
+    let mut conn = acquire(pool).await?;
+    if stored.is_none() {
+        // The lock already keeps the kit commands out; the vault database still keeps a kit
+        // stored by any other writer rather than one founding derived.
+        anchor.recovery = ganbaru_sync::local::store_recovery_kit_keys_if_absent(
+            &mut conn,
+            &anchor.recovery,
+            founding.now_ms,
+        )
+        .await
+        .map_err(|error| format!("store the sync recovery kit: {error}"))?;
+    }
+    ensure_charter(engine, &mut conn, ctx, &anchor, founding).await
+}
+
+async fn acquire(pool: &SqlitePool) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, String> {
+    pool.acquire()
+        .await
+        .map_err(|error| format!("acquire sync connection: {error}"))
 }
 
 /// A linked device the anchor enrolls as a member.

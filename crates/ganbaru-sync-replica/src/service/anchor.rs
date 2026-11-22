@@ -487,6 +487,10 @@ impl<H: SyncHost> Session<'_, H> {
                 let path = self.files.outbox_path();
                 let space = self.ctx.space;
                 let now = now_ms()?;
+                // The service loop takes the kit lock here, not the command that waits for this
+                // answer: the loop also takes it to found a space, so a command holding it while
+                // it waits would stall the loop until the request timed out.
+                let _kit = authority::RECOVERY_KIT_LOCK.lock().await;
                 let seed = blocking(move || {
                     let mut outbox = Outbox::load(&path)?;
                     authority::regenerate_recovery_kit(
@@ -573,6 +577,9 @@ impl<H: SyncHost> Session<'_, H> {
         let path = self.files.outbox_path();
         let space = self.ctx.space;
         let now = now_ms()?;
+        // Taken on the service loop, not by the waiting command, so founding on the same loop
+        // never waits for a holder that waits for the loop.
+        let _kit = authority::RECOVERY_KIT_LOCK.lock().await;
         let seed = blocking(move || {
             let mut outbox = Outbox::load(&path)?;
             authority::rotate_recovery_kit(
@@ -591,7 +598,7 @@ impl<H: SyncHost> Session<'_, H> {
     }
 
     /// Records the public keys of a new kit in the vault database, which keeps the keys of the
-    /// latest kit this device made.
+    /// latest kit this device made. Callers hold [`authority::RECOVERY_KIT_LOCK`].
     async fn store_kit_keys(&self, seed: &RecoverySeed, now: u64) -> Result<(), String> {
         let public = authority::recovery_public_keys(seed)?;
         let mut conn = acquire(&self.pool).await?;

@@ -142,9 +142,7 @@ async fn run_codex_router(mut resources: CodexRouterResources) {
             }
         };
         if let Err(error) = result {
-            if let Ok(mut terminal) = resources.terminal_error.lock() {
-                *terminal = Some(error);
-            }
+            route_failed(&resources, error).await;
             return;
         }
     }
@@ -874,14 +872,45 @@ async fn route_closed(resources: &CodexRouterResources) {
 /// marks the session failed, and keeps that error as the terminal error so later commands
 /// report it instead of a generic transport loss.
 async fn route_oversized(resources: &CodexRouterResources, byte_length: usize) {
-    cancel_capacity_retry(resources);
     let error = CodexRpcFailure::Oversized.to_chat_error("message");
+    fail_session(
+        resources,
+        error,
+        OVERSIZED_MESSAGE_ERROR,
+        |state: &CodexRouteState| {
+            resources
+                .normalizer
+                .oversized_event(state, byte_length)
+                .map(Some)
+        },
+    )
+    .await;
+}
+
+/// Ends the session after a message could not be routed: marks it failed with the error and
+/// keeps that error as the terminal error, so the turn does not stay running and later
+/// commands report why.
+async fn route_failed(resources: &CodexRouterResources, error: ChatError) {
+    let reason = error.message.clone();
+    fail_session(resources, error, &reason, |_: &CodexRouteState| Ok(None)).await;
+}
+
+/// Cancels the armed capacity retry, emits `lead` when there is one and then the failed
+/// session state with `reason`, and keeps `error` as the terminal error. An emit failure is
+/// kept instead, since the timeline then never learned of the failure.
+async fn fail_session(
+    resources: &CodexRouterResources,
+    error: ChatError,
+    reason: &str,
+    lead: impl FnOnce(&CodexRouteState) -> ChatResult<Option<CanonicalRuntimeEvent>>,
+) {
+    cancel_capacity_retry(resources);
     let events = resources
         .route
         .lock()
         .map_err(|_| router_state_error())
         .and_then(|state| {
-            let malformed = resources.normalizer.oversized_event(&state, byte_length)?;
+            let lead = lead(&state)?;
             let previous = state.running_session_state();
             let closed = resources.normalizer.event(
                 &state,
@@ -893,10 +922,10 @@ async fn route_oversized(resources: &CodexRouterResources, byte_length: usize) {
                     session_id: resources.normalizer.session_id(),
                     previous_state: previous,
                     state: ProviderSessionState::Failed,
-                    reason: Some(OVERSIZED_MESSAGE_ERROR.to_string()),
+                    reason: Some(reason.to_string()),
                 }),
             )?;
-            Ok(vec![malformed, closed])
+            Ok(lead.into_iter().chain([closed]).collect())
         });
     let result = emit_events(&resources.sink, events).await;
     if let Ok(mut terminal) = resources.terminal_error.lock() {

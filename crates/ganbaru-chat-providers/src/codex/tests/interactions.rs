@@ -206,3 +206,63 @@ fn command_approvals_show_the_command_and_its_working_directory() {
     assert!(!subject.truncated);
     assert!(display.allow_session && display.session_grants.is_empty());
 }
+
+#[test]
+fn a_request_the_router_cannot_route_fails_the_session_and_keeps_the_error() {
+    crate::test_block_on(async {
+        let (client_reader, mut server_writer) = tokio::io::duplex(4096);
+        let (_server_reader, client_writer) = tokio::io::duplex(4096);
+        let mut connection = CodexRpcConnection::from_test_io(client_reader, client_writer);
+        let sink = Arc::new(RecordingSink::default());
+        let terminal_error = Arc::new(Mutex::new(None));
+        let (provider_thread_sender, _provider_thread) = tokio::sync::watch::channel(None);
+        let router = super::super::session::spawn_codex_router(
+            super::super::session::CodexRouterResources {
+                client: connection.client(),
+                inbound: connection.take_inbound().unwrap(),
+                normalizer: Arc::new(CodexEventNormalizer::new(
+                    identifier("codex-instance-1", ProviderInstanceId::new),
+                    identifier("chat-thread-1", ChatThreadId::new),
+                    identifier("session-1", ProviderSessionId::new),
+                )),
+                route: Arc::new(Mutex::new(CodexRouteState::new(
+                    modes(SafetyMode::AskForApproval, InteractionMode::Build),
+                    None,
+                ))),
+                pending_requests: Arc::new(Mutex::new(HashMap::new())),
+                sink: sink.clone(),
+                provider_thread_sender,
+                expected_shutdown: Arc::new(AtomicBool::new(false)),
+                terminal_error: Arc::clone(&terminal_error),
+                organizational: false,
+                memory_limit: None,
+            },
+        );
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "item/commandExecution/requestApproval",
+            "params": [],
+        });
+        server_writer
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), router)
+            .await
+            .expect("the router stops after the failure")
+            .unwrap();
+
+        assert!(sink.events().iter().any(|event| matches!(
+            &event.event,
+            CanonicalEvent::SessionStateChanged(changed)
+                if changed.state == ProviderSessionState::Failed
+        )));
+        let kept = terminal_error
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the error is kept");
+        assert_eq!(kept.code, ChatErrorCode::Protocol);
+    });
+}

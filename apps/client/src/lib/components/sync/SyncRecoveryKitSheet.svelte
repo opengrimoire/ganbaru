@@ -8,6 +8,7 @@
   import { BUILD_PLATFORM } from "$lib/platform";
   import { syncKitCodeLines, syncKitFileName, syncKitFileText } from "$lib/sync/authority";
   import { portal } from "$lib/utils/portal";
+  import { IDLE_SYNC_ACTIONS, runSyncAction, type SyncActionAccess, type SyncActionState } from "./sync-action-state";
 
   /**
    * Shows a recovery kit that waits to be saved: its code, a printable page with its QR code, a
@@ -35,10 +36,10 @@
 
   const localization = getLocalization();
   const { t } = localization;
-  let busy = $state(false);
+  let actions = $state.raw<SyncActionState<"kit">>(IDLE_SYNC_ACTIONS);
+  const actionAccess: SyncActionAccess<"kit"> = { read: () => actions, write: (next) => { actions = next; } };
+  const busy = $derived(actions.running.length > 0);
   let typed = $state("");
-  let message = $state("");
-  let failed = $state(false);
   let printedAtMs = $state<number | null>(null);
   /** Whether the code may show: at once off Android, and on Android once the window is secure. */
   let shielded = $state(BUILD_PLATFORM !== "android");
@@ -88,42 +89,37 @@
   }
 
   async function saveFile(): Promise<void> {
-    if (busy) return;
-    busy = true;
-    message = "";
-    failed = false;
-    try {
+    await runSyncAction(actionAccess, "kit", async () => {
       await saveSyncRecoveryKitFile(syncKitFileName(t), syncKitFileText(t, localization.locale, kit.code, Date.now()));
-    } catch (cause: unknown) {
-      console.warn("recovery kit file could not be saved", cause);
-      failed = true;
-      message = t("sync.kit.saveFailed");
-    } finally {
-      busy = false;
-    }
+    }, {
+      success: () => "",
+      failure: (cause) => {
+        console.warn("recovery kit file could not be saved", cause);
+        return t("sync.kit.saveFailed");
+      },
+      exclusive: true,
+    });
   }
+
+  /** The typed last group did not match the kit, which the sheet reports as a failed confirmation. */
+  class KitMismatch extends Error {}
 
   async function confirm(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     const group = typed.trim();
-    if (busy || group.length === 0) return;
-    busy = true;
-    message = "";
-    failed = false;
-    try {
-      if (await onConfirm(group)) {
-        typed = "";
-      } else {
-        failed = true;
-        message = t("sync.kit.confirmMismatch");
-      }
-    } catch (cause: unknown) {
-      console.warn("recovery kit could not be confirmed", cause);
-      failed = true;
-      message = t("sync.kit.confirmFailed");
-    } finally {
-      busy = false;
-    }
+    if (group.length === 0) return;
+    const outcome = await runSyncAction(actionAccess, "kit", async () => {
+      if (!(await onConfirm(group))) throw new KitMismatch();
+    }, {
+      success: () => "",
+      failure: (cause) => {
+        if (cause instanceof KitMismatch) return t("sync.kit.confirmMismatch");
+        console.warn("recovery kit could not be confirmed", cause);
+        return t("sync.kit.confirmFailed");
+      },
+      exclusive: true,
+    });
+    if (outcome.ok) typed = "";
   }
 </script>
 
@@ -169,12 +165,8 @@
       </button>
     </div>
   </form>
-  {#if message}
-    {#if failed}
-      <Notice class="px-1 text-[0.8rem] leading-5" {message} copy={false} />
-    {:else}
-      <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{message}</p>
-    {/if}
+  {#if actions.feedback.kind === "failed"}
+    <Notice class="px-1 text-[0.8rem] leading-5" message={actions.feedback.message} copy={false} />
   {/if}
 </div>
 

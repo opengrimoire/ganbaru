@@ -158,6 +158,7 @@ Tauri's platform app config directory stores device-local bootstrap and runtime 
 
 - **Tooling:** pnpm workspaces with Turborepo, Vite, plain Svelte 5 with runes (not SvelteKit), and Tauri v2. Rust uses edition 2024, resolver 3, and rustfmt style 2024.
 - **State management:** Svelte 5 runes (`$state`, `$derived`, `$effect`), no external state manager. Durable runtime authority (Calendar recurrence and mutations, Focus execution, Music sessions) lives in Rust; the frontend renders native projections.
+- **Lifecycle state:** no implicit state machines, meaning lifecycles spread across booleans, nullable fields, or status strings that must agree. Model a value that moves through phases (a request, a save, a linking flow) as one state type with one transition owner, and keep the request token or target identity inside the in-flight state so a late result cannot land on a newer target. See `docs/architecture/decisions/state-machines.md`.
 - **Data architecture:** project working documents and managed attachments are files on disk and the file is the source of truth where its format is canonical; SQLite may index them. Structured data and document graphs (Notes pages and blocks, the planned diary, Calendar events, project tasks, Focus configs and runs) live in SQLite as the source of truth. Markdown for Notes is derivative import, export, or bridge output only.
 - **AI integration:** three opt-in paths. (1) Implemented: local coding-agent Chat in project channels over Rust-owned native provider sessions (Codex, Claude, Cursor, Grok, OpenCode), with durable SQLite history, project working folders, and a scoped ephemeral loopback MCP endpoint for application-owned host tools. That endpoint is infrastructure, not a participant identity. (2) Planned: a BYOK assistant for hosted and local user-configured providers. (3) Planned: a separately authorized MCP service for external AI clients. See `docs/features/ai/` and `docs/features/chat/`.
 - **Chat storage boundary:** organizational Chat state (channels, sessions, events, drafts, checkpoints, authorization revisions, scratch scopes) lives in the vault SQLite database. Managed attachment bytes live under `assets/chat/attachments/`. Provider configuration, absolute folder paths, scratch paths, executables, provider homes, diagnostics, provider-native trust, and process state are device-local; Chat behavior is a portable preference, apart from the device-scoped multiline terminal paste confirmation and Chat notification content inclusion. Provider-native trust never widens organizational authority. Provider secrets live only behind operating-system credential references. See `docs/data/schema/chat.md` and `docs/data/security/chat.md`.
@@ -231,6 +232,7 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 - SQLx validates applied migration checksums, so never rewrite an applied migration to fix a live install. Keep migrations idempotent and narrowly scoped when practical. Preserve user-authored values that still have meaning; only delete data that is obsolete or derivable from canonical data.
 - Keep `crates/ganbaru-db/src/lib.rs` focused on pool and migration services, schema and migration invariant tests in `crates/ganbaru-db/src/tests/`, and active-folder path authorization in `apps/client/src-tauri/app/src/db.rs`.
 - Never hardcode Ganbaru folder paths; read them from user configuration.
+- Device-local SQLite or JSON stores without migrations (spools, runtime snapshots, caches) carry a schema version and replace or reject a store of another version explicitly; `CREATE TABLE IF NOT EXISTS` alone silently keeps an old shape.
 
 ### Theme and color tokens
 
@@ -242,6 +244,7 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 
 - Panels, menus, popovers, dialogs, rows, and fields follow `docs/architecture/ui-foundations.md`. Build them from the shared utilities in `apps/client/src/ui-foundations.css` (`surface-floating`, `surface-dialog`, `menu-item`, `field`, `text-panel`, `w-floating*`) and the `components/ui/` controls (`Checkbox`, `Switch`, `Select`) instead of restyling local copies.
 - Do not add per-panel radii, shadows, focus rings on text entry, row heights, or hover delays. Change the shared token when the whole app should change, and record a reason in that doc for any deliberate exception.
+- A loader never stands in for a failure: every waiting state that a request can end shows its error with a retry in the same place.
 
 ### Code and docs style
 

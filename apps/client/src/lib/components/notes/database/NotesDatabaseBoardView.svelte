@@ -162,6 +162,7 @@
       const loaded = await notesDatabaseSession.load(resource, () => getNotesDataSourceBoardView(sourceId, scope), force);
       if (currentRequest !== requestId) return null;
       board = loaded;
+      error = null;
       if (selectedPanelRowId && !hasBoardRow(selectedPanelRowId, loaded.groups)) {
         selectedPanelRowId = null;
       }
@@ -195,7 +196,7 @@
       board = mergeNotesDatabaseBoardWindow(current, loaded);
       notesDatabaseSession.write(databaseResource("board", dataSourceId, viewScope()), board);
     } catch (caught) {
-      if (currentRequest === requestId) error = notesFailure(caught, t("notes.databaseBoardFailed"));
+      if (currentRequest === requestId && board === current) error = notesFailure(caught, t("notes.databaseBoardFailed"));
     } finally {
       if (currentRequest === requestId) loadingMore = false;
     }

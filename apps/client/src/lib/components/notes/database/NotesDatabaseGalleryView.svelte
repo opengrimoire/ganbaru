@@ -156,6 +156,7 @@
       const loaded = await notesDatabaseSession.load(resource, () => getNotesDataSourceGalleryView(sourceId, scope), force);
       if (currentRequest !== requestId) return null;
       gallery = loaded;
+      error = null;
       if (selectedPanelRowId && !loaded.rows.some((row) => row.id === selectedPanelRowId)) {
         selectedPanelRowId = null;
       }
@@ -189,7 +190,7 @@
       gallery = { ...loaded, rows: mergeNotesDatabaseRows(current.rows, loaded.rows) };
       notesDatabaseSession.write(databaseResource("gallery", dataSourceId, viewScope()), gallery);
     } catch (caught) {
-      if (currentRequest === requestId) error = notesFailure(caught, t("notes.databaseGalleryFailed"));
+      if (currentRequest === requestId && gallery === current) error = notesFailure(caught, t("notes.databaseGalleryFailed"));
     } finally {
       if (currentRequest === requestId) loadingMore = false;
     }

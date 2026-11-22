@@ -160,6 +160,7 @@
       const loaded = await notesDatabaseSession.load(resource, () => getNotesDataSourceCalendarView(sourceId, scope), force);
       if (currentRequest !== requestId) return null;
       calendar = loaded;
+      error = null;
       if (selectedPanelRowId && !loaded.rows.some((row) => row.id === selectedPanelRowId)) {
         selectedPanelRowId = null;
       }
@@ -195,7 +196,7 @@
       calendar = { ...loaded, rows: mergeNotesDatabaseRows(current.rows, loaded.rows) };
       notesDatabaseSession.write(databaseResource("calendar", dataSourceId, viewScope()), calendar);
     } catch (caught) {
-      if (currentRequest === requestId) error = notesFailure(caught, t("notes.databaseCalendarFailed"));
+      if (currentRequest === requestId && calendar === current) error = notesFailure(caught, t("notes.databaseCalendarFailed"));
     } finally {
       if (currentRequest === requestId) loadingMore = false;
     }

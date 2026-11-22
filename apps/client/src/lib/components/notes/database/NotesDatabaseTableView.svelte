@@ -564,6 +564,7 @@
       const focusedId = document.activeElement?.closest<HTMLElement>("[data-database-row-id]")?.dataset.databaseRowId ?? null;
       rowCreation.acceptWindow(dataSourceId, focusedId, settledIds);
       table = loaded;
+      error = null;
       if (selectedPanelRowId && !visibleRows.some((row) => row.id === selectedPanelRowId)) {
         selectedPanelRowId = null;
       }
@@ -614,7 +615,7 @@
       table = { ...loaded, rows: [...rows.values()], row_hierarchy: { ...current.row_hierarchy, ...loaded.row_hierarchy } };
       notesDatabaseSession.write(databaseResource("table", dataSourceId, viewScope()), table);
     } catch (caught) {
-      if (requestId === tableRequestId) error = notesFailure(caught, t("notes.databaseTableFailed"));
+      if (requestId === tableRequestId && table === current) error = notesFailure(caught, t("notes.databaseTableFailed"));
     } finally {
       if (requestId === tableRequestId) loadingMore = false;
     }

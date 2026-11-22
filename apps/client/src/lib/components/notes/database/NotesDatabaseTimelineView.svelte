@@ -176,6 +176,7 @@
       const loaded = await notesDatabaseSession.load(resource, () => getNotesDataSourceTimelineView(sourceId, scope), force);
       if (currentRequest !== requestId) return null;
       timeline = loaded;
+      error = null;
       if (selectedPanelRowId && !loaded.rows.some((row) => row.id === selectedPanelRowId)) {
         selectedPanelRowId = null;
       }
@@ -211,7 +212,7 @@
       timeline = { ...loaded, rows: mergeNotesDatabaseRows(current.rows, loaded.rows) };
       notesDatabaseSession.write(databaseResource("timeline", dataSourceId, viewScope()), timeline);
     } catch (caught) {
-      if (currentRequest === requestId) error = notesFailure(caught, t("notes.databaseTimelineFailed"));
+      if (currentRequest === requestId && timeline === current) error = notesFailure(caught, t("notes.databaseTimelineFailed"));
     } finally {
       if (currentRequest === requestId) loadingMore = false;
     }

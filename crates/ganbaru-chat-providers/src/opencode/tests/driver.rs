@@ -1080,6 +1080,11 @@ fn a_silent_stream_during_a_turn_reconnects_then_fails_unless_idle_or_waiting_fo
                     if error.code == "opencode_event_stream_silent" && !error.recoverable)),
             "a stream that failed for good fails the turn"
         );
+        server.wait_for_request("POST /session/ses_new/abort").await;
+        assert!(
+            driver.live_mut(&snapshot.session_id).is_err(),
+            "a failed session refuses further work"
+        );
         server.shutdown().await;
     });
 }

@@ -15,7 +15,7 @@ use crate::{
     ProviderEventSink,
 };
 use ganbaru_chat_contracts::model_recommendation::{NativeCompany, recommended_model_id};
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
 
 impl ProviderDriver for OpenCodeProviderDriver {
     fn metadata(&self) -> ProviderFamilyMetadataRead {
@@ -680,7 +680,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
                 .map_err(|_| driver_state_error())?
                 .request_interrupt();
             let abort_result = live.client.abort(&live.provider_thread_id).await;
-            live.expected_shutdown.store(true, Ordering::Release);
+            live.lifecycle.begin_stop();
             live.event_task.abort();
             if let Some(task) = live.command_task.take() {
                 task.abort();

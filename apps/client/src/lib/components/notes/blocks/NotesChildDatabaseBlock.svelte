@@ -236,7 +236,11 @@
     if (request !== schemaRequestId) return Promise.resolve();
     if (schemaLoadPromise) return schemaLoadPromise.then(() => request === schemaRequestId ? loadSchema(scope, request) : undefined);
     const sourceId = scope?.dataSourceId ?? schemaDataSourceId;
-    if (!sourceId) return Promise.resolve();
+    if (!sourceId) {
+      // This request superseded any load in flight, so it owns the loading state even though it reads nothing.
+      loading = false;
+      return Promise.resolve();
+    }
     schemaLoadPromise = performLoadSchema(sourceId, scope?.viewId ?? null, request).finally(() => { schemaLoadPromise = null; });
     return schemaLoadPromise;
   }

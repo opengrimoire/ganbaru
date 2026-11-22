@@ -1008,3 +1008,34 @@ fn an_activated_anchor_whose_database_is_lost_does_not_start_it_over() {
         }
     });
 }
+
+#[test]
+fn spending_a_setup_secret_leaves_a_code_printed_since_the_proof() {
+    use ganbaru_handoff::protocol::relay::RelaySetupToken;
+
+    let data = TempDir::new();
+    let paths = DataPaths::new(data.path().to_path_buf());
+    let proven = RelaySetupToken::generate().unwrap();
+    let newer = RelaySetupToken::generate().unwrap();
+    let expires_at_ms = i64::MAX;
+    super::state::store_setup_secret(&paths, &proven, expires_at_ms).unwrap();
+    super::state::store_setup_secret(&paths, &newer, expires_at_ms).unwrap();
+
+    assert!(!super::state::setup_secret_is(&paths, &proven).unwrap());
+    assert!(super::state::setup_secret_is(&paths, &newer).unwrap());
+    assert!(!super::state::consume_setup_secret(&paths, &proven).unwrap());
+    assert!(!super::state::bind_setup_vault(&paths, &proven, VAULT_ID).unwrap());
+    let live = super::state::live_setup_secret(&paths, 0).unwrap();
+    assert_eq!(
+        live.map(|token| token.to_text()),
+        Some(newer.to_text()),
+        "a stale proof must not spend or bind the newer code"
+    );
+
+    assert!(super::state::consume_setup_secret(&paths, &newer).unwrap());
+    assert!(
+        super::state::live_setup_secret(&paths, 0)
+            .unwrap()
+            .is_none()
+    );
+}

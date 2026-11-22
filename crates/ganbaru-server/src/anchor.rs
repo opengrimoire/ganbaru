@@ -162,7 +162,6 @@ async fn serve_with(
         commits,
         version: VERSION,
         upload: tokio::sync::Mutex::new(()),
-        binding: std::sync::Mutex::new(()),
     };
     let bundles = MemberBundles::new(activation::snapshot_preparer(
         host.clone(),

@@ -49,8 +49,6 @@ pub struct SetupRoute {
     pub version: &'static str,
     /// Held for one upload, which has fixed staging paths.
     pub upload: tokio::sync::Mutex<()>,
-    /// Held while a proof binds the setup secret to its vault.
-    pub binding: std::sync::Mutex<()>,
 }
 
 /// A desktop's request to join the vault, decoded from a validated [`ControlMessage::AnchorJoin`].
@@ -211,7 +209,7 @@ impl SetupRoute {
         };
         let identity = self.identity(&vault_id).await?;
         timeout_control(write_control(stream, &identity)).await?;
-        self.after_proof(stream, &vault_id).await
+        self.after_proof(stream, &vault_id, &secret).await
     }
 
     /// The live setup secret `proof` proves, `None` when it proves none.
@@ -270,10 +268,6 @@ impl SetupRoute {
     }
 
     fn bind(&self, secret: &RelaySetupToken, vault_id: &str) -> Result<bool, String> {
-        let _binding = self
-            .binding
-            .lock()
-            .map_err(|_| "the setup binding lock is poisoned".to_string())?;
         super::state::bind_setup_vault(self.host.paths(), secret, vault_id)
     }
 
@@ -331,7 +325,12 @@ impl SetupRoute {
 
     /// Serves the request that follows a proof, if any: a device often closes after it learned
     /// the server's keys.
-    async fn after_proof(&self, stream: &mut ServerStream, vault_id: &str) -> Result<(), String> {
+    async fn after_proof(
+        &self,
+        stream: &mut ServerStream,
+        vault_id: &str,
+        secret: &RelaySetupToken,
+    ) -> Result<(), String> {
         let frame = read_control_limited(stream, protocol::MAX_CONTROL_BYTES);
         match timeout_control(frame).await {
             Ok(ControlMessage::AnchorUpload {
@@ -344,11 +343,11 @@ impl SetupRoute {
                     charter,
                     person_key,
                 };
-                self.upload(stream, vault_id, metadata, charter, take_anchor)
+                self.upload(stream, vault_id, secret, metadata, charter, take_anchor)
                     .await
             }
             Ok(ControlMessage::AnchorRecover { proposal }) => {
-                self.recover(stream, vault_id, proposal).await
+                self.recover(stream, vault_id, secret, proposal).await
             }
             Ok(ControlMessage::AnchorJoin {
                 device_id,
@@ -364,7 +363,7 @@ impl SetupRoute {
                     &admin_key,
                     &tls_fingerprint,
                 )?;
-                self.join(stream, vault_id, request).await
+                self.join(stream, vault_id, secret, request).await
             }
             Ok(_) => {
                 send_error(
@@ -383,6 +382,7 @@ impl SetupRoute {
         &self,
         stream: &mut ServerStream,
         vault_id: &str,
+        secret: &RelaySetupToken,
         metadata: BundleMetadata,
         charter: PinnedCharter,
         take_anchor: bool,
@@ -444,6 +444,10 @@ impl SetupRoute {
             )
             .await;
         }
+        if !super::state::setup_secret_is(&paths, secret)? {
+            clear_incoming(&paths)?;
+            return refuse_setup(stream, WRONG_CODE).await;
+        }
         let activated = activate(
             &self.host,
             Upload {
@@ -457,7 +461,9 @@ impl SetupRoute {
         if let Err(message) = activated {
             return send_error(stream, UPLOAD_REFUSED_CODE, &message, false).await;
         }
-        super::state::consume_setup_secret(&paths)?;
+        // A code printed between the check above and activation stays usable; the vault is
+        // active either way.
+        super::state::consume_setup_secret(&paths, secret)?;
         self.commits.notify_one();
         println!("Activated vault {vault_id}.");
         timeout_control(write_control(
@@ -470,11 +476,13 @@ impl SetupRoute {
     }
 
     /// Hands a proposal the recovery admin key signed to the sequencer. The sequencer verifies it
-    /// as it verifies any proposal, so the secret only lets a device reach it.
+    /// as it verifies any proposal, so the secret only lets a device reach it. An accepted proposal
+    /// spends the proven secret, and a code printed since the proof stays usable.
     async fn recover(
         &self,
         stream: &mut ServerStream,
         vault_id: &str,
+        secret: &RelaySetupToken,
         proposal: String,
     ) -> Result<(), String> {
         let answer = self
@@ -493,7 +501,7 @@ impl SetupRoute {
                 ..
             }
         ) {
-            super::state::consume_setup_secret(self.host.paths())?;
+            super::state::consume_setup_secret(self.host.paths(), secret)?;
         }
         timeout_control(write_control(stream, &answer)).await
     }
@@ -501,11 +509,12 @@ impl SetupRoute {
     /// Enrolls the desktop that proved the secret as an admin, signed with this server's admin
     /// key. A desktop the selected log already enrolls with the same keys gets the current
     /// revision, so a retry after the anchor collected the proposal succeeds. The secret is spent
-    /// once the log enrolls the desktop.
+    /// once the log enrolls the desktop, and a retry whose code was replaced since is refused.
     async fn join(
         &self,
         stream: &mut ServerStream,
         vault_id: &str,
+        secret: &RelaySetupToken,
         request: JoinRequest,
     ) -> Result<(), String> {
         let Some((ctx, view)) = self.authorization(vault_id).await? else {
@@ -523,7 +532,9 @@ impl SetupRoute {
             if !same {
                 return refuse_setup(stream, "the vault already knows this device id").await;
             }
-            super::state::consume_setup_secret(self.host.paths())?;
+            if !super::state::consume_setup_secret(self.host.paths(), secret)? {
+                return refuse_setup(stream, WRONG_CODE).await;
+            }
             let answer = ControlMessage::SyncProposed {
                 revision: Some(view.revision),
                 rejection: None,
@@ -542,8 +553,13 @@ impl SetupRoute {
             admin_enroll_entry(request.enrollment, request.admin_key),
             now_ms,
         )?;
-        self.recover(stream, vault_id, protocol::encode_sync_proposal(&proposal))
-            .await
+        self.recover(
+            stream,
+            vault_id,
+            secret,
+            protocol::encode_sync_proposal(&proposal),
+        )
+        .await
     }
 
     /// The space context and selected authorization of `vault_id`, `None` when this server does

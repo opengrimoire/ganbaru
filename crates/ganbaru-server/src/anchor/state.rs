@@ -79,6 +79,11 @@ impl DataPaths {
         self.root.join("setup-secret")
     }
 
+    /// The file whose lock serializes changes to the setup secret.
+    pub fn setup_secret_lock(&self) -> PathBuf {
+        self.root.join("setup-secret.lock")
+    }
+
     /// The certificate fingerprint, readable while a server holds the data directory lock.
     pub fn fingerprint(&self) -> PathBuf {
         self.root.join("certificate.sha256")
@@ -168,6 +173,7 @@ pub fn store_setup_secret(
     token: &RelaySetupToken,
     expires_at_ms: i64,
 ) -> Result<(), String> {
+    let _lock = SetupSecretLock::acquire(paths)?;
     write_secret(
         paths,
         &StoredSecret {
@@ -176,6 +182,28 @@ pub fn store_setup_secret(
             bound_vault: None,
         },
     )
+}
+
+/// An exclusive lock on the setup secret, released when dropped. Every read that leads to a write
+/// or removal of the secret holds it, across processes, so `anchor setup` printing a new code
+/// never interleaves with a running server binding or spending the older one.
+struct SetupSecretLock {
+    _file: std::fs::File,
+}
+
+impl SetupSecretLock {
+    fn acquire(paths: &DataPaths) -> Result<Self, String> {
+        let path = paths.setup_secret_lock();
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|error| format!("open {}: {error}", path.display()))?;
+        file.lock()
+            .map_err(|error| format!("lock {}: {error}", path.display()))?;
+        Ok(Self { _file: file })
+    }
 }
 
 fn write_secret(paths: &DataPaths, stored: &StoredSecret) -> Result<(), String> {
@@ -195,13 +223,14 @@ fn read_secret(paths: &DataPaths) -> Result<Option<StoredSecret>, String> {
 
 /// Binds the stored setup secret `token` to `vault_id` on its first proof, and answers whether
 /// the secret serves that vault: a bound secret serves only the vault it was bound to, and a
-/// secret replaced since the proof serves none. Callers serialize calls, since the check and the
-/// write are separate file operations.
+/// secret replaced since the proof serves none. The check and the write happen under the setup
+/// secret lock, so a code printed meanwhile is never overwritten.
 pub fn bind_setup_vault(
     paths: &DataPaths,
     token: &RelaySetupToken,
     vault_id: &str,
 ) -> Result<bool, String> {
+    let _lock = SetupSecretLock::acquire(paths)?;
     let Some(mut stored) = read_secret(paths)? else {
         return Ok(false);
     };
@@ -234,9 +263,25 @@ pub fn live_setup_secret(
         .map_err(|_| "the stored setup secret is damaged".to_string())
 }
 
-/// Removes the setup secret, which makes its code useless.
-pub fn consume_setup_secret(paths: &DataPaths) -> Result<(), String> {
-    remove_if_present(&paths.setup_secret())
+/// Whether `token` is still the stored setup secret, so a proof made before `anchor setup`
+/// printed a newer code no longer admits a step that spends it.
+pub fn setup_secret_is(paths: &DataPaths, token: &RelaySetupToken) -> Result<bool, String> {
+    let _lock = SetupSecretLock::acquire(paths)?;
+    Ok(read_secret(paths)?.is_some_and(|stored| stored.token == token.to_text()))
+}
+
+/// Spends the setup secret `token`, which makes its code useless, and answers whether it was
+/// still the stored one. A secret replaced since the proof stays, so a newer printed code keeps
+/// working.
+pub fn consume_setup_secret(paths: &DataPaths, token: &RelaySetupToken) -> Result<bool, String> {
+    let _lock = SetupSecretLock::acquire(paths)?;
+    match read_secret(paths)? {
+        Some(stored) if stored.token == token.to_text() => {
+            remove_if_present(&paths.setup_secret())?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
 }
 
 /// Publishes the certificate fingerprint for `anchor setup`.

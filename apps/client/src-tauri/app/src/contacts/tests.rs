@@ -974,6 +974,40 @@ async fn an_accepted_poll_does_not_reopen_a_request_cancelled_while_in_flight() 
 }
 
 #[tokio::test]
+async fn a_late_attempt_leaves_a_closed_request_unchanged() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    insert_sent_request(&pool, &recipient, "contact-one").await;
+    let pending = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    requests::close_request(
+        &pool,
+        "contact-one",
+        pending.revision,
+        requests::RequestClosure::Cancel,
+    )
+    .await
+    .unwrap();
+    let closed = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+
+    store::touch_request_attempt(&pool, "contact-one", store::now(), Some("late-error"))
+        .await
+        .unwrap();
+
+    let row = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.last_attempt_at, closed.last_attempt_at);
+    assert_eq!(row.last_error_code, closed.last_error_code);
+}
+
+#[tokio::test]
 async fn an_accepted_poll_never_clears_a_block() {
     let pool = migrated_memory_pool().await;
     let recipient = Person::new("Recipient");

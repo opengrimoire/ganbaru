@@ -843,7 +843,9 @@ where
 }
 
 /// Records a delivery or polling attempt on a sent request. Attempts are device-local and
-/// leave the replicated columns untouched, so polling publishes nothing to linked devices.
+/// leave the replicated columns untouched, so polling publishes nothing to linked devices. Only
+/// a pending request records attempts: a late attempt result after a local close leaves the
+/// closed row as it was.
 pub(crate) async fn touch_request_attempt<'e, E>(
     executor: E,
     id: &str,
@@ -856,7 +858,7 @@ where
     sqlx::query(
         "UPDATE contact_requests
          SET last_attempt_at = ?, last_error_code = ?
-         WHERE id = ?",
+         WHERE id = ? AND state = 'pending'",
     )
     .bind(format_time(now))
     .bind(error_code)

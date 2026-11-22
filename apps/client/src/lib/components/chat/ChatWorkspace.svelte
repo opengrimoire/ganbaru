@@ -1095,6 +1095,8 @@
   }
 
   let restoreDialog = $state<RestoreDialogState | null>(null);
+  /** Counts checkpoint restore requests so only the newest one may open the confirmation. */
+  let restoreRequest = 0;
 
   function confirmRestorePreview(threadId: string, checkpointId: string, preview: ChatRestorePreviewRead): Promise<boolean> {
     restoreDialog?.resolve(false);
@@ -1118,12 +1120,16 @@
   async function restoreMessageCheckpoint(threadId: string, checkpointId: string): Promise<void> {
     const thread = chat.selectedThread;
     if (!thread || thread.id !== threadId) return;
+    const request = ++restoreRequest;
     layoutError = null;
     try {
       await restoreChatCheckpoint({
         thread,
         checkpointId,
-        confirm: (preview) => confirmRestorePreview(threadId, checkpointId, preview),
+        // A preview for a superseded request or a thread no longer shown is declined instead of replacing the dialog.
+        confirm: (preview) => request === restoreRequest && chat.selectedThreadId === threadId
+          ? confirmRestorePreview(threadId, checkpointId, preview)
+          : Promise.resolve(false),
         onRestored: (restoredThreadId) => chat.handleNativeChange(restoredThreadId),
       });
     } catch (error: unknown) {

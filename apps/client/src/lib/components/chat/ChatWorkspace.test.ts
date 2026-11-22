@@ -3,6 +3,7 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatRestorePreviewRead, ChatThreadShellRead } from "$lib/chat/contracts";
+import { chatPaneEvents } from "$lib/chat/pane-events";
 import type { RestoreChatCheckpointOptions } from "$lib/chat/review/checkpoint-restoration";
 import { getChat } from "$lib/stores/chat.svelte";
 import { getProjects } from "$lib/stores/projects.svelte";
@@ -137,6 +138,40 @@ describe("ChatWorkspace", () => {
     await settle();
     return target;
   }
+
+  /** Asks the workspace to restore a checkpoint of a thread, as a message's revert action does. */
+  function requestRestore(threadId: string, checkpointId: string): RestoreChatCheckpointOptions | undefined {
+    chatPaneEvents("primary").dispatchEvent(new CustomEvent("ganbaru:chat-revert-message", {
+      detail: { threadId, checkpointId },
+    }));
+    return restoreCalls.at(-1);
+  }
+
+  it("keeps the newest restore confirmation over a preview that arrives late for an earlier request", async () => {
+    await mountWorkspace();
+    const earlier = requestRestore("thread:first", "checkpoint:one");
+    const newer = requestRestore("thread:first", "checkpoint:two");
+    expect(restoreCalls).toHaveLength(2);
+
+    const newerAnswer = track(newer?.confirm(preview("checkpoint:two")) ?? Promise.resolve(false));
+    const earlierAnswer = track(earlier?.confirm(preview("checkpoint:one")) ?? Promise.resolve(true));
+    await settle();
+
+    expect(earlierAnswer).toEqual({ settled: true, value: false });
+    expect(newerAnswer.settled).toBe(false);
+  });
+
+  it("declines a restore preview that arrives after another thread was selected", async () => {
+    await mountWorkspace();
+    const request = requestRestore("thread:first", "checkpoint:one");
+
+    chat.selectedThreadId = "thread:second";
+    await tick();
+    const answer = track(request?.confirm(preview("checkpoint:one")) ?? Promise.resolve(true));
+    await settle();
+
+    expect(answer).toEqual({ settled: true, value: false });
+  });
 
   it("drops a project's sync failure once another project is selected", async () => {
     vi.mocked(chat.syncProjectSelection).mockImplementation((projectId) => projectId === "project:failing"

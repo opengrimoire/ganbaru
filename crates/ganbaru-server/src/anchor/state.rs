@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 /// Largest small state file an anchor reads.
 const MAX_STATE_FILE_BYTES: u64 = 16 * 1024;
 const FINGERPRINT_BYTES: usize = 32;
+/// Refusal for an activated vault whose database is gone.
+const LOST_DATABASE_ERROR: &str = "the vault database is missing or empty, so it was not opened; move the data folder aside and set the server up again from a linked desktop";
 
 /// Files of an anchor data directory.
 #[derive(Clone, Debug)]
@@ -53,6 +55,19 @@ impl DataPaths {
     pub fn database(&self) -> PathBuf {
         self.vault()
             .join(ganbaru_sync_replica::backup::DATABASE_FILE)
+    }
+
+    /// Refuses when the activated vault's database is missing or empty, so opening it never
+    /// creates an empty one in its place. The activation record proves the vault had one.
+    pub fn refuse_lost_database(&self) -> Result<(), String> {
+        match std::fs::symlink_metadata(self.database()) {
+            Ok(metadata) if metadata.len() > 0 => Ok(()),
+            Ok(_) => Err(LOST_DATABASE_ERROR.to_string()),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                Err(LOST_DATABASE_ERROR.to_string())
+            }
+            Err(error) => Err(format!("read the vault database: {error}")),
+        }
     }
 
     /// The record that commits an activation.

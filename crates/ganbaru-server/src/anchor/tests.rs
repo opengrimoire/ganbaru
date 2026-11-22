@@ -955,3 +955,56 @@ fn anchor_activation_removes_stale_staging() {
         .await;
     });
 }
+
+#[test]
+fn an_activated_anchor_whose_database_is_lost_does_not_start_it_over() {
+    block_on(async {
+        let founder = Founder::new().await;
+        let data = TempDir::new();
+        let root = data.path();
+        with_anchor(root, |endpoint| async move {
+            let code = printed_code(root, &endpoint);
+            let server = enroll_and_upload(&founder, &code).await;
+            wait_for_anchor(root, &server).await;
+        })
+        .await;
+        let paths = DataPaths::new(root.to_path_buf());
+        for empty in [false, true] {
+            for suffix in ["", "-wal", "-shm"] {
+                let mut file = paths.database().into_os_string();
+                file.push(suffix);
+                let _ = std::fs::remove_file(file);
+            }
+            if empty {
+                std::fs::write(paths.database(), b"").unwrap();
+            }
+            let (device_id, pairing, _) = super::open_identity(&paths).unwrap();
+            let host = super::AnchorHost::new(
+                paths.clone(),
+                device_id,
+                pairing,
+                DatabasePoolRegistry::default(),
+            );
+            let refused = ganbaru_sync_replica::service::SyncHost::connect_for_sync(&host)
+                .await
+                .unwrap_err();
+            assert!(
+                refused.contains("database is missing or empty"),
+                "{refused}"
+            );
+            let backup = super::backup(AnchorBackupConfig {
+                data_dir: root.to_path_buf(),
+                out: root.join("out.ganbaru-backup"),
+            })
+            .await
+            .unwrap_err();
+            assert!(backup.contains("database is missing or empty"), "{backup}");
+            let kept = std::fs::metadata(paths.database()).map(|metadata| metadata.len());
+            assert_eq!(
+                kept.ok(),
+                empty.then_some(0),
+                "nothing recreated the database"
+            );
+        }
+    });
+}

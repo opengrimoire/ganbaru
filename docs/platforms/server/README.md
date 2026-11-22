@@ -178,7 +178,7 @@ Each start upgrades the data folder in one transaction per step, so a failed upg
 
 ## Backups
 
-An anchor's vault also lives on your devices. For a file that restores on any new device with the recovery kit, run `anchor backup --out /data/vault.ganbaru-backup` as a stopped command, copy the file off the server, and delete it there. A copy of the data folder is not a backup for another machine; copy it only to move the server, and never run both copies.
+An anchor's vault also lives on your devices. For a file that restores on any new device with the recovery kit, run `anchor backup --out /data/vault.ganbaru-backup` as a stopped command, copy the file off the server, and delete it there. A copy of the data folder is not a backup for another machine; copy it only to move the server, and never run both copies. An activated anchor whose vault database is missing or empty refuses to sync or back up instead of starting an empty vault; move the data folder aside and set the server up again from a linked desktop.
 
 A relay holds only copies of what your devices hold. Without its folder, run a fresh relay, remove the old one in Settings, and add the new one.
 

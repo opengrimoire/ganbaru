@@ -211,6 +211,9 @@ impl SyncHost for AnchorHost {
     }
 
     async fn connect_for_sync(&self) -> Result<SqlitePool, String> {
+        if self.activation()?.is_some() {
+            self.0.paths.refuse_lost_database()?;
+        }
         self.0.pools.connect_path(self.0.paths.database()).await
     }
 

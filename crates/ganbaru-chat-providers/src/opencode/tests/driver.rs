@@ -53,6 +53,10 @@ struct OpenCodeServerState {
     event_connections: AtomicUsize,
     event_sender: broadcast::Sender<String>,
     stopping: AtomicBool,
+    /// Holds a provider command open until the session abort arrives, then fails it, and delays
+    /// the abort reply past that failure, as OpenCode does when a running command is aborted.
+    command_fails_on_abort: AtomicBool,
+    command_failed: AtomicBool,
     health_version: &'static str,
 }
 
@@ -83,6 +87,8 @@ impl OpenCodeServerFixture {
             event_connections: AtomicUsize::new(0),
             event_sender,
             stopping: AtomicBool::new(false),
+            command_fails_on_abort: AtomicBool::new(false),
+            command_failed: AtomicBool::new(false),
             health_version,
         });
         let server_state = Arc::clone(&state);
@@ -169,6 +175,28 @@ async fn handle_connection(
                 Ok(Err(_)) => return Ok(()),
                 Err(_) => {}
             }
+        }
+    }
+    if method == "POST" && state.command_fails_on_abort.load(Ordering::Acquire) {
+        if path == "/session/ses_new/command" {
+            wait_until(|| {
+                state
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|request| request.starts_with("POST /session/ses_new/abort"))
+            })
+            .await;
+            state.command_failed.store(true, Ordering::Release);
+            let body = br#"{"name":"MessageAbortedError"}"#;
+            let response = response(500, "Internal Server Error", "application/json", body);
+            connection.write_all(response.as_bytes()).await?;
+            return connection.flush().await;
+        }
+        if path == "/session/ses_new/abort" {
+            wait_until(|| state.command_failed.load(Ordering::Acquire)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
     let response = route_response(method, path, &state);
@@ -971,6 +999,81 @@ fn session_approvals_are_capped_with_a_warning_and_end_with_the_session() {
                 .iter()
                 .any(|request| request.starts_with("POST /permission/perm_after_stop/reply?"))
         );
+        server.shutdown().await;
+    });
+}
+
+async fn wait_until(condition: impl Fn() -> bool) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[test]
+fn a_command_that_fails_because_of_an_interrupt_settles_the_turn_as_interrupted() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("interrupted-command");
+        let server = OpenCodeServerFixture::start(workspace.path(), None, false).await;
+        server
+            .state
+            .command_fails_on_abort
+            .store(true, Ordering::Release);
+        let mut driver =
+            OpenCodeProviderDriver::new(external_configuration(&server.origin, true)).unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let snapshot = driver
+            .start_session(
+                start_request(workspace.path()),
+                sink.clone(),
+                &context("start"),
+            )
+            .await
+            .unwrap();
+        driver
+            .send_turn(
+                turn_request(&snapshot, "turn-command", "/release now", modes()),
+                &context("send"),
+            )
+            .await
+            .unwrap();
+        server
+            .wait_for_request("POST /session/ses_new/command?")
+            .await;
+        driver
+            .interrupt_turn(
+                InterruptTurnRequest {
+                    command: command("interrupt"),
+                    session_id: snapshot.session_id.clone(),
+                    turn_id: ChatTurnId::new("turn-command").unwrap(),
+                },
+                &context("interrupt"),
+            )
+            .await
+            .unwrap();
+
+        let settlements = sink
+            .events()
+            .into_iter()
+            .filter_map(|event| match event.event {
+                CanonicalEvent::TurnAborted(aborted) => Some(aborted.state),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(settlements, vec![ChatTurnState::Interrupted]);
+        driver
+            .stop_session(
+                StopSessionRequest {
+                    session_id: snapshot.session_id.clone(),
+                    force: false,
+                },
+                &context("stop"),
+            )
+            .await
+            .unwrap();
         server.shutdown().await;
     });
 }

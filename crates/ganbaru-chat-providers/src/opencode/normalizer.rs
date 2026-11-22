@@ -156,6 +156,14 @@ impl OpenCodeRouteState {
         self.active_turn_id.take()
     }
 
+    /// Takes the active turn after its dispatch failed and reports whether the user interrupted
+    /// it first, since aborting a running command makes the command request fail too.
+    pub fn take_failed_dispatch(&mut self) -> Option<(ChatTurnId, bool)> {
+        let turn_id = self.active_turn_id.take()?;
+        let interrupted = self.interrupt_requested.take().as_ref() == Some(&turn_id);
+        Some((turn_id, interrupted))
+    }
+
     /// Questions asked outside a turn during the last normalization, in arrival order, which the
     /// driver rejects at OpenCode.
     pub fn take_unprompted_questions(&mut self) -> Vec<ProviderRequestId> {

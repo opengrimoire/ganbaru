@@ -354,11 +354,20 @@ impl ProviderDriver for OpenCodeProviderDriver {
                         {
                             let aborted = route.lock().map_err(|_| driver_state_error()).and_then(
                                 |mut state| {
-                                    if state.active_turn_id.is_none() {
+                                    let Some((turn_id, interrupted)) = state.take_failed_dispatch()
+                                    else {
                                         return Ok(None);
-                                    }
-                                    state.active_turn_id = None;
+                                    };
                                     state.busy = false;
+                                    if interrupted {
+                                        return normalizer
+                                            .interrupted_turn(
+                                                &state,
+                                                "command/interrupted",
+                                                turn_id,
+                                            )
+                                            .map(Some);
+                                    }
                                     normalizer
                                         .external_event(
                                             &state,

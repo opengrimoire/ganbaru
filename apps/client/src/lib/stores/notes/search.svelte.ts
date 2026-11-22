@@ -53,10 +53,7 @@ export function createNotesSearchController() {
         nextCursor: window.next_cursor,
       });
     } catch (caught) {
-      resource = failAsyncRequest(resource, started.token, notesErrorDetail(caught), {
-        ...resource.data,
-        results: [],
-      });
+      resource = failAsyncRequest(resource, started.token, notesErrorDetail(caught), NO_SEARCH_PAGES);
     }
   }
 

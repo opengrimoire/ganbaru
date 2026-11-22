@@ -132,4 +132,22 @@ describe("contacts store", () => {
 
     expect(contacts.identity?.cardRevision).toBe(4);
   });
+
+  it("keeps a failed action's error when a background refresh succeeds after it", async () => {
+    api.blockPerson.mockRejectedValueOnce({ code: "stale_revision", message: "changed" });
+    api.listContacts.mockResolvedValueOnce(snapshot(1)).mockRejectedValueOnce({ code: "io", message: "read failed" }).mockResolvedValueOnce(snapshot(2));
+    const contacts = await load();
+
+    await expect(contacts.block("key")).rejects.toBeDefined();
+    const actionError = contacts.error;
+    expect(actionError).not.toBeNull();
+    await contacts.refresh();
+    expect(contacts.error).toBe(actionError);
+
+    contacts.clearError();
+    await contacts.refresh();
+    expect(contacts.error).not.toBeNull();
+    await contacts.refresh();
+    expect(contacts.error).toBeNull();
+  });
 });

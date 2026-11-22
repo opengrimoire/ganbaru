@@ -40,7 +40,11 @@ let requests = $state<ContactRequest[]>([]);
 let loaded = $state(false);
 let loading = $state(false);
 let cardLoading = $state(false);
-let error = $state<ContactsError | null>(null);
+/**
+ * The last command failure and whether a read or a write failed. A later read clears only a read failure, so a
+ * background refresh never hides why an action failed; a later successful write clears either.
+ */
+let failure = $state.raw<{ kind: CommandKind; error: ContactsError } | null>(null);
 let cardError = $state<ContactsError | null>(null);
 let generation = 0;
 let replicationListenerStarted = false;
@@ -91,7 +95,7 @@ onActiveVaultIdentityChange(() => {
   pendingCardCommands = 0;
   loading = false;
   cardLoading = false;
-  error = null;
+  failure = null;
   cardError = null;
 });
 
@@ -113,11 +117,11 @@ async function runSnapshotCommand(run: () => Promise<ContactsSnapshot>, kind: Co
     const snapshot = await run();
     if (expected !== generation || !admitResult(snapshotOrder, kind, started)) return;
     applySnapshot(snapshot);
-    error = null;
+    if (kind === "write" || failure?.kind === "read") failure = null;
   } catch (cause) {
-    const failure = normalizeContactsError(cause);
-    if (expected === generation && (kind === "write" || started > snapshotOrder.shown)) error = failure;
-    throw failure;
+    const error = normalizeContactsError(cause);
+    if (expected === generation && (kind === "write" || started > snapshotOrder.shown)) failure = { kind, error };
+    throw error;
   }
 }
 
@@ -179,12 +183,12 @@ async function runCardCommand(run: () => Promise<LocalContactCard>, kind: Comman
     card = view.card;
     cardError = null;
   } catch (cause) {
-    const failure = normalizeContactsError(cause);
+    const cardFailure = normalizeContactsError(cause);
     if (expected === generation && (kind === "write" || started > cardOrder.shown)) {
       card = null;
-      cardError = failure;
+      cardError = cardFailure;
     }
-    throw failure;
+    throw cardFailure;
   } finally {
     if (expected === generation) {
       pendingCardCommands -= 1;
@@ -209,7 +213,7 @@ export function getContacts() {
     get loaded(): boolean { return loaded; },
     get loading(): boolean { return loading; },
     get cardLoading(): boolean { return cardLoading; },
-    get error(): ContactsError | null { return error; },
+    get error(): ContactsError | null { return failure?.error ?? null; },
     get cardError(): ContactsError | null { return cardError; },
     get activeContacts(): Contact[] {
       return contacts.filter((contact) => contact.state === "active");
@@ -229,7 +233,7 @@ export function getContacts() {
     ensureLoaded,
     refresh,
     clearError(): void {
-      error = null;
+      failure = null;
     },
     /** Signs the current card; creates the identity the first time the card is opened. */
     loadCard(): Promise<void> {
@@ -268,7 +272,7 @@ export function getContacts() {
       try {
         await mutate(syncContactRequests);
       } catch {
-        // Recorded in `error`; the periodic native poll retries on its own.
+        // Recorded in `failure`; the periodic native poll retries on its own.
       }
     },
   };

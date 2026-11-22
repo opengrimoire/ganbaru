@@ -1,5 +1,6 @@
 use super::callbacks::*;
 use super::*;
+use crate::cursor::driver::SESSION_FORCE_STOP;
 
 pub fn spawn_cursor_router(resources: CursorRouterResources) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -9,14 +10,13 @@ pub fn spawn_cursor_router(resources: CursorRouterResources) -> JoinHandle<()> {
 
 async fn route_inbound(mut resources: CursorRouterResources) {
     let git_metadata_tripped = resources.terminal_callbacks.git_metadata_tripped();
-    let mut ended_by_guard = false;
     loop {
         let message = tokio::select! {
             message = resources.inbound.recv() => message,
             () = wait_for_trip(git_metadata_tripped.as_deref()) => {
+                resources.terminal_callbacks.shutdown();
                 end_after_git_metadata_change(&resources).await;
-                ended_by_guard = true;
-                break;
+                return;
             }
         };
         let Some(message) = message else { break };
@@ -33,50 +33,87 @@ async fn route_inbound(mut resources: CursorRouterResources) {
             AcpInboundMessage::Closed => break,
         };
         if let Err(error) = result {
-            set_terminal_error(&resources.terminal_error, error);
-            break;
+            resources.terminal_callbacks.shutdown();
+            let reason = error.message.clone();
+            fail_session(&resources, error, "transport/route", &reason, Vec::new()).await;
+            return;
         }
     }
     resources.terminal_callbacks.shutdown();
-    if !ended_by_guard && !resources.expected_shutdown.load(Ordering::Acquire) {
-        if reached_memory_limit(resources.memory_limit.as_ref()).await {
-            let warning = resources
-                .route
-                .lock()
-                .map_err(|_| driver_state_error())
-                .and_then(|state| {
-                    resources.normalizer.external_event(
-                        &state,
-                        "transport/memory_limit",
-                        None,
-                        CanonicalEvent::RuntimeWarning(memory_limit_warning()),
-                    )
-                });
-            if let Ok(warning) = warning {
-                emit_all(&resources.sink, vec![warning]).await;
-            }
-        }
-        let provider_name = resources.flavor.display_name();
-        let events = resources
+    if resources.lifecycle.is_stopping() {
+        return;
+    }
+    let mut leading = Vec::new();
+    if reached_memory_limit(resources.memory_limit.as_ref()).await {
+        let warning = resources
             .route
             .lock()
             .map_err(|_| driver_state_error())
-            .and_then(|mut state| {
-                resources
-                    .normalizer
-                    .interrupted(&mut state, &format!("{provider_name} ACP transport closed"))
-            })
-            .unwrap_or_default();
-        emit_all(&resources.sink, events).await;
-        set_terminal_error(
-            &resources.terminal_error,
-            ChatError::new(
-                ChatErrorCode::TransportUnavailable,
-                format!("{provider_name} ACP transport closed unexpectedly"),
-                true,
-            ),
-        );
+            .and_then(|state| {
+                resources.normalizer.external_event(
+                    &state,
+                    "transport/memory_limit",
+                    None,
+                    CanonicalEvent::RuntimeWarning(memory_limit_warning()),
+                )
+            });
+        leading.extend(warning);
     }
+    let provider_name = resources.flavor.display_name();
+    fail_session(
+        &resources,
+        ChatError::new(
+            ChatErrorCode::TransportUnavailable,
+            format!("{provider_name} ACP transport closed unexpectedly"),
+            true,
+        ),
+        "transport/closed",
+        &format!("{provider_name} ACP transport closed"),
+        leading,
+    )
+    .await;
+}
+
+/// Fails the session once: emits `leading`, interrupts the running turn with `reason`, reports
+/// the session failed, and stops the provider process. A session that is stopping, or that
+/// another task already failed, is left alone.
+async fn fail_session(
+    resources: &CursorRouterResources,
+    error: ChatError,
+    source: &str,
+    reason: &str,
+    leading: Vec<CanonicalRuntimeEvent>,
+) {
+    if !resources.lifecycle.fail(error) {
+        return;
+    }
+    let failed = resources
+        .route
+        .lock()
+        .map_err(|_| driver_state_error())
+        .and_then(|mut state| resources.normalizer.failed(&mut state, source, reason));
+    match failed {
+        Ok(failed) => {
+            if let Err(error) =
+                emit_events(&resources.sink, leading.into_iter().chain(failed)).await
+            {
+                resources.lifecycle.replace_failure(error);
+            }
+        }
+        Err(error) => resources.lifecycle.replace_failure(error),
+    }
+    let _ = resources.kill.kill(SESSION_FORCE_STOP).await;
+}
+
+/// Emits every event and flushes, returning the first failure.
+async fn emit_events(
+    sink: &Arc<dyn ProviderEventSink>,
+    events: impl IntoIterator<Item = CanonicalRuntimeEvent>,
+) -> ChatResult<()> {
+    for event in events {
+        sink.emit(event).await?;
+    }
+    sink.flush().await
 }
 
 /// Waits until a confined command changes the Git metadata of the folder; never returns for a
@@ -88,17 +125,17 @@ async fn wait_for_trip(tripped: Option<&Notify>) {
     }
 }
 
-/// Ends the session after a confined command changed Git metadata: the turn is interrupted with
-/// the reason, a warning records the change, and later operations fail with the same error.
+/// Ends the session after a confined command changed Git metadata: a warning records the
+/// change, the turn is interrupted with the reason, and later operations fail with the same
+/// error.
 async fn end_after_git_metadata_change(resources: &CursorRouterResources) {
     let error = crate::confinement::git_metadata_changed_error();
-    set_terminal_error(&resources.terminal_error, error.clone());
-    let events = resources
+    let warning = resources
         .route
         .lock()
         .map_err(|_| driver_state_error())
-        .and_then(|mut state| {
-            let warning = resources.normalizer.external_event(
+        .and_then(|state| {
+            resources.normalizer.external_event(
                 &state,
                 "session/git_metadata_changed",
                 None,
@@ -107,17 +144,17 @@ async fn end_after_git_metadata_change(resources: &CursorRouterResources) {
                     title: "An agent changed this folder's Git or Cursor configuration".to_string(),
                     detail: Some(error.message.clone()),
                 }),
-            )?;
-            let mut events = vec![warning];
-            events.extend(
-                resources
-                    .normalizer
-                    .interrupted(&mut state, &error.message)?,
-            );
-            Ok(events)
-        })
-        .unwrap_or_default();
-    emit_all(&resources.sink, events).await;
+            )
+        });
+    let reason = error.message.clone();
+    fail_session(
+        resources,
+        error,
+        "session/git_metadata_changed",
+        &reason,
+        warning.into_iter().collect(),
+    )
+    .await;
 }
 
 async fn handle_notification(
@@ -568,19 +605,4 @@ fn insert_pending(
     }
     pending.insert(request_id, request);
     Ok(())
-}
-
-async fn emit_all(sink: &Arc<dyn ProviderEventSink>, events: Vec<CanonicalRuntimeEvent>) {
-    for event in events {
-        let _ = sink.emit(event).await;
-    }
-    let _ = sink.flush().await;
-}
-
-fn set_terminal_error(target: &Arc<Mutex<Option<ChatError>>>, error: ChatError) {
-    if let Ok(mut target) = target.lock() {
-        if target.is_none() {
-            *target = Some(error);
-        }
-    }
 }

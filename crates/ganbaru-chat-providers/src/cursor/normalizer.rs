@@ -303,6 +303,34 @@ impl CursorEventNormalizer {
         Ok(events)
     }
 
+    /// Ends the session: the running turn is interrupted with `reason`, then the session is
+    /// reported failed.
+    pub fn failed(
+        &self,
+        state: &mut CursorRouteState,
+        source: &str,
+        reason: &str,
+    ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
+        let previous_state = if state.active_turn_id.is_some() {
+            ProviderSessionState::Active
+        } else {
+            ProviderSessionState::Ready
+        };
+        let mut events = self.interrupted(state, reason)?;
+        events.push(self.external_event(
+            state,
+            source,
+            None,
+            CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
+                session_id: self.session_id.clone(),
+                previous_state,
+                state: ProviderSessionState::Failed,
+                reason: Some(bounded_text(reason, MAX_PROTOCOL_TEXT_BYTES)),
+            }),
+        )?);
+        Ok(events)
+    }
+
     pub fn external_event(
         &self,
         state: &CursorRouteState,

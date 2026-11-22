@@ -20,7 +20,7 @@ use ganbaru_chat_contracts::model_recommendation::recommended_model_id;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::Path;
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const MAX_PROMPT_BYTES: usize = 4 * 1024 * 1024;
@@ -437,7 +437,6 @@ impl ProviderDriver for CursorProviderDriver {
             let route = Arc::clone(&live.route);
             let normalizer = Arc::clone(&live.normalizer);
             let sink = Arc::clone(&live.sink);
-            let terminal_error = Arc::clone(&live.terminal_error);
             let prompt_completions = Arc::clone(&live.prompt_completions);
             let delivered_instructions = Arc::clone(&live.delivered_instructions);
             let terminal_callbacks = live.terminal_callbacks.clone();
@@ -512,13 +511,10 @@ impl ProviderDriver for CursorProviderDriver {
                             .map_err(|_| driver_state_error())
                             .and_then(|mut state| normalizer.finish_turn(&mut state, stop_reason))
                     }
+                    // A failed prompt ends only its turn. When the transport itself is gone,
+                    // the router sees the close and fails the session.
                     Err(error) => {
                         let chat_error = error.to_chat_error("prompt");
-                        if let Ok(mut terminal) = terminal_error.lock() {
-                            if terminal.is_none() && chat_error.code != ChatErrorCode::Cancelled {
-                                *terminal = Some(chat_error.clone());
-                            }
-                        }
                         route
                             .lock()
                             .map_err(|_| driver_state_error())
@@ -802,7 +798,7 @@ impl ProviderDriver for CursorProviderDriver {
                     false,
                 ));
             }
-            live.expected_shutdown.store(true, Ordering::Release);
+            live.lifecycle.begin_stop();
             let provider_thread_id = live
                 .route
                 .lock()

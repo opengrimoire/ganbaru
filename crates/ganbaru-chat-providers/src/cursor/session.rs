@@ -7,6 +7,7 @@ use super::normalizer::{CursorEventNormalizer, CursorRouteState};
 use super::protocol::*;
 use super::transport::{AcpInboundMessage, AcpRpcClient, AcpRpcConnection, AcpRpcFailure};
 use crate::events::*;
+use crate::live_session::{ConnectionKill, LiveSessionLifecycle};
 use crate::models::*;
 use crate::process::systemd_scope::{memory_limit_warning, reached_memory_limit};
 use crate::{DriverOperationContext, ProviderEventSink};
@@ -30,7 +31,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
 };
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -95,8 +96,9 @@ pub struct CursorRouterResources {
     pub route: Arc<Mutex<CursorRouteState>>,
     pub pending: PendingCursorRequests,
     pub sink: Arc<dyn ProviderEventSink>,
-    pub expected_shutdown: Arc<AtomicBool>,
-    pub terminal_error: Arc<Mutex<Option<ChatError>>>,
+    pub lifecycle: LiveSessionLifecycle,
+    /// Stops the provider process when the session fails.
+    pub kill: ConnectionKill,
     pub flavor: AcpProviderFlavor,
     pub prompt_completions: PendingPromptCompletions,
     pub terminal_callbacks: AcpTerminalCallbacks,

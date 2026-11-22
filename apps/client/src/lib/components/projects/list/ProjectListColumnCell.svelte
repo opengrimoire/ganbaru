@@ -381,8 +381,10 @@
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
     const usableViewportHeight = Math.max(0, viewportHeight - FLOATING_PANEL_MARGIN * 2);
+    // The max height applies to the border box while scrollHeight leaves out the borders, so add them back.
+    const frameHeight = node.offsetHeight - node.clientHeight;
     const preferredHeight = Math.min(
-      options.preferredHeight ?? Math.max(node.scrollHeight, node.offsetHeight, options.minHeight),
+      options.preferredHeight ?? Math.max(node.scrollHeight + frameHeight, node.offsetHeight, options.minHeight),
       usableViewportHeight,
     );
     const minimumHeight = Math.min(options.minHeight, usableViewportHeight);
@@ -418,7 +420,7 @@
     node.style.left = `${Math.round(left)}px`;
     node.style.top = `${Math.round(top)}px`;
     if (options.applyNodeMaxHeight ?? true) {
-      node.style.maxHeight = `${Math.round(maxHeight)}px`;
+      node.style.maxHeight = `${Math.ceil(maxHeight)}px`;
       node.style.overflowY = "auto";
     }
     if (options.maxHeightProperty) {

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { flushSync, mount, unmount } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { ParsedContactCard } from "$lib/api/contacts";
 import AddContactDialog from "./AddContactDialog.svelte";
 
@@ -13,6 +13,24 @@ const contactsApi = vi.hoisted(() => ({
 vi.mock("$lib/api/contacts", async (importOriginal) => ({
   ...await importOriginal<typeof import("$lib/api/contacts")>(),
   parseContactCard: contactsApi.parseContactCard,
+}));
+
+const scanner = vi.hoisted(() => ({ mobile: false, fail: () => {} }));
+
+vi.mock("$lib/platform", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("$lib/platform")>();
+  return {
+    ...actual,
+    get BUILD_PLATFORM_PROFILE() {
+      return scanner.mobile ? actual.platformProfileFor("android") : actual.BUILD_PLATFORM_PROFILE;
+    },
+  };
+});
+
+vi.mock("$lib/components/vault/handoff/MobilePairingScanner.svelte", () => ({
+  default: (_anchor: unknown, props: { onError: (cause: unknown) => void }) => {
+    scanner.fail = () => props.onError(new Error("camera busy"));
+  },
 }));
 
 vi.mock("$lib/stores/contacts.svelte", () => ({
@@ -99,5 +117,28 @@ describe("AddContactDialog", () => {
     flushSync();
 
     expect(document.body.textContent).not.toContain("The request could not be sent");
+  });
+
+  it("replaces a failed scan notice with what a pasted code says", async () => {
+    if (component) await unmount(component);
+    scanner.mobile = true;
+    onTestFinished(() => { scanner.mobile = false; });
+    component = mount(AddContactDialog, { target: target ?? document.body, props: { onClose: () => {} } });
+    flushSync();
+    const scanButton = [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((entry) => entry.textContent?.trim() === "Scan QR code");
+    if (!scanButton) throw new Error("The scan button did not render");
+    scanButton.click();
+    flushSync();
+    scanner.fail();
+    flushSync();
+    expect(document.body.textContent).toContain("The camera could not be started");
+
+    contactsApi.parseContactCard.mockResolvedValueOnce({ ...card("Alice", "1111"), existingState: "active" });
+    typeCode("GANB-alice");
+    await vi.waitFor(() => expect(document.body.textContent).toContain("1111"));
+
+    expect(document.body.textContent).toContain("Already a contact");
+    expect(document.body.textContent).not.toContain("The camera could not be started");
   });
 });

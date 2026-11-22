@@ -78,6 +78,7 @@
     if (parseTimer) clearTimeout(parseTimer);
     parseTimer = null;
     sendFailure = null;
+    scanFailed = false;
     const sequence = ++parseSequence;
     if (!text) return;
     parseTimer = setTimeout(() => {

@@ -57,10 +57,7 @@
     checkingAll = true;
     checkError = null;
     try {
-      if (!settings) {
-        const cached = await readChatSettings();
-        if (mounted) settings = cached;
-      }
+      if (!settings) await reloadSettings();
       await refreshAllChatProviders();
       await reloadSettings();
     } catch (error: unknown) {
@@ -70,9 +67,16 @@
     }
   }
 
+  /** Orders settings reads, so a read that resolves after a later one never replaces the newer settings. */
+  let settingsReadsStarted = 0;
+  let settingsReadApplied = 0;
+
   async function reloadSettings(): Promise<void> {
+    const read = ++settingsReadsStarted;
     const refreshed = await readChatSettings();
-    if (mounted) settings = refreshed;
+    if (!mounted || read < settingsReadApplied) return;
+    settingsReadApplied = read;
+    settings = refreshed;
   }
 
   /** Checks one agent: its configuration when it has one, or every agent so a newly installed CLI is added. */

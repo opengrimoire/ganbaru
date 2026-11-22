@@ -50,6 +50,8 @@
   let pendingStoredBytes = $state(0);
   let retentionError = $state<string | null>(null);
   let retentionErrorDetail = $state<string | null>(null);
+  /** Counts retention choices so a pending impact read can tell whether a newer choice replaced it. */
+  let retentionRequest = 0;
   const historyRetention = $derived(
     notes.pageHistorySettings?.retention_days ?? DEFAULT_NOTES_HISTORY_RETENTION_DAYS,
   );
@@ -141,9 +143,14 @@
     }
   }
 
+  /**
+   * Applies a chosen retention, first asking to confirm when a shorter one would prune versions. A newer choice
+   * supersedes a pending impact read, so a slow read never applies or asks about an older choice.
+   */
   async function selectHistoryRetention(value: string): Promise<void> {
     const parsed = Number.parseInt(value, 10);
     if (!isNotesHistoryRetentionDays(parsed)) return;
+    const request = ++retentionRequest;
     const current = notes.pageHistorySettings?.retention_days
       ?? DEFAULT_NOTES_HISTORY_RETENTION_DAYS;
     if (parsed >= current) {
@@ -153,6 +160,7 @@
     retentionError = null;
     try {
       const impact = await getNotesHistoryRetentionImpact(parsed);
+      if (request !== retentionRequest) return;
       if (impact.versionCount === 0) {
         await applyHistoryRetention(parsed);
         return;
@@ -161,6 +169,7 @@
       pendingVersionCount = impact.versionCount;
       pendingStoredBytes = impact.storedBytes;
     } catch (cause) {
+      if (request !== retentionRequest) return;
       retentionError = userErrorMessage(cause, t("settings.notesGeneral.historyRetentionUpdateFailed"));
       retentionErrorDetail = technicalErrorDetail(cause);
     }

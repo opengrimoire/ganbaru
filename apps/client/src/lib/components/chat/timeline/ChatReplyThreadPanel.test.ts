@@ -550,6 +550,81 @@ describe("ChatReplyThreadPanel", () => {
     await vi.waitFor(() => expect(retry).toHaveBeenCalledWith(assignment.id));
   });
 
+  it("keeps a retry failure that settles after another thread opened out of that thread", async () => {
+    const failedRun: ChatAgentRunRead = { ...run, providerExecutionThreadId: null, state: "failed" };
+    const assignment = {
+      id: run.assignmentId,
+      replyThreadId: page.thread.id,
+      agent: agentParticipant,
+      triggeringMessageItemId: "root:test",
+      previousAssignmentId: null,
+      state: "failed",
+      stateReason: "timeout",
+      revision: 3,
+      settledAt: "2026-08-04T17:02:00.000Z",
+      createdAt: "2026-08-04T17:00:00.000Z",
+      updatedAt: "2026-08-04T17:02:00.000Z",
+      review: null,
+      latestRunProviderThreadId: null,
+      modelSelection: { providerManagedModel: true, modelId: null, modelOptions: [] },
+      instructions: "",
+      modelLabel: null,
+      delegation: null,
+    } satisfies ChatReplyThreadPageRead["assignment"];
+    const failedPage: ChatReplyThreadPageRead = {
+      ...page,
+      replies: [{
+        ...message("failure:test", agentParticipant, "Timed out", 1),
+        richContent: {
+          schemaVersion: 1,
+          value: {
+            type: "agent_update",
+            updateKind: "failure",
+            assignmentId: assignment.id,
+            agentRunId: failedRun.id,
+            payload: { code: "timeout", safeDetails: null },
+          },
+        },
+      }],
+      assignment,
+      agentRuns: [failedRun],
+    };
+    const otherPage: ChatReplyThreadPageRead = {
+      ...page,
+      thread: { ...page.thread, id: "reply-thread:other" },
+      agentRuns: [],
+    };
+    chat.openReplyThreadId = failedPage.thread.id;
+    chat.replyThread = failedPage;
+    chat.replyThreadPages = [failedPage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "selectAssignmentExecution").mockResolvedValue();
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    let rejectRetry: ((cause: unknown) => void) | undefined;
+    vi.spyOn(chat, "retryAssignment").mockImplementation(() => new Promise<void>((_resolve, reject) => {
+      rejectRetry = reject;
+    }));
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+
+    await vi.waitFor(() => expect(target?.querySelector("[data-notice-retry]")).not.toBeNull());
+    target.querySelector<HTMLButtonElement>("[data-notice-retry]")?.click();
+    await vi.waitFor(() => expect(rejectRetry).toBeDefined());
+    chat.openReplyThreadId = otherPage.thread.id;
+    chat.replyThread = otherPage;
+    chat.replyThreadPages = [otherPage];
+    await tick();
+
+    rejectRetry?.(new Error("Retry failed"));
+    for (let index = 0; index < 4; index += 1) await tick();
+    expect(target.querySelector("[data-notice-dismiss]")).toBeNull();
+  });
+
   it("closes a working run with a Stop working control that cancels only its assignment", async () => {
     const startingRun: ChatAgentRunRead = {
       ...run,

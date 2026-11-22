@@ -58,3 +58,31 @@ describe("Notes row picker sources", () => {
     expect(optionLabels()).toEqual(["second-row"]);
   });
 });
+
+describe("Notes row picker closing", () => {
+  it("does not close a later picker when a pick finishes after this picker closed", async () => {
+    vi.mocked(listNotesDataSourceRowPages).mockResolvedValue([row("first-row")]);
+    let finishPick: () => void = () => undefined;
+    const onPick = vi.fn(() => new Promise<void>((resolve) => { finishPick = resolve; }));
+    const onClose = vi.fn();
+    const anchor = document.createElement("button");
+    const target = document.createElement("div");
+    document.body.append(anchor, target);
+    component = mount(NotesDatabaseRowPicker, {
+      target,
+      props: { anchor, dataSourceId: "source", sourceName: "Tasks", closeOnPick: true, onPick, onClose },
+    });
+    flushSync();
+    await vi.waitFor(() => expect(optionLabels()).toEqual(["first-row"]));
+
+    document.querySelector<HTMLElement>('[role="option"]')?.click();
+    expect(onPick).toHaveBeenCalledTimes(1);
+    await unmount(component);
+    component = undefined;
+    finishPick();
+    await tick();
+    await tick();
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});

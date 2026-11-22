@@ -1,7 +1,7 @@
 <script lang="ts">
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
-  import { tick, untrack } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { listNotesDataSourceRowPages } from "$lib/api/notes";
   import { floatPanel } from "$lib/components/contacts/float-panel";
@@ -70,6 +70,9 @@
   let rowsLoad = $state.raw<RowsLoad | null>(null);
   let error = $state<NotesFailure | null>(null);
   let pending = $state(false);
+  /** Cleared once the picker closes, so a pick finishing afterwards does not close a picker opened since. */
+  let mounted = true;
+  onDestroy(() => { mounted = false; });
   let activeIndex = $state(0);
   /** Rows picked here, hidden before the caller's exclusions catch up. */
   const pickedIds = new SvelteSet<string>();
@@ -145,8 +148,10 @@
         await load();
       }
       if (closeOnPick) {
-        onClose();
-        anchor.focus({ preventScroll: true });
+        if (mounted) {
+          onClose();
+          anchor.focus({ preventScroll: true });
+        }
         return;
       }
     } catch (caught) {

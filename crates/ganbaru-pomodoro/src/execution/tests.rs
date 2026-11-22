@@ -1015,3 +1015,183 @@ fn an_illegal_focus_mode_move_is_rejected_without_changing_the_mode() {
     assert!(session.enter_mode(FocusMode::ManualPause).is_err());
     assert_eq!(session.state.mode, FocusMode::Expired);
 }
+
+#[test]
+fn skip_next_break_is_refused_outside_a_running_or_manually_paused_focus_phase() {
+    block_on(async {
+        let pool = pool().await;
+        start(&pool).await;
+        let suspended = observe(
+            &pool,
+            FocusObservation::Suspend {
+                started_at_ms: START + 15_000,
+                returned_at_ms: START + 30_000,
+            },
+            &context(START + 30_000),
+        )
+        .await;
+        assert_eq!(suspended.mode, FocusMode::Suspended);
+        let error = execute(
+            &pool,
+            &command(
+                "skip-while-suspended",
+                suspended.revision,
+                FocusIntent::SetSkipNextBreak { enabled: true },
+            ),
+            &context(START + 31_000),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, FocusErrorCode::InvalidState);
+        let resumed = execute(
+            &pool,
+            &command(
+                "resume-suspend",
+                suspended.revision,
+                FocusIntent::ResolveSuspend { resume: true },
+            ),
+            &context(START + 32_000),
+        )
+        .await
+        .unwrap();
+        let paused = execute(
+            &pool,
+            &command("pause", resumed.revision, FocusIntent::Pause),
+            &context(START + 33_000),
+        )
+        .await
+        .unwrap();
+        let skipped = execute(
+            &pool,
+            &command(
+                "skip-while-paused",
+                paused.revision,
+                FocusIntent::SetSkipNextBreak { enabled: true },
+            ),
+            &context(START + 34_000),
+        )
+        .await
+        .unwrap();
+        assert!(skipped.skip_next_break);
+    });
+}
+
+#[test]
+fn skip_next_break_does_not_carry_into_the_next_run() {
+    block_on(async {
+        let pool = pool().await;
+        let started = start(&pool).await;
+        let skipped = execute(
+            &pool,
+            &command(
+                "skip",
+                started.revision,
+                FocusIntent::SetSkipNextBreak { enabled: true },
+            ),
+            &context(START + 10_000),
+        )
+        .await
+        .unwrap();
+        assert!(skipped.skip_next_break);
+        let stopped = execute(
+            &pool,
+            &command("stop", skipped.revision, FocusIntent::Stop),
+            &context(START + 20_000),
+        )
+        .await
+        .unwrap();
+        let restarted = execute(
+            &pool,
+            &command(
+                "restart",
+                stopped.revision,
+                FocusIntent::StartScheduled {
+                    occurrence_id: None,
+                },
+            ),
+            &context(START + 30_000),
+        )
+        .await
+        .unwrap();
+        assert!(!restarted.skip_next_break);
+        let next = observe(
+            &pool,
+            FocusObservation::Deadline,
+            &context(START + 30_000 + 2 * MINUTE),
+        )
+        .await;
+        assert_eq!(next.segment.unwrap().phase, FocusPhase::ShortBreak);
+    });
+}
+
+#[test]
+fn a_reconfigured_break_that_ends_while_suspended_waits_without_suspend_evidence() {
+    block_on(async {
+        let pool = pool().await;
+        let at = |now_ms: i64, short_break_minutes: i64| {
+            let mut value = context(now_ms);
+            value.commitment.as_mut().unwrap().configuration.rhythm = PomodoroRunRhythm::Count {
+                focus_duration_minutes: 2,
+                short_break_minutes,
+                long_break_minutes: 2,
+                long_break_after_focus_count: 2,
+            };
+            value
+        };
+        execute(
+            &pool,
+            &command(
+                "start",
+                0,
+                FocusIntent::StartScheduled {
+                    occurrence_id: None,
+                },
+            ),
+            &at(START, 2),
+        )
+        .await
+        .unwrap();
+        let on_break = observe(
+            &pool,
+            FocusObservation::Deadline,
+            &at(START + 2 * MINUTE, 2),
+        )
+        .await;
+        assert_eq!(on_break.segment.unwrap().phase, FocusPhase::ShortBreak);
+        let suspended = observe(
+            &pool,
+            FocusObservation::Suspend {
+                started_at_ms: START + 3 * MINUTE + 30_000,
+                returned_at_ms: START + 4 * MINUTE,
+            },
+            &at(START + 4 * MINUTE, 2),
+        )
+        .await;
+        assert_eq!(suspended.mode, FocusMode::Suspended);
+        execute(
+            &pool,
+            &command(
+                "dismiss",
+                suspended.revision,
+                FocusIntent::DismissPausedPrompts,
+            ),
+            &at(START + 4 * MINUTE, 2),
+        )
+        .await
+        .unwrap();
+        let waiting = observe(
+            &pool,
+            FocusObservation::CalendarChanged,
+            &at(START + 4 * MINUTE + 1_000, 1),
+        )
+        .await;
+        assert_eq!(waiting.mode, FocusMode::ReturnWait);
+        assert_eq!(
+            waiting.return_started_at_ms,
+            Some(START + 4 * MINUTE + 1_000)
+        );
+        assert_eq!(waiting.suspend_started_at_ms, None);
+        assert_eq!(waiting.suspend_returned_at_ms, None);
+        assert!(!waiting.paused_prompts_dismissed);
+    });
+}

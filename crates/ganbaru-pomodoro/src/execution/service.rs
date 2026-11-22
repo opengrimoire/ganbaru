@@ -205,8 +205,14 @@ async fn apply_intent(
             }
         }
         FocusIntent::SetSkipNextBreak { enabled } => {
-            if session.active_segment()?.phase != FocusPhase::Focus {
-                return Err(invalid_state("Skip next break requires a focus phase"));
+            if !matches!(
+                session.state.mode,
+                FocusMode::Running | FocusMode::ManualPause
+            ) || session.active_segment()?.phase != FocusPhase::Focus
+            {
+                return Err(invalid_state(
+                    "Skip next break requires a running or paused focus phase",
+                ));
             }
             session.state.skip_next_break = *enabled;
             Ok(())

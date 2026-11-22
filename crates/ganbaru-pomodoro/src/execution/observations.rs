@@ -386,6 +386,7 @@ impl Session {
             self.close_segment(tx, context.now_ms, "completed", "completed")
                 .await?;
             self.enter_mode(FocusMode::ReturnWait)?;
+            self.clear_waits();
             self.state.return_started_at_ms = Some(context.now_ms);
             return Ok(true);
         }

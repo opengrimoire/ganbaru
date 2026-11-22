@@ -449,6 +449,8 @@ impl Session {
         if let Some(decision) = &decision {
             configuration.rhythm = decision.selected_rhythm.into_rhythm();
         }
+        // A skip request belongs to the focus work it was made in, which only a continuation carries.
+        let continues_work = continuation.is_some();
         let mut continuation = continuation.unwrap_or_default();
         let position = normalize_position(&configuration, continuation.position);
         if continuation.phase == FocusPhase::Focus
@@ -529,6 +531,9 @@ impl Session {
         self.state.segment_id = Some(segment.id.clone());
         self.enter_mode(FocusMode::Running)?;
         self.state.dismissed_occurrence_id = None;
+        if !continues_work {
+            self.state.skip_next_break = false;
+        }
         self.state.focus_extension_used = false;
         self.state.break_extension_ms = 0;
         self.state.last_transition_at_ms = now_ms;

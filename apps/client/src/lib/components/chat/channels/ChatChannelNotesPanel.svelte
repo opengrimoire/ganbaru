@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Trash from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
@@ -33,6 +34,14 @@
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import {
+    asyncResourceError,
+    failAsyncRequest,
+    idleAsyncResource,
+    resolveAsyncRequest,
+    startAsyncRequest,
+    type AsyncResource,
+  } from "$lib/utils/async-resource";
 
   /**
    * The notes people keep for every agent working in a channel, opened from the members panel. People
@@ -56,10 +65,14 @@
   const localization = getLocalization();
   const { t } = localization;
 
-  let notes = $state<ChatChannelNoteRead[]>([]);
-  let loaded = $state(false);
-  let error = $state<string | null>(null);
+  /** The channel notes as last read, null until the first read lands; only the newest read settles it. */
+  let notesRead = $state.raw<AsyncResource<ChatChannelNoteRead[] | null>>(idleAsyncResource(null));
+  /** The failure of the last note command, which a later read of the list does not clear. */
+  let actionError = $state<string | null>(null);
   let pending = $state(false);
+  const notes = $derived(notesRead.data ?? []);
+  const loaded = $derived(notesRead.data !== null);
+  const error = $derived(actionError ?? asyncResourceError(notesRead));
   let draft = $state("");
   let editingId = $state<string | null>(null);
   let editDraft = $state("");
@@ -78,17 +91,24 @@
 
   $effect(() => {
     const _version = chat.channelNotesVersion;
-    void load(channel.id);
+    const channelId = channel.id;
+    untrack(() => { void load(channelId); });
   });
 
+  /**
+   * Reads the channel notes. Only the newest read settles the list, so a slower earlier read cannot replace the list
+   * a later read showed, and a failed read stops showing once a later read succeeds.
+   *
+   * @param channelId - The channel to read.
+   */
   async function load(channelId: ChatChannelId): Promise<void> {
+    const started = startAsyncRequest(notesRead);
+    notesRead = started.resource;
     try {
       const read = await listChatChannelNotes(channelId);
-      if (channelId !== channel.id) return;
-      notes = read;
-      loaded = true;
+      notesRead = resolveAsyncRequest(notesRead, started.token, read);
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("chatErrors.actions.notesAction"));
+      notesRead = failAsyncRequest(notesRead, started.token, chatErrorMessage(cause, t("chatErrors.actions.notesAction")));
     }
   }
 
@@ -106,7 +126,7 @@
   async function run(command: () => Promise<unknown>): Promise<boolean> {
     if (pending) return false;
     pending = true;
-    error = null;
+    actionError = null;
     const channelId = channel.id;
     try {
       await command();
@@ -114,7 +134,7 @@
       await load(channelId);
       return true;
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("chatErrors.actions.notesAction"));
+      actionError = chatErrorMessage(cause, t("chatErrors.actions.notesAction"));
       return false;
     } finally {
       pending = false;
@@ -132,7 +152,7 @@
   function startEdit(note: ChatChannelNoteRead): void {
     editingId = note.id;
     editDraft = note.body;
-    error = null;
+    actionError = null;
   }
 
   async function saveEdit(note: ChatChannelNoteRead): Promise<void> {

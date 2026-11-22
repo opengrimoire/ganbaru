@@ -70,7 +70,8 @@ export function createNotesCollaborationController(
       : commentThreads.filter((thread) => thread.status === "open"),
   );
   let suggestions = $state<NotesSuggestion[]>([]);
-  let activeSuggestionDraft = $state<NotesSuggestionDraft | null>(null);
+  let activeSuggestionDraft = $state.raw<NotesSuggestionDraft | null>(null);
+  let creatingSuggestionDraft: NotesSuggestionDraft | null = null;
   let suggestionsLoading = $state(false);
   let suggestionsError = $state<string | null>(null);
   let suggestionsIncludeDecided = $state(false);
@@ -213,7 +214,9 @@ export function createNotesCollaborationController(
     if (commentsLoading) void reloadComments();
   }
 
+  /** Apply a suggestion the backend returned, ignoring one from a page that is no longer selected. */
   function updateSuggestion(suggestion: NotesSuggestion): void {
+    if (suggestion.page_id !== context.readSelectedPageId()) return;
     if (suggestion.status !== "open" && !suggestionsIncludeDecided) {
       suggestions = suggestions.filter((candidate) => candidate.id !== suggestion.id);
       return;
@@ -257,13 +260,23 @@ export function createNotesCollaborationController(
     context.requestBlockFocus(blockId);
   }
 
+  /**
+   * Save the open draft as a suggestion once, ignoring repeats while it saves. The draft closes only while it is
+   * still the open one, so a draft started meanwhile, or on another page, stays open.
+   */
   async function createSuggestion(proposedText: string): Promise<void> {
     const draft = activeSuggestionDraft;
-    if (!draft || proposedText === draft.original_text) return;
-    await context.flushBlockSave(draft.block_id);
-    updateSuggestion(await createNotesSuggestion(
-      notesSuggestionCreateRequest(crypto.randomUUID(), draft, proposedText),
-    ));
+    if (!draft || proposedText === draft.original_text || creatingSuggestionDraft === draft) return;
+    creatingSuggestionDraft = draft;
+    try {
+      await context.flushBlockSave(draft.block_id);
+      updateSuggestion(await createNotesSuggestion(
+        notesSuggestionCreateRequest(crypto.randomUUID(), draft, proposedText),
+      ));
+    } finally {
+      if (creatingSuggestionDraft === draft) creatingSuggestionDraft = null;
+    }
+    if (activeSuggestionDraft !== draft) return;
     activeSuggestionDraft = null;
     context.requestBlockFocus(draft.block_id);
   }

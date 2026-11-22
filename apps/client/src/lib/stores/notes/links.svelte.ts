@@ -36,10 +36,16 @@ interface NotesLinksControllerContext {
 
 /** Own backlink, alias, unresolved-link, and destination request identities. */
 export function createNotesLinksController(context: NotesLinksControllerContext) {
-  const backlinks = createPageLinkResource<NotesBacklink>(listNotesBacklinks, context.readSelectedPageId);
-  const aliases = createPageLinkResource<NotesPageAlias>(listNotesPageAliases, context.readSelectedPageId);
+  const backlinks = createPageLinkResource<NotesBacklink>(
+    (pageId) => listNotesBacklinks(pageId),
+    context.readSelectedPageId,
+  );
+  const aliases = createPageLinkResource<NotesPageAlias>(
+    (pageId) => listNotesPageAliases(pageId),
+    context.readSelectedPageId,
+  );
   const unresolved = createPageLinkResource<NotesUnresolvedLink>(
-    listNotesUnresolvedLinks,
+    (pageId) => listNotesUnresolvedLinks(pageId),
     context.readSelectedPageId,
   );
   let destinations = $state<NotesPage[]>([]);

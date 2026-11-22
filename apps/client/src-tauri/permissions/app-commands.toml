@@ -762,6 +762,7 @@ commands.allow = [
   "vault_dismiss_database_rollback",
   "vault_export_replaced_backup",
   "vault_inspect_backup",
+  "vault_kept_folders",
   "vault_link_status",
   "vault_lock_status",
   "vault_patch_config",
@@ -779,6 +780,7 @@ commands.allow = [
   "vault_restore_database_rollback",
   "vault_restore_replaced_backup",
   "vault_reveal_active",
+  "vault_start_new_after_lost_database",
   "vault_use_default",
   "write_benchmark_state",
 ]

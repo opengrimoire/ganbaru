@@ -299,6 +299,57 @@ describe("database rollbacks", () => {
   });
 });
 
+describe("kept vault folders", () => {
+  const folder = {
+    id: "Ganbaru before replacement 1761700000",
+    displayName: "Ganbaru",
+    keptAtMs: 1_761_700_000_000,
+    sizeBytes: 4096,
+  };
+
+  it("lists kept folders in the order Rust returned, with or without a vault name", async () => {
+    const { listKeptVaultFolders } = await loadModule();
+    const unnamed = { ...folder, id: "Ganbaru before replacement 1761600000", displayName: null };
+    invokeMock.mockResolvedValueOnce([folder, unnamed]);
+    await expect(listKeptVaultFolders()).resolves.toEqual([folder, unnamed]);
+    expect(invokeMock).toHaveBeenCalledWith("vault_kept_folders");
+  });
+
+  it("rejects malformed kept folder entries", async () => {
+    const { parseKeptVaultFolders } = await loadModule();
+    expect(() => parseKeptVaultFolders(null)).toThrow("not a list");
+    expect(() => parseKeptVaultFolders(["folder"])).toThrow("not an object");
+    expect(() => parseKeptVaultFolders([{ ...folder, id: "" }])).toThrow("incomplete");
+    expect(() => parseKeptVaultFolders([{ ...folder, displayName: " " }])).toThrow("incomplete");
+    expect(() => parseKeptVaultFolders([{ ...folder, keptAtMs: 1.5 }])).toThrow("incomplete");
+    expect(() => parseKeptVaultFolders([{ ...folder, sizeBytes: -1 }])).toThrow("incomplete");
+  });
+
+  it("starts a new vault and activates the vault Rust returned", async () => {
+    const { getCachedActiveVaultInfo, startNewVaultAfterLostDatabase } = await loadModule();
+    const info = {
+      path: "/data/ganbaru/Ganbaru",
+      databasePath: "/data/ganbaru/Ganbaru/ganbaru.sqlite",
+      vaultId: "vault-2",
+      displayName: "Ganbaru",
+      created: true,
+    };
+    invokeMock.mockResolvedValueOnce(info);
+    await expect(startNewVaultAfterLostDatabase()).resolves.toEqual(info);
+    expect(invokeMock).toHaveBeenCalledWith("vault_start_new_after_lost_database");
+    expect(getCachedActiveVaultInfo()).toEqual(info);
+    invokeMock.mockResolvedValueOnce({ path: "/data/ganbaru/Ganbaru" });
+    await expect(startNewVaultAfterLostDatabase()).rejects.toThrow();
+  });
+
+  it("explains that a linked phone must unlink before starting a new vault", async () => {
+    const { formatVaultError } = await loadModule();
+    expect(
+      formatVaultError("this phone is linked to other devices; unlink it before starting a new vault"),
+    ).toBe("This phone is linked to other devices. Unlink this phone first, then start a new vault.");
+  });
+});
+
 describe("replaced vault backups", () => {
   const backup = {
     id: "replaced-1761700000000.ganbaru-backup",

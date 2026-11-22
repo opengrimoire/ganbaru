@@ -302,6 +302,8 @@ export const general = {
     replacedVaultsHeading: "Replaced vaults",
     replacedVaultsDescription: "When a linked vault replaces this phone's vault, Ganbaru keeps a copy of the replaced one here so you can restore it. The two newest are kept. Export saves an encrypted backup to Downloads that opens with the recovery kit of the vault in use.",
     replacedVaultUnnamed: "Unnamed vault",
+    keptVaultFoldersHeading: "Kept vault folders",
+    keptVaultFoldersDescription: "Whole vault folders that Ganbaru set aside on this phone instead of deleting them, such as a vault whose data was lost before a new vault started.",
     replacedVaultExport: "Export",
     replacedVaultRestore: "Restore",
     replacedVaultRestoreTitle: "Restore this vault?",

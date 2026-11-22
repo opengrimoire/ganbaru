@@ -307,6 +307,8 @@ export const general = {
     replacedVaultsHeading: "Bóvedas reemplazadas",
     replacedVaultsDescription: "Cuando una bóveda vinculada reemplaza la bóveda de este teléfono, Ganbaru guarda aquí una copia de la reemplazada para que puedas restaurarla. Se conservan las dos más recientes. Exportar guarda en Descargas una copia cifrada que se abre con el kit de recuperación de la bóveda en uso.",
     replacedVaultUnnamed: "Bóveda sin nombre",
+    keptVaultFoldersHeading: "Carpetas de bóveda conservadas",
+    keptVaultFoldersDescription: "Carpetas de bóveda enteras que Ganbaru apartó en este teléfono en lugar de borrarlas, como una bóveda cuyos datos se perdieron antes de empezar una nueva.",
     replacedVaultExport: "Exportar",
     replacedVaultRestore: "Restaurar",
     replacedVaultRestoreTitle: "¿Restaurar esta bóveda?",

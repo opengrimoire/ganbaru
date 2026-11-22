@@ -230,7 +230,7 @@ fn finish_replacement(target: &Path, rollback: &Path) -> Result<(), String> {
         return fs::remove_dir_all(rollback)
             .map_err(|error| format!("remove completed restore rollback: {error}"));
     }
-    let kept = kept_previous_path(target)?;
+    let kept = super::kept_folders::kept_folder_path(target)?;
     fs::rename(rollback, &kept)
         .map_err(|error| format!("keep files from before the replacement: {error}"))?;
     stranded.report(
@@ -238,23 +238,6 @@ fn finish_replacement(target: &Path, rollback: &Path) -> Result<(), String> {
         &format!("that stay in '{}'", kept.display()),
     );
     Ok(())
-}
-
-/// Visible sibling that keeps a replaced folder whose own files could not move.
-fn kept_previous_path(target: &Path) -> Result<PathBuf, String> {
-    let parent = target
-        .parent()
-        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-    let folder_name = target
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or("Ganbaru");
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| format!("name the kept folder: {error}"))?
-        .as_secs();
-    Ok(parent.join(format!("{folder_name} before replacement {seconds}")))
 }
 
 #[cfg(target_os = "android")]

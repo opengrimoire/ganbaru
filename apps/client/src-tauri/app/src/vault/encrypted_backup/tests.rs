@@ -707,6 +707,8 @@ fn startup_sweep_clears_transfers_and_restore_staging() {
     let not_random = documents.join(format!(".ganbaru.restore-copy.{BUILD}.kept"));
     // Handoff staging is named by its transfer and removed only by the pairing that owns it.
     let handoff = crate::vault::backup::handoff_staging_path_in(&documents, "transfer-0123");
+    // A vault folder kept whole after a lost database or a restore is never swept.
+    let kept_whole = documents.join("Ganbaru before replacement 1761700000");
     for folder in [
         transfers.join("restore-picked"),
         transfers.join("save-written"),
@@ -718,6 +720,7 @@ fn startup_sweep_clears_transfers_and_restore_staging() {
         other_copy.clone(),
         not_random.clone(),
         handoff.clone(),
+        kept_whole.clone(),
         vault.clone(),
         sibling.clone(),
     ] {
@@ -744,6 +747,7 @@ fn startup_sweep_clears_transfers_and_restore_staging() {
         other_copy,
         not_random,
         handoff,
+        kept_whole,
     ] {
         assert!(kept.join("data").exists(), "{} stays", kept.display());
     }

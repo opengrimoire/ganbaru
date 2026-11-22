@@ -2,18 +2,19 @@
   import HardDrive from "@lucide/svelte/icons/hard-drive";
   import BackupKitPrompt from "$lib/components/vault/BackupKitPrompt.svelte";
   import DatabaseRollbacks from "$lib/components/vault/DatabaseRollbacks.svelte";
+  import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { createBackupKitPrompt } from "$lib/vault/backup-kit-prompt.svelte";
   import { backupRefusalMessage } from "$lib/vault/backup-restore";
-  import { formatVaultError } from "$lib/vault/state";
+  import { formatVaultError, startNewVaultAfterLostDatabase } from "$lib/vault/state";
 
   /**
    * The screen shown when the active vault cannot open at startup.
    *
    * @param message - Localized guidance for the failure.
    * @param onRetry - Opens the app again.
-   * @param offerRollbacks - Offers the vault's rollback copies and a backup file to restore, for a vault whose database is gone.
+   * @param offerRollbacks - Offers the vault's rollback copies, a backup file to restore, and a new vault that keeps the lost one aside, for a vault whose database is gone.
    */
   let {
     message,
@@ -24,6 +25,7 @@
   const kitPrompt = createBackupKitPrompt();
   let restoring = $state(false);
   let restoreError = $state<string | null>(null);
+  let confirmingNewVault = $state(false);
 
   /** Restores a picked backup file, which keeps the lost vault's folder, then opens the app again. */
   async function restoreBackup(): Promise<void> {
@@ -44,11 +46,31 @@
       restoring = false;
     }
   }
+
+  /** Sets the lost vault aside whole, starts a new empty vault, then opens the app again. */
+  async function startNewVault(): Promise<void> {
+    confirmingNewVault = false;
+    if (restoring) return;
+    restoring = true;
+    restoreError = null;
+    try {
+      await startNewVaultAfterLostDatabase();
+      onRetry();
+    } catch (cause) {
+      console.warn("Could not start a new vault:", cause);
+      restoreError = formatVaultError(cause, "general", t);
+    } finally {
+      restoring = false;
+    }
+  }
 </script>
 
 {#snippet restoreAction()}
   <button type="button" class="notice-action-text" disabled={restoring} onclick={() => void restoreBackup()}>
     {t("mobile.vaultSetup.restoreBackupFile")}
+  </button>
+  <button type="button" class="notice-action-text" disabled={restoring} onclick={() => confirmingNewVault = true}>
+    {t("mobile.vaultSetup.startNewVault")}
   </button>
 {/snippet}
 
@@ -75,6 +97,17 @@
     <Notice layout="fill" class="text-base" icon={HardDrive} title={t("mobile.startupFailed")} {message} {onRetry} />
   {/if}
 </main>
+
+{#if confirmingNewVault}
+  <ConfirmDialog
+    title={t("mobile.vaultSetup.startNewVaultTitle")}
+    message={t("mobile.vaultSetup.startNewVaultMessage")}
+    confirmLabel={t("mobile.vaultSetup.startNewVault")}
+    cancelLabel={t("common.cancel")}
+    onConfirm={() => void startNewVault()}
+    onCancel={() => confirmingNewVault = false}
+  />
+{/if}
 
 {#if kitPrompt.request}
   <BackupKitPrompt

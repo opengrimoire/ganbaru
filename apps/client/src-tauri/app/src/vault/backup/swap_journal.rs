@@ -6,7 +6,8 @@
 //! from the recorded phase at the next start. A folder no journal names is never moved,
 //! merged, or deleted.
 
-use super::{discard_replaced_folder, finish_replacement, holds_vault, kept_previous_path};
+use super::{discard_replaced_folder, finish_replacement, holds_vault};
+use crate::vault::kept_folders::kept_folder_path;
 use crate::vault::{database_rollback, journal_file, vault_info_from_path};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -482,7 +483,7 @@ fn keep_whole(target: &Path, replaced: &Path, reason: &str) -> Result<(), String
     if fs::symlink_metadata(replaced).is_err() {
         return Ok(());
     }
-    let kept = kept_previous_path(target)?;
+    let kept = kept_folder_path(target)?;
     fs::rename(replaced, &kept)
         .map_err(|error| format!("{reason}; keep the replaced folder: {error}"))?;
     eprintln!(

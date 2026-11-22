@@ -1,5 +1,6 @@
 <script lang="ts">
   import DatabaseRollbacks from "$lib/components/vault/DatabaseRollbacks.svelte";
+  import KeptVaultFolders from "$lib/components/vault/KeptVaultFolders.svelte";
   import ReplacedVaultBackups from "$lib/components/vault/ReplacedVaultBackups.svelte";
   import VaultBackupRows from "$lib/components/vault/VaultBackupRows.svelte";
   import VaultLockWarning from "$lib/components/vault/VaultLockWarning.svelte";
@@ -33,4 +34,6 @@
   <DatabaseRollbacks onRestored={() => window.location.reload()} />
 
   <ReplacedVaultBackups onRestored={() => window.location.reload()} />
+
+  <KeptVaultFolders />
 </div>

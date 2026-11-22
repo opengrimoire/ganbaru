@@ -45,6 +45,9 @@ const VAULT_OPEN_ELSEWHERE_MESSAGE = "this vault is open in another ganbaru app"
 /** Lowercase text of the native error raised when a linked phone restores another vault. */
 const LINKED_ANDROID_RESTORE_MESSAGE = "unlink it before restoring another vault";
 
+/** Lowercase text of the native error raised when a linked phone starts a new vault after losing its database. */
+const LINKED_ANDROID_NEW_VAULT_MESSAGE = "unlink it before starting a new vault";
+
 /** Lowercase text of the native error raised when a rollback would rewind a live anchor. */
 const ANCHOR_ROLLBACK_MESSAGE = "the rollback copy is behind its authorization head";
 
@@ -195,6 +198,9 @@ export function formatVaultError(
     return t("dataFolderError.openElsewhere");
   }
 
+  if (lower.includes(LINKED_ANDROID_NEW_VAULT_MESSAGE)) {
+    return t("dataFolderError.linkedAndroidNewVault");
+  }
   if (lower.includes(LINKED_ANDROID_RESTORE_MESSAGE)) {
     return t("dataFolderError.linkedAndroid");
   }
@@ -458,6 +464,52 @@ export async function exportReplacedVaultBackup(id: string): Promise<BackupSaveO
 /** Deletes one replaced vault backup from this device. */
 export async function deleteReplacedVaultBackup(id: string): Promise<void> {
   await invoke("vault_delete_replaced_backup", { id });
+}
+
+/** A whole vault folder this Android device kept beside the vault in use instead of deleting it. */
+export interface KeptVaultFolder {
+  id: string;
+  /** The kept vault's name, when its marker is readable. */
+  displayName: string | null;
+  keptAtMs: number;
+  sizeBytes: number;
+}
+
+/**
+ * Validates the native listing of kept vault folders.
+ *
+ * @param value - Untrusted `vault_kept_folders` response.
+ * @returns Folders newest first, as Rust ordered them.
+ */
+export function parseKeptVaultFolders(value: unknown): KeptVaultFolder[] {
+  if (!Array.isArray(value)) throw new Error("kept vault folder response is not a list");
+  return value.map((entry: unknown) => {
+    if (!isRecord(entry)) throw new Error("kept vault folder entry is not an object");
+    const id = readString(entry.id);
+    const rawDisplayName: unknown = entry.displayName ?? null;
+    const displayName = rawDisplayName === null ? null : readString(rawDisplayName);
+    const keptAtMs = readNonNegativeInteger(entry.keptAtMs);
+    const sizeBytes = readNonNegativeInteger(entry.sizeBytes);
+    if (!id || (rawDisplayName !== null && displayName === null) || keptAtMs === null || sizeBytes === null) {
+      throw new Error("kept vault folder entry is incomplete");
+    }
+    return { id, displayName, keptAtMs, sizeBytes };
+  });
+}
+
+/** Lists the whole vault folders Android keeps beside the vault in use. */
+export async function listKeptVaultFolders(): Promise<KeptVaultFolder[]> {
+  return parseKeptVaultFolders(await invoke<unknown>("vault_kept_folders"));
+}
+
+/**
+ * Sets the vault whose database is lost aside, whole, and starts a new empty vault in its place. A phone linked to other
+ * devices is refused, as is a vault whose database is still there.
+ *
+ * @returns The new vault.
+ */
+export async function startNewVaultAfterLostDatabase(): Promise<VaultInfo> {
+  return activateVaultInfo(parseVaultInfo(await invoke<unknown>("vault_start_new_after_lost_database")));
 }
 
 /** Why the app did not write or restore an encrypted backup. */

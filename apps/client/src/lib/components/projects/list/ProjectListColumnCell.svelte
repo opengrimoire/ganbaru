@@ -142,6 +142,8 @@
   const preferences = getPreferences();
   const context = getProjectListTableContext();
   const FLOATING_PANEL_GAP = 6;
+  /** Cell panels sit directly on the cell edge, which is the visible boundary of a table cell. */
+  const CELL_PANEL_GAP = 0;
   const FLOATING_PANEL_MARGIN = 8;
   const DATE_PICKER_PANEL_WIDTH = FLOATING_WIDTH.sm;
   const DATE_PICKER_PANEL_MIN_HEIGHT = 180;
@@ -360,6 +362,8 @@
       preferredHeight?: number;
       applyNodeMaxHeight?: boolean;
       maxHeightProperty?: string;
+      /** Distance between the anchor edge and the panel. */
+      gap?: number;
     },
   ): void {
     if (!anchor) return;
@@ -380,8 +384,9 @@
         viewportWidth - panelWidth - FLOATING_PANEL_MARGIN,
       ),
     );
-    const belowTop = triggerRect.bottom + FLOATING_PANEL_GAP;
-    const aboveBottom = triggerRect.top - FLOATING_PANEL_GAP;
+    const gap = options.gap ?? FLOATING_PANEL_GAP;
+    const belowTop = triggerRect.bottom + gap;
+    const aboveBottom = triggerRect.top - gap;
     const belowSpace = Math.max(0, viewportHeight - FLOATING_PANEL_MARGIN - belowTop);
     const aboveSpace = Math.max(0, aboveBottom - FLOATING_PANEL_MARGIN);
     const preferBelow = belowSpace >= preferredHeight || belowSpace >= aboveSpace;
@@ -417,6 +422,7 @@
       positionPanel(node, cellAnchor(dateTriggerEl), {
         fallbackWidth: DATE_PICKER_PANEL_WIDTH,
         minHeight: DATE_PICKER_PANEL_MIN_HEIGHT,
+        gap: CELL_PANEL_GAP,
       });
     }
 
@@ -466,6 +472,7 @@
       positionPanel(node, cellAnchor(anchor), {
         fallbackWidth: Math.max(180, anchor?.offsetWidth ?? 0),
         minHeight: 48,
+        gap: CELL_PANEL_GAP,
       });
     }
 

@@ -109,6 +109,8 @@
   let paletteAnchor = $state<NotesTextMenuRect | null>(null);
   let palettePosition = $state<NotesTextMenuPoint | null>(null);
   let actionError = $state<string | null>(null);
+  /** Names the action whose result may still settle the menu; cleared when the menu moves or closes. */
+  let currentAction: symbol | null = null;
   const rootPosition = $derived(notesTextContextMenuPosition(
     position,
     viewport,
@@ -166,16 +168,24 @@
     }
   }
 
+  /**
+   * Runs a menu action and closes the menu when it finishes. Only the latest action of this menu at its current
+   * position settles it, so a slow action cannot close or report into a menu opened after it.
+   */
   function runAction(action: () => void | Promise<void>): void {
+    const token = Symbol("context menu action");
+    currentAction = token;
     actionError = null;
-    try {
-      void Promise.resolve(action()).then(() => onClose()).catch((error: unknown) => {
-        console.error("Notes text context menu action failed", error);
-        actionError = t("notes.contextMenuActionFailed");
-      });
-    } catch (error) {
+    const fail = (error: unknown): void => {
       console.error("Notes text context menu action failed", error);
-      actionError = t("notes.contextMenuActionFailed");
+      if (currentAction === token) actionError = t("notes.contextMenuActionFailed");
+    };
+    try {
+      void Promise.resolve(action()).then(() => {
+        if (currentAction === token) onClose();
+      }).catch(fail);
+    } catch (error) {
+      fail(error);
     }
   }
 
@@ -188,7 +198,16 @@
   let pointer: MenuAimPoint | null = null;
   let hoverTimer: ReturnType<typeof setTimeout> | null = null;
 
-  onDestroy(cancelHover);
+  onDestroy(() => {
+    cancelHover();
+    currentAction = null;
+  });
+
+  $effect(() => {
+    void position;
+    currentAction = null;
+    actionError = null;
+  });
 
   function trackPointer(event: PointerEvent): void {
     pointer = { x: event.clientX, y: event.clientY };

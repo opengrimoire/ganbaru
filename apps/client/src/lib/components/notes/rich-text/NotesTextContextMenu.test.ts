@@ -16,7 +16,11 @@ describe("Notes text context menu", () => {
     target = null;
   });
 
-  function renderMenu(hasSelection: boolean, focusOnOpen = false) {
+  function renderMenu(
+    hasSelection: boolean,
+    focusOnOpen = false,
+    clipboard: { onCopy?: () => Promise<void>; onPaste?: () => Promise<void> } = {},
+  ) {
     target = document.createElement("div");
     document.body.append(target);
     const onToggleAnnotation = vi.fn();
@@ -44,8 +48,8 @@ describe("Notes text context menu", () => {
         onConvert,
         onInsert: vi.fn(),
         onCut: vi.fn(async () => undefined),
-        onCopy: vi.fn(async () => undefined),
-        onPaste: vi.fn(async () => undefined),
+        onCopy: clipboard.onCopy ?? vi.fn(async () => undefined),
+        onPaste: clipboard.onPaste ?? vi.fn(async () => undefined),
         onPastePlainText: vi.fn(async () => undefined),
         onClose,
       },
@@ -132,5 +136,44 @@ describe("Notes text context menu", () => {
     await tick();
     await tick();
     expect(document.activeElement).toBe(button("Edit link"));
+  });
+
+  it("does not close a later menu when an action finishes after this menu closed", async () => {
+    let finishPaste = (): void => undefined;
+    const onPaste = vi.fn(() => new Promise<void>((resolve) => { finishPaste = resolve; }));
+    const { onClose } = renderMenu(true, false, { onPaste });
+    await tick();
+    button("Paste").click();
+    expect(onPaste).toHaveBeenCalledOnce();
+
+    if (component) await unmount(component);
+    component = null;
+    finishPaste();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("keeps the error of the latest action when an earlier action finishes later", async () => {
+    let finishPaste = (): void => undefined;
+    const onPaste = vi.fn(() => new Promise<void>((resolve) => { finishPaste = resolve; }));
+    const onCopy = vi.fn(() => Promise.reject(new Error("clipboard denied")));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { onClose } = renderMenu(true, false, { onCopy, onPaste });
+    await tick();
+    button("Paste").click();
+    button("Copy").click();
+    await Promise.resolve();
+    await tick();
+    expect(target?.querySelector('[role="alert"]')).not.toBeNull();
+
+    finishPaste();
+    await Promise.resolve();
+    await tick();
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(target?.querySelector('[role="alert"]')).not.toBeNull();
+    vi.restoreAllMocks();
   });
 });

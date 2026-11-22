@@ -144,6 +144,7 @@
   let executedElsewhere = $state<ReviewExecutedElsewhere | null>(null);
   let executingDeviceLabel = $state<string | null>(null);
   let executedElsewhereRequest = 0;
+  let sourcePickRequest = 0;
   let showGitImported = $state(false);
 
   const threadId = $derived(sourceThreadId ?? chat.selectedThreadId);
@@ -453,17 +454,26 @@
    */
   function chooseSourceKey(value: string): void {
     const next = parseReviewSourceKey(value);
-    if (next?.kind === "assignment") void openAssignmentSource(next.assignmentId);
+    sourcePickRequest += 1;
+    if (next?.kind === "assignment") void openAssignmentSource(next.assignmentId, sourcePickRequest);
     else if (next) chooseSource(next);
   }
 
-  /** Reopens the review on an assignment through the workspace, which resolves the folder its execution used. */
-  async function openAssignmentSource(assignmentId: ChatWorkAssignmentId): Promise<void> {
+  /**
+   * Reopens the review on an assignment through the workspace, which resolves the folder its execution used.
+   * A later source pick or a thread change while the assignment loads discards its result and error.
+   *
+   * @param assignmentId Assignment whose review opens.
+   * @param request Source pick token that must still be the latest when the load settles.
+   */
+  async function openAssignmentSource(assignmentId: ChatWorkAssignmentId, request: number): Promise<void> {
+    const pickedThreadId = threadId;
+    const current = () => !destroyed && request === sourcePickRequest && threadId === pickedThreadId;
     try {
       const detail = await chat.assignmentReviewDetail(assignmentId);
-      if (!destroyed) paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-open-review", { detail }));
+      if (current()) paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-open-review", { detail }));
     } catch (reason: unknown) {
-      if (!destroyed) error = message(reason);
+      if (current()) error = message(reason);
     }
   }
 

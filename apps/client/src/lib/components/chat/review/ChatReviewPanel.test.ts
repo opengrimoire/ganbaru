@@ -4,10 +4,13 @@ import { en } from "$lib/i18n/messages/en";
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  ChatReplyThreadPageRead,
   ChatReviewPatchPageRead,
   ChatReviewSnapshotRead,
   OpenChatReviewRequest,
 } from "$lib/chat/contracts";
+import { chatPaneEvents } from "$lib/chat/pane-events";
+import type { ChatOpenReviewDetail } from "$lib/chat/workspace/events";
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatReviewPanel from "./ChatReviewPanel.svelte";
 
@@ -181,6 +184,42 @@ describe("ChatReviewPanel", () => {
     await tick();
 
     expect(target.querySelector(".review-file-list")?.textContent).toContain("merged.py");
+  });
+
+  it("drops an assignment review that finishes loading after another source was picked", async () => {
+    const chat = getChat();
+    chat.selectedThreadId = null;
+    chat.openReplyThreadId = "reply-1";
+    vi.spyOn(chat, "replyThread", "get").mockReturnValue(
+      { assignment: { id: "assignment-1", state: "working" } } as unknown as ChatReplyThreadPageRead,
+    );
+    let finishDetail = null as ((detail: ChatOpenReviewDetail) => void) | null;
+    vi.spyOn(chat, "assignmentReviewDetail").mockImplementation(() => new Promise((resolve) => { finishDetail = resolve; }));
+    api.openReview.mockResolvedValue(snapshot());
+    api.readPatches.mockResolvedValue({ patches: [], continuationCursor: null });
+    const listener = vi.fn();
+    chatPaneEvents("primary").addEventListener("ganbaru:chat-open-review", listener);
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReviewPanel, { target, props: { source: { kind: "working_tree", mode: "all" } } });
+    await vi.waitFor(() => expect(api.openReview).toHaveBeenCalled());
+
+    const pick = async (index: number): Promise<void> => {
+      target?.querySelector<HTMLButtonElement>(".source-picker button")?.click();
+      await tick();
+      document.querySelectorAll<HTMLButtonElement>('[role="option"]')[index]?.click();
+      await tick();
+    };
+    await pick(0);
+    expect(chat.assignmentReviewDetail).toHaveBeenCalledWith("assignment-1");
+    await pick(1);
+    finishDetail?.({ source: { kind: "assignment", assignmentId: "assignment-1" }, relativePath: null });
+    await Promise.resolve();
+    await tick();
+
+    chatPaneEvents("primary").removeEventListener("ganbaru:chat-open-review", listener);
+    chat.openReplyThreadId = null;
+    expect(listener).not.toHaveBeenCalled();
   });
 
   it("opens provider changes against the hidden session that produced them", async () => {

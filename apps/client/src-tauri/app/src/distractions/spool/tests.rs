@@ -160,9 +160,10 @@ async fn drained_samples_join_the_journal_once_and_leave_the_spool() {
 async fn a_failed_journal_import_keeps_the_batch_in_the_spool() {
     let path = temporary_spool("failed-drain");
     let vault = vault_pool().await;
+    // The trigger body names a missing table, which fails with a plain SQLite error.
     sqlx::raw_sql(
-        "CREATE TRIGGER reject_usage BEFORE INSERT ON distractions_usage_samples
-         WHEN NEW.id = 'two' BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
+        "CREATE TRIGGER fail_usage BEFORE INSERT ON distractions_usage_samples
+         WHEN NEW.id = 'two' BEGIN SELECT * FROM missing_table; END",
     )
     .execute(&vault)
     .await
@@ -568,6 +569,60 @@ async fn compaction_after_a_committed_drain_does_not_count_its_samples_twice() {
         .await
         .unwrap();
     assert_eq!(journal_total(&vault).await, 30);
+    vault.close().await;
+    remove(&path);
+}
+
+#[tokio::test]
+async fn samples_the_journal_refuses_leave_the_spool_and_the_rest_drain() {
+    let path = temporary_spool("refused-samples");
+    let vault = vault_pool().await;
+    // A trigger refusal stands for any permanent vault rule beyond the column checks.
+    sqlx::raw_sql(
+        "CREATE TRIGGER refuse_usage BEFORE INSERT ON distractions_usage_samples
+         WHEN NEW.id = 'refused' BEGIN SELECT RAISE(ABORT, 'injected refusal'); END",
+    )
+    .execute(&vault)
+    .await
+    .unwrap();
+    let mut unknown_source = sample("unknown-source", 7);
+    unknown_source.source_type = "tablet-app".to_string();
+    enqueue_native_samples_at(
+        &path,
+        VAULT,
+        DEVICE,
+        &[
+            sample("one", 12),
+            sample("empty", 0),
+            unknown_source,
+            sample("refused", 3),
+            sample("two", 18),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        drain_at(&path, &vault, VAULT, DEVICE, &window())
+            .await
+            .unwrap(),
+        5
+    );
+    assert!(pending(&path).await.is_empty());
+    assert_eq!(
+        journal(&vault).await,
+        [("one".to_string(), 12), ("two".to_string(), 18)]
+    );
+    // A later batch is not held back by the refused rows.
+    enqueue_native_samples_at(&path, VAULT, DEVICE, &[sample("three", 5)])
+        .await
+        .unwrap();
+    assert_eq!(
+        drain_at(&path, &vault, VAULT, DEVICE, &window())
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(journal_total(&vault).await, 35);
     vault.close().await;
     remove(&path);
 }

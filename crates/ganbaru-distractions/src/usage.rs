@@ -307,13 +307,19 @@ impl std::fmt::Display for SpooledBlockEventError {
 /// SQLite primary result code of a constraint, CHECK, foreign key, or `RAISE(ABORT)` failure.
 const SQLITE_CONSTRAINT: i32 = 19;
 
-/// Classifies a vault error: a constraint or trigger refusal is permanent, anything else is not.
-fn spooled_write_error(error: sqlx::Error, what: &str) -> SpooledBlockEventError {
-    let refused = error
+/// Whether the vault refused a write by a constraint or trigger, which every later attempt of
+/// the same row would meet again.
+fn is_permanent_refusal(error: &sqlx::Error) -> bool {
+    error
         .as_database_error()
         .and_then(|database| database.code())
         .and_then(|code| code.parse::<i32>().ok())
-        .is_some_and(|code| code & 0xff == SQLITE_CONSTRAINT);
+        .is_some_and(|code| code & 0xff == SQLITE_CONSTRAINT)
+}
+
+/// Classifies a vault error: a constraint or trigger refusal is permanent, anything else is not.
+fn spooled_write_error(error: sqlx::Error, what: &str) -> SpooledBlockEventError {
+    let refused = is_permanent_refusal(&error);
     let message = format!("{what}: {error}");
     if refused {
         SpooledBlockEventError::Refused(message)

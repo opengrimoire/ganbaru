@@ -206,7 +206,7 @@ fn usage_sample_batch_rolls_back_when_a_late_insert_fails() {
                 source_key TEXT NOT NULL,
                 display_name TEXT,
                 started_at_ms INTEGER NOT NULL,
-                elapsed_seconds INTEGER NOT NULL CHECK (elapsed_seconds < 100),
+                elapsed_seconds INTEGER NOT NULL,
                 local_date TEXT NOT NULL,
                 created_at_ms INTEGER NOT NULL
             )",
@@ -219,7 +219,7 @@ fn usage_sample_batch_rolls_back_when_a_late_insert_fails() {
              BEFORE INSERT ON distractions_usage_samples
              WHEN NEW.id = 'second'
              BEGIN
-               SELECT RAISE(ABORT, 'late batch failure');
+               SELECT * FROM missing_table;
              END",
         )
         .execute(&pool)
@@ -246,7 +246,7 @@ fn usage_sample_batch_rolls_back_when_a_late_insert_fails() {
         assert!(
             totals::insert_own_samples(
                 &mut transaction,
-                &[sample("first", 10), sample("second", 200)],
+                &[sample("first", 10), sample("second", 20)],
                 &window,
             )
             .await
@@ -258,6 +258,81 @@ fn usage_sample_batch_rolls_back_when_a_late_insert_fails() {
             .await
             .unwrap();
         assert_eq!(count, 0);
+    });
+}
+
+#[test]
+fn usage_samples_the_vault_refuses_are_reported_and_the_rest_are_stored() {
+    crate::test_support::block_on(async {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE distractions_usage_samples (
+                id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                display_name TEXT,
+                started_at_ms INTEGER NOT NULL,
+                elapsed_seconds INTEGER NOT NULL CHECK (elapsed_seconds < 100),
+                local_date TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL
+            );
+            CREATE TRIGGER refuse_usage_sample BEFORE INSERT ON distractions_usage_samples
+            WHEN NEW.id = 'triggered' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let sample = |id: &str, elapsed_seconds| DistractionsUsageSampleRow {
+            id: id.to_string(),
+            source_type: "website".to_string(),
+            source_key: "example.com".to_string(),
+            display_name: None,
+            started_at_ms: 1,
+            elapsed_seconds,
+            local_date: "2026-05-26".to_string(),
+            created_at_ms: 1,
+        };
+        let batch = [
+            sample("first", 10),
+            sample("checked", 200),
+            sample("triggered", 5),
+            sample("last", 20),
+        ];
+
+        let window = usage_date_window(chrono::NaiveDate::from_ymd_opt(2026, 5, 26).unwrap());
+        let mut transaction = pool.begin().await.unwrap();
+        let import = totals::insert_own_samples(&mut transaction, &batch, &window)
+            .await
+            .unwrap();
+        // A retry stores nothing twice and refuses the same samples again.
+        let retry = totals::insert_own_samples(&mut transaction, &batch, &window)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+
+        assert_eq!(import, retry);
+        assert_eq!(import.skipped, 0);
+        assert_eq!(import.refused.len(), 2);
+        assert!(
+            import.refused[0].contains("checked"),
+            "{:?}",
+            import.refused
+        );
+        assert!(
+            import.refused[1].contains("triggered"),
+            "{:?}",
+            import.refused
+        );
+        let stored: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM distractions_usage_samples ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, ["first", "last"]);
     });
 }
 

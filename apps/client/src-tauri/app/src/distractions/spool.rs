@@ -405,7 +405,10 @@ pub(crate) async fn drain<R: Runtime>(
 
 /// Each batch is claimed in the spool, commits to the vault, and only then leaves the spool. The
 /// journal ignores samples it already holds, so a claimed batch that committed but stayed in the
-/// spool drains again harmlessly, and compaction never merges claimed rows into new ids.
+/// spool drains again harmlessly, and compaction never merges claimed rows into new ids. A sample
+/// the journal refuses by a constraint or trigger leaves the spool with its batch and a log line,
+/// so it never holds the claim; any other vault error keeps the whole batch claimed for the next
+/// attempt.
 async fn drain_at(
     path: &Path,
     pool: &SqlitePool,
@@ -437,16 +440,19 @@ async fn drain_at(
                 .begin()
                 .await
                 .map_err(|error| format!("begin usage journal import: {error}"))?;
-            let skipped = insert_own_samples(&mut transaction, &batch, window).await?;
+            let import = insert_own_samples(&mut transaction, &batch, window).await?;
             transaction
                 .commit()
                 .await
                 .map_err(|error| format!("commit usage journal import: {error}"))?;
-            if skipped > 0 {
+            if import.skipped > 0 {
                 eprintln!(
-                    "skipped {skipped} Distractions usage samples dated outside {}..={}",
-                    window.earliest, window.latest
+                    "skipped {} Distractions usage samples dated outside {}..={}",
+                    import.skipped, window.earliest, window.latest
                 );
+            }
+            for reason in &import.refused {
+                eprintln!("dropped spooled Distractions {reason}");
             }
             let mut transaction = spool
                 .begin()

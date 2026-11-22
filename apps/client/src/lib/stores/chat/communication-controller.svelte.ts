@@ -117,7 +117,7 @@ export class ChatCommunicationController {
       this.channelMessagesChannelId = channelId;
       this.channelCache.set(channelId, this.channelPages);
     } catch (error: unknown) {
-      if (request !== this.channelRequest) return;
+      if (!this.isCurrentChannelRequest(request, channelId)) return;
       this.channelError = chatErrorMessage(error, translate("chatErrors.actions.loadChannel"));
       throw error;
     } finally {
@@ -139,7 +139,7 @@ export class ChatCommunicationController {
       this.channelMessages = mergeMessages(this.channelPages.flatMap((entry) => entry.messages));
       this.channelCache.set(channelId, this.channelPages);
     } catch (error: unknown) {
-      if (request !== this.channelRequest) return;
+      if (!this.isCurrentChannelRequest(request, channelId)) return;
       this.channelError = chatErrorMessage(error, translate("chatErrors.actions.loadOlderHistory"));
       throw error;
     } finally {
@@ -158,7 +158,7 @@ export class ChatCommunicationController {
       this.channelMessages = page.messages;
       this.channelMessagesChannelId = channelId;
     } catch (error: unknown) {
-      if (request !== this.channelRequest) return;
+      if (!this.isCurrentChannelRequest(request, channelId)) return;
       this.channelError = chatErrorMessage(error, translate("chatErrors.actions.loadSearchResult"));
       throw error;
     } finally {
@@ -188,7 +188,7 @@ export class ChatCommunicationController {
       this.replyThread = page;
       this.replyThreadCache.set(replyThreadId, [page]);
     } catch (error: unknown) {
-      if (request !== this.replyThreadRequest) return;
+      if (!this.isCurrentReplyThreadRequest(request, replyThreadId)) return;
       this.replyThreadError = chatErrorMessage(error, translate("chatErrors.actions.loadReplyThread"));
       throw error;
     } finally {
@@ -211,7 +211,7 @@ export class ChatCommunicationController {
       this.replyThread = mergeReplyThreadPages(this.replyThreadPages);
       this.replyThreadCache.set(replyThreadId, this.replyThreadPages);
     } catch (error: unknown) {
-      if (request !== this.replyThreadRequest) return;
+      if (!this.isCurrentReplyThreadRequest(request, replyThreadId)) return;
       this.replyThreadError = chatErrorMessage(error, translate("chatErrors.actions.loadOlderReplies"));
       throw error;
     } finally {
@@ -230,7 +230,7 @@ export class ChatCommunicationController {
       this.replyThreadPages = [page];
       this.replyThread = page;
     } catch (error: unknown) {
-      if (request !== this.replyThreadRequest) return;
+      if (!this.isCurrentReplyThreadRequest(request, replyThreadId)) return;
       this.replyThreadError = chatErrorMessage(error, translate("chatErrors.actions.loadSearchThread"));
       throw error;
     } finally {

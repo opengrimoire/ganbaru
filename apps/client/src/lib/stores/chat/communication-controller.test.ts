@@ -116,6 +116,27 @@ describe("ChatCommunicationController channel history ownership", () => {
     expect(communication.channelMessagesChannelId).toBe("channel:a");
   });
 
+  it("keeps a failed load of a channel left for a cached channel off the shown channel", async () => {
+    const communication = controller();
+    selectedChannelId = "channel:b";
+    api.readChannelPage.mockResolvedValueOnce(channelPage("channel:b", "b:1"));
+    await communication.loadChannel("channel:b");
+
+    selectedChannelId = "channel:a";
+    let rejectPage: (error: Error) => void = () => undefined;
+    api.readChannelPage.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectPage = reject; }));
+    const loading = communication.loadChannel("channel:a");
+
+    selectedChannelId = "channel:b";
+    await communication.loadChannel("channel:b");
+    rejectPage(new Error("Channel history is unavailable"));
+    await loading;
+
+    expect(communication.channelError).toBeNull();
+    expect(communication.channelLoading).toBe(false);
+    expect(communication.channelMessagesChannelId).toBe("channel:b");
+  });
+
   it("forgets the history owner on reset", async () => {
     const communication = controller();
     selectedChannelId = "channel:a";

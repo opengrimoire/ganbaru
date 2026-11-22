@@ -114,6 +114,27 @@ describe("chat file editor session confirmations", () => {
     expect(mocks.preview).toHaveBeenCalledTimes(1);
   });
 
+  it("finishes opening a file when a workspace change lands while its preview loads", async () => {
+    const { session } = createSession();
+    mocks.preview.mockResolvedValueOnce(filePreview("src/a.ts", "first"));
+    await session.select("src/a.ts");
+    let resolveOpen: (preview: ProjectWorkingFolderFilePreview) => void = () => undefined;
+    mocks.preview.mockImplementationOnce(() => new Promise((resolve) => { resolveOpen = resolve; }));
+    mocks.preview.mockResolvedValueOnce(filePreview("src/b.ts", "changed", "rev-2"));
+    const opening = session.select("src/b.ts");
+    expect(session.loading).toBe(true);
+
+    const refreshing = session.refreshFromDisk("src/b.ts", false);
+    resolveOpen(filePreview("src/b.ts", "opened"));
+
+    await expect(opening).resolves.toBe(true);
+    await refreshing;
+    await vi.waitFor(() => expect(session.draftText).toBe("changed"));
+    expect(session.loading).toBe(false);
+    expect(session.preview?.relativePath).toBe("src/b.ts");
+    expect(session.preview?.contentRevision).toBe("rev-2");
+  });
+
   it("asks only when the draft is dirty and reloads after the answer", async () => {
     const { session } = createSession();
     mocks.preview.mockResolvedValueOnce(filePreview("src/a.ts", "saved"));

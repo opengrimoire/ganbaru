@@ -32,6 +32,7 @@
     projectTaskListGridTemplate,
     projectTaskListGutterWidth,
     projectTaskListLeadingGridTemplate,
+    projectTaskListNameTrackWidth,
     type ProjectTaskListColumnWidths,
     type ProjectTaskListGridInput,
     type ProjectTaskListResizableColumn,
@@ -261,6 +262,7 @@
   const taskListGridTemplate = $derived(projectTaskListGridTemplate(taskListGridInput));
   const taskListGridMinWidth = $derived(projectTaskListGridMinWidth(taskListGridInput));
   const taskListLeadingGridTemplate = $derived(projectTaskListLeadingGridTemplate(taskListGridInput));
+  const taskListNameTrackWidth = $derived(projectTaskListNameTrackWidth(taskListGridInput));
   const taskListContentStart = collectionRowContentStart(projectTaskListGutterWidth());
   /** Picking one endpoint of an empty range chains to the other date menu on desktop; touch dialogs edit one date at a time. */
   const listDateMenusChain = $derived(!TOUCH_PICKERS && taskListColumns.includes("start") && taskListColumns.includes("due"));
@@ -283,6 +285,7 @@
   if (tableQuery) setProjectListTableContext({
     query: tableQuery,
     gutter: projectTaskListGutterWidth(),
+    nameTrackWidth: () => taskListNameTrackWidth,
     cellClass: (column) => [
       frozenOffsets[column] !== undefined ? "project-list-frozen-cell" : "",
       column === "selection" || column === "expand" ? "project-list-gutter-cell" : "",

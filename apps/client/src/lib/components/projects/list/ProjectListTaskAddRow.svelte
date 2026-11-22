@@ -44,7 +44,7 @@
   data-section-task-add-row={mode === "section" ? rowId : undefined}
   data-group-task-add-row={mode === "group" ? rowId : undefined}
   data-subtask-add-row={mode === "subtask" ? rowId : undefined}>
-  <CollectionQuickAdd {label} {draft} {active} disabled={pending} contentColumn={3} {indent} {onDraftChange} {onActiveChange}
+  <CollectionQuickAdd {label} {draft} {active} disabled={pending} contentColumn={3} {indent} submitAnchor={context?.nameTrackWidth()} {onDraftChange} {onActiveChange}
     inputAttributes={{ "data-section-task-input": mode === "section" ? rowId : undefined, "data-group-task-input": mode === "group" ? rowId : undefined }}
     onSubmit={async () => { await onSubmit(); return !error; }} />
   {#if error}<p class="col-span-full px-2 py-1 text-[0.8rem] text-destructive" role="alert">{error}</p>{/if}

@@ -84,4 +84,29 @@ describe("shared inline creation", () => {
     expect(document.querySelector('[role="alert"]')).toBeNull();
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
+
+  it("anchors the submit button at the next column and grows the field with a longer draft", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(true);
+    component = mount(CollectionQuickAdd, { target: document.body, props: { label: "Add task", active: true, draft: "Plan", contentColumn: 3, indent: "1rem", submitAnchor: "16rem", onSubmit } });
+    await tick();
+    const field = document.querySelector("form > div")!;
+    expect(field.getAttribute("style")).toContain("min-width: max(0px, calc(16rem - 1rem - 0.75rem))");
+    const sizer = field.querySelector("span[aria-hidden]")!;
+    expect(sizer.textContent).toBe("Plan ");
+    const input = field.querySelector("input")!;
+    input.value = "Plan the release checklist";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    expect(sizer.textContent).toBe("Plan the release checklist ");
+    expect(field.nextElementSibling?.getAttribute("type")).toBe("submit");
+  });
+
+  it("keeps the field full width without an anchor", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(true);
+    component = mount(CollectionQuickAdd, { target: document.body, props: { label: "Add card", active: true, onSubmit } });
+    await tick();
+    const field = document.querySelector("form > div")!;
+    expect(field.getAttribute("style")).toBeNull();
+    expect(field.querySelector("span[aria-hidden]")).toBeNull();
+  });
 });

@@ -1,12 +1,13 @@
 <script lang="ts">
   import { tick } from "svelte";
   import type { HTMLInputAttributes } from "svelte/elements";
+  import CornerDownLeft from "@lucide/svelte/icons/corner-down-left";
   import Plus from "@lucide/svelte/icons/plus";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { userErrorMessage } from "$lib/i18n/user-errors";
   import { cn } from "$lib/utils";
-  let { label, draft = $bindable(""), active = $bindable(false), disabled = false, inputAttributes, contentColumn, indent, onDraftChange, onActiveChange, onSubmit, onCreate }: {
+  let { label, draft = $bindable(""), active = $bindable(false), disabled = false, inputAttributes, contentColumn, indent, submitAnchor, onDraftChange, onActiveChange, onSubmit, onCreate }: {
     label: string;
     draft?: string;
     active?: boolean;
@@ -16,6 +17,11 @@
     contentColumn?: number;
     /** Start inset of the content, matching the title indent of the nested rows it adds to. */
     indent?: string;
+    /**
+     * Distance from the content start to where the submit button sits while the draft fits before it. The field then
+     * grows with the draft toward the row end, so typing never scrolls the start of the title out of view first.
+     */
+    submitAnchor?: string;
     onDraftChange?: (draft: string) => void;
     onActiveChange?: (active: boolean) => void;
   } & ({ onSubmit: (title: string) => Promise<boolean>; onCreate?: never }
@@ -26,6 +32,10 @@
     spansRow ? `grid-column: ${contentColumn} / -1;` : "",
     indent ? `margin-left: ${indent};` : "",
   ].join(" ") || undefined);
+  /** The field ends before the anchor, short of the form's start padding and the gap before the submit button. */
+  const fieldStyle = $derived(submitAnchor
+    ? `min-width: max(0px, calc(${submitAnchor} - ${indent ?? "0px"} - 0.75rem));`
+    : undefined);
   let input: HTMLInputElement | undefined = $state();
   /** A one pixel mark at the start of the open field, revealed in place of the field itself. */
   let fieldStart: HTMLSpanElement | undefined = $state();
@@ -80,9 +90,12 @@
   {#if active || draft}
     <form class={cn("relative flex min-h-(--collection-table-row-height) min-w-0 items-center gap-1 rounded-md px-2", !spansRow && "bg-accent/20")} style={contentStyle} onsubmit={(event) => { event.preventDefault(); void submit(); }}>
       <span bind:this={fieldStart} class="pointer-events-none absolute inset-y-0 left-0 w-px" aria-hidden="true"></span>
-      <input {...inputAttributes} bind:this={input} value={draft} oninput={(event) => { draft = event.currentTarget.value; onDraftChange?.(draft); }} aria-label={label} placeholder={label} disabled={disabled || pending} class="min-h-8 w-full min-w-0 bg-transparent text-collection text-foreground outline-none" onkeydown={(event) => { event.stopPropagation(); if (event.key === "Escape" && !pending) { event.preventDefault(); cancel(); } }} />
-      <button type="submit" class="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground" disabled={disabled || pending || !draft.trim()} aria-label={label}><Plus class="size-4" /></button>
-      <button type="button" class="rounded-md px-2 py-1 text-[0.8rem] text-muted-foreground hover:bg-accent" disabled={pending} onclick={cancel}>{t("common.cancel")}</button>
+      <div class={submitAnchor ? "grid min-w-0 grid-cols-1 text-collection" : "flex w-full min-w-0"} style={fieldStyle}>
+        {#if submitAnchor}<span class="invisible col-start-1 row-start-1 block overflow-hidden whitespace-pre" aria-hidden="true">{`${draft || label} `}</span>{/if}
+        <input {...inputAttributes} bind:this={input} value={draft} oninput={(event) => { draft = event.currentTarget.value; onDraftChange?.(draft); }} aria-label={label} placeholder={label} size={1} disabled={disabled || pending} class="col-start-1 row-start-1 min-h-8 w-full min-w-0 bg-transparent text-collection text-foreground outline-none" onkeydown={(event) => { event.stopPropagation(); if (event.key === "Escape" && !pending) { event.preventDefault(); cancel(); } }} />
+      </div>
+      <button type="submit" class="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground" disabled={disabled || pending || !draft.trim()} aria-label={label}><CornerDownLeft class="size-4" /></button>
+      <button type="button" class="shrink-0 rounded-md px-2 py-1 text-[0.8rem] text-muted-foreground hover:bg-accent" disabled={pending} onclick={cancel}>{t("common.cancel")}</button>
     </form>
   {:else if spansRow}
     <button bind:this={trigger} type="button" class="col-span-full grid min-h-(--collection-table-row-height) grid-cols-subgrid items-center text-left text-collection text-muted-foreground outline-none hover:text-foreground focus-visible:bg-accent/40 focus-visible:text-foreground" {disabled} onclick={() => { void begin(); }}>

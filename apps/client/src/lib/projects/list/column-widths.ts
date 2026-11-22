@@ -505,6 +505,13 @@ export function projectTaskListGutterWidth(): string {
   return formatProjectTaskListRem(PROJECT_LIST_SELECTION_TRACK_REM + PROJECT_LIST_EXPAND_TRACK_REM);
 }
 
+/** Width of the name track, where content of a whole-row control such as the add task field lines up with the next column. */
+export function projectTaskListNameTrackWidth(
+  input: readonly ProjectTaskListColumn[] | ProjectTaskListGridInput,
+): string {
+  return formatProjectTaskListRem(projectTaskListNameColumnWidth(normalizeProjectTaskListGridInput(input)));
+}
+
 export function projectTaskListGridTemplate(
   input: readonly ProjectTaskListColumn[] | ProjectTaskListGridInput,
 ): string {

@@ -10,7 +10,7 @@
   let { query }: { query: ProjectTaskQueryController } = $props();
   const columnReorder = createProjectListColumnReorder(untrack(() => query));
   onDestroy(() => columnReorder.destroy());
-  setProjectListTableContext({ get query() { return query; }, gutter: projectTaskListGutterWidth(), cellClass: () => "", cellStyle: () => "", rowStyle: () => "", columnReorder });
+  setProjectListTableContext({ get query() { return query; }, gutter: projectTaskListGutterWidth(), nameTrackWidth: () => "16rem", cellClass: () => "", cellStyle: () => "", rowStyle: () => "", columnReorder });
 </script>
 
 <div data-floating-root>

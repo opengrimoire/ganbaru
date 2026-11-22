@@ -25,7 +25,7 @@
     calendar: {sourceEvents: []} as unknown as Input["calendar"],
     translate: getLocalization().t,
   });
-  setProjectListTableContext({query, gutter: projectTaskListGutterWidth(), cellClass: () => "", cellStyle: () => "", rowStyle: () => ""});
+  setProjectListTableContext({query, gutter: projectTaskListGutterWidth(), nameTrackWidth: () => "16rem", cellClass: () => "", cellStyle: () => "", rowStyle: () => ""});
 
   /** Expose the shared query so tests can observe sorting and grouping. */
   export function taskQuery(): ProjectTaskQueryController {

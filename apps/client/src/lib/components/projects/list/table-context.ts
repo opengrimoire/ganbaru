@@ -8,6 +8,8 @@ export interface ProjectListTableContext {
   query: ProjectTaskQueryController;
   /** Width of the selection and expand tracks outside the table, passed to rows so fills skip it. */
   gutter: string;
+  /** Current width of the name track, read where a whole-row control lines its content up with the next column. */
+  nameTrackWidth: () => string;
   cellClass: (column: ProjectTaskListResizableColumn | "selection" | "expand") => string;
   cellStyle: (column: ProjectTaskListResizableColumn | "selection" | "expand") => string;
   rowStyle: (task: ProjectTask, selected: boolean) => string;

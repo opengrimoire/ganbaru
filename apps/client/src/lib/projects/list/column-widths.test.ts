@@ -11,6 +11,7 @@ import {
   projectTaskListDoubleClickColumnWidthRem,
   projectTaskListGridMinWidth,
   projectTaskListGridTemplate,
+  projectTaskListNameTrackWidth,
   projectTaskListLeadingGridTemplate,
   startProjectTaskListColumnResize,
   taskListColumnWidthsForView,
@@ -180,6 +181,7 @@ describe("project list column widths", () => {
   it("sizes the name column from titles within its bounds", () => {
     expect(projectTaskListGridTemplate(measured({ columns: [], tasks: [task("Short")] }))).toBe("1.5rem 1.75rem 16rem 2.25rem");
     expect(projectTaskListGridTemplate(measured({ columns: [], tasks: [task("t".repeat(36))] }))).toBe("1.5rem 1.75rem 19.35rem 2.25rem");
+    expect(projectTaskListNameTrackWidth(measured({ columns: [], tasks: [task("t".repeat(36))] }))).toBe("19.35rem");
     expect(projectTaskListGridTemplate(measured({ columns: [], tasks: [task("t".repeat(80))] }))).toBe("1.5rem 1.75rem 21.5rem 2.25rem");
   });
 

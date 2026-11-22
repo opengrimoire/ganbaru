@@ -51,4 +51,13 @@
     border-color: transparent;
   }
   .collection-cell :global(button:focus-visible) { outline: none; box-shadow: none; }
+  /*
+   * On touch, a swipe across a text field that is not being edited pans the table instead of scrolling the field's
+   * hidden text; a tap lands on the cell, which focuses the field.
+   */
+  @media (hover: none) {
+    .collection-cell :global(input[data-collection-cell-primary]:not([type="checkbox"]):not([type="radio"]):not(:focus)) {
+      pointer-events: none;
+    }
+  }
 </style>

@@ -267,3 +267,59 @@ describe("Calendar stores of split panes", () => {
     warn.mockRestore();
   });
 });
+
+describe("Calendar store boot superseded by a committed change", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.mocked(loadNativeCalendarWindow).mockResolvedValue(snapshot());
+  });
+
+  it("requests the boot window again when acceptance clears the cache during the boot read", async () => {
+    const { getCalendar } = await import("./calendar.svelte");
+    const store = getCalendar();
+    const bootRead = deferred<MappedNativeCalendarWindow>();
+    vi.mocked(loadNativeCalendarWindow).mockReturnValueOnce(bootRead.promise);
+    const boot = store.load();
+    await vi.waitFor(() => expect(loadNativeCalendarWindow).toHaveBeenCalledOnce());
+    store.acceptNativeEdit();
+    bootRead.resolve(snapshot([event("stale")]));
+    await boot;
+    expect(loadNativeCalendarWindow).toHaveBeenCalledTimes(2);
+    expect(store.loaded).toBe(true);
+    expect(store.windowLoadFailed).toBe(false);
+    expect(store.foregroundWindowLoadBusy).toBe(false);
+  });
+
+  it("shows a window when another window's change notice arrives during the boot read", async () => {
+    const { initCalendarWindowSync } = await import("$lib/stores/calendar/window-sync");
+    const { getCalendar } = await import("./calendar.svelte");
+    const store = getCalendar();
+    const onRemoteChange = vi.mocked(initCalendarWindowSync).mock.calls[0]?.[0];
+    expect(onRemoteChange).toBeDefined();
+    const bootRead = deferred<MappedNativeCalendarWindow>();
+    vi.mocked(loadNativeCalendarWindow).mockReturnValueOnce(bootRead.promise);
+    const boot = store.load();
+    await vi.waitFor(() => expect(loadNativeCalendarWindow).toHaveBeenCalledOnce());
+    const remote = onRemoteChange?.();
+    bootRead.resolve(snapshot([event("stale")]));
+    await Promise.all([boot, remote]);
+    expect(loadNativeCalendarWindow).toHaveBeenCalledTimes(2);
+    expect(store.loaded).toBe(true);
+    expect(store.eventsInWindow(start, end)).not.toContainEqual(event("stale"));
+  });
+
+  it("offers a retry after a failed reload and reads the failed window again", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { getCalendar } = await import("./calendar.svelte");
+    const store = getCalendar();
+    await store.loadWindow(start, end);
+    vi.mocked(loadNativeCalendarWindow).mockRejectedValueOnce(new Error("Refresh unavailable"));
+    await expect(store.refreshCurrentWindow()).rejects.toThrow("Refresh unavailable");
+    expect(store.windowLoadFailed).toBe(true);
+    expect(store.loaded).toBe(true);
+    await store.retryWindow();
+    expect(store.windowLoadFailed).toBe(false);
+    expect(store.isWindowCurrent(start, end)).toBe(true);
+  });
+});

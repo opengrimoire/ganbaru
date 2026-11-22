@@ -1324,7 +1324,7 @@
       icon={CalendarX}
       copy={false}
       message={t("calendar.view.eventsLoadFailed")}
-      onRetry={() => calendarStore.load()}
+      onRetry={() => calendarStore.retryWindow()}
     />
   {/if}
 

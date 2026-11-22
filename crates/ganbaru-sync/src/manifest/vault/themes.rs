@@ -160,6 +160,7 @@ const GROUPS: [GroupSpec; 7] = [
                 text("seed_icon_label", MAX_ICON_LABEL_CHARS),
                 text("seed_calendar_default_mode", MAX_CALENDAR_MODE_CHARS),
                 text("seed_calendar_default_custom", MAX_COLOR_CHARS),
+                non_negative("seed_derivation_engine_version"),
             ],
             tables: &[tokens(SEED_TOKENS_OWNED), palette(SEED_PALETTE_OWNED)],
         },

@@ -61,7 +61,7 @@ User themes and their seed snapshots are normalized SQLite records. Built-in lig
 
 The quick-toggle light and dark choices are portable preferences that follow the vault. The active theme ID, font family, and font scale are device preferences, so switching to dark mode on one device never repaints another. Theme content never lives in preferences. Platform bootstraps load configuration and hydrate user themes before mounting the app shell. Startup never depends on user themes: a stored theme that fails validation is skipped, and a failed load leaves the built-in themes.
 
-A user theme keeps a seed snapshot for `Reset all to seed`. The seed is fixed when the theme is created: duplicating creates a new independent seed, import uses the imported content as its seed, and saving, rebaking, or resetting never changes it. Seeds are not exported.
+A user theme keeps a seed snapshot for `Reset all to seed`. The seed is fixed when the theme is created: duplicating creates a new independent seed, import uses the imported content as its seed, and saving, rebaking, or resetting never changes it. The seed records the engine version its tokens were derived with, and `Reset all to seed` restores that stamp with the seed values in one edit, so a rebaked theme that is reset is offered the rebake again. The editor buffer owns the reset, and the next save writes it as ordinary content. Seeds are not exported.
 
 ## Linked devices
 

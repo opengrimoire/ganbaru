@@ -29,6 +29,7 @@ function emptyRead(overrides: Partial<UserThemeRead["theme"]> = {}): UserThemeRe
       seed_calendar_default_custom: "#101820",
       icon_label: "dark",
       seed_icon_label: "dark",
+      seed_derivation_engine_version: 1,
       created_at_ms: 0,
       updated_at_ms: 0,
       has_conflict: false,
@@ -143,5 +144,17 @@ describe("userThemeToWrite", () => {
     expect(reread).toEqual(theme);
     expect(reread.calendarIsolated.has(calendarKey)).toBe(true);
     expect(reread.eventPalette[2]).toBe("#778899");
+  });
+
+  it("keeps the seed engine stamp apart from the current one", () => {
+    const theme = userThemeFromRead(
+      emptyRead({ derivation_engine_version: 4, seed_derivation_engine_version: 2 }),
+    );
+    expect(theme.derivationEngineVersion).toBe(4);
+    expect(theme.seedDerivationEngineVersion).toBe(2);
+
+    const write = userThemeToWrite(theme);
+    expect(write.derivationEngineVersion).toBe(4);
+    expect(write.seedDerivationEngineVersion).toBe(2);
   });
 });

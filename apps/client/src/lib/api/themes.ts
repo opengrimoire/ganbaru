@@ -47,6 +47,8 @@ export interface ThemeRow {
   blend_canvas: string;
   seed_blend_canvas: string;
   derivation_engine_version: number;
+  /** Engine version the seed tokens were derived with; a reset to the seed restores it. */
+  seed_derivation_engine_version: number;
   calendar_default_mode: string;
   calendar_default_custom: string;
   seed_calendar_default_mode: string;
@@ -79,6 +81,7 @@ export interface UserThemeWrite {
   blendCanvas: string;
   seedBlendCanvas: string;
   derivationEngineVersion: number;
+  seedDerivationEngineVersion: number;
   calendarDefaultMode: string;
   calendarDefaultCustom: string;
   seedCalendarDefaultMode: string;
@@ -183,31 +186,6 @@ export async function renameTheme(
     id,
     displayName,
   });
-}
-
-/**
- * Reset a single token to its seed value and seed isolated flag. Used by
- * the per-row reset icon in the editor.
- */
-export async function resetTokenToSeed(
-  id: string,
-  kind: TokenKind,
-  key: string,
-): Promise<void> {
-  await invoke<void>("themes_reset_token_to_seed", {
-    dbUrl: await activeDbUrl(),
-    id,
-    kind,
-    key,
-  });
-}
-
-/**
- * Restore every token, palette slot, and blend_canvas to its seed value.
- * Used by the editor footer's "Reset all" button.
- */
-export async function resetThemeToSeed(id: string): Promise<void> {
-  await invoke<void>("themes_reset_to_seed", { dbUrl: await activeDbUrl(), id });
 }
 
 export async function recordDismissal(

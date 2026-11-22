@@ -100,6 +100,8 @@ export interface BuiltinTheme {
   id: ThemeId;
   displayName: string;
   base: "light" | "dark";
+  /** Engine version the seed tokens were derived with; "Reset all" restores the stamp to this. */
+  seedDerivationEngineVersion: number;
   /**
    * Decorative sun/moon tag surfaced as the icon next to the theme name.
    * Built-in themes pin this to their base; user themes carry it as a

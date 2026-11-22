@@ -302,8 +302,8 @@ pub struct ThemeContent {
 }
 
 impl ThemeContent {
-    /// Reads and checks a content or seed group value. Both hold four columns, then the token
-    /// and palette blobs; the seed holds its icon label where content holds its engine version.
+    /// Reads and checks a content group value: four columns, then the token and palette blobs.
+    /// The seed group holds its icon label and engine version as well, and is checked apart.
     pub fn from_value(value: &Value) -> Result<Self, AdapterError> {
         const INVALID: AdapterError = AdapterError("theme content");
         match value.fields() {
@@ -344,12 +344,14 @@ fn validate_seed(value: &Value) -> Result<(), AdapterError> {
             Field::Text(icon_label),
             Field::Text(calendar_default_mode),
             Field::Text(calendar_default_custom),
+            Field::Integer(derivation_engine_version),
             Field::Blob(tokens),
             Field::Blob(palette),
         ] if is_hex_color(blend_canvas)
             && is_icon_label(icon_label)
             && is_calendar_mode(calendar_default_mode)
-            && is_hex_color(calendar_default_custom) =>
+            && is_hex_color(calendar_default_custom)
+            && *derivation_engine_version >= 0 =>
         {
             decode_tokens(tokens)?;
             decode_palette(palette)?;
@@ -761,6 +763,7 @@ mod tests {
             Field::Text("dark".to_owned()),
             Field::Text("custom".to_owned()),
             Field::Text("#27282A".to_owned()),
+            Field::Integer(2),
             Field::Blob(encode_tokens(&tokens).unwrap()),
             Field::Blob(encode_palette(&palette()).unwrap()),
         ])
@@ -768,6 +771,14 @@ mod tests {
         assert_eq!(
             ThemesAdapter.validate(THEMES_TABLE, group::SEED, &seed),
             Ok(())
+        );
+        let mut fields = seed.fields().to_vec();
+        fields[4] = Field::Integer(-1);
+        let negative_engine = Value::new(fields).unwrap();
+        assert!(
+            ThemesAdapter
+                .validate(THEMES_TABLE, group::SEED, &negative_engine)
+                .is_err()
         );
     }
 

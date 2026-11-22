@@ -26,7 +26,7 @@ table 16 vault_preferences replicated key key rule any
   group 2 register
 table 17 themes replicated key id rule theme_slug
   group 0 immutable created_at_ms:integer(0..=9223372036854775807)
-  group 1 immutable seed_blend_canvas:text(..=9) seed_icon_label:text(..=5) seed_calendar_default_mode:text(..=10) seed_calendar_default_custom:text(..=9)
+  group 1 immutable seed_blend_canvas:text(..=9) seed_icon_label:text(..=5) seed_calendar_default_mode:text(..=10) seed_calendar_default_custom:text(..=9) seed_derivation_engine_version:integer(0..=9223372036854775807)
     owned theme_seed_tokens parent theme_id key kind,key rows 256 codec custom kind:text(..=8) key:text(..=64) value:text(..=9) isolated:flag
     owned theme_seed_event_palette parent theme_id key slot rows 32 codec custom slot:integer(0..=31) value:text(..=9)
   group 2 register recoverable display_name:trimmed_text(1..=60)

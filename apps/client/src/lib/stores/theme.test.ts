@@ -39,6 +39,7 @@ function storedTheme(id: string): UserThemeRead {
       seed_calendar_default_custom: "#101820",
       icon_label: "dark",
       seed_icon_label: "dark",
+      seed_derivation_engine_version: 1,
       created_at_ms: 0,
       updated_at_ms: 0,
       has_conflict: false,

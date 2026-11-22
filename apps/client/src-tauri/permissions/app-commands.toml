@@ -747,8 +747,6 @@ commands.allow = [
   "themes_record_dismissal",
   "themes_rename",
   "themes_replace_content",
-  "themes_reset_to_seed",
-  "themes_reset_token_to_seed",
   "themes_resolve_conflict",
   "toggle_devtools",
   "updater_install_context",

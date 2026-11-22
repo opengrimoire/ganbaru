@@ -78,28 +78,6 @@ pub async fn themes_rename<R: Runtime>(
     ganbaru_themes::rename(&pool, &id, &display_name).await
 }
 
-#[tauri::command]
-pub async fn themes_reset_token_to_seed<R: Runtime>(
-    app: AppHandle<R>,
-    db_url: String,
-    id: String,
-    kind: String,
-    key: String,
-) -> Result<(), String> {
-    let pool = connect_sqlite(app, db_url).await?;
-    ganbaru_themes::reset_token_to_seed(&pool, &id, &kind, &key).await
-}
-
-#[tauri::command]
-pub async fn themes_reset_to_seed<R: Runtime>(
-    app: AppHandle<R>,
-    db_url: String,
-    id: String,
-) -> Result<(), String> {
-    let pool = connect_sqlite(app, db_url).await?;
-    ganbaru_themes::reset_to_seed(&pool, &id).await
-}
-
 /// The content versions of a theme left by concurrent saves on linked devices, with the device
 /// that wrote each one.
 #[tauri::command]

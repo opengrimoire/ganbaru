@@ -111,6 +111,7 @@ pub async fn restore_recovered(
         id: new_theme_id()?,
         display_name,
         seed_icon_label: icon_label.clone(),
+        seed_derivation_engine_version: content.derivation_engine_version,
         icon_label,
         seed_blend_canvas: content.blend_canvas.clone(),
         blend_canvas: content.blend_canvas,

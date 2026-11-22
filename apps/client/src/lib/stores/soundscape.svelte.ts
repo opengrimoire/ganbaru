@@ -62,12 +62,15 @@ interface SoundscapePreview {
   playing: { ids: string[]; levels: number[]; level: number } | null;
 }
 
+/** The catalog read of {@link SoundscapeStore.initialize} or {@link SoundscapeStore.ensureCatalog}; a vault switch ends it. */
+type SoundscapeCatalogLoad = { phase: "idle" } | { phase: "loading"; token: symbol };
+
 class SoundscapeStore {
   definitions = $state<MusicSoundscapeDefinition[]>([]);
   presets = $state<MusicSoundscapePreset[]>([]);
   persisted = $state<MusicSoundscapeState | null>(null);
   snapshot = $state<MusicSoundscapeSnapshot>(IDLE_SNAPSHOT);
-  loading = $state(false);
+  private catalogLoad = $state.raw<SoundscapeCatalogLoad>({ phase: "idle" });
   saving = $state(false);
   playbackPending = $state(false);
   error = $state<string | null>(null);
@@ -112,9 +115,24 @@ class SoundscapeStore {
     return this.source?.kind === "layer" && this.snapshot.status !== "idle";
   }
 
+  /** Whether the sound catalog of the current vault is loading. */
+  get loading(): boolean {
+    return this.catalogLoad.phase === "loading";
+  }
+
+  private beginCatalogLoad(): symbol {
+    const token = Symbol("soundscape catalog");
+    this.catalogLoad = { phase: "loading", token };
+    return token;
+  }
+
+  private finishCatalogLoad(token: symbol): void {
+    if (this.catalogLoad.phase === "loading" && this.catalogLoad.token === token) this.catalogLoad = { phase: "idle" };
+  }
+
   async initialize(): Promise<void> {
     const generation = ++this.generation;
-    this.loading = true;
+    const token = this.beginCatalogLoad();
     this.error = null;
     try {
       const [definitions, persisted, presets, snapshot] = await Promise.all([
@@ -137,7 +155,7 @@ class SoundscapeStore {
     } catch (error) {
       if (generation === this.generation) this.error = soundscapeErrorMessage(error);
     } finally {
-      if (generation === this.generation) this.loading = false;
+      this.finishCatalogLoad(token);
     }
   }
 
@@ -148,7 +166,7 @@ class SoundscapeStore {
   async ensureCatalog(): Promise<void> {
     if (this.persisted || this.loading || this.catalogLoaded) return;
     const generation = this.generation;
-    this.loading = true;
+    const token = this.beginCatalogLoad();
     try {
       const [definitions, presets] = await Promise.all([
         getMusicSoundscapes(),
@@ -162,7 +180,7 @@ class SoundscapeStore {
     } catch (error) {
       if (generation === this.generation) this.error = soundscapeErrorMessage(error);
     } finally {
-      if (generation === this.generation) this.loading = false;
+      this.finishCatalogLoad(token);
     }
   }
 
@@ -425,6 +443,7 @@ class SoundscapeStore {
 
   async switchVault(nextVaultId: string | null): Promise<void> {
     ++this.generation;
+    this.catalogLoad = { phase: "idle" };
     ++this.levelGeneration;
     this.clearLevelSaves();
     this.snapshot = IDLE_SNAPSHOT;

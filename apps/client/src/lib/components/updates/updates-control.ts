@@ -1,4 +1,4 @@
-import type { ProviderInstanceId, ProviderInstanceRead, ProviderUpdateRead } from "$lib/chat/contracts";
+import type { ProviderInstanceId, ProviderInstanceRead, ProviderUpdateRead, ProviderUpdateRunRead } from "$lib/chat/contracts";
 import { providersInPickerOrder } from "$lib/chat/composer/model-picker-model";
 import type { UpdateStatus } from "$lib/stores/updates.svelte";
 
@@ -45,6 +45,43 @@ export function cliUpdateEntries(
  */
 export function runnableCliUpdates(entries: readonly CliUpdateEntry[]): ProviderInstanceId[] {
   return entries.filter((entry) => entry.update.runsInApp).map((entry) => entry.update.instanceId);
+}
+
+/**
+ * How one CLI update ended. A probe that fails after the update succeeded leaves the update finished, so it never
+ * reads as an update failure.
+ */
+export type CliUpdateOutcome =
+  | { readonly phase: "updated" }
+  | { readonly phase: "updated-unprobed"; readonly error: unknown }
+  | { readonly phase: "update-failed"; readonly output: string | null };
+
+/**
+ * Runs a CLI update, then probes the provider so its new version shows.
+ *
+ * @param run Runs the update command; rejects when the command could not start.
+ * @param probe Reads the provider again after a successful update.
+ * @returns How the update ended.
+ */
+export async function runCliUpdateSteps(
+  run: () => Promise<ProviderUpdateRunRead>,
+  probe: () => Promise<unknown>,
+): Promise<CliUpdateOutcome> {
+  let result: ProviderUpdateRunRead;
+  try {
+    result = await run();
+  } catch (error: unknown) {
+    console.error("Failed to update the provider CLI:", error);
+    return { phase: "update-failed", output: null };
+  }
+  if (!result.successful) return { phase: "update-failed", output: result.output };
+  try {
+    await probe();
+  } catch (error: unknown) {
+    console.error("Failed to probe the provider after its CLI update:", error);
+    return { phase: "updated-unprobed", error };
+  }
+  return { phase: "updated" };
 }
 
 /**

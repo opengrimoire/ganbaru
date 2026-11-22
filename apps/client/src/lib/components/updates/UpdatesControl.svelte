@@ -16,7 +16,7 @@
   import { cn } from "$lib/utils";
   import { writeTextToClipboard } from "$lib/utils/clipboard";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
-  import { appUpdatePending, cliUpdateEntries, offersUpdateAll, runnableCliUpdates } from "./updates-control";
+  import { appUpdatePending, cliUpdateEntries, offersUpdateAll, runCliUpdateSteps, runnableCliUpdates } from "./updates-control";
 
   /**
    * Title bar indicator that appears while Ganbaru or a configured agent CLI has an update, and
@@ -99,19 +99,13 @@
    */
   async function runCliUpdate(instanceId: ProviderInstanceId): Promise<boolean> {
     setFailure(instanceId, undefined);
-    try {
-      const result = await providerUpdates.run(instanceId);
-      if (!result.successful) {
-        setFailure(instanceId, result.output);
-        return false;
-      }
-      await chat.probeProvider(instanceId);
-      return true;
-    } catch (error: unknown) {
-      console.error("Failed to update the provider CLI:", error);
-      setFailure(instanceId, null);
-      return false;
-    }
+    const outcome = await runCliUpdateSteps(
+      () => providerUpdates.run(instanceId),
+      () => chat.probeProvider(instanceId),
+    );
+    if (outcome.phase !== "update-failed") return true;
+    setFailure(instanceId, outcome.output);
+    return false;
   }
 
   /**

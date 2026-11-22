@@ -76,6 +76,45 @@ describe("Notice", () => {
     expect(retry.getAttribute("data-notice-retry")).toBe("idle");
   });
 
+  it("keeps a second retry pending when the first retry's check mark expires", async () => {
+    let resolveSecond: () => void = () => undefined;
+    const onRetry = vi.fn()
+      .mockImplementationOnce(() => Promise.resolve())
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveSecond = resolve; }));
+    const root = render({ onRetry });
+    const retry = button(root, "[data-notice-retry]");
+
+    retry.click();
+    await settle(480);
+    expect(retry.getAttribute("data-notice-retry")).toBe("done");
+
+    retry.click();
+    await settle(1_600);
+    expect(retry.getAttribute("data-notice-retry")).toBe("pending");
+    retry.click();
+    expect(onRetry).toHaveBeenCalledTimes(2);
+
+    resolveSecond();
+    await settle(480);
+    expect(retry.getAttribute("data-notice-retry")).toBe("done");
+  });
+
+  it("keeps a later copy's feedback when an earlier copy's feedback expires", async () => {
+    const root = render({});
+    const copy = button(root, "[data-notice-copy]");
+
+    copy.click();
+    await settle(1_000);
+    expect(copy.getAttribute("data-notice-copy")).toBe("done");
+
+    copy.click();
+    await settle(600);
+    expect(copy.getAttribute("data-notice-copy")).toBe("done");
+
+    await settle(1_000);
+    expect(copy.getAttribute("data-notice-copy")).toBe("idle");
+  });
+
   it("returns the retry button to idle without a check mark when the retry fails", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const root = render({ onRetry: () => Promise.reject(new Error("still offline")) });

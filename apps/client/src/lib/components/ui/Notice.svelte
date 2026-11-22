@@ -64,6 +64,9 @@
 
   let retryState = $state<FeedbackState>("idle");
   let copyState = $state<FeedbackState>("idle");
+  /** Names the latest retry and copy press, so feedback from an earlier press never resets a later one. */
+  let retryCycle = 0;
+  let copyCycle = 0;
   let destroyed = false;
   const timers = new Set<ReturnType<typeof setTimeout>>();
 
@@ -77,14 +80,23 @@
     });
   }
 
-  async function settleFeedback(set: (state: FeedbackState) => void, state: FeedbackState): Promise<void> {
+  /**
+   * Shows `state` for a moment, then returns to idle unless a later press took over.
+   *
+   * @param set - Writes the feedback state.
+   * @param state - The feedback to show.
+   * @param isCurrent - Whether the press that shows this feedback is still the latest one.
+   */
+  async function settleFeedback(set: (state: FeedbackState) => void, state: FeedbackState, isCurrent: () => boolean): Promise<void> {
     set(state);
     await wait(FEEDBACK_MS);
-    if (!destroyed) set("idle");
+    if (!destroyed && isCurrent()) set("idle");
   }
 
   async function retry(): Promise<void> {
     if (!onRetry || retryState === "pending") return;
+    const cycle = ++retryCycle;
+    const isCurrent = (): boolean => cycle === retryCycle;
     retryState = "pending";
     const startedAt = performance.now();
     let succeeded = true;
@@ -96,19 +108,21 @@
     }
     const remaining = RETRY_MIN_SPIN_MS - (performance.now() - startedAt);
     if (remaining > 0) await wait(remaining);
-    if (destroyed) return;
-    if (succeeded) await settleFeedback((state) => { retryState = state; }, "done");
+    if (destroyed || !isCurrent()) return;
+    if (succeeded) await settleFeedback((state) => { retryState = state; }, "done", isCurrent);
     else retryState = "idle";
   }
 
   async function copyMessage(): Promise<void> {
     if (copyText === null) return;
+    const cycle = ++copyCycle;
+    const isCurrent = (): boolean => cycle === copyCycle;
     try {
       await writeTextToClipboard(copyText);
-      if (!destroyed) await settleFeedback((state) => { copyState = state; }, "done");
+      if (!destroyed && isCurrent()) await settleFeedback((state) => { copyState = state; }, "done", isCurrent);
     } catch (error: unknown) {
       console.warn("Notice copy failed", error);
-      if (!destroyed) await settleFeedback((state) => { copyState = state; }, "failed");
+      if (!destroyed && isCurrent()) await settleFeedback((state) => { copyState = state; }, "failed", isCurrent);
     }
   }
 

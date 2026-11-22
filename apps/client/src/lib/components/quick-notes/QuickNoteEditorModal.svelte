@@ -803,8 +803,12 @@
   }
 
   async function reloadConflict(): Promise<void> {
-    if (!persisted) return;
-    const fresh = await getQuickNote(persisted.id);
+    const shown = persisted;
+    if (!shown) return;
+    const expectedVersion = dirtyVersion;
+    const fresh = await getQuickNote(shown.id);
+    // Saving a copy or editing while the read ran keeps those newer changes instead of the reloaded note.
+    if (persisted !== shown || dirtyVersion !== expectedVersion) return;
     persisted = fresh;
     revision = fresh.revision;
     title = fresh.title;

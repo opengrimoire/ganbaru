@@ -135,7 +135,8 @@
 
   async function confirmRestore(): Promise<void> {
     const snapshot = restoreSnapshot;
-    if (!snapshot || restoring) return;
+    // The page history runs one write at a time and ignores a second, which would close the modal unrestored.
+    if (!snapshot || restoring || copying) return;
     restoreSnapshotId = null;
     restoring = true;
     await notes.restorePageHistoryVersion(snapshot.id);
@@ -180,7 +181,7 @@
   {compactPreviewOpen}
   previewBusy={notes.pageHistoryVersionLoading}
   versionsBusy={initializing || notes.pageHistorySnapshotsLoading}
-  canRestore={selectedSnapshot !== null}
+  canRestore={selectedSnapshot !== null && !copying}
   {restoring}
   {error}
   dismissBlocked={restoreSnapshotId !== null}

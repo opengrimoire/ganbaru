@@ -187,6 +187,10 @@ pub(crate) const VAULT_NOT_LOST: &str =
 const STAGING_HOLDS_DATA: &str =
     "an earlier new vault folder holds data, so a new vault was not started";
 
+/// Error of a put-back request that names no kept folder of the vault in use.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) const KEPT_FOLDER_UNKNOWN: &str = "that kept vault folder is not there";
+
 /// Name prefix of the folder a new vault is prepared in beside the lost one.
 const NEW_VAULT_STAGING_PREFIX: &str = ".ganbaru.new-vault-";
 
@@ -330,6 +334,72 @@ pub(crate) fn start_new_vault_at(
     })
 }
 
+/// The kept folder of `target` named `id`, refused with [`KEPT_FOLDER_UNKNOWN`] unless `id` is
+/// exactly a kept folder name and names a real directory, never a link.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn kept_folder_named(target: &Path, id: &str) -> Result<PathBuf, String> {
+    if parse_kept_folder_name(target, id).is_none() {
+        return Err(KEPT_FOLDER_UNKNOWN.to_string());
+    }
+    let folder = parent_of(target)?.join(id);
+    match fs::symlink_metadata(&folder) {
+        Ok(metadata) if metadata.is_dir() => Ok(folder),
+        Ok(_) => Err(KEPT_FOLDER_UNKNOWN.to_string()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Err(KEPT_FOLDER_UNKNOWN.to_string()),
+        Err(error) => Err(format!("read the kept vault folder: {error}")),
+    }
+}
+
+/// Puts the kept folder `id` of `target` back in place of the vault in use and keeps that vault
+/// whole in a kept sibling named for `seconds`, so putting back is undone the same way and
+/// nothing is deleted.
+///
+/// A kept vault whose database is gone opens in the lost-database view, which reaches its
+/// rollback copies and its files; any other opens as usual. `activate` swaps it in through the
+/// crash-safe swap journal, so a crash leaves one of the two vaults in place and the other kept
+/// whole. A kept folder with an unreadable marker, or one an unfinished rollback restore still
+/// needs, is refused before anything moves.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn put_back_kept_folder_at(
+    target: &Path,
+    id: &str,
+    seconds: u64,
+    activate: impl FnOnce(&Path, &Path, Replacement) -> Result<(), String>,
+) -> Result<StartedVault, String> {
+    swap_journal::recover_or_refuse(target)?;
+    let folder = kept_folder_named(target, id)?;
+    let kept_vault = super::vault_info_from_path(&folder)?;
+    if super::database_rollback::has_unfinished_restore(&folder) {
+        return Err(swap_journal::SWAP_RECOVERY_PENDING.to_string());
+    }
+    let aside = kept_folder_path_at(target, seconds)?;
+    let aside_name = aside
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| "the kept folder name is not valid text".to_string())?;
+    activate(
+        &folder,
+        target,
+        Replacement::Preserve {
+            folder: aside,
+            discard: false,
+        },
+    )?;
+    // The preserved folder is never discarded, so its journal is settled right away.
+    if let swap_journal::Recovery::Pending(reason) = swap_journal::recover(target)? {
+        eprintln!("Kept vault put-back cleanup: {reason}");
+    }
+    let info = super::vault_info_from_path(target)?;
+    if info.vault_id != kept_vault.vault_id {
+        return Err("the kept vault did not take the place of the vault in use".to_string());
+    }
+    Ok(StartedVault {
+        info,
+        kept: aside_name,
+    })
+}
+
 /// Error of a new vault started after a lost database while this Android device is linked. The
 /// vault error formatter recognizes it and asks the user to unlink first.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -397,6 +467,60 @@ pub async fn vault_start_new_after_lost_database(
     Ok(info)
 }
 
+/// Puts the kept folder `id` back in place of the vault in use and keeps that vault whole beside
+/// it, through the crash-safe swap of [`put_back_kept_folder_at`]. Vault writers and native
+/// runtimes are paused first, and a linked phone is refused before anything moves, since its
+/// linked devices expect the vault in use here.
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub async fn vault_put_back_kept_folder(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<super::VaultInfo, String> {
+    let transition = super::quiescence::reserve_vault_transition()?;
+    super::encrypted_backup::refuse_other_vault_while_linked(
+        super::encrypted_backup::PLATFORM,
+        super::encrypted_backup::device_linked(&app)?,
+    )?;
+    let target = super::default_vault_path(&app)?;
+    let quiescence = super::quiescence::begin_reserved_quiescence(
+        &app,
+        transition,
+        super::quiescence::RunningTerminals::Block,
+    )
+    .await?;
+    let selection_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let selected = (|| {
+            let put = put_back_kept_folder_at(
+                &target,
+                &id,
+                unix_seconds()?,
+                |staging, target, replacement| {
+                    // The lock moves with the swapped folders, so the kept vault is fenced
+                    // throughout.
+                    super::vault_lock::process_vault_lock().replace_with(staging, target, || {
+                        swap_journal::swap(staging, target, replacement)
+                    })
+                },
+            )?;
+            eprintln!("Vault in use kept whole as '{}'", put.kept);
+            super::select_quiesced_vault(&selection_app, &put.info, &quiescence)?;
+            Ok(put.info)
+        })();
+        let resumed = quiescence.finish();
+        match (selected, resumed) {
+            (Ok(info), Ok(())) => Ok(info),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(resume)) => {
+                Err(format!("{error}; resuming runtimes also failed: {resume}"))
+            }
+        }
+    })
+    .await
+    .map_err(|error| format!("kept vault worker failed: {error}"))?
+}
+
 /// Reports that kept vault folders are listed only on Android.
 #[cfg(all(not(target_os = "android"), any(test, target_os = "ios")))]
 #[tauri::command]
@@ -409,6 +533,14 @@ pub fn vault_kept_folders() -> Result<Vec<KeptVaultFolder>, String> {
 #[tauri::command]
 pub fn vault_start_new_after_lost_database() -> Result<super::VaultInfo, String> {
     Err("starting a new vault after a lost database is only available on Android".to_string())
+}
+
+/// Reports that putting back a kept vault folder is offered only on Android.
+#[cfg(all(not(target_os = "android"), any(test, target_os = "ios")))]
+#[tauri::command]
+pub fn vault_put_back_kept_folder(id: String) -> Result<super::VaultInfo, String> {
+    let _ = id;
+    Err("kept vault folders are only available on Android".to_string())
 }
 
 #[cfg(test)]
@@ -755,6 +887,204 @@ mod tests {
                 inventory(&kept_path(&target, &kept[0].id)),
                 lost,
                 "{window:?} keeps every file of the lost vault"
+            );
+        }
+    }
+
+    /// A new vault holding a file, started in place of a lost vault holding another, with the
+    /// lost vault's kept folder name and both inventories.
+    struct PutBackFixture {
+        target: PathBuf,
+        kept: String,
+        lost: BTreeMap<PathBuf, Vec<u8>>,
+        current: BTreeMap<PathBuf, Vec<u8>>,
+    }
+
+    fn put_back_fixture(name: &str) -> PutBackFixture {
+        let target = vault_in(name);
+        lose_database(&target);
+        fs::create_dir_all(target.join("assets/profile")).unwrap();
+        fs::write(target.join("assets/profile/avatar.png"), b"image").unwrap();
+        let lost = inventory(&target);
+        let kept = start_new(&target, 10).unwrap().kept;
+        fs::create_dir_all(target.join("assets/notes/files")).unwrap();
+        fs::write(target.join("assets/notes/files/new.txt"), b"new").unwrap();
+        let current = inventory(&target);
+        PutBackFixture {
+            target,
+            kept,
+            lost,
+            current,
+        }
+    }
+
+    fn put_back(target: &Path, id: &str, seconds: u64) -> Result<StartedVault, String> {
+        put_back_kept_folder_at(target, id, seconds, swap_journal::swap)
+    }
+
+    #[test]
+    fn a_kept_vault_is_put_back_and_the_vault_in_use_is_kept_whole() {
+        let fixture = put_back_fixture("kept-folders-put-back");
+        let lost_id =
+            crate::vault::vault_info_from_path(&kept_path(&fixture.target, &fixture.kept))
+                .unwrap()
+                .vault_id;
+
+        let put = put_back(&fixture.target, &fixture.kept, 100).unwrap();
+
+        assert_eq!(put.info.vault_id, lost_id);
+        assert_eq!(put.kept, "Ganbaru before replacement 100");
+        assert_eq!(inventory(&fixture.target), fixture.lost);
+        assert_eq!(
+            inventory(&kept_path(&fixture.target, &put.kept)),
+            fixture.current
+        );
+        assert!(!kept_path(&fixture.target, &fixture.kept).exists());
+        assert!(!swap_journal::has_unfinished_swap(&fixture.target));
+        let ids: Vec<String> = list_kept_vault_folders(&fixture.target)
+            .unwrap()
+            .into_iter()
+            .map(|folder| folder.id)
+            .collect();
+        assert_eq!(ids, vec![put.kept.clone()]);
+        assert_eq!(
+            crate::vault::refuse_lost_database(&fixture.target).unwrap_err(),
+            crate::vault::VAULT_DATABASE_MISSING,
+            "the lost-database view opens, so its rollback copies are reachable"
+        );
+
+        put_back(&fixture.target, &put.kept, 200).unwrap();
+        assert_eq!(inventory(&fixture.target), fixture.current);
+        assert_eq!(
+            inventory(&kept_path(
+                &fixture.target,
+                "Ganbaru before replacement 200"
+            )),
+            fixture.lost,
+            "putting back is undone the same way"
+        );
+    }
+
+    #[test]
+    fn only_a_kept_folder_of_the_vault_in_use_can_be_put_back() {
+        let fixture = put_back_fixture("kept-folders-put-back-names");
+        let parent = fixture.target.parent().unwrap().to_path_buf();
+        fs::create_dir_all(parent.join("Other before replacement 5")).unwrap();
+        for id in [
+            "Other before replacement 5",
+            "Ganbaru before replacement 1x",
+            "Ganbaru before replacement 6",
+            "../Ganbaru before replacement 10",
+            "Ganbaru",
+            "",
+        ] {
+            assert_eq!(
+                put_back(&fixture.target, id, 100).unwrap_err(),
+                KEPT_FOLDER_UNKNOWN,
+                "{id:?}"
+            );
+        }
+        fs::write(parent.join("Ganbaru before replacement 7"), b"file").unwrap();
+        assert_eq!(
+            put_back(&fixture.target, "Ganbaru before replacement 7", 100).unwrap_err(),
+            KEPT_FOLDER_UNKNOWN
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                kept_path(&fixture.target, &fixture.kept),
+                parent.join("Ganbaru before replacement 8"),
+            )
+            .unwrap();
+            assert_eq!(
+                put_back(&fixture.target, "Ganbaru before replacement 8", 100).unwrap_err(),
+                KEPT_FOLDER_UNKNOWN,
+                "a link is never followed"
+            );
+        }
+        assert_eq!(inventory(&fixture.target), fixture.current);
+        assert_eq!(
+            inventory(&kept_path(&fixture.target, &fixture.kept)),
+            fixture.lost
+        );
+    }
+
+    #[test]
+    fn a_kept_folder_without_a_vault_marker_is_never_put_back() {
+        let fixture = put_back_fixture("kept-folders-put-back-unmarked");
+        let kept = kept_path(&fixture.target, &fixture.kept);
+        fs::remove_file(kept.join(crate::vault::VAULT_MANIFEST_FILE)).unwrap();
+
+        assert!(put_back(&fixture.target, &fixture.kept, 100).is_err());
+        assert_eq!(inventory(&fixture.target), fixture.current);
+        assert!(kept.exists());
+    }
+
+    #[test]
+    fn a_failed_put_back_leaves_both_vaults_where_they_were() {
+        let fixture = put_back_fixture("kept-folders-put-back-failed");
+
+        let error = put_back_kept_folder_at(&fixture.target, &fixture.kept, 100, |_, _, _| {
+            Err("swap failed".to_string())
+        });
+
+        assert_eq!(error.unwrap_err(), "swap failed");
+        assert_eq!(inventory(&fixture.target), fixture.current);
+        assert_eq!(
+            inventory(&kept_path(&fixture.target, &fixture.kept)),
+            fixture.lost
+        );
+    }
+
+    #[test]
+    fn a_crash_while_putting_back_keeps_both_vaults_whole() {
+        use swap_journal::PreserveCrash;
+        let windows = [
+            (Some(PreserveCrash::Journaled), false),
+            (Some(PreserveCrash::TargetMoved), false),
+            (Some(PreserveCrash::BothMoved), true),
+            (Some(PreserveCrash::Activated), true),
+            (None, true),
+        ];
+        for (crash, swapped) in windows {
+            let fixture = put_back_fixture("kept-folders-put-back-crash");
+
+            let crashed = put_back_kept_folder_at(
+                &fixture.target,
+                &fixture.kept,
+                100,
+                |staging, target, replacement| {
+                    let Replacement::Preserve { folder, .. } = &replacement else {
+                        panic!("putting back preserves the vault in use");
+                    };
+                    match crash {
+                        Some(crash) => {
+                            swap_journal::crash_preserve_swap(staging, target, folder, crash)?;
+                        }
+                        None => swap_journal::swap(staging, target, replacement)?,
+                    }
+                    Err("the process ended".to_string())
+                },
+            );
+            assert_eq!(crashed.unwrap_err(), "the process ended");
+            assert_eq!(
+                swap_journal::recover(&fixture.target).unwrap(),
+                swap_journal::Recovery::Settled,
+                "{crash:?}"
+            );
+
+            let (in_place, aside) = if swapped {
+                (&fixture.lost, &fixture.current)
+            } else {
+                (&fixture.current, &fixture.lost)
+            };
+            assert_eq!(&inventory(&fixture.target), in_place, "{crash:?}");
+            let kept = list_kept_vault_folders(&fixture.target).unwrap();
+            assert_eq!(kept.len(), 1, "{crash:?}");
+            assert_eq!(
+                &inventory(&kept_path(&fixture.target, &kept[0].id)),
+                aside,
+                "{crash:?} keeps the other vault whole"
             );
         }
     }

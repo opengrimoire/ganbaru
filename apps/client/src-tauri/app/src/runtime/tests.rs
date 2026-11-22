@@ -119,6 +119,7 @@ fn mobile_runtime_registers_portable_core_commands() {
         "vault::encrypted_backup::vault_restore_replaced_backup",
         "vault::kept_folders::vault_kept_folders",
         "vault::kept_folders::vault_start_new_after_lost_database",
+        "vault::kept_folders::vault_put_back_kept_folder",
         "crate::sync::server_join::sync_decode_server_qr",
         "crate::sync::server_join::sync_join_through_server",
         "crate::sync::server_join::sync_recover_through_server",

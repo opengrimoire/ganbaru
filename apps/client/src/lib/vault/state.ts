@@ -512,6 +512,17 @@ export async function startNewVaultAfterLostDatabase(): Promise<VaultInfo> {
   return activateVaultInfo(parseVaultInfo(await invoke<unknown>("vault_start_new_after_lost_database")));
 }
 
+/**
+ * Puts a kept vault folder back in place of the vault in use, which is kept whole as another kept folder. A phone
+ * linked to other devices is refused.
+ *
+ * @param id - The kept folder's identifier from {@link listKeptVaultFolders}.
+ * @returns The vault now in use.
+ */
+export async function putBackKeptVaultFolder(id: string): Promise<VaultInfo> {
+  return activateVaultInfo(parseVaultInfo(await invoke<unknown>("vault_put_back_kept_folder", { id })));
+}
+
 /** Why the app did not write or restore an encrypted backup. */
 export type BackupRefusal =
   | "noRecoveryKit"

@@ -76,6 +76,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::encrypted_backup::vault_restore_replaced_backup,
             vault::kept_folders::vault_kept_folders,
             vault::kept_folders::vault_start_new_after_lost_database,
+            vault::kept_folders::vault_put_back_kept_folder,
             chat::settings_commands::chat_read_settings,
             chat::settings_commands::chat_discover_default_providers,
             chat::settings_commands::chat_update_behavior,

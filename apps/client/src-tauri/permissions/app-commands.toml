@@ -773,6 +773,7 @@ commands.allow = [
   "vault_pick_and_write_theme_json",
   "vault_pick_create",
   "vault_pick_open",
+  "vault_put_back_kept_folder",
   "vault_read_config",
   "vault_release_starter",
   "vault_replaced_backups",

@@ -35,5 +35,5 @@
 
   <ReplacedVaultBackups onRestored={() => window.location.reload()} />
 
-  <KeptVaultFolders />
+  <KeptVaultFolders onRestored={() => window.location.reload()} />
 </div>

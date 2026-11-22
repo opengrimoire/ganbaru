@@ -348,6 +348,23 @@ describe("kept vault folders", () => {
       formatVaultError("this phone is linked to other devices; unlink it before starting a new vault"),
     ).toBe("This phone is linked to other devices. Unlink this phone first, then start a new vault.");
   });
+
+  it("puts a kept folder back by its identifier and activates the vault Rust returned", async () => {
+    const { getCachedActiveVaultInfo, putBackKeptVaultFolder } = await loadModule();
+    const info = {
+      path: "/data/ganbaru/Ganbaru",
+      databasePath: "/data/ganbaru/Ganbaru/ganbaru.sqlite",
+      vaultId: "vault-1",
+      displayName: "Ganbaru",
+      created: false,
+    };
+    invokeMock.mockResolvedValueOnce(info);
+    await expect(putBackKeptVaultFolder(folder.id)).resolves.toEqual(info);
+    expect(invokeMock).toHaveBeenCalledWith("vault_put_back_kept_folder", { id: folder.id });
+    expect(getCachedActiveVaultInfo()).toEqual(info);
+    invokeMock.mockResolvedValueOnce({ path: "/data/ganbaru/Ganbaru" });
+    await expect(putBackKeptVaultFolder(folder.id)).rejects.toThrow();
+  });
 });
 
 describe("replaced vault backups", () => {

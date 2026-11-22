@@ -2,6 +2,7 @@
   import HardDrive from "@lucide/svelte/icons/hard-drive";
   import BackupKitPrompt from "$lib/components/vault/BackupKitPrompt.svelte";
   import DatabaseRollbacks from "$lib/components/vault/DatabaseRollbacks.svelte";
+  import KeptVaultFolders from "$lib/components/vault/KeptVaultFolders.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -14,7 +15,7 @@
    *
    * @param message - Localized guidance for the failure.
    * @param onRetry - Opens the app again.
-   * @param offerRollbacks - Offers the vault's rollback copies, a backup file to restore, and a new vault that keeps the lost one aside, for a vault whose database is gone.
+   * @param offerRollbacks - Offers the vault's rollback copies, the kept vault folders to put back, a backup file to restore, and a new vault that keeps the lost one aside, for a vault whose database is gone.
    */
   let {
     message,
@@ -92,6 +93,7 @@
         <Notice message={restoreError} />
       {/if}
       <DatabaseRollbacks onRestored={onRetry} />
+      <KeptVaultFolders onRestored={onRetry} />
     </div>
   {:else}
     <Notice layout="fill" class="text-base" icon={HardDrive} title={t("mobile.startupFailed")} {message} {onRetry} />

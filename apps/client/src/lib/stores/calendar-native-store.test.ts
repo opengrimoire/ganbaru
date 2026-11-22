@@ -227,6 +227,26 @@ describe("Calendar stores of split panes", () => {
     expect(secondary.sourceEvents).toEqual([]);
   });
 
+  it("drops every cached window, notifies other windows, and reloads both panes after a calendar-level write", async () => {
+    const { getCalendarStore } = await import("./calendar.svelte");
+    const primary = getCalendarStore("primary");
+    const secondary = getCalendarStore("secondary");
+    await primary.loadWindow(start, end);
+    await primary.loadWindow(nextStart, nextEnd);
+    await secondary.loadWindow(start, end);
+    expect(loadNativeCalendarWindow).toHaveBeenCalledTimes(2);
+
+    vi.mocked(loadNativeCalendarWindow).mockResolvedValue({ ...snapshot([]), sourceEvents: [], totalEventCount: 0 });
+    await primary.acceptCalendarChange();
+
+    expect(publishCalendarWindowSync).toHaveBeenCalledOnce();
+    expect(loadNativeCalendarWindow).toHaveBeenCalledTimes(4);
+    expect(primary.isWindowCurrent(nextStart, nextEnd)).toBe(true);
+    expect(secondary.isWindowCurrent(start, end)).toBe(true);
+    expect(secondary.eventsInWindow(start, end)).toEqual([]);
+    expect(primary.eventCount).toBe(0);
+  });
+
   it("keeps a commit's refresh successful when only the other pane's reload fails", async () => {
     const { getCalendarStore } = await import("./calendar.svelte");
     const primary = getCalendarStore("primary");

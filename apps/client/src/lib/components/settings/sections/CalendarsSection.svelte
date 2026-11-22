@@ -295,7 +295,7 @@
     pendingDelete = undefined;
     try {
       await calendarsStore.remove(target.id);
-      await calendarStore.load();
+      await calendarStore.acceptCalendarChange();
       await refreshCounts();
       flashToast(t("settings.calendars.deleted", calendarDisplayName(target)));
     } catch (err) {

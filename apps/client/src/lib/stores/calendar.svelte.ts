@@ -698,6 +698,18 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
       publishCalendarWindowSync();
     },
 
+    /**
+     * Drop every cached window, notify other windows, and reload the windows of both split panes after a
+     * calendar-level write, such as removing a calendar together with its events.
+     */
+    async acceptCalendarChange(): Promise<void> {
+      clearPanelEventCache();
+      clearWindowCache();
+      indexVersion++;
+      publishCalendarWindowSync();
+      await refreshPanes(pane);
+    },
+
     /** Show `windowStart` to `windowEnd` freshly read from the database, and reload other split panes' windows. */
     async refreshWindow(
       windowStart: Temporal.PlainDate,

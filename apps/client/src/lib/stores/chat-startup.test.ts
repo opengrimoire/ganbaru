@@ -128,6 +128,34 @@ describe("Chat startup", () => {
     expect(chatApi.listChatAgents).toHaveBeenCalledTimes(reads);
   });
 
+  it("keeps the newest agent list when an earlier agent read finishes last, and drops one from a previous vault", async () => {
+    await chat.prewarmForProject("project");
+    vi.spyOn(chatApi, "readChatChannel").mockImplementation(async (channelId) => channel(channelId));
+    type Agents = Awaited<ReturnType<typeof chatApi.listChatAgents>>;
+    const stale = [{ participant: { id: "agent-stale" }, providerFamilyId: "codex" }] as unknown as Agents;
+    const fresh = [{ participant: { id: "agent-fresh" }, providerFamilyId: "codex" }] as unknown as Agents;
+    const earlier = deferred<Agents>();
+    vi.mocked(chatApi.listChatAgents)
+      .mockImplementationOnce(() => earlier.promise)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(fresh)
+      .mockResolvedValueOnce([]);
+
+    const first = chat.refreshAgents();
+    await chat.refreshAgents();
+    earlier.resolve(stale);
+    await first;
+    expect(chat.agents).toEqual(fresh);
+
+    const previousVault = deferred<Agents>();
+    vi.mocked(chatApi.listChatAgents).mockImplementationOnce(() => previousVault.promise).mockResolvedValueOnce([]);
+    const late = chat.refreshAgents();
+    resetChatForVault();
+    previousVault.resolve(stale);
+    await late;
+    expect(chat.agents).toEqual([]);
+  });
+
   it("discovers providers again for a vault activated after startup", async () => {
     await chat.prewarmForProject("project");
     resetChatForVault();

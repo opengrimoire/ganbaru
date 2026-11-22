@@ -118,7 +118,7 @@ class ChatSharedState {
   agents = $state<ChatAiAgentRead[]>([]);
   archivedAgents = $state<ChatAiAgentRead[]>([]);
   providerDiscoveryStarted = false;
-  /** Bumped by {@link resetAgents}, so an agent read started for an earlier vault is dropped. */
+  /** Bumped by {@link resetAgents} and every agent read, so an earlier read or one for an earlier vault is dropped. */
   private agentReadGeneration = 0;
   readonly configuration = new ChatConfigurationController({
     onSettingsChanged: () => {
@@ -159,13 +159,8 @@ class ChatSharedState {
     if (!settings) return;
     const covered = new Set([...this.agents, ...this.archivedAgents].map((agent) => agent.providerFamilyId));
     if (settings.providerInstances.every((provider) => covered.has(provider.configuration.familyId))) return;
-    const generation = this.agentReadGeneration;
-    void Promise.all([chatApi.listChatAgents(false), chatApi.listChatAgents(true)])
-      .then(([agents, archivedAgents]) => {
-        if (generation !== this.agentReadGeneration) return;
-        this.agents = agents;
-        this.archivedAgents = archivedAgents;
-      })
+    const generation = this.agentReadGeneration + 1;
+    void this.reloadAgents()
       .catch((error: unknown) => {
         if (generation === this.agentReadGeneration) console.error("Chat agent refresh after a provider change failed", error);
       });
@@ -176,6 +171,21 @@ class ChatSharedState {
     this.agentReadGeneration += 1;
     this.agents = [];
     this.archivedAgents = [];
+  }
+
+  /**
+   * Rereads the active and archived agents. The lists apply only when no newer read or vault reset started meanwhile,
+   * so a read that finishes late never replaces a newer list or shows another vault's agents.
+   *
+   * @returns Whether the read applied.
+   */
+  async reloadAgents(): Promise<boolean> {
+    const generation = ++this.agentReadGeneration;
+    const [agents, archivedAgents] = await Promise.all([chatApi.listChatAgents(false), chatApi.listChatAgents(true)]);
+    if (generation !== this.agentReadGeneration) return false;
+    this.agents = agents;
+    this.archivedAgents = archivedAgents;
+    return true;
   }
   /** The vault-wide queue of work that waits for the person, which every pane's rail shows. */
   readonly reviewQueue = new ChatReviewQueueController({
@@ -951,16 +961,14 @@ export class ChatStore {
     return this.channelNavigationController.updateDetails(channel, name, topic);
   }
 
+  /** Rereads the agents and the selected channel, dropping results that land after a vault switch. */
   async refreshAgents(): Promise<void> {
-    const [agents, archivedAgents] = await Promise.all([
-      chatApi.listChatAgents(false),
-      chatApi.listChatAgents(true),
-    ]);
-    this.agents = agents;
-    this.archivedAgents = archivedAgents;
-    if (this.selectedChannelId) {
-      this.channelNavigationController.upsert(await chatApi.readChatChannel(this.selectedChannelId));
-    }
+    const vaultGeneration = this.vaultGeneration;
+    await shared.reloadAgents();
+    const channelId = this.selectedChannelId;
+    if (!channelId || vaultGeneration !== this.vaultGeneration) return;
+    const channel = await chatApi.readChatChannel(channelId);
+    if (vaultGeneration === this.vaultGeneration) this.channelNavigationController.upsert(channel);
   }
 
   organizationalDraft(destination: string): ChatOrganizationalDraft {

@@ -499,6 +499,26 @@ describe("MusicSourcesController", () => {
     expect(controller.defaultFolderPreparationError).toBe("Your music folder could not be prepared, so try again or choose another folder.");
   });
 
+  it("drops a detection failure from before a vault round trip so the newer detection stays in progress", async () => {
+    const detections: Array<{ reject: (error: Error) => void }> = [];
+    const detectDefaultFolder = vi.fn(() => new Promise<null>((_resolve, reject) => { detections.push({ reject }); }));
+    const controller = createMusicSourcesController(api({ detectDefaultFolder }), () => 10, () => "id", refreshStub());
+    controller.setVault("vault-1");
+    void controller.load();
+    await vi.waitFor(() => expect(detections).toHaveLength(1));
+
+    controller.setVault("vault-2");
+    controller.setVault("vault-1");
+    void controller.load();
+    await vi.waitFor(() => expect(detections).toHaveLength(2));
+    detections[0]?.reject(new Error("late"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(controller.preparingDefaultFolder).toBe(true);
+    expect(controller.defaultFolderPreparationError).toBeNull();
+  });
+
   it("distinguishes videos from playlists and saves a resolved video", async () => {
     const saveYouTubeVideo = vi.fn(async (request: Parameters<MusicSourcesControllerApi["saveYouTubeVideo"]>[0]) => ({ id: request.videoId, version: 1 }));
     const controller = createMusicSourcesController(api({ saveYouTubeVideo }), () => 20, () => "id", refreshStub());

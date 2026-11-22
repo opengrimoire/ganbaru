@@ -86,7 +86,7 @@ describe("MusicPanel", () => {
     target = undefined;
     vi.unstubAllGlobals();
     resizeObserverCallbacks.clear();
-    Object.assign(getMusicSourcesController(), { firstUseSession: false, preparingDefaultFolder: false, loaded: false });
+    Object.assign(getMusicSourcesController(), { firstUseSession: false, firstUseFolder: { phase: "idle", folderPath: null }, loaded: false });
     const player = getMusicPlayer();
     player.setPlaylistVisible(false);
     player.currentSource = null;
@@ -520,7 +520,7 @@ describe("MusicPanel", () => {
   it("keeps first-use preparation pending when the panel closes before completion", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
     vi.stubGlobal("matchMedia", matchMediaStub);
-    Object.assign(getMusicSourcesController(), { firstUseSession: true, preparingDefaultFolder: true });
+    Object.assign(getMusicSourcesController(), { firstUseSession: true, firstUseFolder: { phase: "preparing", origin: "chosen", folderPath: "/home/user/Music" } });
     target = document.createElement("div");
     document.body.append(target);
     const { default: MusicPanel } = await import("./MusicPanel.svelte");

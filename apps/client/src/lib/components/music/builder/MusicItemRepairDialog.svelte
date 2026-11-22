@@ -39,6 +39,7 @@
 
   async function undo(): Promise<void> {
     busy = true;
+    error = null;
     try { await controller.undoItemRepair(); }
     catch (cause) { error = musicErrorMessage(cause, t("music.errors.itemRepairFailed")); }
     finally { busy = false; }

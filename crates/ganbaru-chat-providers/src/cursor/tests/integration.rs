@@ -1067,3 +1067,28 @@ async fn instructed_turn(
     .await
     .unwrap();
 }
+
+#[test]
+fn a_request_after_the_reader_closed_fails_at_once() {
+    crate::test_block_on(async {
+        let (application_reader, agent_writer) = tokio::io::duplex(1024);
+        drop(agent_writer);
+        let mut connection = AcpRpcConnection::from_test_io(application_reader, tokio::io::sink());
+        let mut inbound = connection.take_inbound().unwrap();
+        assert!(matches!(
+            inbound.recv().await.unwrap(),
+            AcpInboundMessage::Closed
+        ));
+        let mut long_wait = context("late");
+        long_wait.deadline = std::time::Instant::now() + Duration::from_secs(60);
+
+        let late = tokio::time::timeout(
+            Duration::from_secs(5),
+            connection.client().request("late", json!({}), &long_wait),
+        )
+        .await
+        .expect("a closed connection refuses the request instead of waiting for its deadline");
+
+        assert_eq!(late, Err(AcpRpcFailure::Closed));
+    });
+}

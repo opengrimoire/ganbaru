@@ -177,3 +177,32 @@ fn oversized_message_fails_pending_requests() {
         drop(writer.await.unwrap());
     });
 }
+
+#[test]
+fn a_request_after_the_reader_closed_fails_at_once() {
+    crate::test_block_on(async {
+        let (client_reader, server_writer) = tokio::io::duplex(1024);
+        drop(server_writer);
+        let mut connection = CodexRpcConnection::from_test_io(client_reader, tokio::io::sink());
+        let mut inbound = connection.take_inbound().unwrap();
+        assert!(matches!(
+            inbound.recv().await.unwrap(),
+            CodexInboundMessage::Closed
+        ));
+        let long_wait = DriverOperationContext {
+            deadline: Instant::now() + Duration::from_secs(60),
+            ..context("late")
+        };
+
+        let late = tokio::time::timeout(
+            Duration::from_secs(5),
+            connection
+                .client()
+                .request("test/late", json!({}), &long_wait),
+        )
+        .await
+        .expect("a closed connection refuses the request instead of waiting for its deadline");
+
+        assert_eq!(late, Err(CodexRpcFailure::Closed));
+    });
+}

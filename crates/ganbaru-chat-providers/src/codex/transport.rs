@@ -3,17 +3,16 @@
 use crate::DriverOperationContext;
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use crate::process::ProviderProcessHandle;
+use crate::response_map::{ResponseMap, ResponseSlotRefusal};
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 pub(super) const MAX_JSONL_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
-const MAX_PENDING_REQUESTS: usize = 128;
 const MAX_INBOUND_MESSAGES: usize = 256;
 const MAX_OUTBOUND_MESSAGES: usize = 256;
 const MAX_METHOD_BYTES: usize = 256;
@@ -118,8 +117,7 @@ pub enum CodexInboundMessage {
     Closed,
 }
 
-type PendingResponse = oneshot::Sender<Result<Value, CodexRpcFailure>>;
-type PendingResponses = Arc<Mutex<HashMap<String, PendingResponse>>>;
+type PendingResponses = ResponseMap<CodexRpcFailure>;
 
 #[derive(Clone)]
 pub struct CodexRpcClient {
@@ -143,17 +141,13 @@ impl CodexRpcClient {
             .next_request_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let key = id.to_string();
-        let (sender, mut receiver) = oneshot::channel();
-        {
-            let mut pending = self
-                .pending
-                .lock()
-                .map_err(|_| CodexRpcFailure::Unavailable)?;
-            if pending.len() >= MAX_PENDING_REQUESTS {
-                return Err(CodexRpcFailure::Unavailable);
-            }
-            pending.insert(key.clone(), sender);
-        }
+        let mut receiver = self
+            .pending
+            .register(key.clone())
+            .map_err(|refusal| match refusal {
+                ResponseSlotRefusal::Full => CodexRpcFailure::Unavailable,
+                ResponseSlotRefusal::Closed(failure) => failure,
+            })?;
         if let Err(error) = self
             .send_value(json!({ "id": id, "method": method, "params": params }))
             .await
@@ -225,9 +219,7 @@ impl CodexRpcClient {
     }
 
     fn remove_pending(&self, key: &str) {
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.remove(key);
-        }
+        self.pending.take(key);
     }
 }
 
@@ -278,11 +270,11 @@ impl CodexRpcConnection {
     {
         let (outbound, outbound_receiver) = mpsc::channel(MAX_OUTBOUND_MESSAGES);
         let (inbound_sender, inbound) = mpsc::channel(MAX_INBOUND_MESSAGES);
-        let pending = Arc::new(Mutex::new(HashMap::new()));
-        let reader_pending = Arc::clone(&pending);
+        let pending = PendingResponses::new();
+        let reader_pending = pending.clone();
         let reader_task = tokio::spawn(read_messages(reader, inbound_sender, reader_pending));
         let (writer_shutdown, shutdown_receiver) = oneshot::channel();
-        let writer_pending = Arc::clone(&pending);
+        let writer_pending = pending.clone();
         let writer_task = tokio::spawn(write_messages(
             writer,
             outbound_receiver,
@@ -337,7 +329,7 @@ impl CodexRpcConnection {
         if !self.reader_task.is_finished() {
             self.reader_task.abort();
         }
-        fail_pending(&self.client.pending, CodexRpcFailure::Closed);
+        self.client.pending.close(CodexRpcFailure::Closed);
         process_result
     }
 }
@@ -349,7 +341,7 @@ impl Drop for CodexRpcConnection {
         }
         self.writer_task.abort();
         self.reader_task.abort();
-        fail_pending(&self.client.pending, CodexRpcFailure::Closed);
+        self.client.pending.close(CodexRpcFailure::Closed);
     }
 }
 
@@ -372,7 +364,7 @@ async fn write_messages<W>(
             },
         };
         if writer.write_all(&message).await.is_err() || writer.flush().await.is_err() {
-            fail_pending(&pending, CodexRpcFailure::Closed);
+            pending.close(CodexRpcFailure::Closed);
             break;
         }
     }
@@ -396,7 +388,7 @@ async fn read_messages<R>(
                     }
                     Ok(InboundEnvelope::Message(message)) => {
                         if inbound.send(message).await.is_err() {
-                            fail_pending(&pending, CodexRpcFailure::Closed);
+                            pending.close(CodexRpcFailure::Closed);
                             return;
                         }
                     }
@@ -422,7 +414,7 @@ async fn read_messages<R>(
             Err(byte_length) => {
                 // The stream cannot be trusted to resynchronize after an unbounded line, so
                 // waiting requests fail at once and the session ends.
-                fail_pending(&pending, CodexRpcFailure::Oversized);
+                pending.close(CodexRpcFailure::Oversized);
                 let _ = inbound
                     .send(CodexInboundMessage::Oversized { byte_length })
                     .await;
@@ -430,7 +422,7 @@ async fn read_messages<R>(
             }
         }
     }
-    fail_pending(&pending, CodexRpcFailure::Closed);
+    pending.close(CodexRpcFailure::Closed);
     let _ = inbound.send(CodexInboundMessage::Closed).await;
 }
 
@@ -509,28 +501,7 @@ fn deliver_response(
     let Ok(key) = rpc_id_key(id) else {
         return;
     };
-    let sender = pending
-        .lock()
-        .ok()
-        .and_then(|mut responses| responses.remove(&key));
-    if let Some(sender) = sender {
-        let _ = sender.send(result);
-    }
-}
-
-fn fail_pending(pending: &PendingResponses, failure: CodexRpcFailure) {
-    let responses = pending
-        .lock()
-        .map(|mut pending| {
-            pending
-                .drain()
-                .map(|(_, sender)| sender)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    for response in responses {
-        let _ = response.send(Err(failure.clone()));
-    }
+    pending.deliver(&key, result);
 }
 
 fn validate_method(method: &str) -> Result<(), CodexRpcFailure> {

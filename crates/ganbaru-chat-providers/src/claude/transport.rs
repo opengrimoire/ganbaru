@@ -3,8 +3,8 @@
 use crate::DriverOperationContext;
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use crate::process::ProviderProcessHandle;
+use crate::response_map::{ResponseMap, ResponseSlotRefusal};
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
@@ -15,7 +15,6 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 const MAX_JSONL_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
-const MAX_PENDING_REQUESTS: usize = 128;
 const MAX_INBOUND_MESSAGES: usize = 256;
 const MAX_OUTBOUND_MESSAGES: usize = 256;
 
@@ -68,8 +67,7 @@ pub enum ClaudeInboundMessage {
     Closed,
 }
 
-type PendingResponse = oneshot::Sender<Result<Value, ClaudeTransportFailure>>;
-type PendingResponses = Arc<Mutex<HashMap<String, PendingResponse>>>;
+type PendingResponses = ResponseMap<ClaudeTransportFailure>;
 
 #[derive(Clone)]
 pub struct ClaudeJsonlClient {
@@ -94,20 +92,15 @@ impl ClaudeJsonlClient {
             "ganbaru-{}",
             self.next_request_id.fetch_add(1, Ordering::Relaxed)
         );
-        let receiver = {
-            let mut pending = self
-                .pending
-                .lock()
-                .map_err(|_| ClaudeTransportFailure::Closed)?;
-            if pending.len() >= MAX_PENDING_REQUESTS {
-                return Err(ClaudeTransportFailure::Malformed(
-                    "too many pending control requests".to_string(),
-                ));
-            }
-            let (sender, receiver) = oneshot::channel();
-            pending.insert(request_id.clone(), sender);
-            receiver
-        };
+        let receiver =
+            self.pending
+                .register(request_id.clone())
+                .map_err(|refusal| match refusal {
+                    ResponseSlotRefusal::Full => ClaudeTransportFailure::Malformed(
+                        "too many pending control requests".to_string(),
+                    ),
+                    ResponseSlotRefusal::Closed(failure) => failure,
+                })?;
         let mut request = fields.as_object().cloned().unwrap_or_default();
         request.insert("subtype".to_string(), Value::String(subtype.to_string()));
         if let Err(error) = self
@@ -141,9 +134,7 @@ impl ClaudeJsonlClient {
     }
 
     fn remove_pending(&self, request_id: &str) {
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.remove(request_id);
-        }
+        self.pending.take(request_id);
     }
 }
 
@@ -223,14 +214,14 @@ impl ClaudeJsonlConnection {
     {
         let (outbound, outbound_receiver) = mpsc::channel(MAX_OUTBOUND_MESSAGES);
         let (inbound_sender, inbound) = mpsc::channel(MAX_INBOUND_MESSAGES);
-        let pending = Arc::new(Mutex::new(HashMap::new()));
-        let reader_task = tokio::spawn(read_messages(reader, inbound_sender, Arc::clone(&pending)));
+        let pending = PendingResponses::new();
+        let reader_task = tokio::spawn(read_messages(reader, inbound_sender, pending.clone()));
         let (writer_shutdown, shutdown_receiver) = oneshot::channel();
         let writer_task = tokio::spawn(write_messages(
             writer,
             outbound_receiver,
             shutdown_receiver,
-            Arc::clone(&pending),
+            pending.clone(),
         ));
         Self {
             client: ClaudeJsonlClient {
@@ -293,7 +284,7 @@ impl ClaudeJsonlConnection {
         if !self.reader_task.is_finished() {
             self.reader_task.abort();
         }
-        fail_pending(&self.client.pending, ClaudeTransportFailure::Closed);
+        self.client.pending.close(ClaudeTransportFailure::Closed);
         process_result
     }
 }
@@ -303,7 +294,7 @@ impl Drop for ClaudeJsonlConnection {
         signal_writer_shutdown(&self.writer_shutdown);
         self.reader_task.abort();
         self.writer_task.abort();
-        fail_pending(&self.client.pending, ClaudeTransportFailure::Closed);
+        self.client.pending.close(ClaudeTransportFailure::Closed);
     }
 }
 
@@ -314,7 +305,7 @@ async fn await_response(
     context: &DriverOperationContext,
 ) -> Result<Value, ClaudeTransportFailure> {
     if context.is_cancelled() {
-        remove_pending(pending, request_id);
+        pending.take(request_id);
         return Err(if Instant::now() >= context.deadline {
             ClaudeTransportFailure::Timeout
         } else {
@@ -329,11 +320,11 @@ async fn await_response(
             Err(_) => Err(ClaudeTransportFailure::Closed),
         },
         () = context.cancellation.cancelled() => {
-            remove_pending(pending, request_id);
+            pending.take(request_id);
             Err(ClaudeTransportFailure::Cancelled)
         }
         () = tokio::time::sleep_until(deadline) => {
-            remove_pending(pending, request_id);
+            pending.take(request_id);
             Err(ClaudeTransportFailure::Timeout)
         }
     }
@@ -390,7 +381,7 @@ async fn read_messages<R>(
             break;
         }
     }
-    fail_pending(&pending, ClaudeTransportFailure::Closed);
+    pending.close(ClaudeTransportFailure::Closed);
     let _ = inbound.send(ClaudeInboundMessage::Closed).await;
 }
 
@@ -453,10 +444,7 @@ fn route_control_response(value: &Value, pending: &PendingResponses) -> bool {
     let Some(request_id) = response.get("request_id").and_then(Value::as_str) else {
         return false;
     };
-    let sender = pending
-        .lock()
-        .ok()
-        .and_then(|mut map| map.remove(request_id));
+    let sender = pending.take(request_id);
     if let Some(sender) = sender {
         let result = match response.get("subtype").and_then(Value::as_str) {
             Some("success") => Ok(response
@@ -507,7 +495,7 @@ pub(super) async fn write_messages<W>(
         }
     }
     let _ = writer.shutdown().await;
-    fail_pending(&pending, ClaudeTransportFailure::Closed);
+    pending.close(ClaudeTransportFailure::Closed);
 }
 
 fn signal_writer_shutdown(shutdown: &WriterShutdown) {
@@ -532,20 +520,4 @@ fn connection_state_error() -> ChatError {
         "Claude connection state is unavailable",
         false,
     )
-}
-
-fn remove_pending(pending: &PendingResponses, request_id: &str) {
-    if let Ok(mut map) = pending.lock() {
-        map.remove(request_id);
-    }
-}
-
-fn fail_pending(pending: &PendingResponses, error: ClaudeTransportFailure) {
-    let entries = pending
-        .lock()
-        .map(|mut map| map.drain().map(|(_, sender)| sender).collect::<Vec<_>>())
-        .unwrap_or_default();
-    for sender in entries {
-        let _ = sender.send(Err(error.clone()));
-    }
 }

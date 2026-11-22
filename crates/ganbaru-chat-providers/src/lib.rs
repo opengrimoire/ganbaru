@@ -23,6 +23,7 @@ mod opencode;
 mod registry;
 #[cfg(test)]
 mod replay;
+mod response_map;
 pub mod runtime_review;
 mod unsupported;
 

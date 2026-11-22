@@ -207,7 +207,7 @@ fn writer_exits_on_shutdown_without_polling() {
                 writer,
                 outbound_receiver,
                 shutdown_receiver,
-                Arc::new(Mutex::new(HashMap::new())),
+                crate::response_map::ResponseMap::new(),
             ));
             let counted = Arc::clone(&polls);
             let task = tokio::spawn(std::future::poll_fn(move |cx| {
@@ -741,4 +741,34 @@ async fn write_json_line(writer: &mut tokio::io::DuplexStream, value: Value) {
         .write_all(format!("{value}\n").as_bytes())
         .await
         .unwrap();
+}
+
+#[test]
+fn a_control_request_after_the_reader_closed_fails_at_once() {
+    crate::test_block_on(async {
+        let (driver_reader, server_writer) = tokio::io::duplex(1024);
+        drop(server_writer);
+        let mut connection = ClaudeJsonlConnection::from_test_io(driver_reader, tokio::io::sink());
+        let mut inbound = connection.take_inbound().unwrap();
+        assert!(matches!(
+            inbound.recv().await.unwrap(),
+            ClaudeInboundMessage::Closed
+        ));
+        let long_wait = DriverOperationContext {
+            operation_id: "late".to_string(),
+            deadline: Instant::now() + Duration::from_secs(60),
+            cancellation: DriverCancellation::default(),
+        };
+
+        let late = tokio::time::timeout(
+            Duration::from_secs(5),
+            connection
+                .client()
+                .request("interrupt", json!({}), &long_wait),
+        )
+        .await
+        .expect("a closed connection refuses the request instead of waiting for its deadline");
+
+        assert_eq!(late, Err(ClaudeTransportFailure::Closed));
+    });
 }

@@ -1074,6 +1074,12 @@ fn a_silent_stream_during_a_turn_reconnects_then_fails_unless_idle_or_waiting_fo
             sink.events().iter().filter(|event| silent(event)).count(),
             1
         );
+        assert!(
+            sink.events().iter().any(|event| matches!(&event.event,
+                CanonicalEvent::RuntimeError(error)
+                    if error.code == "opencode_event_stream_silent" && !error.recoverable)),
+            "a stream that failed for good fails the turn"
+        );
         server.shutdown().await;
     });
 }

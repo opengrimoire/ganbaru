@@ -1000,7 +1000,8 @@ async fn emit_events(
     Ok(())
 }
 
-/// Ends the session after the event stream failed for good, reporting `code`.
+/// Ends the session after the event stream failed for good, reporting `code`. The error is not
+/// recoverable for the runtime, so the turn the stream carried fails instead of staying open.
 async fn settle_event_failure(resources: &EventPumpResources, code: &str, message: &str) {
     let error = ChatError::new(ChatErrorCode::TransportUnavailable, message, true);
     if let Ok(mut terminal) = resources.terminal_error.lock() {
@@ -1018,7 +1019,7 @@ async fn settle_event_failure(resources: &EventPumpResources, code: &str, messag
                 CanonicalEvent::RuntimeError(RuntimeErrorEvent {
                     code: code.to_string(),
                     message: message.to_string(),
-                    recoverable: true,
+                    recoverable: false,
                     safe_details: None,
                 }),
             )

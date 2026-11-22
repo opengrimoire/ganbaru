@@ -29,7 +29,7 @@
     {
       "type": "runtime_error",
       "turn": "turn-1",
-      "recoverable": true,
+      "recoverable": false,
       "code": "opencode_event_stream_silent"
     }
   ]

@@ -660,7 +660,9 @@
     return view.type !== "table" || supportedViews.filter((candidate) => candidate.data_source_id === view.data_source_id && candidate.type === "table").length >= 2;
   }
 
+  /** Copy a link to a saved view, replacing any earlier view failure with the outcome of this attempt. */
   async function copyViewLink(viewId: string): Promise<void> {
+    viewError = null;
     try {
       await onCopyViewLink?.(viewId);
     } catch (caught: unknown) { viewError = notesFailure(caught, t("notes.databaseViewLinkCopyFailed")); }

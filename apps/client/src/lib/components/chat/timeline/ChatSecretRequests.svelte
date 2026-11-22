@@ -42,6 +42,8 @@
   let busyRequestId = $state<string | null>(null);
   let error = $state<string | null>(null);
   let listRequest = 0;
+  /** The reply thread whose requests and typed values are shown. */
+  let shownThreadId: ChatReplyThreadId | null = null;
 
   function refusalCode(cause: unknown): SecretRefusalCode | null {
     const message = chatErrorDetail(cause);
@@ -73,6 +75,7 @@
 
   async function answer(request: ChatSecretRequestRead, provide: boolean): Promise<void> {
     if (busyRequestId) return;
+    const threadId = replyThreadId;
     const value = values[request.id] ?? "";
     values = { ...values, [request.id]: "" };
     busyRequestId = request.id;
@@ -85,7 +88,8 @@
       const code = refusalCode(cause);
       if (code && CLOSED_REQUEST_CODES.includes(code)) {
         await loadRequests(replyThreadId);
-      } else {
+      } else if (threadId === replyThreadId) {
+        // An answer that fails after another reply thread opened does not report into that thread.
         error = errorText(cause);
       }
     } finally {
@@ -97,6 +101,12 @@
     const threadId = replyThreadId;
     void refreshKey;
     error = null;
+    if (threadId !== shownThreadId) {
+      // Another thread's requests and typed values never show under this one, even when its list fails to load.
+      shownThreadId = threadId;
+      requests = [];
+      values = {};
+    }
     void loadRequests(threadId);
   });
 

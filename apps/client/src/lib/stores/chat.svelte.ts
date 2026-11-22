@@ -1199,8 +1199,9 @@ export class ChatStore {
       ? this.replyThread.assignment.revision
       : null;
     if (expectedRevision === null) throw new Error("Work assignment was not loaded");
+    const channelId = this.selectedChannelId;
     await chatApi.cancelChatAssignment(assignmentId, expectedRevision);
-    this.publishChannelChange(this.selectedChannelId);
+    this.publishChannelChange(channelId);
     this.refreshReviewQueue();
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
     if (this.selectedChannelId) await this.loadChannelMessages(this.selectedChannelId, true);
@@ -1215,6 +1216,7 @@ export class ChatStore {
       ? this.replyThread.assignment.revision
       : null;
     if (expectedRevision === null) throw new Error("Work assignment was not loaded");
+    const channelId = this.selectedChannelId;
     let reviewed = true;
     try {
       await chatApi.reviewChatAssignment(assignmentId, expectedRevision, review);
@@ -1222,7 +1224,7 @@ export class ChatStore {
       if (chatErrorCode(error) !== "stale_revision") throw error;
       reviewed = false;
     }
-    this.publishChannelChange(this.selectedChannelId);
+    this.publishChannelChange(channelId);
     this.refreshReviewQueue();
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
     if (this.selectedChannelId) await this.loadChannelMessages(this.selectedChannelId, true);
@@ -1234,8 +1236,9 @@ export class ChatStore {
       ? this.replyThread.assignment.revision
       : null;
     if (expectedRevision === null) throw new Error("Work assignment was not loaded");
+    const channelId = this.selectedChannelId;
     await chatApi.retryChatAssignment(assignmentId, expectedRevision);
-    this.publishChannelChange(this.selectedChannelId);
+    this.publishChannelChange(channelId);
     this.refreshReviewQueue();
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
   }

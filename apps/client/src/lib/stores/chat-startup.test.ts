@@ -9,6 +9,7 @@ import { setActiveVaultIdentity } from "$lib/vault/active-vault";
 import { getChat, getChatStore, resetChatForVault } from "./chat.svelte";
 import { ChatConfigurationController } from "$lib/stores/chat/configuration-controller.svelte";
 import { multiProviderSettings } from "$lib/components/chat/composer/composer-test-store";
+import { publishChatChanges } from "$lib/chat/window-sync";
 
 const projects = vi.hoisted(() => ({
   selectedProjectId: "project",
@@ -474,6 +475,24 @@ describe("Chat reply thread tabs", () => {
 
     expect(chat.selectedChannelId).toBe("other");
     expect(chat.messageAnchorId).toBe("message-other");
+  });
+
+  it("tells other windows about the channel an assignment was cancelled in after the person moved on", async () => {
+    await chat.ensureLoaded();
+    await chat.selectChannel("general");
+    const communication = (chat as unknown as { communicationController: { replyThread: unknown } }).communicationController;
+    communication.replyThread = { assignment: { id: "assignment", revision: 1 } };
+    const cancelled = deferred<Awaited<ReturnType<typeof chatApi.cancelChatAssignment>>>();
+    vi.spyOn(chatApi, "cancelChatAssignment").mockImplementationOnce(() => cancelled.promise);
+
+    const cancelling = chat.cancelAssignment("assignment").catch(() => undefined);
+    await chat.selectChannel("other");
+    vi.mocked(publishChatChanges).mockClear();
+    cancelled.resolve({} as Awaited<ReturnType<typeof chatApi.cancelChatAssignment>>);
+    await cancelling;
+
+    const published = vi.mocked(publishChatChanges).mock.calls.flatMap(([changes]) => [...(changes.channelIds ?? [])]);
+    expect(published).toEqual(["general"]);
   });
 
   /** Shows the general channel with a working folder and a provider thread of its project selected. */

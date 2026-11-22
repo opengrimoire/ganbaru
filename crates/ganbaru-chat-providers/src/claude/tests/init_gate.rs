@@ -548,3 +548,29 @@ fn direct_sessions_skip_the_mcp_status_gate() {
         );
     });
 }
+
+#[test]
+fn a_message_the_router_cannot_route_fails_the_turn_and_stops_the_process() {
+    crate::test_block_on(async {
+        let mut harness = GateHarness::new(false, json!({}));
+        let snapshot = harness.start().await.unwrap();
+        harness
+            .send_turn(&snapshot.session_id, "turn-1")
+            .await
+            .unwrap();
+        let mut seen = Vec::new();
+        harness.claude().wait_for("user", &mut seen).await;
+        harness.claude().send(json!({
+            "type": "control_request",
+            "request": { "subtype": "can_use_tool", "tool_name": "Edit", "input": {} },
+        }));
+        harness.claude().wait_for(DRIVER_EOF, &mut seen).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_failed_closed(&harness.events());
+        let error = harness
+            .send_turn(&snapshot.session_id, "turn-2")
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Protocol);
+    });
+}

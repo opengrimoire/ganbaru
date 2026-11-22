@@ -10,7 +10,7 @@ use super::organizational::{
 use super::protocol::{
     control_error, control_success, organizational_permission_error, protocol_error,
 };
-use super::transport::{ClaudeInboundMessage, ClaudeJsonlClient};
+use super::transport::{ClaudeConnectionKill, ClaudeInboundMessage, ClaudeJsonlClient};
 use crate::confinement::ShellSandbox;
 use crate::events::*;
 use crate::models::*;
@@ -60,6 +60,8 @@ pub struct RoutedClaudeRequest {
 
 pub struct ClaudeRouterResources {
     pub client: ClaudeJsonlClient,
+    /// Stops the process when routing fails, so a session the router left cannot keep running.
+    pub kill: ClaudeConnectionKill,
     pub inbound: mpsc::Receiver<ClaudeInboundMessage>,
     pub normalizer: Arc<ClaudeEventNormalizer>,
     pub route: Arc<Mutex<ClaudeRouteState>>,
@@ -113,22 +115,28 @@ async fn run_claude_router(mut resources: ClaudeRouterResources) {
         let result = match message {
             ClaudeInboundMessage::Message(value) => match gate.as_mut() {
                 Some(gate) => route_gated(&resources, gate, value).await,
-                None => route_message(&resources, value).await,
+                None => route_message(&resources, value)
+                    .await
+                    .map(|()| Routed::Next),
             },
             ClaudeInboundMessage::Malformed {
                 reason,
                 byte_length,
-            } => route_malformed(&resources, &reason, byte_length).await,
+            } => route_malformed(&resources, &reason, byte_length)
+                .await
+                .map(|()| Routed::Next),
             ClaudeInboundMessage::Closed => {
                 route_closed(&resources).await;
                 return;
             }
         };
-        if let Err(error) = result {
-            if let Ok(mut terminal) = resources.terminal_error.lock() {
-                *terminal = Some(error);
+        match result {
+            Ok(Routed::Next) => {}
+            Ok(Routed::Failed) => return,
+            Err(error) => {
+                fail_session(&resources, gate.as_mut(), &error, "transport/route", None).await;
+                return;
             }
-            return;
         }
     }
     route_closed(&resources).await;
@@ -139,19 +147,27 @@ enum RouterInput {
     VerificationExpired,
 }
 
+/// What routing one frame left the session in.
+enum Routed {
+    /// The router reads the next frame.
+    Next,
+    /// The session already failed and its process was stopped, so the router returns.
+    Failed,
+}
+
 /// Routes one frame of an organizational session through its verification gate.
 async fn route_gated(
     resources: &ClaudeRouterResources,
     gate: &mut ClaudeOrganizationalGate,
     value: Value,
-) -> ChatResult<()> {
+) -> ChatResult<Routed> {
     match gate.admit(value)? {
         ClaudeGateAction::Route(frames) => {
             for frame in frames {
                 if let Err(error) = verify_confined_work(resources, &frame) {
                     fail_session(
                         resources,
-                        gate,
+                        Some(gate),
                         &error,
                         "organizational/git_metadata_changed",
                         Some(NotificationEvent {
@@ -161,21 +177,22 @@ async fn route_gated(
                         }),
                     )
                     .await;
-                    return Err(error);
+                    return Ok(Routed::Failed);
                 }
                 route_message(resources, frame).await?;
             }
-            Ok(())
+            Ok(Routed::Next)
         }
-        ClaudeGateAction::Hold => Ok(()),
+        ClaudeGateAction::Hold => Ok(Routed::Next),
         ClaudeGateAction::Reply(response) => resources
             .client
             .send(response)
             .await
+            .map(|()| Routed::Next)
             .map_err(|error| error.to_chat_error("control response")),
         ClaudeGateAction::Fail => {
             fail_organizational(resources, gate).await;
-            Err(organizational_permission_error())
+            Ok(Routed::Failed)
         }
     }
 }
@@ -201,7 +218,7 @@ async fn fail_organizational(
 ) {
     fail_session(
         resources,
-        gate,
+        Some(gate),
         &organizational_permission_error(),
         "organizational/unverified",
         None,
@@ -209,17 +226,19 @@ async fn fail_organizational(
     .await;
 }
 
-/// Fails an organizational session with `error`: held frames are dropped, the active turn
-/// fails without retry, and the process is killed. The router returns afterwards, so the
-/// closed stream never replaces the error. A `warning` is raised before the failure.
+/// Fails the session with `error`: an organizational session's held frames are dropped, the
+/// active turn fails without retry, and the process is killed. The router returns afterwards,
+/// so the closed stream never replaces the error. A `warning` is raised before the failure.
 async fn fail_session(
     resources: &ClaudeRouterResources,
-    gate: &mut ClaudeOrganizationalGate,
+    gate: Option<&mut ClaudeOrganizationalGate>,
     error: &ChatError,
     source: &str,
     warning: Option<NotificationEvent>,
 ) {
-    gate.discard();
+    if let Some(gate) = gate {
+        gate.discard();
+    }
     if let Ok(mut terminal) = resources.terminal_error.lock() {
         *terminal = Some(error.clone());
     }
@@ -266,7 +285,7 @@ async fn fail_session(
     if let Ok(events) = events {
         let _ = emit_events(&resources.sink, events).await;
     }
-    let _ = gate.kill_handle().kill(SESSION_FORCE_STOP).await;
+    let _ = resources.kill.kill(SESSION_FORCE_STOP).await;
 }
 
 async fn route_message(resources: &ClaudeRouterResources, value: Value) -> ChatResult<()> {

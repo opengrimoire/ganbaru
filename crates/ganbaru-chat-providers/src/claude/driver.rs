@@ -471,10 +471,11 @@ impl ClaudeProviderDriver {
             });
         let (organizational_deadline, organizational_route) = organizational_server
             .zip(organizational_scope)
-            .map(|(server, scope)| organizational_route(server, scope, connection.kill_handle()))
+            .map(|(server, scope)| organizational_route(server, scope))
             .unzip();
         let router_task = spawn_claude_router(ClaudeRouterResources {
             client: connection.client(),
+            kill: connection.kill_handle(),
             inbound,
             normalizer: Arc::clone(&normalizer),
             route: Arc::clone(&route),

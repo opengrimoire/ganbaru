@@ -186,12 +186,16 @@
     editingLocked = locked;
   });
 
+  /** Open a database, replacing any earlier action failure with the outcome of this attempt. */
   async function openDatabase(id: string): Promise<void> {
+    titleError = null;
     try { await onOpenDatabase?.(id); }
     catch (caught: unknown) { titleError = notesFailure(caught, t("notes.databaseOpenFailed")); }
   }
 
+  /** Delete this database block, replacing any earlier action failure with the outcome of this attempt. */
   async function deleteDatabase(): Promise<void> {
+    titleError = null;
     try { await onDeleteDatabase?.(block.id); }
     catch (caught: unknown) { titleError = notesFailure(caught, t("notes.databaseChangeFailed")); }
   }
@@ -202,6 +206,7 @@
    * @param viewId Saved view the link selects when opened.
    */
   async function copyDatabaseLink(viewId?: string): Promise<void> {
+    titleError = null;
     try {
       const destination = reference ?? await getNotesDatabaseReference(block.id);
       const target = { pageId: destination.page_id, blockId: destination.block_id };

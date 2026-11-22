@@ -2,7 +2,7 @@
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatChannelRead, ChatReviewQueueItemRead, ChatReviewQueueKind } from "$lib/chat/contracts";
+import type { ChatChannelRead, ChatMessageSearchResultRead, ChatReviewQueueItemRead, ChatReviewQueueKind } from "$lib/chat/contracts";
 import { readChatSidebarSections, saveChatSidebarSections } from "$lib/chat/channel-sections";
 import { chatPaneEvents } from "$lib/chat/pane-events";
 import { getChat } from "$lib/stores/chat.svelte";
@@ -123,6 +123,50 @@ describe("ChatChannelRail", () => {
     await tick();
     expect(target.querySelector('input[type="search"]')).toBe(input);
     expect(document.activeElement).toBe(input);
+  });
+
+  it("keeps a failed message search to its own query, without earlier results or a lasting error", async () => {
+    const result: ChatMessageSearchResultRead = {
+      projectId: "project-1",
+      channelId: "channel-general",
+      channelName: "general",
+      conversationId: "conversation-general",
+      replyThreadId: null,
+      messageItemId: "item-release",
+      anchorCursor: "cursor-release",
+      authorParticipantId: null,
+      authorKind: null,
+      authorDisplayName: "Ana",
+      excerpt: "release notes",
+      createdAt: "2026-11-20T10:00:00.000Z",
+    };
+    const search = vi.spyOn(getChat(), "searchOrganizationalMessages")
+      .mockResolvedValueOnce([result])
+      .mockRejectedValueOnce(new Error("index busy"))
+      .mockResolvedValueOnce([]);
+    component = mount(ChatChannelRail, {
+      target,
+      props: { expanded: true, showCollapsedStrip: true, onExpand: vi.fn(), onCollapse: vi.fn() },
+    });
+    await tick();
+    const input = target.querySelector<HTMLInputElement>('input[type="search"]');
+    if (!input) throw new Error("Search input is missing");
+    const typeQuery = async (text: string, calls: number) => {
+      input.value = text;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await vi.waitFor(() => expect(search).toHaveBeenCalledTimes(calls));
+      await vi.waitFor(() => expect(target.querySelector(".message-results .animate-spin")).toBeNull());
+    };
+
+    await typeQuery("release", 1);
+    expect(target.querySelectorAll(".message-result")).toHaveLength(1);
+
+    await typeQuery("release n", 2);
+    expect(target.querySelectorAll(".message-result")).toHaveLength(0);
+    expect(target.textContent).toContain("The channel could not be updated.");
+
+    await typeQuery("release no", 3);
+    expect(target.textContent).not.toContain("The channel could not be updated.");
   });
 
   it("keeps the docked rail content mounted and inert behind the collapsed strip", async () => {

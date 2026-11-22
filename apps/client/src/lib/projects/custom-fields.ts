@@ -73,6 +73,11 @@ export function projectCustomFieldUsesTextValue(fieldType: ProjectCustomFieldTyp
   return TEXT_BACKED_CUSTOM_FIELD_TYPES.has(fieldType);
 }
 
+/** Whether a text-backed field's cell leads with an icon that names its kind, such as a link or an email address. */
+export function projectCustomFieldHasCellIcon(fieldType: ProjectCustomFieldType): boolean {
+  return projectCustomFieldUsesTextValue(fieldType) && fieldType !== "text";
+}
+
 export function projectCustomFieldUsesOptions(fieldType: ProjectCustomFieldType): boolean {
   return OPTION_BACKED_CUSTOM_FIELD_TYPES.has(fieldType);
 }

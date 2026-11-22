@@ -9,7 +9,15 @@
   import { getTheme } from "$lib/stores/theme.svelte";
   import { getEventColor } from "$lib/calendar/utils";
   import { collectionRowContentStart } from "$lib/components/collections/row-expansion";
-  import { projectListFrozenOffsets, projectListRowColor } from "$lib/projects/list/presentation";
+  import {
+    projectListDateLabel,
+    projectListFrozenOffsets,
+    projectListNumberLabel,
+    projectListRowColor,
+    projectListTimeLabel,
+  } from "$lib/projects/list/presentation";
+  import { createCollectionTextMeasurer, type CollectionTextMeasurer } from "$lib/components/collections/text-measure";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
   import { setProjectListTableContext } from "./table-context";
   import type { ProjectTaskQueryController } from "$lib/components/projects/task-query-controller.svelte";
   import ProjectListCalculationFooter from "./ProjectListCalculationFooter.svelte";
@@ -19,6 +27,7 @@
     projectCustomFieldUsesOptions,
   } from "$lib/projects/custom-fields";
   import {
+    projectTaskListAutoColumnWidths,
     projectTaskListGridMinWidth,
     projectTaskListGridTemplate,
     projectTaskListGutterWidth,
@@ -26,6 +35,7 @@
     type ProjectTaskListColumnWidths,
     type ProjectTaskListGridInput,
     type ProjectTaskListResizableColumn,
+    type ProjectTaskListTextStyle,
   } from "$lib/projects/list/view";
   import {
     projectListDueDateEditPlan,
@@ -118,7 +128,9 @@
   const projects = useProjects();
   const calendar = getCalendar();
   const theme = getTheme();
-  const { t } = getLocalization();
+  const localization = getLocalization();
+  const { t } = localization;
+  const preferences = getPreferences();
   const tableQuery = untrack(() => taskQuery);
 
   let sectionNameDrafts = $state<Record<string, string>>({});
@@ -159,22 +171,91 @@
   }) : undefined;
   onDestroy(() => columnReorder?.destroy());
 
+  /** Everything column widths fit, apart from manual widths, so resizing reuses the fitted widths. */
+  const taskListContentInput: ProjectTaskListGridInput = $derived({
+    columns: taskListColumns,
+    tasks,
+    statuses,
+    customFields: projectCustomFields,
+    nameLabel: t("projects.list.name"),
+    sectionLabels: sections.map((section) => section.name),
+    groupLabels: listTaskGroups.map((group) => taskListGroupTitle(group.value)),
+    columnLabel: taskListColumnLabel,
+    headerIcons: preferences.projectsShowPropertyIcons,
+    measureText: measureTextRem,
+    priorityLabel: (priority: ProjectPriority) => projectPriorityDisplayLabel(priority, priorities, t),
+    priorityLabels: priorities.filter((priority) => !priority.deletedAt).map((priority) => priority.name),
+    estimateLabel,
+    dateLabel: taskListDateLabel,
+    emptyDateLabel: (column) => column === "start" ? t("projects.detail.noDate") : t("projects.filters.noDueDate"),
+    emptyValueLabel: t("projects.customFields.emptyValue"),
+    today: localDateKey(new Date()),
+    customFieldCellLabel,
+    customFieldOptionNames: (field) => customFieldOptions(field).map((option) => option.name),
+    dependencyLabels: taskDependencyLabels,
+    scheduledLabel,
+  });
+  const taskListAutoColumnWidths = $derived(projectTaskListAutoColumnWidths(taskListContentInput));
+
   function taskListGridInputFor(columnWidths: ProjectTaskListColumnWidths): ProjectTaskListGridInput {
-    return {
-      columns: taskListColumns,
-      columnWidths,
-      tasks,
-      statuses,
-      customFields: projectCustomFields,
-      nameLabel: t("projects.list.name"),
-      sectionLabels: sections.map((section) => section.name),
-      groupLabels: listTaskGroups.map((group) => taskListGroupTitle(group.value)),
-      columnLabel: taskListColumnLabel,
-      priorityLabel: (priority: ProjectPriority) => projectPriorityDisplayLabel(priority, priorities, t),
-      estimateLabel,
-      customFieldDisplayValue,
-      scheduledLabel,
+    return { ...taskListContentInput, columnWidths, autoColumnWidths: taskListAutoColumnWidths };
+  }
+
+  /** Measures cell text in the fonts the table renders; replaced when the font family, scale, or loaded fonts change. */
+  let measureTextPx = $state<CollectionTextMeasurer | undefined>(undefined);
+  $effect(() => {
+    const host = viewport.container;
+    void preferences.fontFamilyId;
+    void preferences.fontScale;
+    if (!host) return;
+    const refresh = () => {
+      measureTextPx = createCollectionTextMeasurer(host);
     };
+    refresh();
+    const fonts = "fonts" in document ? document.fonts : undefined;
+    fonts?.addEventListener("loadingdone", refresh);
+    return () => fonts?.removeEventListener("loadingdone", refresh);
+  });
+
+  function measureTextRem(text: string, style: ProjectTaskListTextStyle): number | undefined {
+    if (!measureTextPx) return undefined;
+    const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+    return Number.isFinite(rootFontSize) && rootFontSize > 0 ? measureTextPx(text, style) / rootFontSize : undefined;
+  }
+
+  function localDateKey(date: Date): string {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  }
+
+  /** The label a date cell shows, matching the cell's own date and time formatting. */
+  function taskListDateLabel(column: ProjectTaskListColumn, date: string, time?: string): string {
+    const presentation = taskQuery?.listPresentation;
+    const dateLabel = projectListDateLabel(date, presentation?.dateFormats[column] ?? "locale", localization.locale, localDateKey(new Date()));
+    if (!time || (column !== "start" && column !== "due")) return dateLabel;
+    const timeLabel = projectListTimeLabel(time, presentation?.timeFormats[column] ?? "locale", localization.locale);
+    return timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel;
+  }
+
+  /** What a custom field cell shows for a task, formatted as the cell formats it. */
+  function customFieldCellLabel(task: ProjectTask, field: ProjectCustomField): string | undefined {
+    const column: ProjectTaskListColumn = `custom:${field.id}`;
+    const value = customFieldValue(task, field);
+    if (field.fieldType === "checkbox") return undefined;
+    if (field.fieldType === "number") {
+      if (value?.numberValue === undefined) return undefined;
+      return projectListNumberLabel(Number(value.numberValue), taskQuery?.listPresentation.numberFormats[column] ?? "number", localization.locale);
+    }
+    if (field.fieldType === "date") return value?.dateValue ? taskListDateLabel(column, value.dateValue) : undefined;
+    return customFieldDisplayValue(task, field);
+  }
+
+  function taskDependencyLabels(task: ProjectTask): string[] {
+    const blockedBy = blockedByDependencies(task).length;
+    const blocks = blocksDependencies(task).length;
+    return [
+      ...(blockedBy > 0 ? [t("projects.list.blockedBy", blockedBy)] : []),
+      ...(blocks > 0 ? [t("projects.list.blocks", blocks)] : []),
+    ];
   }
   const taskListGridInput = $derived(taskListGridInputFor(viewport.effectiveColumnWidths));
   const taskListGridTemplate = $derived(projectTaskListGridTemplate(taskListGridInput));

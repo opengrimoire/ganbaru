@@ -71,6 +71,7 @@
   import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
+  import { createCollectionTextMeasurer, type CollectionTextMeasurer } from "$lib/components/collections/text-measure";
   import { formatList, formatNumber } from "$lib/i18n/formatters";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import {
@@ -80,6 +81,7 @@
     notesDatabaseTableCellText,
     notesDatabaseTableColumnCanEdit,
     notesDatabaseTableColumns,
+    notesDatabaseTableHeaderFitWidth,
     notesDatabaseTableColumnWidth,
     notesDatabaseTableConfigurationFromView,
     notesDatabaseTableFiltersFromView,
@@ -361,10 +363,32 @@
     return kind ? requestCsvPanel(kind, true) : Promise.resolve();
   }
 
+  /** Measures header text in the rendered font; replaced when the font family, scale, or loaded fonts change. */
+  let measureHeaderText = $state<CollectionTextMeasurer | undefined>(undefined);
+  $effect(() => {
+    const host = tableRoot;
+    void preferences.fontFamilyId;
+    void preferences.fontScale;
+    if (!host) return;
+    const refresh = () => {
+      measureHeaderText = createCollectionTextMeasurer(host);
+    };
+    refresh();
+    const fonts = "fonts" in document ? document.fonts : undefined;
+    fonts?.addEventListener("loadingdone", refresh);
+    return () => fonts?.removeEventListener("loadingdone", refresh);
+  });
+
+  function headerFitWidth(column: NotesDatabaseTableColumn): number {
+    if (!measureHeaderText || remPixels === undefined) return column.width;
+    return notesDatabaseTableHeaderFitWidth(column, measureHeaderText(column.name, "cell"), remPixels, preferences.notesShowPropertyIcons);
+  }
+
   const visibleRows = $derived(rowCreation.rowsFor(dataSourceId, table?.rows ?? []));
   const templateSourceRows = $derived(visibleRows.filter((row) => !rowCreation.blocked(row.id)));
   const tableConfiguration = $derived(table ? { ...notesDatabaseTableConfigurationFromView(table.view), ...notesTableViewSettings(table.view) } : null);
   const savedColumns = $derived(table ? notesDatabaseTableColumns(table.data_source, table.view).map((column) => ({ ...column,
+    width: tableConfiguration?.column_widths[column.id] === undefined ? headerFitWidth(column) : column.width,
     displayFormat: notesTableColumnPresentation(tableConfiguration?.presentation, column.id),
   })) : []);
   const columns = $derived(pendingColumnOrder ? collectionOrderById(savedColumns, pendingColumnOrder) : savedColumns);

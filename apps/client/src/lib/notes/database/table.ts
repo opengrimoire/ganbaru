@@ -353,6 +353,33 @@ function numberFormat(property: UnknownRecord, type: NotesDataSourcePropertyType
   return NOTES_DATA_SOURCE_NUMBER_FORMATS.find((format) => format === config.format) ?? "number";
 }
 
+/** Widest an unresized column grows to show its full property name, in pixels. */
+const HEADER_FIT_MAX_COLUMN_WIDTH = 320;
+/** Header chrome around the property name, in rem: `px-2` padding plus room for subpixel rounding. */
+const HEADER_CHROME_REM = 1.25;
+/** A header's property icon (`size-3.5`) and its gap (`gap-1.5`), in rem. */
+const HEADER_ICON_REM = 1.25;
+
+/**
+ * Width of a column the user has not resized: its type's default, widened so the full property name and icon fit in
+ * any language, up to a cap. Saving the table stores this width, so it stays put once the table changes.
+ *
+ * @param column The column with its default width.
+ * @param headerTextWidth Rendered width of the property name, in pixels.
+ * @param remPixels Pixels in one rem.
+ * @param showIcon Whether headers show property icons.
+ */
+export function notesDatabaseTableHeaderFitWidth(
+  column: Pick<NotesDatabaseTableColumn, "width">,
+  headerTextWidth: number,
+  remPixels: number,
+  showIcon: boolean,
+): number {
+  const headerWidth = headerTextWidth + (HEADER_CHROME_REM + (showIcon ? HEADER_ICON_REM : 0)) * remPixels;
+  if (!Number.isFinite(headerWidth) || headerWidth <= column.width) return column.width;
+  return Math.min(Math.max(column.width, HEADER_FIT_MAX_COLUMN_WIDTH), Math.ceil(headerWidth));
+}
+
 function clampColumnWidth(width: number): number {
   return Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, Math.round(width)));
 }

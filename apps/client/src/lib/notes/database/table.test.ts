@@ -5,6 +5,7 @@ import {
   notesDatabaseTableCellText,
   notesDatabaseTableColumnCanEdit,
   notesDatabaseTableColumns,
+  notesDatabaseTableHeaderFitWidth,
   notesDatabaseTableConfigurationFromView,
   notesDatabaseTableFiltersFromView,
   notesDatabaseTableSortsFromView,
@@ -252,6 +253,14 @@ const page: NotesPage = {
 };
 
 describe("database table helpers", () => {
+  it("widens unresized columns until the full property name and icon fit, up to a cap", () => {
+    expect(notesDatabaseTableHeaderFitWidth({ width: 180 }, 100, 15, true)).toBe(180);
+    expect(notesDatabaseTableHeaderFitWidth({ width: 180 }, 170, 15, false)).toBe(189);
+    expect(notesDatabaseTableHeaderFitWidth({ width: 180 }, 170, 15, true)).toBe(208);
+    expect(notesDatabaseTableHeaderFitWidth({ width: 180 }, 900, 15, true)).toBe(320);
+    expect(notesDatabaseTableHeaderFitWidth({ width: 400 }, 900, 15, true)).toBe(400);
+  });
+
   it("loads table configuration, ordered columns, visibility, and widths", () => {
     const configuration = notesDatabaseTableConfigurationFromView(view);
     const columns = notesDatabaseTableColumns(dataSource, view);

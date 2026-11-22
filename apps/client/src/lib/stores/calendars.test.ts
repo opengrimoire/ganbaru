@@ -16,7 +16,7 @@ describe("calendars store", () => {
     invokeMock.mockReset();
   });
 
-  it("shows the stored visibility when two toggles overlap", async () => {
+  it("counts each of two quick toggles and writes them in click order", async () => {
     const store = getCalendars();
     invokeMock.mockResolvedValue(undefined);
     await store.add({ id: "cal-work", name: "Work", color: "", source: "ics", createdAt: "", updatedAt: "" });
@@ -26,14 +26,30 @@ describe("calendars store", () => {
       replies.push(() => resolve(undefined));
     }));
     const first = store.toggleVisibility("cal-work");
+    expect(store.list.find((calendar) => calendar.id === "cal-work")?.visible).toBe(false);
     const second = store.toggleVisibility("cal-work");
-    for (const reply of replies) reply();
+    expect(store.list.find((calendar) => calendar.id === "cal-work")?.visible).toBe(true);
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    replies[0]?.();
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    replies[1]?.();
     await Promise.all([first, second]);
 
     const written = invokeMock.mock.calls
       .filter(([command]) => command === "calendar_set_visibility")
       .map(([, args]) => (args as { visible: boolean }).visible);
-    expect(written).toEqual([false, false]);
-    expect(store.list.find((calendar) => calendar.id === "cal-work")?.visible).toBe(false);
+    expect(written).toEqual([false, true]);
+    expect(store.list.find((calendar) => calendar.id === "cal-work")?.visible).toBe(true);
+  });
+
+  it("restores the stored visibility when the latest toggle fails to save", async () => {
+    const store = getCalendars();
+    invokeMock.mockResolvedValue(undefined);
+    await store.add({ id: "cal-home", name: "Home", color: "", source: "ics", createdAt: "", updatedAt: "" });
+    invokeMock.mockRejectedValue(new Error("Database locked"));
+
+    await expect(store.toggleVisibility("cal-home")).rejects.toThrow("Database locked");
+
+    expect(store.list.find((calendar) => calendar.id === "cal-home")?.visible).toBe(true);
   });
 });

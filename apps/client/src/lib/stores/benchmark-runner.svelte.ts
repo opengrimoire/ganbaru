@@ -58,6 +58,8 @@ import {
   type BenchmarkSeedHandle,
   type BenchmarkSuiteState,
   type BenchmarkState,
+  type BenchmarkPhaseAState,
+  type BenchmarkPhaseBState,
   type BenchmarkScenario,
   type BenchmarkScenarioMetadata,
   type PhaseResult,
@@ -316,7 +318,7 @@ class BenchmarkRunnerStore {
       await this.#runPhaseAThenSeed(scenario, state);
       return true;
     } else if (state.stage === "phase-b-pending") {
-      if (!state.seedHandle || (!state.phaseA && !isDenseOnlyScenario(scenario))) {
+      if (!state.phaseA && !isDenseOnlyScenario(scenario)) {
         await this.#abandonStale();
         return false;
       }
@@ -341,7 +343,7 @@ class BenchmarkRunnerStore {
     }
   }
 
-  async #runPhaseAThenSeed(scenario: BenchmarkScenario, state: BenchmarkState) {
+  async #runPhaseAThenSeed(scenario: BenchmarkScenario, state: BenchmarkPhaseAState) {
     this.status = "running";
     this.errorMessage = undefined;
     this.running = {
@@ -456,7 +458,7 @@ class BenchmarkRunnerStore {
 
   async #runPhaseB(
     scenario: BenchmarkScenario,
-    state: BenchmarkState,
+    state: BenchmarkPhaseBState,
     phaseA: PhaseResult | undefined,
     seedHandle: BenchmarkSeedHandle,
   ) {

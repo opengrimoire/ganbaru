@@ -30,6 +30,7 @@ import {
   type SampleLabel,
   type StartupRunState,
 } from "./types";
+import { parseBenchmarkState } from "./state";
 import {
   sampleMemoryObservation,
   captureBootTimings,
@@ -239,7 +240,7 @@ export function restartAppAfterDelay(delayMs: number): void {
 
 /**
  * Read the persisted state file from `app_config_dir/benchmark-state.json`.
- * Validates harness version, dataset version, and TTL; if any check fails,
+ * Validates the shape through `parseBenchmarkState`, then harness version, dataset version, and TTL; if any check fails,
  * deletes the benchmark DB and clears the file silently before returning
  * `null`. A stale state file usually implies a stale benchmark DB beside the
  * vault database, and both must be gone before the next normal boot.
@@ -247,10 +248,8 @@ export function restartAppAfterDelay(delayMs: number): void {
 export async function loadPersistedState(): Promise<BenchmarkState | null> {
   const json = await invoke<string | null>("read_benchmark_state");
   if (!json) return null;
-  let parsed: BenchmarkState;
-  try {
-    parsed = JSON.parse(json) as BenchmarkState;
-  } catch {
+  const parsed = parseBenchmarkState(json);
+  if (!parsed) {
     await discardStaleArtifacts();
     return null;
   }

@@ -66,7 +66,8 @@
   /** Agent settings of the selected scope's channel, which decide whether its agent may write to the project's folders. */
   let channelSettings = $state<ChatChannelAgentSettingsRead | null>(null);
   let accessRequest = 0;
-  let promotionEntry = $state<ChatScratchDirectoryEntryRead | null>(null);
+  /** The file the promotion form is open for; its identity tells a promotion result whether that form is still open. */
+  let promotionEntry = $state.raw<ChatScratchDirectoryEntryRead | null>(null);
   let promotionKind = $state<PromotionKind>("workingFolder");
   let promotionFolderId = $state<ProjectWorkingFolderId | null>(null);
   let promotionTargetPath = $state("");
@@ -279,19 +280,24 @@
           displayName: promotionDisplayName.trim(),
         };
     if (!destination) return;
+    const entry = promotionEntry;
+    const expectedContentRevision = promotionEntry.contentRevision;
+    const generationId = selectedGeneration.id;
     promoting = true;
     directoryError = null;
     try {
       await chatApi.promoteChatScratchFile({
         promotionId: `scratch-promotion:${crypto.randomUUID()}`,
-        scratchGenerationId: selectedGeneration.id,
-        sourceRelativePath: promotionEntry.relativePath,
-        expectedContentRevision: promotionEntry.contentRevision,
+        scratchGenerationId: generationId,
+        sourceRelativePath: entry.relativePath,
+        expectedContentRevision,
         destination,
       });
-      notice = t("settings.agents.scratchManager.promotionSuccess");
-      promotionEntry = null;
+      // A form opened for another file meanwhile stays open, and a result reports only while its generation is shown.
+      if (promotionEntry === entry) promotionEntry = null;
+      if (selectedGenerationId === generationId) notice = t("settings.agents.scratchManager.promotionSuccess");
     } catch (cause: unknown) {
+      if (selectedGenerationId !== generationId) return;
       directoryError = chatErrorMessage(
         cause,
         t("settings.agents.scratchManager.promotionFailed"),

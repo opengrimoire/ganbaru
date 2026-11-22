@@ -11,6 +11,8 @@ const api = vi.hoisted(() => ({
   readPreviewModelOrigins: vi.fn(async () => []),
   readPendingBrowserApproval: vi.fn(async () => null),
   openBrowserTab: vi.fn<(request: { threadId: string; tabId: string; url: string }) => Promise<BrowserTabRead>>(),
+  startBrowserRecording: vi.fn<(threadId: string, tabId: string) => Promise<void>>(),
+  stopBrowserRecording: vi.fn(async () => ({ displayName: "recording.webm" })),
   setBrowserTabVisible: vi.fn(async (threadId: string, tabId: string, visible: boolean): Promise<BrowserTabRead> => ({
     threadId, tabId, currentUrl: "", title: "", visible, loading: false, viewportWidth: 1, viewportHeight: 1, externalOrigin: false,
   })),
@@ -18,6 +20,10 @@ const api = vi.hoisted(() => ({
 vi.mock("$lib/api/chat", async (importOriginal) => ({
   ...await importOriginal<typeof import("$lib/api/chat")>(),
   ...api,
+}));
+vi.mock("$lib/components/ui/confirmation.svelte", async (importOriginal) => ({
+  ...await importOriginal<typeof import("$lib/components/ui/confirmation.svelte")>(),
+  requestConfirmation: async () => true,
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
 
@@ -82,5 +88,33 @@ describe("ChatBrowserPanel", () => {
     expect(target.querySelectorAll("[role='tab']")).toHaveLength(0);
     expect(input.value).toBe("");
     expect(api.setBrowserTabVisible).toHaveBeenCalledWith("thread-a", "preview:thread-a:main", false);
+  });
+
+  it("stops a recording that started after another thread was selected", async () => {
+    const chat = getChat();
+    chat.selectedThreadId = "thread-a";
+    api.readBrowserStatus.mockImplementation(async (threadId?: string) => (
+      threadId ? [openedTab(threadId, `preview:${threadId}:main`, "http://localhost:5173/")] : []
+    ));
+    let finishStart = null as (() => void) | null;
+    api.startBrowserRecording.mockImplementation(() => new Promise((resolve) => { finishStart = resolve; }));
+    const target = document.createElement("div");
+    document.body.append(target);
+    const component = mount(ChatBrowserPanel, { target, props: { channelId: null, workingFolderId: null } });
+    mounted.push({ target, component });
+    await settle();
+
+    const record = () => target.querySelector<HTMLButtonElement>("button[aria-label='Start recording']");
+    record()?.click();
+    await settle();
+    expect(api.startBrowserRecording).toHaveBeenCalledWith("thread-a", "preview:thread-a:main");
+
+    chat.selectedThreadId = "thread-b";
+    await settle();
+    finishStart?.();
+    await settle();
+
+    expect(api.stopBrowserRecording).toHaveBeenCalledWith("thread-a", "preview:thread-a:main");
+    expect(record()?.classList.contains("active")).toBe(false);
   });
 });

@@ -460,7 +460,11 @@
         await finishRecording(selectedThread, selectedTab, true);
       } else {
         await chatApi.startBrowserRecording(selectedThread, selectedTab);
-        recording = true;
+        if (destroyed || threadId !== selectedThread || tabId !== selectedTab) {
+          await chatApi.stopBrowserRecording(selectedThread, selectedTab).catch(() => undefined);
+        } else {
+          recording = true;
+        }
       }
     } catch (reason) {
       error = message(reason);

@@ -28,7 +28,11 @@
 
   let previewUrl = $state<string | null>(null);
   let previewFailed = $state(false);
-  let openError = $state<NotesFailure | null>(null);
+  /** The latest failed open, kept with the link it was for so it never shows under another attachment. */
+  let openFailure = $state.raw<{ readonly url: string; readonly failure: NotesFailure } | null>(null);
+  const openError = $derived(openFailure && openFailure.url === file?.externalUrl ? openFailure.failure : null);
+  /** Names the latest open; an earlier open that settles later leaves the error alone. */
+  let openRequest: symbol | null = null;
 
   $effect(() => {
     const path = imagePath;
@@ -49,12 +53,15 @@
     };
   });
 
+  /** Opens the attachment link, keeping only the latest open's failure for that link. */
   async function openExternal(url: string): Promise<void> {
-    openError = null;
+    const request = Symbol("comment attachment open");
+    openRequest = request;
+    openFailure = null;
     try {
       await openNotesExternalUrl(url);
     } catch (error) {
-      openError = notesFailure(error, t("notes.commentAttachmentOpenFailed"));
+      if (openRequest === request) openFailure = { url, failure: notesFailure(error, t("notes.commentAttachmentOpenFailed")) };
     }
   }
 </script>

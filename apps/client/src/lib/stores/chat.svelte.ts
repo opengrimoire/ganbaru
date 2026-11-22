@@ -180,8 +180,22 @@ class ChatSharedState {
    * @returns Whether the read applied.
    */
   async reloadAgents(): Promise<boolean> {
-    const generation = ++this.agentReadGeneration;
+    const generation = this.beginAgentRead();
     const [agents, archivedAgents] = await Promise.all([chatApi.listChatAgents(false), chatApi.listChatAgents(true)]);
+    return this.applyAgentRead(generation, agents, archivedAgents);
+  }
+
+  /** Starts an agent read, superseding every read already in flight, and returns its generation. */
+  beginAgentRead(): number {
+    return ++this.agentReadGeneration;
+  }
+
+  /**
+   * Applies the agent lists a read returned, unless a newer read or vault reset started after it.
+   *
+   * @returns Whether the lists applied.
+   */
+  applyAgentRead(generation: number, agents: ChatAiAgentRead[], archivedAgents: ChatAiAgentRead[]): boolean {
     if (generation !== this.agentReadGeneration) return false;
     this.agents = agents;
     this.archivedAgents = archivedAgents;
@@ -673,6 +687,7 @@ export class ChatStore {
   private async loadSharedState(): Promise<{ settings: ChatSettingsRead; navigationChannels: ChatChannelRead[] }> {
     const vaultGeneration = this.vaultGeneration;
     if (localExecutionAvailable) await chatApi.recoverInterruptedChatTurns();
+    const agentGeneration = shared.beginAgentRead();
     const [settings, workingFolders, navigationChannels, agents, archivedAgents] = await Promise.all([
       chatApi.readChatSettings(),
       localExecutionAvailable
@@ -683,8 +698,7 @@ export class ChatStore {
       chatApi.listChatAgents(true),
     ]);
     if (vaultGeneration === this.vaultGeneration) {
-      this.agents = agents;
-      this.archivedAgents = archivedAgents;
+      shared.applyAgentRead(agentGeneration, agents, archivedAgents);
       this.configurationController.hydrate(settings, workingFolders);
     }
     return { settings, navigationChannels };

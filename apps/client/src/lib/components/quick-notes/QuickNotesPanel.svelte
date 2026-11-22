@@ -99,6 +99,8 @@
   let initializing = $state(initialSnapshot === null);
   let loadError = $state("");
   let editorNote = $state<QuickNote | null | undefined>(undefined);
+  /** The note being read for the editor; a newer open, or an editor opened meanwhile, drops its result. */
+  let openingNote: symbol | null = null;
   let deleteTarget = $state<QuickNote | null>(null);
   let deleteTagTarget = $state<QuickNoteTag | null>(null);
   let movingTag = $state(false);
@@ -527,10 +529,15 @@
   }
 
   async function openNote(note: QuickNote): Promise<void> {
+    const request = Symbol("open quick note");
+    openingNote = request;
     loadError = "";
     try {
-      editorNote = await getQuickNote(note.id);
+      const opened = await getQuickNote(note.id);
+      if (openingNote !== request || editorNote !== undefined) return;
+      editorNote = opened;
     } catch (error: unknown) {
+      if (openingNote !== request) return;
       console.warn("Quick note could not be opened:", error);
       loadError = userErrorMessage(error, t("quickNotes.openFailed"));
     }

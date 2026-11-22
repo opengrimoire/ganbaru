@@ -648,4 +648,42 @@ describe("MusicSourcesController", () => {
     expect(undoItemRepair).toHaveBeenCalledWith("repair-location", "repair-root");
     expect(clearBinding).toHaveBeenCalledWith("vault-1", "repair-root");
   });
+
+  it("ends a source load that a vault switch supersedes", async () => {
+    let resolveRoots!: (roots: []) => void;
+    const controller = createMusicSourcesController(api({
+      roots: vi.fn(() => new Promise<[]>((resolve) => { resolveRoots = resolve; })),
+    }), () => 10, () => "id", refreshStub());
+    controller.setVault("vault-1");
+    const loading = controller.load();
+    expect(controller.busy).toBe(true);
+
+    controller.setVault("vault-2");
+    expect(controller.busy).toBe(false);
+    resolveRoots([]);
+    expect(await loading).toBe(false);
+    expect(controller.busy).toBe(false);
+    expect(controller.loaded).toBe(false);
+  });
+
+  it("keeps a refresh failure from the previous vault off the next vault", async () => {
+    const refresh = refreshStub();
+    let resolveRun!: (statuses: Awaited<ReturnType<MusicSourceRefreshController["run"]>>) => void;
+    refresh.run = vi.fn(() => new Promise((resolve) => { resolveRun = resolve; }));
+    const controller = createMusicSourcesController(api(), () => 20, () => "id", refresh);
+    controller.setVault("vault-1");
+    const running = controller.runRefresh(refresh.prepare([]), true);
+
+    controller.setVault("vault-2");
+    resolveRun([{
+      collectionId: "collection-1",
+      kind: "local-root",
+      name: "Music",
+      state: "failed",
+      progress: null,
+      error: "The refresh failed.",
+    }]);
+    await running;
+    expect(controller.error).toBeNull();
+  });
 });

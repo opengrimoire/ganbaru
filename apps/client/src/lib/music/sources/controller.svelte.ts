@@ -227,6 +227,7 @@ export class MusicSourcesController {
     this.refreshStatuses = {};
     this.error = null;
     this.loaded = false;
+    this.busy = false;
     this.detectedDefaultFolder = null;
     this.detectingDefaultFolder = false;
     this.addingDefaultFolder = false;
@@ -376,7 +377,8 @@ export class MusicSourcesController {
   }
 
   async addLocalFolder(selection: MediaFolderSelection, name: string, waitForRefresh = false): Promise<string> {
-    if (!this.vaultId) throw new LocalizedError(translate("music.errors.vaultUnavailable"));
+    const vaultId = this.vaultId;
+    if (!vaultId) throw new LocalizedError(translate("music.errors.vaultUnavailable"));
     const trimmedName = name.trim();
     if (!trimmedName) throw new LocalizedError(translate("music.errors.sourceNameRequired"));
     const rootId = this.id();
@@ -386,14 +388,14 @@ export class MusicSourcesController {
       name: trimmedName,
       createdAtMs,
     });
-    await this.api.bindRoot(this.vaultId, rootId, selection.folderPath);
+    await this.api.bindRoot(vaultId, rootId, selection.folderPath);
     await this.loadProjection();
     const target = this.localTarget(collectionId, rootId, trimmedName, selection.folderPath, createdAtMs);
     const plan = this.refresh.prepare([target]);
     if (waitForRefresh) {
       const failure = refreshFailure(await this.runRefresh(plan, true));
       if (failure) {
-        this.error = failure;
+        this.reportVaultError(vaultId, failure);
         throw new LocalizedError(failure);
       }
       notifyMusicLibraryChanged();
@@ -401,10 +403,10 @@ export class MusicSourcesController {
       void this.runRefresh(plan, true)
         .then((statuses) => {
           const failure = refreshFailure(statuses);
-          if (failure) this.error = failure;
+          if (failure) this.reportVaultError(vaultId, failure);
           else notifyMusicLibraryChanged();
         })
-        .catch((error: unknown) => { this.error = musicErrorMessage(error, translate("music.errors.sourceRefreshFailed", trimmedName)); });
+        .catch((error: unknown) => { this.reportVaultError(vaultId, musicErrorMessage(error, translate("music.errors.sourceRefreshFailed", trimmedName))); });
     }
     return collectionId;
   }
@@ -533,10 +535,11 @@ export class MusicSourcesController {
   }
 
   async runRefresh(plan: MusicSourceRefreshPlan, allowNetwork: boolean): Promise<MusicSourceRefreshStatus[]> {
+    const vaultId = this.vaultId;
     const statuses = await this.refresh.run(plan, { allowNetwork });
     const failure = refreshFailure(statuses);
     await this.loadProjection();
-    if (failure) this.error = failure;
+    if (failure) this.reportVaultError(vaultId, failure);
     return statuses;
   }
 
@@ -656,6 +659,7 @@ export class MusicSourcesController {
    * The plan only moves known tracks, so a background refresh then adds new files and settles availability.
    */
   async applyRelink(decisions: MusicRelinkDecision[]): Promise<void> {
+    const vaultId = this.vaultId;
     const plan = this.relinkPlan;
     const folderPath = this.relinkFolderPath;
     if (!plan || !folderPath) throw new LocalizedError(translate("music.errors.relinkNotReady"));
@@ -669,7 +673,7 @@ export class MusicSourcesController {
     const collection = this.collections.find((entry) => entry.kind === "local-root" && entry.localRootId === plan.rootId);
     if (!collection) return;
     void this.refreshLocalRoot(collection, plan.rootId, folderPath).catch((error: unknown) => {
-      this.error = musicErrorMessage(error, translate("music.errors.sourceRefreshFailed", collection.name));
+      this.reportVaultError(vaultId, musicErrorMessage(error, translate("music.errors.sourceRefreshFailed", collection.name)));
     });
   }
 
@@ -696,13 +700,19 @@ export class MusicSourcesController {
   }
 
   private async refreshLocalRoot(collection: MusicSourceCollection, rootId: string, folderPath: string): Promise<void> {
+    const vaultId = this.vaultId;
     const target = this.localTarget(collection.id, rootId, collection.name, folderPath, this.now());
     const failure = refreshFailure(await this.runRefresh(this.refresh.prepare([target]), true));
     if (failure) {
-      this.error = failure;
+      this.reportVaultError(vaultId, failure);
       throw new LocalizedError(failure);
     }
     notifyMusicLibraryChanged();
+  }
+
+  /** Shows `error` only while `vaultId` is still the active vault, so a late failure never lands on another vault. */
+  private reportVaultError(vaultId: string | null, error: string): void {
+    if (vaultId === this.vaultId) this.error = error;
   }
 
   private localTarget(

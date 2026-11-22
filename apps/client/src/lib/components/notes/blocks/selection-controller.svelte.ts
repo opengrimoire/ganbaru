@@ -75,16 +75,19 @@ export function createNotesBlockSelectionController(options: NotesBlockSelection
   let dragPointerId = $state<number | null>(null);
   let clipboard = $state<NotesBlockSelectionClipboard | null>(null);
   let busy = $state(false);
-  let error = $state<string | null>(null);
+  /** The latest action failure, kept with the page it ran on so it never shows on another page. */
+  let error = $state.raw<{ pageId: string; message: string } | null>(null);
 
+  /** Run one selection action at a time, recording a failure against the page the action started on. */
   async function run(action: () => Promise<void> | void): Promise<void> {
     if (busy) return;
+    const pageId = options.readPageId();
     busy = true;
     error = null;
     try {
       await action();
     } catch (reason) {
-      error = reason instanceof Error ? reason.message : String(reason);
+      error = { pageId, message: reason instanceof Error ? reason.message : String(reason) };
     } finally {
       busy = false;
     }
@@ -266,7 +269,7 @@ export function createNotesBlockSelectionController(options: NotesBlockSelection
     get dragPointerId() { return dragPointerId; },
     get clipboard() { return clipboard; },
     get busy() { return busy; },
-    get error() { return error; },
+    get error() { return error?.pageId === options.readPageId() ? error.message : null; },
     get selectedRootBlockIds() { return selection ? notesSelectionRootBlockIds(options.readTreeState(), selection.selectedBlockIds) : []; },
     get canMoveUp() { return !!planNotesSelectionMoveWithinSiblings(options.readTreeState(), selection ? notesSelectionRootBlockIds(options.readTreeState(), selection.selectedBlockIds) : [], "up"); },
     get canMoveDown() { return !!planNotesSelectionMoveWithinSiblings(options.readTreeState(), selection ? notesSelectionRootBlockIds(options.readTreeState(), selection.selectedBlockIds) : [], "down"); },

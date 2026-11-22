@@ -112,6 +112,17 @@
     onBeforeDocumentNavigation: () => Promise<boolean>;
   } = $props();
 
+  /** A failure tagged with the project whose action produced it. */
+  type ProjectNotesFailure = { projectId: string | null; failure: NotesFailure };
+
+  /** Returns the failure only while the explorer still shows the project it came from. */
+  function projectFailure(
+    entry: ProjectNotesFailure | null,
+    currentProjectId: string | null,
+  ): NotesFailure | null {
+    return entry && entry.projectId === currentProjectId ? entry.failure : null;
+  }
+
   const notes = useNotesWorkspace();
   const preferences = getPreferences();
   const tabs = getWorkspaceTabs();
@@ -419,10 +430,14 @@
   ): Promise<void> {
     const cardId = navigationDragCard?.id ?? null;
     const previousTops = navigationRowTops();
+    const requestedProjectId = projectId;
     try {
       await moveNavigationItem(source, target);
     } catch (error: unknown) {
-      navigationDragError = notesFailure(error, t("notes.navigationMoveFailed"));
+      navigationDragFailure = {
+        projectId: requestedProjectId,
+        failure: notesFailure(error, t("notes.navigationMoveFailed")),
+      };
       returnNavigationDragCard();
       return;
     }
@@ -511,7 +526,7 @@
 
   function beginNavigationPointerDrag(pending: PendingNavigationPointerDrag): void {
     draggingNavigationItem = pending.item;
-    navigationDragError = null;
+    navigationDragFailure = null;
     sortMenuOpen = false;
     liftNavigationDragCard(pending);
   }
@@ -686,8 +701,10 @@
   let pendingDeleteFolder = $state<NotesFolder | null>(null);
   let folderRenameTargetId = $state<string | null>(null);
   let folderRenameRequestId = $state(0);
-  let folderActionError = $state<NotesFailure | null>(null);
-  let navigationDragError = $state<NotesFailure | null>(null);
+  let folderActionFailure = $state.raw<ProjectNotesFailure | null>(null);
+  let navigationDragFailure = $state.raw<ProjectNotesFailure | null>(null);
+  const folderActionError = $derived(projectFailure(folderActionFailure, projectId));
+  const navigationDragError = $derived(projectFailure(navigationDragFailure, projectId));
   let draggingNavigationItem = $state<NotesNavigationDragItem | null>(null);
   let navigationDropTarget = $state.raw<NotesNavigationDropTarget | null>(null);
   let navigationDropResolution = $state<NotesNavigationDropResolution | null>(null);
@@ -1063,7 +1080,8 @@
     parentFolderId: string | null = creationFolderId,
   ): Promise<void> {
     if (!projectId) return;
-    folderActionError = null;
+    const requestedProjectId = projectId;
+    folderActionFailure = null;
     try {
       const folder = await notes.createFolder(
         projectId,
@@ -1075,28 +1093,39 @@
       folderRenameTargetId = folder.id;
       folderRenameRequestId += 1;
     } catch (error) {
-      folderActionError = notesFailure(error, t("notes.folderActionFailed"));
+      folderActionFailure = {
+        projectId: requestedProjectId,
+        failure: notesFailure(error, t("notes.folderActionFailed")),
+      };
     }
   }
 
   async function renameFolder(folderId: string, name: string): Promise<boolean> {
-    folderActionError = null;
+    const requestedProjectId = projectId;
+    folderActionFailure = null;
     try {
       await notes.renameFolder(folderId, name);
       return true;
     } catch (error) {
-      folderActionError = notesFailure(error, t("notes.folderActionFailed"));
+      folderActionFailure = {
+        projectId: requestedProjectId,
+        failure: notesFailure(error, t("notes.folderActionFailed")),
+      };
       return false;
     }
   }
 
   async function moveFolder(folderId: string, parentFolderId: string | null): Promise<void> {
-    folderActionError = null;
+    const requestedProjectId = projectId;
+    folderActionFailure = null;
     try {
       await notes.moveFolder(folderId, parentFolderId);
       if (parentFolderId) notes.setFolderCollapsed(parentFolderId, false);
     } catch (error) {
-      folderActionError = notesFailure(error, t("notes.folderActionFailed"));
+      folderActionFailure = {
+        projectId: requestedProjectId,
+        failure: notesFailure(error, t("notes.folderActionFailed")),
+      };
     }
   }
 
@@ -1148,11 +1177,15 @@
     const folder = pendingDeleteFolder;
     pendingDeleteFolder = null;
     if (!folder) return;
-    folderActionError = null;
+    const requestedProjectId = projectId;
+    folderActionFailure = null;
     try {
       await notes.deleteFolder(folder.id);
     } catch (error) {
-      folderActionError = notesFailure(error, t("notes.folderActionFailed"));
+      folderActionFailure = {
+        projectId: requestedProjectId,
+        failure: notesFailure(error, t("notes.folderActionFailed")),
+      };
     }
   }
 </script>

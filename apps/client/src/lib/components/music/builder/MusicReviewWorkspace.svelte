@@ -387,6 +387,7 @@
     if (!item || preparingNext || review.actionBusy) return;
     preparingNext = true;
     try {
+      const fromItemId = item.id;
       const skipped = new Set(sessionSkippedIds).add(item.id);
       let nextItemId = nextPendingMusicReviewTreeItemId(items, item.id, skipped);
       if (!nextItemId) {
@@ -396,6 +397,7 @@
         viewState.sessionSkippedIds = [...skipped];
       }
       await ensureReviewArtwork(nextItemId);
+      if (item?.id !== fromItemId) return;
       if (nextItemId) inspector.selectCached(nextItemId);
       library.selectItem(nextItemId);
     } finally {
@@ -406,10 +408,12 @@
   async function continueCurrentItem(): Promise<void> {
     if (!item || preparingNext || review.actionBusy) return;
     const nextItemId = reviewTreeIndex >= 0 ? reviewItemIds[reviewTreeIndex + 1] ?? null : null;
+    const fromItemId = item.id;
     viewState.membershipBaselines = { ...viewState.membershipBaselines, [item.id]: membershipSignature };
     preparingNext = true;
     try {
       await ensureReviewArtwork(nextItemId);
+      if (item?.id !== fromItemId) return;
       if (nextItemId) inspector.selectCached(nextItemId);
       library.selectItem(nextItemId);
     } finally {

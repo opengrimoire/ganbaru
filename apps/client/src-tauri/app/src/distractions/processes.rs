@@ -23,14 +23,23 @@ pub(super) fn read_linux_process_names(path: &Path) -> Vec<String> {
     names
 }
 
+/// Start time from `/proc/<pid>/stat`, in clock ticks since boot. Together with the process ID
+/// it names one process, because a reused ID belongs to a process that started later.
 #[cfg(target_os = "linux")]
-fn linux_process_start_time(path: &Path) -> Option<String> {
+pub(super) fn linux_process_start_time(path: &Path) -> Option<String> {
+    linux_process_lineage(path).map(|(_, start_time)| start_time)
+}
+
+/// Parent process ID and start time from one read of `/proc/<pid>/stat`, so both describe the
+/// same process.
+#[cfg(target_os = "linux")]
+pub(super) fn linux_process_lineage(path: &Path) -> Option<(u32, String)> {
     let stat = std::fs::read_to_string(path.join("stat")).ok()?;
     let command_end = stat.rfind(')')?;
-    stat.get(command_end + 1..)?
-        .split_whitespace()
-        .nth(19)
-        .map(ToOwned::to_owned)
+    let mut fields = stat.get(command_end + 1..)?.split_whitespace();
+    let parent_id = fields.nth(1)?.parse().ok()?;
+    let start_time = fields.nth(17)?.to_owned();
+    Some((parent_id, start_time))
 }
 
 /// Parent process ID from `/proc/<pid>/stat`, read past the closing parenthesis because the name

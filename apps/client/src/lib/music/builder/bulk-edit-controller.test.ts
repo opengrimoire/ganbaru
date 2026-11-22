@@ -225,4 +225,32 @@ describe("MusicBulkEditController", () => {
     expect(await loading).toBe(true);
     expect(controller.states.empty).toBe("checked");
   });
+
+  it("keeps a membership save that lands after a new selection opened off the new selection", async () => {
+    const library = { refreshAfterMutation: vi.fn(async () => true) } as unknown as MusicLibraryController;
+    const controller = new MusicBulkEditController(library, () => 100, () => "action");
+    getMusicMembershipMatrix.mockImplementationOnce(async () => []);
+    await controller.open(["item-1"], [summary("all"), summary("empty")]);
+    controller.toggle("empty");
+    let rejectSave!: (error: Error) => void;
+    bulkEditMusicMemberships.mockImplementationOnce(() => new Promise((_, reject) => { rejectSave = reject; }));
+    let resolveSave!: (value: { changedCount: number }) => void;
+    bulkEditMusicMemberships.mockImplementationOnce(() => new Promise((resolve) => { resolveSave = resolve; }));
+
+    const failing = controller.saveMemberships();
+    getMusicMembershipMatrix.mockImplementationOnce(async () => [{ itemId: "item-2", playlistId: "all", weight: "normal" }]);
+    await controller.open(["item-2", "item-3"], [summary("all"), summary("empty")]);
+    rejectSave(new Error("late failure"));
+    expect(await failing).toBe(false);
+    expect(controller.error).toBeNull();
+
+    controller.toggle("all");
+    const saving = controller.saveMemberships();
+    getMusicMembershipMatrix.mockImplementationOnce(async () => []);
+    await controller.open(["item-4"], [summary("all"), summary("empty")]);
+    resolveSave({ changedCount: 1 });
+    expect(await saving).toBe(true);
+    expect(controller.initialCounts).toEqual({});
+    expect(controller.states).toEqual({ all: "unchecked", empty: "unchecked" });
+  });
 });

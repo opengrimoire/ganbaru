@@ -151,10 +151,12 @@ export class MusicBulkEditController {
       if (state === "unchecked" && initialCount > 0) removePlaylistIds.push(playlistId);
     }
     if (addPlaylistIds.length === 0 && removePlaylistIds.length === 0) return true;
+    const generation = this.openGeneration;
+    const itemCount = this.itemIds.length;
     const saved = await this.persist({ addPlaylistIds, removePlaylistIds, weightPlaylistIds: [], weight: null });
-    if (saved) {
+    if (saved && generation === this.openGeneration) {
       const nextCounts = { ...this.initialCounts };
-      for (const playlistId of addPlaylistIds) nextCounts[playlistId] = this.itemIds.length;
+      for (const playlistId of addPlaylistIds) nextCounts[playlistId] = itemCount;
       for (const playlistId of removePlaylistIds) nextCounts[playlistId] = 0;
       this.initialCounts = nextCounts;
     }
@@ -204,6 +206,7 @@ export class MusicBulkEditController {
         })
       : [];
     this.saving = true;
+    const generation = this.openGeneration;
     this.error = null;
     try {
       for (const snapshot of ignoredSnapshots) {
@@ -239,11 +242,13 @@ export class MusicBulkEditController {
           item.version = version;
         }
       }
-      const nextCounts = { ...this.initialCounts };
-      for (const playlistId of addPlaylistIds) nextCounts[playlistId] = items.length;
-      for (const playlistId of removePlaylistIds) nextCounts[playlistId] = 0;
-      this.initialCounts = nextCounts;
-      this.touchedPlaylistIds = new Set();
+      if (generation === this.openGeneration) {
+        const nextCounts = { ...this.initialCounts };
+        for (const playlistId of addPlaylistIds) nextCounts[playlistId] = items.length;
+        for (const playlistId of removePlaylistIds) nextCounts[playlistId] = 0;
+        this.initialCounts = nextCounts;
+        this.touchedPlaylistIds = new Set();
+      }
       await this.library.refreshSummariesAfterMutation();
       return true;
     } catch (error) {
@@ -251,7 +256,7 @@ export class MusicBulkEditController {
         snapshot.item.reviewState = snapshot.reviewState;
         snapshot.item.updatedAtMs = snapshot.updatedAtMs;
       }
-      this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
+      if (generation === this.openGeneration) this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
       return false;
     } finally {
       this.saving = false;
@@ -269,6 +274,7 @@ export class MusicBulkEditController {
   async setSignals(signals: MusicItemSignal[]): Promise<boolean> {
     if (this.saving || this.itemIds.length === 0) return false;
     this.saving = true;
+    const generation = this.openGeneration;
     this.error = null;
     try {
       const prior = await Promise.all(this.itemIds.map(async (itemId) => ({ itemId, signals: (await getMusicInspectorDetail(itemId)).signals })));
@@ -286,7 +292,7 @@ export class MusicBulkEditController {
       await this.library.refreshAfterMutation();
       return true;
     } catch (error) {
-      this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
+      if (generation === this.openGeneration) this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
       return false;
     } finally {
       this.saving = false;
@@ -305,13 +311,14 @@ export class MusicBulkEditController {
       return false;
     }
     this.saving = true;
+    const generation = this.openGeneration;
     this.error = null;
     try {
       await bulkSetMusicReviewState({ items, reviewState, deferredUntil: null, updatedAtMs: this.now() });
       await this.library.refreshAfterMutation();
       return true;
     } catch (error) {
-      this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
+      if (generation === this.openGeneration) this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
       return false;
     } finally {
       this.saving = false;
@@ -322,6 +329,7 @@ export class MusicBulkEditController {
     if (this.saving || this.itemIds.length === 0) return false;
     const now = this.now();
     this.saving = true;
+    const generation = this.openGeneration;
     this.error = null;
     try {
       await bulkSnoozeMusicItems({
@@ -331,7 +339,7 @@ export class MusicBulkEditController {
       await this.library.refreshAfterMutation();
       return true;
     } catch (error) {
-      this.error = musicErrorMessage(error, translate("music.errors.snoozeFailed"));
+      if (generation === this.openGeneration) this.error = musicErrorMessage(error, translate("music.errors.snoozeFailed"));
       return false;
     } finally {
       this.saving = false;
@@ -359,6 +367,7 @@ export class MusicBulkEditController {
   }): Promise<boolean> {
     if (this.saving || this.itemIds.length === 0) return false;
     this.saving = true;
+    const generation = this.openGeneration;
     this.error = null;
     try {
       await bulkEditMusicMemberships({
@@ -370,7 +379,7 @@ export class MusicBulkEditController {
       await this.library.refreshAfterMutation();
       return true;
     } catch (error) {
-      this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
+      if (generation === this.openGeneration) this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
       return false;
     } finally {
       this.saving = false;

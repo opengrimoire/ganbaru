@@ -460,17 +460,22 @@
         await finishRecording(selectedThread, selectedTab, true);
       } else {
         await chatApi.startBrowserRecording(selectedThread, selectedTab);
-        if (destroyed || threadId !== selectedThread || tabId !== selectedTab) {
+        if (!isShownTarget(selectedThread, selectedTab)) {
           await chatApi.stopBrowserRecording(selectedThread, selectedTab).catch(() => undefined);
         } else {
           recording = true;
         }
       }
     } catch (reason) {
-      error = message(reason);
+      if (isShownTarget(selectedThread, selectedTab)) error = message(reason);
     } finally {
       loading = false;
     }
+  }
+
+  /** Whether the panel is still mounted and showing this thread and tab. */
+  function isShownTarget(selectedThread: string, selectedTab: string): boolean {
+    return !destroyed && threadId === selectedThread && tabId === selectedTab;
   }
 
   async function finishRecording(
@@ -481,9 +486,9 @@
     recording = false;
     try {
       const artifact = await chatApi.stopBrowserRecording(selectedThread, selectedTab);
-      if (reportResult) artifactStatus = t("chat.browser.artifactSaved", artifact.displayName);
+      if (reportResult && isShownTarget(selectedThread, selectedTab)) artifactStatus = t("chat.browser.artifactSaved", artifact.displayName);
     } catch (reason) {
-      if (reportResult) error = message(reason);
+      if (reportResult && isShownTarget(selectedThread, selectedTab)) error = message(reason);
     }
   }
 

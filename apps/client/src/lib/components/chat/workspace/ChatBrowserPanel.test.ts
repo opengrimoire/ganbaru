@@ -117,4 +117,28 @@ describe("ChatBrowserPanel", () => {
     expect(api.stopBrowserRecording).toHaveBeenCalledWith("thread-a", "preview:thread-a:main");
     expect(record()?.classList.contains("active")).toBe(false);
   });
+
+  it("keeps a recording start failure for an earlier thread out of the thread selected after it", async () => {
+    const chat = getChat();
+    chat.selectedThreadId = "thread-a";
+    api.readBrowserStatus.mockImplementation(async (threadId?: string) => (
+      threadId ? [openedTab(threadId, `preview:${threadId}:main`, "http://localhost:5173/")] : []
+    ));
+    let failStart = null as ((reason: Error) => void) | null;
+    api.startBrowserRecording.mockImplementation(() => new Promise((_resolve, reject) => { failStart = reject; }));
+    const target = document.createElement("div");
+    document.body.append(target);
+    const component = mount(ChatBrowserPanel, { target, props: { channelId: null, workingFolderId: null } });
+    mounted.push({ target, component });
+    await settle();
+
+    target.querySelector<HTMLButtonElement>("button[aria-label='Start recording']")?.click();
+    await settle();
+    chat.selectedThreadId = "thread-b";
+    await settle();
+    failStart?.(new Error("Recorder unavailable"));
+    await settle();
+
+    expect(target.querySelector(".error")).toBeNull();
+  });
 });

@@ -64,3 +64,36 @@ describe("Notes relation dropdown", () => {
     expect(document.activeElement).toBe(trigger);
   });
 });
+
+describe("Notes relation targets", () => {
+  it("loads the new target source when the relation target changes during a load", async () => {
+    const pending = new Map<string, (rows: NotesPage[]) => void>();
+    vi.mocked(listNotesDataSourceRowPages).mockImplementation((sourceId: string) =>
+      new Promise((resolve) => { pending.set(sourceId, resolve); }));
+    const target = document.createElement("div");
+    document.body.append(target);
+    const props = $state({
+      row: row("current"), column, rowIndex: 0, columnIndex: 0, mutating: false,
+      onSave: vi.fn(), onNavigate: vi.fn(),
+    });
+    component = mount(NotesDatabaseRelationCell, { target, props });
+    const trigger = () => target.querySelector<HTMLButtonElement>('[data-table-cell="true"]')!;
+    trigger().focus();
+    await tick();
+    props.column = { ...column, relationDataSourceId: "other-source" };
+    await tick();
+    trigger().blur();
+    trigger().focus();
+    await tick();
+    expect(listNotesDataSourceRowPages).toHaveBeenLastCalledWith("other-source");
+    pending.get("target-source")?.([row("stale-target")]);
+    pending.get("other-source")?.([row("fresh-target")]);
+    await tick();
+    await tick();
+    trigger().click();
+    await tick();
+    const labels = [...document.querySelectorAll('[role="option"]')].map((option) => option.textContent ?? "");
+    expect(labels.some((label) => label.includes("fresh-target"))).toBe(true);
+    expect(labels.some((label) => label.includes("stale-target"))).toBe(false);
+  });
+});

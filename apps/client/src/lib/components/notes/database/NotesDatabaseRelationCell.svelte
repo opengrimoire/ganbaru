@@ -35,17 +35,26 @@
 
   const { t } = getLocalization();
 
-  let targetRows = $state<NotesPage[]>([]);
-  let loadedDataSourceId = $state<string | null>(null);
-  let loading = $state(false);
-  let error = $state<NotesFailure | null>(null);
+  /** Target rows of one source; a load names its source and token, so a response for a replaced target is dropped. */
+  type TargetLoad =
+    | { readonly phase: "idle" }
+    | { readonly phase: "loading"; readonly sourceId: string; readonly token: symbol }
+    | { readonly phase: "loaded"; readonly sourceId: string; readonly rows: readonly NotesPage[] }
+    | { readonly phase: "failed"; readonly sourceId: string; readonly error: NotesFailure };
+
+  let targetLoad = $state.raw<TargetLoad>({ phase: "idle" });
   let selectedRowId = $state("");
 
   const targetDataSourceId = $derived(column.relationDataSourceId);
+  const currentLoad = $derived(
+    targetLoad.phase !== "idle" && targetLoad.sourceId === targetDataSourceId ? targetLoad : null,
+  );
+  const loading = $derived(currentLoad?.phase === "loading");
+  const error = $derived(currentLoad?.phase === "failed" ? currentLoad.error : null);
   const relationItems = $derived(notesDatabaseTableRelationItems(row, column));
   const relationIds = $derived(relationItems.map((item) => item.id));
   const availableRows = $derived(
-    targetRows.filter((target) => !relationIds.includes(target.id)),
+    (currentLoad?.phase === "loaded" ? currentLoad.rows : []).filter((target) => !relationIds.includes(target.id)),
   );
 
   function rowTitle(target: NotesPage): string {
@@ -53,16 +62,16 @@
   }
 
   async function loadTargets(): Promise<void> {
-    if (!targetDataSourceId || loadedDataSourceId === targetDataSourceId || loading) return;
-    loading = true;
-    error = null;
+    const sourceId = targetDataSourceId;
+    if (!sourceId || currentLoad?.phase === "loading" || currentLoad?.phase === "loaded") return;
+    const token = Symbol("relation targets");
+    targetLoad = { phase: "loading", sourceId, token };
+    const isCurrent = () => targetLoad.phase === "loading" && targetLoad.token === token;
     try {
-      targetRows = await listNotesDataSourceRowPages(targetDataSourceId);
-      loadedDataSourceId = targetDataSourceId;
+      const rows = await listNotesDataSourceRowPages(sourceId);
+      if (isCurrent()) targetLoad = { phase: "loaded", sourceId, rows };
     } catch (caught) {
-      error = notesFailure(caught, t("notes.databaseRelationLoadFailed"));
-    } finally {
-      loading = false;
+      if (isCurrent()) targetLoad = { phase: "failed", sourceId, error: notesFailure(caught, t("notes.databaseRelationLoadFailed")) };
     }
   }
 

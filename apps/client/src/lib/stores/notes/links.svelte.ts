@@ -203,6 +203,12 @@ export function createNotesLinksController(context: NotesLinksControllerContext)
     backlinks = [];
     aliases = [];
     unresolved = [];
+    backlinksLoading = false;
+    aliasesLoading = false;
+    unresolvedLoading = false;
+    backlinksError = null;
+    aliasesError = null;
+    unresolvedError = null;
   }
 
   function resetAll(): void {

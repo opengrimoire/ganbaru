@@ -2,7 +2,10 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type {
+  NotesBacklink,
   NotesPage,
+  NotesPageAlias,
+  NotesUnresolvedLink,
   NotesPageSummaryWindow,
   NotesSearchWindow,
   NotesWorkspaceShell,
@@ -28,6 +31,9 @@ const backend = vi.hoisted(() => {
     search: queue<NotesSearchWindow>(),
     destinations: queue<NotesWorkspaceShell>(),
     templates: queue<NotesPageTemplate[]>(),
+    backlinks: queue<NotesBacklink[]>(),
+    aliases: queue<NotesPageAlias[]>(),
+    unresolved: queue<NotesUnresolvedLink[]>(),
   };
 });
 
@@ -40,6 +46,9 @@ vi.mock("$lib/api/notes", async (importOriginal) => {
     searchNotes: backend.search.next,
     listNotesDestinationCandidates: backend.destinations.next,
     listNotesPageTemplates: backend.templates.next,
+    listNotesBacklinks: backend.backlinks.next,
+    listNotesPageAliases: backend.aliases.next,
+    listNotesUnresolvedLinks: backend.unresolved.next,
   };
 });
 
@@ -174,6 +183,45 @@ describe("Notes query controllers", () => {
     expect(controller.destinationHasMore).toBe(true);
     expect(warn).toHaveBeenCalledOnce();
     warn.mockRestore();
+  });
+
+  it("ends running page link reads and clears their errors when the page state resets", async () => {
+    const { createNotesLinksController } = await import("./links.svelte");
+    const controller = createNotesLinksController({
+      readSelectedPageId: () => "page-a",
+      readSelectedProjectId: () => null,
+      readAllPages: () => [],
+      reloadSelectedPage: async () => undefined,
+      scheduleVisibleMetadataRefresh: () => undefined,
+    });
+    const failedBacklinks = controller.reloadBacklinks();
+    const failedAliases = controller.reloadPageAliases();
+    const failedUnresolved = controller.reloadUnresolvedLinks();
+    backend.backlinks.reject(lastCall(backend.backlinks.next), new Error("offline"));
+    backend.aliases.reject(lastCall(backend.aliases.next), new Error("offline"));
+    backend.unresolved.reject(lastCall(backend.unresolved.next), new Error("offline"));
+    await Promise.all([failedBacklinks, failedAliases, failedUnresolved]);
+    expect(controller.backlinksError).toContain("offline");
+
+    controller.resetPageState();
+    expect(controller.backlinksError).toBeNull();
+    expect(controller.aliasesError).toBeNull();
+    expect(controller.unresolvedError).toBeNull();
+
+    const backlinks = controller.reloadBacklinks();
+    const aliases = controller.reloadPageAliases();
+    const unresolved = controller.reloadUnresolvedLinks();
+    controller.resetAll();
+    expect(controller.backlinksLoading).toBe(false);
+    expect(controller.aliasesLoading).toBe(false);
+    expect(controller.unresolvedLoading).toBe(false);
+    backend.backlinks.resolve(lastCall(backend.backlinks.next), []);
+    backend.aliases.resolve(lastCall(backend.aliases.next), []);
+    backend.unresolved.resolve(lastCall(backend.unresolved.next), []);
+    await Promise.all([backlinks, aliases, unresolved]);
+    expect(controller.backlinksLoading).toBe(false);
+    expect(controller.aliasesLoading).toBe(false);
+    expect(controller.unresolvedLoading).toBe(false);
   });
 
   it("keeps changed and removed pages current when a destination read finishes late", async () => {

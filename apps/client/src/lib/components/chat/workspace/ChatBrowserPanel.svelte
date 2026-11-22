@@ -292,22 +292,31 @@
     loading = true;
     error = null;
     try {
+      let opened: BrowserTabRead;
       if (browserTab?.visible) {
-        browserTab = await chatApi.navigateBrowserTab(threadId, tabId, destination, externalConfirmed);
+        opened = await chatApi.navigateBrowserTab(selectedThread, selectedTab, destination, externalConfirmed);
       } else {
         await tick();
-        browserTab = await chatApi.openBrowserTab({
-          threadId,
-          tabId,
+        if (threadId !== selectedThread || tabId !== selectedTab) return;
+        opened = await chatApi.openBrowserTab({
+          threadId: selectedThread,
+          tabId: selectedTab,
           url: destination,
           bounds: currentBounds(),
           externalNavigationConfirmed: externalConfirmed,
         });
       }
-      url = browserTab.currentUrl;
-      upsertTab(browserTab);
+      // A thread switch during the read already replaced the tabs, so the tab belongs to a thread no longer shown.
+      if (threadId !== selectedThread) {
+        if (opened.visible) void chatApi.setBrowserTabVisible(selectedThread, selectedTab, false).catch(() => undefined);
+        return;
+      }
+      upsertTab(opened);
+      if (tabId !== selectedTab) return;
+      browserTab = opened;
+      url = opened.currentUrl;
     } catch (reason) {
-      error = message(reason);
+      if (threadId === selectedThread) error = message(reason);
     } finally {
       loading = false;
     }

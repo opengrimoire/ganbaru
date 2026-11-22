@@ -369,14 +369,12 @@ impl ProviderDriver for OpenCodeProviderDriver {
                                             .map(Some);
                                     }
                                     normalizer
-                                        .external_event(
+                                        .failed_turn(
                                             &state,
                                             "command/failed",
-                                            CanonicalEvent::TurnAborted(TurnAbortedEvent {
-                                                state: ChatTurnState::Failed,
-                                                reason: error.message,
-                                                recoverable: error.recoverable,
-                                            }),
+                                            turn_id,
+                                            error.message,
+                                            error.recoverable,
                                         )
                                         .map(Some)
                                 },
@@ -395,14 +393,12 @@ impl ProviderDriver for OpenCodeProviderDriver {
                     let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                     state.active_turn_id = None;
                     state.busy = false;
-                    live.normalizer.external_event(
+                    live.normalizer.failed_turn(
                         &state,
                         "turn/dispatch_failed",
-                        CanonicalEvent::TurnAborted(TurnAbortedEvent {
-                            state: ChatTurnState::Failed,
-                            reason: error.message.clone(),
-                            recoverable: error.recoverable,
-                        }),
+                        request.turn_id.clone(),
+                        error.message.clone(),
+                        error.recoverable,
                     )?
                 };
                 live.sink.emit(aborted).await?;

@@ -57,6 +57,8 @@ struct OpenCodeServerState {
     /// the abort reply past that failure, as OpenCode does when a running command is aborted.
     command_fails_on_abort: AtomicBool,
     command_failed: AtomicBool,
+    /// Rejects every prompt and command dispatch with a server error.
+    dispatch_fails: AtomicBool,
     health_version: &'static str,
 }
 
@@ -89,6 +91,7 @@ impl OpenCodeServerFixture {
             stopping: AtomicBool::new(false),
             command_fails_on_abort: AtomicBool::new(false),
             command_failed: AtomicBool::new(false),
+            dispatch_fails: AtomicBool::new(false),
             health_version,
         });
         let server_state = Arc::clone(&state);
@@ -198,6 +201,15 @@ async fn handle_connection(
             wait_until(|| state.command_failed.load(Ordering::Acquire)).await;
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
+    }
+    if method == "POST"
+        && state.dispatch_fails.load(Ordering::Acquire)
+        && (path == "/session/ses_new/prompt_async" || path == "/session/ses_new/command")
+    {
+        let body = br#"{"name":"UnknownError"}"#;
+        let response = response(500, "Internal Server Error", "application/json", body);
+        connection.write_all(response.as_bytes()).await?;
+        return connection.flush().await;
     }
     let response = route_response(method, path, &state);
     connection.write_all(response.as_bytes()).await?;
@@ -1461,5 +1473,95 @@ fn organizational_sessions_fail_closed_before_creating_a_session() {
             "no refused launch creates a session"
         );
         server.shutdown().await;
+    });
+}
+
+/// Starts an OpenCode session whose prompt and command dispatches fail, then sends `prompt` as
+/// `turn-failed` and returns the dispatch result with the recorded `TurnAborted` events.
+async fn send_turn_with_failing_dispatch(
+    name: &str,
+    prompt: &str,
+    command_dispatch: bool,
+) -> (bool, Vec<(Option<ChatTurnId>, ChatTurnState)>) {
+    let workspace = TestDirectory::new(name);
+    let server = OpenCodeServerFixture::start(workspace.path(), None, false).await;
+    server.state.dispatch_fails.store(true, Ordering::Release);
+    let mut driver =
+        OpenCodeProviderDriver::new(external_configuration(&server.origin, true)).unwrap();
+    let sink = Arc::new(RecordingSink::default());
+    let snapshot = driver
+        .start_session(
+            start_request(workspace.path()),
+            sink.clone(),
+            &context("start"),
+        )
+        .await
+        .unwrap();
+    let dispatched = driver
+        .send_turn(
+            turn_request(&snapshot, "turn-failed", prompt, modes()),
+            &context("send"),
+        )
+        .await
+        .is_ok();
+    if command_dispatch {
+        wait_for_event(&sink, |event| {
+            matches!(event.event, CanonicalEvent::TurnAborted(_))
+        })
+        .await;
+    }
+    let aborts = sink
+        .events()
+        .into_iter()
+        .filter_map(|event| match event.event {
+            CanonicalEvent::TurnAborted(aborted) => Some((event.turn_id, aborted.state)),
+            _ => None,
+        })
+        .collect();
+    driver
+        .stop_session(
+            StopSessionRequest {
+                session_id: snapshot.session_id.clone(),
+                force: false,
+            },
+            &context("stop"),
+        )
+        .await
+        .unwrap();
+    server.shutdown().await;
+    (dispatched, aborts)
+}
+
+#[test]
+fn a_failed_prompt_dispatch_settles_the_turn_it_started_as_failed() {
+    crate::test_block_on(async {
+        let (dispatched, aborts) =
+            send_turn_with_failing_dispatch("failed-prompt-dispatch", "Hello", false).await;
+
+        assert!(!dispatched);
+        assert_eq!(
+            aborts,
+            vec![(
+                Some(ChatTurnId::new("turn-failed").unwrap()),
+                ChatTurnState::Failed
+            )]
+        );
+    });
+}
+
+#[test]
+fn a_failed_command_dispatch_settles_the_turn_it_started_as_failed() {
+    crate::test_block_on(async {
+        let (dispatched, aborts) =
+            send_turn_with_failing_dispatch("failed-command-dispatch", "/release now", true).await;
+
+        assert!(dispatched);
+        assert_eq!(
+            aborts,
+            vec![(
+                Some(ChatTurnId::new("turn-failed").unwrap()),
+                ChatTurnState::Failed
+            )]
+        );
     });
 }

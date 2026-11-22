@@ -456,6 +456,30 @@ impl OpenCodeEventNormalizer {
         self.event(state, source, None, None, event)
     }
 
+    /// Settles a turn that failed outside the event stream, such as a rejected prompt or command
+    /// dispatch. The turn is named explicitly because the caller has already cleared it from the
+    /// route state.
+    pub fn failed_turn(
+        &self,
+        state: &OpenCodeRouteState,
+        source: &str,
+        turn_id: ChatTurnId,
+        reason: String,
+        recoverable: bool,
+    ) -> ChatResult<CanonicalRuntimeEvent> {
+        self.event(
+            state,
+            source,
+            None,
+            Some(turn_id),
+            CanonicalEvent::TurnAborted(TurnAbortedEvent {
+                state: ChatTurnState::Failed,
+                reason,
+                recoverable,
+            }),
+        )
+    }
+
     /// Settles a turn the user interrupted.
     pub fn interrupted_turn(
         &self,

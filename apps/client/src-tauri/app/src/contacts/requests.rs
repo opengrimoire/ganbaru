@@ -784,7 +784,7 @@ pub(super) async fn apply_status_response(
                 .begin()
                 .await
                 .map_err(|error| format!("begin declined transaction: {error}"))?;
-            store::set_request_state(
+            let declined = store::set_request_state(
                 &mut *tx,
                 &row.id,
                 None,
@@ -793,6 +793,14 @@ pub(super) async fn apply_status_response(
                 now,
             )
             .await?;
+            if !declined {
+                // A local cancel or block closed the request while the poll was in flight, so a
+                // newer request to the same person is not this answer's to close.
+                tx.rollback()
+                    .await
+                    .map_err(|error| format!("roll back declined request: {error}"))?;
+                return Ok(true);
+            }
             store::close_pending_from(
                 &mut *tx,
                 RequestDirection::Sent,

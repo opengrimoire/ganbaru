@@ -974,6 +974,46 @@ async fn an_accepted_poll_does_not_reopen_a_request_cancelled_while_in_flight() 
 }
 
 #[tokio::test]
+async fn a_declined_poll_for_a_cancelled_request_leaves_a_newer_request_pending() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    insert_sent_request(&pool, &recipient, "contact-one").await;
+    let in_flight = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    requests::close_request(
+        &pool,
+        "contact-one",
+        in_flight.revision,
+        requests::RequestClosure::Cancel,
+    )
+    .await
+    .unwrap();
+    insert_sent_request(&pool, &recipient, "contact-two").await;
+    let declined = Ok(ControlMessage::ContactRequestState {
+        state: ContactRequestOutcome::Declined,
+        recipient_card: None,
+    });
+
+    let resolved = requests::apply_status_response(&pool, &in_flight, declined, store::now())
+        .await
+        .unwrap();
+
+    assert!(resolved);
+    let stale = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stale.state, "expired");
+    let newer = store::request_by_id(&pool, "contact-two")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(newer.state, "pending");
+}
+
+#[tokio::test]
 async fn a_late_attempt_leaves_a_closed_request_unchanged() {
     let pool = migrated_memory_pool().await;
     let recipient = Person::new("Recipient");

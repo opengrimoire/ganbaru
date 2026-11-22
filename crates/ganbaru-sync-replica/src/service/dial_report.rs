@@ -9,26 +9,68 @@ use std::sync::Mutex;
 /// Coordinator dial outcomes of this run, one per coordinator dialed.
 static DIAL_REPORTS: Mutex<DialReports> = Mutex::new(DialReports::new());
 
-/// What the dials of one coordinator found in this run.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CoordinatorDialReport {
-    /// The endpoint the latest successful dial reached.
-    pub reached: Option<SocketAddr>,
-    /// The latest dial reached no endpoint, and the system refused at least one connection
-    /// with a permission error, as Android does when local network access is denied.
+/// Why a dial reached no endpoint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FailedDial {
+    /// The system refused at least one connection with a permission error, as Android does
+    /// when local network access is denied.
     pub local_network_denied: bool,
-    /// The latest dial reached no endpoint after a browse of the local network found none.
+    /// A browse of the local network found no endpoint.
     pub discovery_found_nothing: bool,
+}
+
+/// What the dials of one coordinator found in this run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CoordinatorDialReport {
+    /// No dial ended yet.
+    #[default]
+    NotDialed,
+    /// The latest dial reached this endpoint.
+    Reached(SocketAddr),
+    /// The latest dial reached no endpoint. `last_reached` keeps the endpoint an earlier dial of
+    /// this run reached, which the status still names next to its state.
+    Failed {
+        last_reached: Option<SocketAddr>,
+        failure: FailedDial,
+    },
+}
+
+impl CoordinatorDialReport {
+    /// The report after a dial ended with `outcome`. A failure keeps the endpoint an earlier
+    /// dial reached, and a success clears every problem.
+    pub fn after(self, outcome: DialOutcome) -> Self {
+        match outcome {
+            DialOutcome::Reached(endpoint) => Self::Reached(endpoint),
+            DialOutcome::Failed(failure) => Self::Failed {
+                last_reached: self.last_reached(),
+                failure,
+            },
+        }
+    }
+
+    /// The endpoint the latest successful dial of this run reached.
+    pub fn last_reached(&self) -> Option<SocketAddr> {
+        match *self {
+            Self::NotDialed => None,
+            Self::Reached(endpoint) => Some(endpoint),
+            Self::Failed { last_reached, .. } => last_reached,
+        }
+    }
+
+    /// Why the latest dial failed, or `None` when it reached an endpoint or none ended yet.
+    pub fn failure(&self) -> Option<FailedDial> {
+        match *self {
+            Self::Failed { failure, .. } => Some(failure),
+            Self::NotDialed | Self::Reached(_) => None,
+        }
+    }
 }
 
 /// How one dial ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DialOutcome {
     Reached(SocketAddr),
-    Failed {
-        local_network_denied: bool,
-        discovery_found_nothing: bool,
-    },
+    Failed(FailedDial),
 }
 
 /// The coordinator a report belongs to.
@@ -43,35 +85,20 @@ impl DialReports {
         Self(BTreeMap::new())
     }
 
-    /// Folds `outcome` into the report of the coordinator of `vault_id` with `fingerprint`. A
-    /// failure keeps the endpoint an earlier dial reached.
+    /// Folds `outcome` into the report of the coordinator of `vault_id` with `fingerprint`.
     pub fn record(&mut self, vault_id: &str, fingerprint: &str, outcome: DialOutcome) {
         let report = self
             .0
             .entry((vault_id.to_string(), fingerprint.to_string()))
             .or_default();
-        match outcome {
-            DialOutcome::Reached(endpoint) => {
-                *report = CoordinatorDialReport {
-                    reached: Some(endpoint),
-                    ..CoordinatorDialReport::default()
-                };
-            }
-            DialOutcome::Failed {
-                local_network_denied,
-                discovery_found_nothing,
-            } => {
-                report.local_network_denied = local_network_denied;
-                report.discovery_found_nothing = discovery_found_nothing;
-            }
-        }
+        *report = report.after(outcome);
     }
 
     /// The report of the coordinator of `vault_id` with `fingerprint`, empty before any dial.
     pub fn report(&self, vault_id: &str, fingerprint: &str) -> CoordinatorDialReport {
         self.0
             .get(&(vault_id.to_string(), fingerprint.to_string()))
-            .cloned()
+            .copied()
             .unwrap_or_default()
     }
 }
@@ -104,43 +131,37 @@ mod tests {
         text.parse().expect("endpoint")
     }
 
+    const DENIED: FailedDial = FailedDial {
+        local_network_denied: true,
+        discovery_found_nothing: true,
+    };
+    const NOTHING_FOUND: FailedDial = FailedDial {
+        local_network_denied: false,
+        discovery_found_nothing: true,
+    };
+
     #[test]
     fn a_failed_dial_keeps_the_endpoint_an_earlier_dial_reached_and_a_success_clears_problems() {
         let mut reports = DialReports::new();
         assert_eq!(
             reports.report("vault", "a"),
-            CoordinatorDialReport::default()
+            CoordinatorDialReport::NotDialed
         );
         reports.record(
             "vault",
             "a",
             DialOutcome::Reached(endpoint("192.168.1.20:43821")),
         );
-        reports.record(
-            "vault",
-            "a",
-            DialOutcome::Failed {
-                local_network_denied: true,
-                discovery_found_nothing: true,
-            },
-        );
+        reports.record("vault", "a", DialOutcome::Failed(DENIED));
         assert_eq!(
             reports.report("vault", "a"),
-            CoordinatorDialReport {
-                reached: Some(endpoint("192.168.1.20:43821")),
-                local_network_denied: true,
-                discovery_found_nothing: true,
+            CoordinatorDialReport::Failed {
+                last_reached: Some(endpoint("192.168.1.20:43821")),
+                failure: DENIED,
             }
         );
-        reports.record(
-            "vault",
-            "a",
-            DialOutcome::Failed {
-                local_network_denied: false,
-                discovery_found_nothing: true,
-            },
-        );
-        assert!(!reports.report("vault", "a").local_network_denied);
+        reports.record("vault", "a", DialOutcome::Failed(NOTHING_FOUND));
+        assert_eq!(reports.report("vault", "a").failure(), Some(NOTHING_FOUND));
         reports.record(
             "vault",
             "a",
@@ -148,11 +169,38 @@ mod tests {
         );
         assert_eq!(
             reports.report("vault", "a"),
-            CoordinatorDialReport {
-                reached: Some(endpoint("100.64.0.7:43821")),
-                ..CoordinatorDialReport::default()
-            }
+            CoordinatorDialReport::Reached(endpoint("100.64.0.7:43821"))
         );
+    }
+
+    #[test]
+    fn every_report_moves_to_the_outcome_of_the_latest_dial() {
+        let lan = endpoint("192.168.1.20:43821");
+        let overlay = endpoint("100.64.0.7:43821");
+        let reports = [
+            CoordinatorDialReport::NotDialed,
+            CoordinatorDialReport::Reached(lan),
+            CoordinatorDialReport::Failed {
+                last_reached: None,
+                failure: DENIED,
+            },
+            CoordinatorDialReport::Failed {
+                last_reached: Some(lan),
+                failure: NOTHING_FOUND,
+            },
+        ];
+        for report in reports {
+            assert_eq!(
+                report.after(DialOutcome::Reached(overlay)),
+                CoordinatorDialReport::Reached(overlay)
+            );
+            let failed = report.after(DialOutcome::Failed(DENIED));
+            assert_eq!(failed.failure(), Some(DENIED));
+            assert_eq!(failed.last_reached(), report.last_reached());
+        }
+        assert_eq!(CoordinatorDialReport::NotDialed.failure(), None);
+        assert_eq!(CoordinatorDialReport::Reached(lan).failure(), None);
+        assert_eq!(CoordinatorDialReport::NotDialed.last_reached(), None);
     }
 
     #[test]

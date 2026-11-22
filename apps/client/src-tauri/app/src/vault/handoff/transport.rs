@@ -4,7 +4,7 @@ mod server;
 #[cfg(all(test, desktop))]
 use ganbaru_sync_replica::serve::coordinator::QuarantinedDevices;
 pub(crate) use ganbaru_sync_replica::service::dial_report::CoordinatorDialReport;
-use ganbaru_sync_replica::service::dial_report::{DialOutcome, record_dial};
+use ganbaru_sync_replica::service::dial_report::{DialOutcome, FailedDial, record_dial};
 pub(crate) use ganbaru_sync_replica::service::peers::BundleSource;
 #[cfg(test)]
 use ganbaru_sync_replica::service::sync_peer;
@@ -836,10 +836,10 @@ async fn connect_coordinator(
     }
     let outcome = match &reached {
         Some((_, endpoint)) => DialOutcome::Reached(*endpoint),
-        None => DialOutcome::Failed {
+        None => DialOutcome::Failed(FailedDial {
             local_network_denied: failures.iter().any(|failure| failure.local_network_denied),
             discovery_found_nothing,
-        },
+        }),
     };
     record_dial(coordinator, outcome);
     finish_coordinator_dial(manager, coordinator, reached, failures)

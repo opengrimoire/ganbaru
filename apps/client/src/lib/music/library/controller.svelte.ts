@@ -134,6 +134,17 @@ function itemWindowRequest(
   };
 }
 
+/** The shared builder refresh; only a blocking refresh holds the builder busy. */
+type LibraryRefresh =
+  | { phase: "idle" }
+  | { phase: "refreshing"; token: symbol; blocking: boolean };
+
+/** The append of the next page for one destination window. */
+type LibraryPageLoad =
+  | { phase: "idle" }
+  | { phase: "loading"; token: symbol; key: string }
+  | { phase: "failed"; key: string; error: Error };
+
 export class MusicLibraryController {
   vaultId = $state<string | null>(null);
   location = $state<MusicBuilderLocation>({ kind: "review" });
@@ -148,9 +159,8 @@ export class MusicLibraryController {
   playlistSummaries = $state<MusicPlaylistSummary[]>([]);
   sourceSummaries = $state<MusicSourceSummary[]>([]);
   issues = $state<MusicIssue[]>([]);
-  busy = $state(false);
-  loadingMore = $state(false);
-  loadMoreError = $state<Error | null>(null);
+  private refreshRequest = $state.raw<LibraryRefresh>({ phase: "idle" });
+  private pageLoad = $state.raw<LibraryPageLoad>({ phase: "idle" });
   error = $state<Error | null>(null);
   undoCount = $state(0);
   lastUndoLabel = $state<string | null>(null);
@@ -164,9 +174,23 @@ export class MusicLibraryController {
     return this.currentWindow.items.find((item) => item.id === selectedId) ?? null;
   });
 
+  /** Whether a blocking refresh of the builder windows and summaries is in flight. */
+  get busy(): boolean {
+    return this.refreshRequest.phase === "refreshing" && this.refreshRequest.blocking;
+  }
+
+  /** Whether the next page of the current destination is loading. */
+  get loadingMore(): boolean {
+    return this.pageLoad.phase === "loading" && this.pageLoad.key === this.currentKey;
+  }
+
+  /** The failure of the last page load for the current destination. */
+  get loadMoreError(): Error | null {
+    return this.pageLoad.phase === "failed" && this.pageLoad.key === this.currentKey ? this.pageLoad.error : null;
+  }
+
   private readonly api: MusicLibraryControllerApi;
   private readonly now: () => number;
-  private refreshGeneration = 0;
   private staleWindowKeys = new Set<string>();
   private mutationRevisions: Record<string, number> = {};
   private mutationTails: Record<string, Promise<void>> = {};
@@ -181,16 +205,14 @@ export class MusicLibraryController {
     const normalized = vaultId?.trim() || null;
     if (normalized === this.vaultId) return;
     this.vaultId = normalized;
-    this.refreshGeneration += 1;
+    this.refreshRequest = { phase: "idle" };
+    this.pageLoad = { phase: "idle" };
     this.windows = {};
     this.staleWindowKeys.clear();
     this.playlistSummaries = [];
     this.sourceSummaries = [];
     this.issues = [];
     this.error = null;
-    this.busy = false;
-    this.loadingMore = false;
-    this.loadMoreError = null;
     this.mutationRevisions = {};
     this.mutationTails = {};
     this.undoEntries = [];
@@ -260,7 +282,7 @@ export class MusicLibraryController {
     window: MusicItemWindow,
     state: MusicDestinationState,
     nowMs: number,
-    generation: number,
+    token: symbol,
     vaultId: string,
   ): Promise<boolean> {
     const reviewLocation = { kind: "review" } as const;
@@ -269,7 +291,7 @@ export class MusicLibraryController {
         ...state,
         offset: window.items.length,
       }, nowMs));
-      if (!this.isCurrent(generation, vaultId)) return false;
+      if (!this.isCurrent(token, vaultId)) return false;
       const knownIds = new Set(window.items.map((item) => item.id));
       const nextItems = next.items.filter((item) => !knownIds.has(item.id));
       if (nextItems.length === 0) throw new Error("The complete Review list could not be loaded.");
@@ -283,14 +305,13 @@ export class MusicLibraryController {
   /** Loads shared builder summaries plus the Review and Library windows in one initialization pass. */
   async preloadCoreDestinations(): Promise<boolean> {
     if (!this.vaultId) return false;
-    const generation = ++this.refreshGeneration;
+    const token = this.beginRefresh(true);
     const vaultId = this.vaultId;
     const reviewLocation = { kind: "review" } as const;
     const libraryLocation = { kind: "library" } as const;
     const reviewState = { ...(this.destinationStates.review ?? defaultDestinationState(reviewLocation)) };
     const libraryState = { ...(this.destinationStates.library ?? defaultDestinationState(libraryLocation)) };
     const nowMs = this.now();
-    this.busy = true;
     this.error = null;
     try {
       const [reviewWindow, libraryWindow, playlists, sources, issues] = await Promise.all([
@@ -300,8 +321,8 @@ export class MusicLibraryController {
         this.api.sourceSummaries(nowMs, 0, 500),
         this.api.issues(0, 500),
       ]);
-      if (!this.isCurrent(generation, vaultId)) return false;
-      if (!await this.completeReviewWindow(reviewWindow, reviewState, nowMs, generation, vaultId)) return false;
+      if (!this.isCurrent(token, vaultId)) return false;
+      if (!await this.completeReviewWindow(reviewWindow, reviewState, nowMs, token, vaultId)) return false;
       this.windows.review = reviewWindow;
       this.windows.library = libraryWindow;
       this.staleWindowKeys.delete("review");
@@ -311,11 +332,11 @@ export class MusicLibraryController {
       this.issues = issues;
       return true;
     } catch (error) {
-      if (!this.isCurrent(generation, vaultId)) return false;
+      if (!this.isCurrent(token, vaultId)) return false;
       this.error = localizedMusicError(error, "music.errors.libraryLoadFailed");
       return false;
     } finally {
-      if (this.isCurrent(generation, vaultId)) this.busy = false;
+      if (this.isCurrent(token, vaultId)) this.refreshRequest = { phase: "idle" };
     }
   }
 
@@ -336,11 +357,15 @@ export class MusicLibraryController {
     return this.refresh();
   }
 
-  /** Refreshes shared counts after a local window was updated without replacing its visible rows. */
+  /**
+   * Refreshes shared counts after a local window was updated without replacing its visible rows. A blocking refresh
+   * in flight read before the mutation, so it is replaced by a full refresh instead.
+   */
   async refreshSummariesAfterMutation(): Promise<boolean> {
     if (!this.vaultId) return false;
     this.markRetainedWindowsStale();
-    const generation = ++this.refreshGeneration;
+    if (this.busy) return this.refresh();
+    const token = this.beginRefresh(false);
     const vaultId = this.vaultId;
     const nowMs = this.now();
     this.error = null;
@@ -350,21 +375,23 @@ export class MusicLibraryController {
         this.api.sourceSummaries(nowMs, 0, 500),
         this.api.issues(0, 500),
       ]);
-      if (!this.isCurrent(generation, vaultId)) return false;
+      if (!this.isCurrent(token, vaultId)) return false;
       this.playlistSummaries = playlists;
       this.sourceSummaries = sources;
       this.issues = issues;
       return true;
     } catch (error) {
-      if (!this.isCurrent(generation, vaultId)) return false;
+      if (!this.isCurrent(token, vaultId)) return false;
       this.error = localizedMusicError(error, "music.errors.libraryLoadFailed");
       return false;
+    } finally {
+      if (this.isCurrent(token, vaultId)) this.refreshRequest = { phase: "idle" };
     }
   }
 
   async refresh(): Promise<boolean> {
     if (!this.vaultId) return false;
-    const generation = ++this.refreshGeneration;
+    const token = this.beginRefresh(true);
     const vaultId = this.vaultId;
     const location = this.location;
     const key = locationKey(location);
@@ -372,7 +399,6 @@ export class MusicLibraryController {
     const reviewLocation = { kind: "review" } as const;
     const reviewState = { ...(this.destinationStates.review ?? defaultDestinationState(reviewLocation)) };
     const nowMs = this.now();
-    this.busy = true;
     this.error = null;
     try {
       const [window, sourceReviewWindow, playlists, sources, issues] = await Promise.all([
@@ -386,11 +412,11 @@ export class MusicLibraryController {
         this.api.sourceSummaries(nowMs, 0, 500),
         this.api.issues(0, 500),
       ]);
-      if (!this.isCurrent(generation, vaultId)) return false;
+      if (!this.isCurrent(token, vaultId)) return false;
       if (window && location.kind === "review"
-        && !await this.completeReviewWindow(window, state, nowMs, generation, vaultId)) return false;
+        && !await this.completeReviewWindow(window, state, nowMs, token, vaultId)) return false;
       if (sourceReviewWindow
-        && !await this.completeReviewWindow(sourceReviewWindow, reviewState, nowMs, generation, vaultId)) return false;
+        && !await this.completeReviewWindow(sourceReviewWindow, reviewState, nowMs, token, vaultId)) return false;
       if (window) {
         this.windows[key] = window;
         this.staleWindowKeys.delete(key);
@@ -404,11 +430,11 @@ export class MusicLibraryController {
       this.issues = issues;
       return true;
     } catch (error) {
-      if (!this.isCurrent(generation, vaultId)) return false;
+      if (!this.isCurrent(token, vaultId)) return false;
       this.error = localizedMusicError(error, "music.errors.libraryLoadFailed");
       return false;
     } finally {
-      if (this.isCurrent(generation, vaultId)) this.busy = false;
+      if (this.isCurrent(token, vaultId)) this.refreshRequest = { phase: "idle" };
     }
   }
 
@@ -420,22 +446,23 @@ export class MusicLibraryController {
     const location = this.location;
     const key = this.currentKey;
     const state = { ...this.currentState, offset: current.items.length };
-    this.loadingMore = true;
-    this.loadMoreError = null;
+    const token = Symbol(key);
+    this.pageLoad = { phase: "loading", token, key };
+    const isCurrentPage = () => this.isCurrentPageLoad(token, vaultId, key);
     try {
       const next = await this.api.itemWindow(itemWindowRequest(location, state, this.now()));
-      if (this.vaultId !== vaultId || this.currentKey !== key) return false;
+      if (!isCurrentPage()) return false;
       const known = new Set(current.items.map((item) => item.id));
       current.items = [...current.items, ...next.items.filter((item) => !known.has(item.id))];
       current.totalCount = next.totalCount;
       current.groups = next.groups;
       return true;
     } catch (error) {
-      if (this.vaultId !== vaultId || this.currentKey !== key) return false;
-      this.loadMoreError = localizedMusicError(error, "music.errors.libraryLoadFailed");
+      if (!isCurrentPage()) return false;
+      this.pageLoad = { phase: "failed", key, error: localizedMusicError(error, "music.errors.libraryLoadFailed") };
       return false;
     } finally {
-      if (this.vaultId === vaultId && this.currentKey === key) this.loadingMore = false;
+      if (this.pageLoad.phase === "loading" && this.pageLoad.token === token) this.pageLoad = { phase: "idle" };
     }
   }
 
@@ -485,8 +512,19 @@ export class MusicLibraryController {
     this.syncUndoProjection();
   }
 
-  private isCurrent(generation: number, vaultId: string): boolean {
-    return generation === this.refreshGeneration && vaultId === this.vaultId;
+  private beginRefresh(blocking: boolean): symbol {
+    const token = Symbol("music library refresh");
+    this.refreshRequest = { phase: "refreshing", token, blocking };
+    return token;
+  }
+
+  private isCurrent(token: symbol, vaultId: string): boolean {
+    return this.refreshRequest.phase === "refreshing" && this.refreshRequest.token === token && vaultId === this.vaultId;
+  }
+
+  private isCurrentPageLoad(token: symbol, vaultId: string, key: string): boolean {
+    return this.pageLoad.phase === "loading" && this.pageLoad.token === token
+      && vaultId === this.vaultId && key === this.currentKey;
   }
 
   private pushUndo(label: string, run: () => Promise<void>): void {

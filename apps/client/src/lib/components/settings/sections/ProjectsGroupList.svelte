@@ -23,8 +23,22 @@
   let nameDraft = $state("");
   let nameInput = $state<HTMLInputElement | null>(null);
   let deleteCandidate = $state<ProjectGroup | null>(null);
-  let pendingGroupId = $state<string | null>(null);
+  /** Groups with a rename or delete in flight; each settles on its own, so one finishing never frees another. */
+  let pendingGroupIds = $state.raw<ReadonlySet<string>>(new Set());
   let actionError = $state<string | null>(null);
+
+  /**
+   * Marks a group as busy while its rename or delete runs, or frees it once that action settles.
+   *
+   * @param groupId - The group.
+   * @param pending - Whether an action for the group is in flight.
+   */
+  function setGroupPending(groupId: string, pending: boolean): void {
+    const next = new Set(pendingGroupIds);
+    if (pending) next.add(groupId);
+    else next.delete(groupId);
+    pendingGroupIds = next;
+  }
 
   function displayName(group: ProjectGroup): string {
     return systemProjectGroupName(group.id, group.name, t);
@@ -56,13 +70,13 @@
     renamingGroupId = null;
     const name = normalizeProjectName(nameDraft);
     if (!name || name === group.name) return;
-    pendingGroupId = group.id;
+    setGroupPending(group.id, true);
     try {
       await projects.updateGroup(group, { name });
     } catch (error: unknown) {
       actionError = userErrorMessage(error, t("projects.navigator.groupSaveFailed"));
     } finally {
-      pendingGroupId = null;
+      setGroupPending(group.id, false);
     }
   }
 
@@ -81,14 +95,14 @@
     const group = deleteCandidate;
     deleteCandidate = null;
     if (!group) return;
-    pendingGroupId = group.id;
+    setGroupPending(group.id, true);
     actionError = null;
     try {
       await projects.removeGroup(group);
     } catch (error: unknown) {
       actionError = userErrorMessage(error, t("projects.navigator.groupDeleteFailed"));
     } finally {
-      pendingGroupId = null;
+      setGroupPending(group.id, false);
     }
   }
 
@@ -135,7 +149,7 @@
               <button
                 type="button"
                 class="inline-flex h-(--control-height) items-center justify-center rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 dark:bg-transparent"
-                disabled={pendingGroupId === group.id}
+                disabled={pendingGroupIds.has(group.id)}
                 aria-label={t("settings.projectsGroups.renameGroup", displayName(group))}
                 onclick={() => beginRename(group)}
               >
@@ -144,7 +158,7 @@
               <button
                 type="button"
                 class="inline-flex h-(--control-height) items-center justify-center rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-destructive transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 dark:bg-transparent"
-                disabled={pendingGroupId === group.id}
+                disabled={pendingGroupIds.has(group.id)}
                 aria-label={t("projects.navigator.deleteGroup", displayName(group))}
                 onclick={() => { deleteCandidate = group; }}
               >

@@ -152,6 +152,34 @@ describe("Settings list of project groups", () => {
     await vi.waitFor(() => expect(target.textContent).toContain("Could not delete group."));
   });
 
+  it("keeps a group busy until its own delete settles when another group's rename finishes first", async () => {
+    const home = group("group-home", "Home");
+    store.groups = [routine, work, home];
+    let finishRename = (): void => {};
+    store.updateGroup.mockReturnValueOnce(new Promise<void>((resolve) => {
+      finishRename = resolve;
+    }));
+    store.removeGroup.mockReturnValueOnce(new Promise<void>(() => {}));
+    render();
+
+    buttonLabeled("Rename Work")?.click();
+    flushSync();
+    typeName("Office");
+    press("Enter");
+    buttonLabeled("Delete group Home")?.click();
+    flushSync();
+    buttonLabeled("Delete group (Enter)")?.click();
+    flushSync();
+    finishRename();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+
+    expect(buttonLabeled("Rename Work")?.disabled).toBe(false);
+    expect(buttonLabeled("Delete group Home")?.disabled).toBe(true);
+    expect(buttonLabeled("Rename Home")?.disabled).toBe(true);
+  });
+
   it("says when there are no groups", () => {
     store.groups = [];
     render();

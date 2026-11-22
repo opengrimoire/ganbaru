@@ -353,6 +353,15 @@
     return trigger?.closest<HTMLElement>(".collection-cell") ?? trigger;
   }
 
+  /**
+   * Watch a panel and its content root. A panel capped by its own max height stops resizing when its content grows,
+   * such as a month with six week rows, so only the content root reports the growth that must lift the cap.
+   */
+  function observePanelSize(observer: ResizeObserver, node: HTMLElement): void {
+    observer.observe(node);
+    if (node.firstElementChild) observer.observe(node.firstElementChild);
+  }
+
   function positionPanel(
     node: HTMLElement,
     anchor: HTMLElement | undefined,
@@ -428,7 +437,7 @@
 
     const frame = requestAnimationFrame(updatePosition);
     const resizeObserver = new ResizeObserver(updatePosition);
-    resizeObserver.observe(node);
+    observePanelSize(resizeObserver, node);
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", updatePosition, true);
 
@@ -478,7 +487,7 @@
 
     const frame = requestAnimationFrame(updatePosition);
     const resizeObserver = new ResizeObserver(updatePosition);
-    resizeObserver.observe(node);
+    observePanelSize(resizeObserver, node);
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", updatePosition, true);
 
@@ -748,7 +757,7 @@
           aria-label={dateLabel}
           use:positionDatePickerPanel
         >
-          {@render dateMenuContent()}
+          <div>{@render dateMenuContent()}</div>
         </div>
       {/if}
   {:else if column === "scheduled"}

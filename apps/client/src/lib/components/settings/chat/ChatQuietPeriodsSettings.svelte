@@ -77,10 +77,16 @@
     error = null;
     try {
       windows = (await saveChatQuietPeriods({ windows: next })).windows;
-      announceChatQuietPeriodsSaved();
-      quietState = await readChatQuietState();
     } catch (cause: unknown) {
       windows = previous;
+      error = chatErrorMessage(cause);
+      saving = false;
+      return;
+    }
+    announceChatQuietPeriodsSaved();
+    try {
+      quietState = await readChatQuietState();
+    } catch (cause: unknown) {
       error = chatErrorMessage(cause);
     } finally {
       saving = false;

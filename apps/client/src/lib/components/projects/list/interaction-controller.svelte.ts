@@ -10,6 +10,11 @@ export type ProjectListTaskMenu = "status" | "priority" | "start" | "due";
 export interface ProjectListInteractionControllerContext {
   getSelectedTaskIds: () => string[];
   selectedTaskIdsChanged: (taskIds: string[]) => void;
+  /**
+   * Whether start and due date menus open as portaled dialogs. A dialog sits outside its cell and closes from its
+   * own backdrop, so an outside press must not unmount it before the press becomes a click on the content below.
+   */
+  dateMenusAreDialogs: boolean;
 }
 
 export class ProjectListInteractionController {
@@ -91,7 +96,11 @@ export class ProjectListInteractionController {
     if (this.priorityMenuTaskId && !target.closest("[data-list-priority-menu-root='true']")) {
       this.priorityMenuTaskId = null;
     }
-    if ((this.startDateMenuTaskId || this.dueDateMenuTaskId) && !target.closest("[data-list-date-menu-root='true']")) {
+    if (
+      !this.context.dateMenusAreDialogs
+      && (this.startDateMenuTaskId || this.dueDateMenuTaskId)
+      && !target.closest("[data-list-date-menu-root='true']")
+    ) {
       this.startDateMenuTaskId = null;
       this.dueDateMenuTaskId = null;
     }

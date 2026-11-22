@@ -25,6 +25,7 @@ describe("ProjectListInteractionController", () => {
     const controller = new ProjectListInteractionController({
       getSelectedTaskIds: () => [],
       selectedTaskIdsChanged: vi.fn(),
+      dateMenusAreDialogs: false,
     });
 
     controller.toggleTaskMenu("status", "task-a");
@@ -42,6 +43,7 @@ describe("ProjectListInteractionController", () => {
     const controller = new ProjectListInteractionController({
       getSelectedTaskIds: () => selectedIds,
       selectedTaskIdsChanged: changed,
+      dateMenusAreDialogs: false,
     });
     const first = task("task-a");
     const second = task("task-b");
@@ -58,6 +60,7 @@ describe("ProjectListInteractionController", () => {
     const controller = new ProjectListInteractionController({
       getSelectedTaskIds: () => [],
       selectedTaskIdsChanged: vi.fn(),
+      dateMenusAreDialogs: false,
     });
     controller.sectionOptionsMenuId = "section-a";
     controller.toggleTaskMenu("priority", "task-a");
@@ -70,10 +73,32 @@ describe("ProjectListInteractionController", () => {
     expect(controller.sectionOptionsMenuId).toBeNull();
   });
 
+  it("closes anchored date menus on an outside press but leaves dialog date menus to their own backdrop", () => {
+    const outside = { closest: () => null } as unknown as Element;
+    const anchored = new ProjectListInteractionController({
+      getSelectedTaskIds: () => [],
+      selectedTaskIdsChanged: vi.fn(),
+      dateMenusAreDialogs: false,
+    });
+    anchored.toggleTaskMenu("due", "task-a");
+    anchored.handleOutsidePointerTarget(outside);
+    expect(anchored.dueDateMenuTaskId).toBeNull();
+
+    const dialog = new ProjectListInteractionController({
+      getSelectedTaskIds: () => [],
+      selectedTaskIdsChanged: vi.fn(),
+      dateMenusAreDialogs: true,
+    });
+    dialog.toggleTaskMenu("start", "task-a");
+    dialog.handleOutsidePointerTarget(outside);
+    expect(dialog.startDateMenuTaskId).toBe("task-a");
+  });
+
   it("expands tasks with subtasks by default and opens childless tasks on request", () => {
     const controller = new ProjectListInteractionController({
       getSelectedTaskIds: () => [],
       selectedTaskIdsChanged: vi.fn(),
+      dateMenusAreDialogs: false,
     });
     const parent = task("parent");
     const leaf = task("leaf");

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { TOUCH_PICKERS } from "$lib/components/ui/picker-presentation";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { userErrorMessage } from "$lib/i18n/user-errors";
   import { getCalendar } from "$lib/stores/calendar.svelte";
@@ -126,6 +127,7 @@
   const interaction = new ProjectListInteractionController({
     getSelectedTaskIds: () => selectedTaskIds,
     selectedTaskIdsChanged: (taskIds) => onSelectedTaskIdsChange(taskIds),
+    dateMenusAreDialogs: TOUCH_PICKERS,
   });
   const quickAdd = new ProjectListQuickAddController({
     projects,

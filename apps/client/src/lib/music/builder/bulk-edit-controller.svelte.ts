@@ -285,15 +285,17 @@ export class MusicBulkEditController {
     if (this.saving || this.itemIds.length === 0) return false;
     this.saving = true;
     const generation = this.openGeneration;
+    // The selection can change while the prior signals load, so the write and its Undo keep the tracks described.
+    const itemIds = [...this.itemIds];
     this.error = null;
     try {
-      const prior = await Promise.all(this.itemIds.map(async (itemId) => ({ itemId, signals: (await getMusicInspectorDetail(itemId)).signals })));
+      const prior = await Promise.all(itemIds.map(async (itemId) => ({ itemId, signals: (await getMusicInspectorDetail(itemId)).signals })));
       await this.library.runOptimistic({
-        key: `bulk-signals:${this.itemIds.join(":")}`,
+        key: `bulk-signals:${itemIds.join(":")}`,
         label: "Describe selected tracks",
         apply: () => undefined,
         rollback: () => undefined,
-        persist: () => setMusicItemSignals({ itemIds: this.itemIds, signals, updatedAtMs: this.now() }),
+        persist: () => setMusicItemSignals({ itemIds, signals, updatedAtMs: this.now() }),
         undo: async () => {
           for (const entry of prior) await setMusicItemSignals({ itemIds: [entry.itemId], signals: entry.signals, updatedAtMs: this.now() });
           await this.library.refreshAfterMutation();

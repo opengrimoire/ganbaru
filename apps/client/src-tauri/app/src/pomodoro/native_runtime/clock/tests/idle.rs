@@ -1,4 +1,5 @@
 use super::*;
+use ganbaru_pomodoro::FocusModeState;
 
 fn idle() -> FocusExecutionSnapshot {
     serde_json::from_value(serde_json::json!({
@@ -69,14 +70,13 @@ fn native_idle_grace_revokes_on_resume_and_resets_across_generations() {
         clock.remaining(start + Duration::from_secs(30)),
         Some(Duration::from_secs(60))
     );
-    snapshot.mode = FocusMode::Running;
+    snapshot.mode = FocusModeState::Running;
     clock.update(5, Some(&snapshot), start + Duration::from_secs(40));
     assert_eq!(clock.remaining(start + Duration::from_secs(50)), None);
-    snapshot.mode = FocusMode::IdlePause;
-    snapshot.idle_overlay_visible_at_ms = None;
+    snapshot.mode = idle_pause(None);
     clock.update(5, Some(&snapshot), start + Duration::from_secs(50));
     assert_eq!(clock.remaining(start + Duration::from_secs(90)), None);
-    snapshot.idle_overlay_visible_at_ms = Some(100_000);
+    snapshot.mode = idle_pause(Some(100_000));
     clock.update(5, Some(&snapshot), start + Duration::from_secs(100));
     assert_eq!(
         clock.remaining(start + Duration::from_secs(100)),
@@ -84,4 +84,14 @@ fn native_idle_grace_revokes_on_resume_and_resets_across_generations() {
     );
     clock.update(5, None, start + Duration::from_secs(101));
     assert_eq!(clock.remaining(start + Duration::from_secs(102)), None);
+}
+
+/// The fixture's idle episode with the given warning visibility.
+fn idle_pause(idle_overlay_visible_at_ms: Option<i64>) -> FocusModeState {
+    FocusModeState::IdlePause {
+        idle_started_at_ms: 10_000,
+        idle_detected_at_ms: 70_000,
+        idle_overlay_visible_at_ms,
+        paused_prompts_dismissed: false,
+    }
 }

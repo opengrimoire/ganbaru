@@ -100,6 +100,276 @@ impl FocusMode {
     }
 }
 
+/// The execution mode with the facts that exist only while Focus is in it.
+///
+/// Serialized with its mode name under `mode` and its facts beside it, so the wire snapshot
+/// keeps `mode` as a plain discriminant. Entering a mode replaces the whole value, which
+/// drops the previous mode's idle, suspend, or return evidence.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "mode",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum FocusModeState {
+    #[default]
+    Stopped,
+    Running,
+    ManualPause {
+        paused_prompts_dismissed: bool,
+    },
+    IdlePause {
+        idle_started_at_ms: i64,
+        idle_detected_at_ms: i64,
+        /// Visibility acknowledged by the current controller; unseen warnings cannot
+        /// trigger idle failure.
+        idle_overlay_visible_at_ms: Option<i64>,
+        paused_prompts_dismissed: bool,
+    },
+    IdleFailed {
+        idle_started_at_ms: i64,
+        idle_detected_at_ms: i64,
+        focus_failed_at_ms: i64,
+        paused_prompts_dismissed: bool,
+    },
+    Suspended {
+        suspend_started_at_ms: i64,
+        suspend_returned_at_ms: i64,
+        paused_prompts_dismissed: bool,
+    },
+    ReturnWait {
+        return_started_at_ms: i64,
+        paused_prompts_dismissed: bool,
+    },
+    Expired,
+}
+
+impl FocusModeState {
+    /// The mode without its facts, as used by the transition table and native consumers.
+    pub fn kind(&self) -> FocusMode {
+        match self {
+            Self::Stopped => FocusMode::Stopped,
+            Self::Running => FocusMode::Running,
+            Self::ManualPause { .. } => FocusMode::ManualPause,
+            Self::IdlePause { .. } => FocusMode::IdlePause,
+            Self::IdleFailed { .. } => FocusMode::IdleFailed,
+            Self::Suspended { .. } => FocusMode::Suspended,
+            Self::ReturnWait { .. } => FocusMode::ReturnWait,
+            Self::Expired => FocusMode::Expired,
+        }
+    }
+
+    /// Whether a paused-state prompt was dismissed; modes without prompts have none.
+    pub fn paused_prompts_dismissed(&self) -> bool {
+        match self {
+            Self::ManualPause {
+                paused_prompts_dismissed,
+            }
+            | Self::IdlePause {
+                paused_prompts_dismissed,
+                ..
+            }
+            | Self::IdleFailed {
+                paused_prompts_dismissed,
+                ..
+            }
+            | Self::Suspended {
+                paused_prompts_dismissed,
+                ..
+            }
+            | Self::ReturnWait {
+                paused_prompts_dismissed,
+                ..
+            } => *paused_prompts_dismissed,
+            Self::Stopped | Self::Running | Self::Expired => false,
+        }
+    }
+
+    /// The dismissal flag of a mode that shows paused prompts, or `None` for one that shows none.
+    pub(super) fn paused_prompts_dismissed_mut(&mut self) -> Option<&mut bool> {
+        match self {
+            Self::ManualPause {
+                paused_prompts_dismissed,
+            }
+            | Self::IdlePause {
+                paused_prompts_dismissed,
+                ..
+            }
+            | Self::IdleFailed {
+                paused_prompts_dismissed,
+                ..
+            }
+            | Self::Suspended {
+                paused_prompts_dismissed,
+                ..
+            }
+            | Self::ReturnWait {
+                paused_prompts_dismissed,
+                ..
+            } => Some(paused_prompts_dismissed),
+            Self::Stopped | Self::Running | Self::Expired => None,
+        }
+    }
+
+    /// When the current idle episode began, while idle paused or after it failed the phase.
+    pub fn idle_started_at_ms(&self) -> Option<i64> {
+        match self {
+            Self::IdlePause {
+                idle_started_at_ms, ..
+            }
+            | Self::IdleFailed {
+                idle_started_at_ms, ..
+            } => Some(*idle_started_at_ms),
+            _ => None,
+        }
+    }
+
+    /// When native execution detected the current idle episode.
+    pub fn idle_detected_at_ms(&self) -> Option<i64> {
+        match self {
+            Self::IdlePause {
+                idle_detected_at_ms,
+                ..
+            }
+            | Self::IdleFailed {
+                idle_detected_at_ms,
+                ..
+            } => Some(*idle_detected_at_ms),
+            _ => None,
+        }
+    }
+
+    /// When the live controller showed the idle warning, only while idle paused.
+    pub fn idle_overlay_visible_at_ms(&self) -> Option<i64> {
+        match self {
+            Self::IdlePause {
+                idle_overlay_visible_at_ms,
+                ..
+            } => *idle_overlay_visible_at_ms,
+            _ => None,
+        }
+    }
+
+    /// When an elapsed phase began waiting for the user to return, only while waiting.
+    pub fn return_started_at_ms(&self) -> Option<i64> {
+        match self {
+            Self::ReturnWait {
+                return_started_at_ms,
+                ..
+            } => Some(*return_started_at_ms),
+            _ => None,
+        }
+    }
+
+    /// The start of the interruption this mode waits on, if it records one.
+    pub fn wait_started_at_ms(&self) -> Option<i64> {
+        match self {
+            Self::IdlePause {
+                idle_started_at_ms, ..
+            }
+            | Self::IdleFailed {
+                idle_started_at_ms, ..
+            } => Some(*idle_started_at_ms),
+            Self::Suspended {
+                suspend_started_at_ms,
+                ..
+            } => Some(*suspend_started_at_ms),
+            Self::ReturnWait {
+                return_started_at_ms,
+                ..
+            } => Some(*return_started_at_ms),
+            Self::Stopped | Self::Running | Self::ManualPause { .. } | Self::Expired => None,
+        }
+    }
+
+    /// The pause a Calendar reconfiguration restores in the run that replaces this one,
+    /// with the pause reason it records. Idle and suspend evidence restarts at `now_ms`,
+    /// because the new run's phase starts then; acknowledgements carry over.
+    pub(super) fn carried_into_reconfigured_run(
+        &self,
+        now_ms: i64,
+    ) -> Option<(&'static str, FocusModeState)> {
+        match *self {
+            Self::ManualPause {
+                paused_prompts_dismissed,
+            } => Some((
+                "manual",
+                Self::ManualPause {
+                    paused_prompts_dismissed,
+                },
+            )),
+            Self::IdlePause {
+                idle_detected_at_ms,
+                idle_overlay_visible_at_ms,
+                paused_prompts_dismissed,
+                ..
+            } => Some((
+                "idle",
+                Self::IdlePause {
+                    idle_started_at_ms: now_ms,
+                    idle_detected_at_ms,
+                    idle_overlay_visible_at_ms,
+                    paused_prompts_dismissed,
+                },
+            )),
+            Self::Suspended {
+                suspend_returned_at_ms,
+                paused_prompts_dismissed,
+                ..
+            } => Some((
+                "suspend",
+                Self::Suspended {
+                    suspend_started_at_ms: now_ms,
+                    suspend_returned_at_ms: suspend_returned_at_ms.max(now_ms),
+                    paused_prompts_dismissed,
+                },
+            )),
+            Self::Stopped
+            | Self::Running
+            | Self::IdleFailed { .. }
+            | Self::ReturnWait { .. }
+            | Self::Expired => None,
+        }
+    }
+}
+
+impl PartialEq<FocusMode> for FocusModeState {
+    fn eq(&self, other: &FocusMode) -> bool {
+        self.kind() == *other
+    }
+}
+
+/// Lifecycle of one accepted phase, matching the `pomodoro_segments.status` CHECK.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusSegmentStatus {
+    Active,
+    Completed,
+    Interrupted,
+}
+
+impl FocusSegmentStatus {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Completed => "completed",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
+    pub(super) fn parse(value: &str) -> Result<Self, FocusExecutionError> {
+        match value {
+            "active" => Ok(Self::Active),
+            "completed" => Ok(Self::Completed),
+            "interrupted" => Ok(Self::Interrupted),
+            _ => Err(execution_error(
+                FocusErrorCode::InvalidState,
+                "Invalid canonical Focus segment status",
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FocusPhase {
@@ -259,28 +529,24 @@ impl CommittedFocusEffect {
 }
 
 /// Durable control facts that are not themselves evidence of an executed phase.
+///
+/// The mode and its facts are one nested value under `mode`, so a stored row cannot hold
+/// idle, suspend, or return evidence for a mode it is not in. An empty object is a stopped
+/// state, which is how the baseline seeds the row.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ExecutionState {
     pub run_id: Option<String>,
     pub segment_id: Option<String>,
-    pub mode: FocusMode,
+    pub mode: FocusModeState,
     pub calendar_configuration: Option<FocusConfiguration>,
     pub skip_next_break: bool,
     pub focus_extension_used: bool,
     pub break_extension_ms: i64,
     pub dismissed_occurrence_id: Option<String>,
     pub automatic_admission_suppressed: bool,
-    pub paused_prompts_dismissed: bool,
     pub idle_timeout_override_set: bool,
     pub idle_timeout_override_minutes: Option<i64>,
-    pub idle_started_at_ms: Option<i64>,
-    pub idle_detected_at_ms: Option<i64>,
-    pub idle_overlay_visible_at_ms: Option<i64>,
-    pub focus_failed_at_ms: Option<i64>,
-    pub suspend_started_at_ms: Option<i64>,
-    pub suspend_returned_at_ms: Option<i64>,
-    pub return_started_at_ms: Option<i64>,
     pub activity_source_unavailable: bool,
     pub last_transition_at_ms: i64,
 }
@@ -326,7 +592,7 @@ pub struct FocusSegmentSnapshot {
     pub actual_start_ms: i64,
     pub actual_end_ms: Option<i64>,
     pub chosen_duration_ms: i64,
-    pub status: String,
+    pub status: FocusSegmentStatus,
     pub end_reason: Option<String>,
     pub pauses: Vec<FocusPauseSnapshot>,
 }
@@ -337,7 +603,9 @@ pub struct FocusSegmentSnapshot {
 pub struct FocusExecutionSnapshot {
     pub revision: i64,
     pub observed_at_ms: i64,
-    pub mode: FocusMode,
+    /// The mode name on the wire as `mode`, with that mode's facts beside it.
+    #[serde(flatten)]
+    pub mode: FocusModeState,
     pub run: Option<FocusRunSnapshot>,
     pub segment: Option<FocusSegmentSnapshot>,
     pub changed_segments: Vec<FocusSegmentSnapshot>,
@@ -350,15 +618,6 @@ pub struct FocusExecutionSnapshot {
     pub break_extension_ms: i64,
     pub dismissed_occurrence_id: Option<String>,
     pub automatic_admission_suppressed: bool,
-    pub paused_prompts_dismissed: bool,
-    pub idle_started_at_ms: Option<i64>,
-    pub idle_detected_at_ms: Option<i64>,
-    /// Visibility acknowledged by the current controller; unseen warnings cannot trigger idle failure.
-    pub idle_overlay_visible_at_ms: Option<i64>,
-    pub focus_failed_at_ms: Option<i64>,
-    pub suspend_started_at_ms: Option<i64>,
-    pub suspend_returned_at_ms: Option<i64>,
-    pub return_started_at_ms: Option<i64>,
     pub activity_source_unavailable: bool,
     pub effective_idle_timeout_minutes: Option<i64>,
     /// Why this transition skipped adaptive evidence, for the native owner's log.

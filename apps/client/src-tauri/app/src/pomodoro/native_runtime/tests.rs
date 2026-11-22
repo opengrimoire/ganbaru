@@ -1,4 +1,5 @@
 use super::*;
+use ganbaru_pomodoro::FocusModeState;
 
 fn snapshot() -> FocusExecutionSnapshot {
     serde_json::from_value(serde_json::json!({
@@ -61,11 +62,26 @@ fn native_displayed_controls_reject_changed_run_segment_phase_mode_and_idle_epis
     changed.segment.as_mut().unwrap().phase = FocusPhase::ShortBreak;
     assert!(!context.matches_phase(3, &changed));
     changed = snapshot.clone();
-    changed.mode = FocusMode::ManualPause;
+    changed.mode = FocusModeState::ManualPause {
+        paused_prompts_dismissed: false,
+    };
     assert!(!context.matches_phase(3, &changed));
+    let idle_pause = |idle_detected_at_ms| FocusModeState::IdlePause {
+        idle_started_at_ms: 1000,
+        idle_detected_at_ms,
+        idle_overlay_visible_at_ms: None,
+        paused_prompts_dismissed: false,
+    };
+    let idle_context = FocusNativeContext {
+        mode: FocusMode::IdlePause,
+        idle_detected_at_ms: Some(1500),
+        ..context
+    };
     changed = snapshot;
-    changed.idle_detected_at_ms = Some(2000);
-    assert!(!context.matches_phase(3, &changed));
+    changed.mode = idle_pause(1500);
+    assert!(idle_context.matches_phase(3, &changed));
+    changed.mode = idle_pause(2000);
+    assert!(!idle_context.matches_phase(3, &changed));
 }
 
 #[test]
@@ -80,7 +96,9 @@ fn quiet_focus_activity_counts_only_a_focus_phase_in_progress() {
     );
 
     let mut paused = running.clone();
-    paused.mode = FocusMode::ManualPause;
+    paused.mode = FocusModeState::ManualPause {
+        paused_prompts_dismissed: false,
+    };
     assert_eq!(
         focus_phase_activity_of(Some(&paused)),
         Some(FocusPhaseActivity { deadline_ms: None })
@@ -93,7 +111,7 @@ fn quiet_focus_activity_counts_only_a_focus_phase_in_progress() {
     assert_eq!(focus_phase_activity_of(Some(&on_break)), None);
 
     let mut stopped = running.clone();
-    stopped.mode = FocusMode::Stopped;
+    stopped.mode = FocusModeState::Stopped;
     assert_eq!(focus_phase_activity_of(Some(&stopped)), None);
 
     let mut without_segment = running;

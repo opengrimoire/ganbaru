@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FOCUS_VISUAL_INTERVAL_MS, focusDisplayElapsedSeconds, focusDisplayRemainingSeconds, focusNeedsVisualClock, focusPausedPulseAmount, focusProjectionIsCurrent, focusSnapshotAgeMs, parseFocusCommandResult, parseFocusNotice, parseFocusProjection } from "./native-focus";
 import { DEFAULT_POMODORO_CONFIG } from "./rhythm";
-import { focusProjection } from "./native-focus.test-helpers";
+import { focusProjection, idlePausedFocusSnapshot } from "./native-focus.test-helpers";
 
 describe("native Focus response boundaries", () => {
   it("requires complete typed state and an authorized vault identity", () => {
@@ -21,12 +21,10 @@ describe("native Focus response boundaries", () => {
   });
 
   it("requires native visibility evidence to follow detection and precede observation", () => {
-    const value = focusProjection();
-    if (!value.snapshot) throw new Error("Missing fixture state");
-    const observedAtMs = value.snapshot.observedAtMs;
-    const detectedAtMs = observedAtMs - 1000;
-    value.snapshot.idleDetectedAtMs = detectedAtMs;
-    value.snapshot.idleOverlayVisibleAtMs = observedAtMs;
+    const idle = idlePausedFocusSnapshot(99_000);
+    const observedAtMs = idle.observedAtMs;
+    const detectedAtMs = idle.idleDetectedAtMs;
+    const value = { ...focusProjection(), snapshot: { ...idle, idleOverlayVisibleAtMs: observedAtMs } };
     expect(parseFocusProjection(value)).toEqual(value);
     const altered = (idleOverlayVisibleAtMs: unknown) => ({
       ...value, snapshot: { ...value.snapshot, idleOverlayVisibleAtMs },
@@ -35,6 +33,17 @@ describe("native Focus response boundaries", () => {
     expect(() => parseFocusProjection(altered(detectedAtMs - 1))).toThrow();
     expect(() => parseFocusProjection(altered("visible"))).toThrow();
     expect(() => parseFocusProjection({ ...value, snapshot: { ...value.snapshot, idleDetectedAtMs: null } })).toThrow();
+  });
+
+  it("accepts each mode's facts only beside that mode", () => {
+    const idle = idlePausedFocusSnapshot(99_000);
+    expect(parseFocusProjection({ ...focusProjection(), snapshot: idle }).snapshot).toEqual(idle);
+    const { idleStartedAtMs: _started, ...withoutStart } = idle;
+    expect(() => parseFocusProjection({ ...focusProjection(), snapshot: withoutStart })).toThrow();
+    expect(() => parseFocusProjection({ ...focusProjection(), snapshot: { ...idle, mode: "return_wait" } })).toThrow();
+    expect(() => parseFocusProjection({ ...focusProjection(), snapshot: { ...idle, mode: "paused" } })).toThrow();
+    const waiting = { ...idle, mode: "return_wait", returnStartedAtMs: 95_000, pausedPromptsDismissed: true };
+    expect(parseFocusProjection({ ...focusProjection(), snapshot: waiting }).snapshot?.mode).toBe("return_wait");
   });
 
   it("validates the immutable receipt separately from a later canonical revision", () => {
@@ -121,8 +130,10 @@ describe("native Focus response boundaries", () => {
     expect(focusNeedsVisualClock(state)).toBe(true);
     state.run = { ...state.run, endedAtMs: 120_000 };
     expect(focusNeedsVisualClock(state)).toBe(false);
-    expect(focusNeedsVisualClock({ ...state, idleStartedAtMs: 95_000 })).toBe(true);
-    expect(focusNeedsVisualClock({ ...state, returnStartedAtMs: 95_000 })).toBe(true);
+    expect(focusNeedsVisualClock({ ...state, mode: "manual_pause", pausedPromptsDismissed: false })).toBe(false);
+    expect(focusNeedsVisualClock({ ...state, mode: "idle_failed", idleStartedAtMs: 95_000, idleDetectedAtMs: 96_000,
+      focusFailedAtMs: 95_000, pausedPromptsDismissed: false })).toBe(true);
+    expect(focusNeedsVisualClock({ ...state, mode: "return_wait", returnStartedAtMs: 95_000, pausedPromptsDismissed: false })).toBe(true);
   });
 });
 

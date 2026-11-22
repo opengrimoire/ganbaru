@@ -140,11 +140,11 @@ impl FocusNativeContext {
     /// Heartbeats can refresh revisions without changing the displayed action's target.
     fn matches_phase(&self, generation: u64, snapshot: &FocusExecutionSnapshot) -> bool {
         self.vault_generation == generation
-            && self.mode == snapshot.mode
+            && self.mode == snapshot.mode.kind()
             && self.phase == snapshot.segment.as_ref().map(|segment| segment.phase)
             && self.run_id == snapshot.run.as_ref().map(|run| run.id.clone())
             && self.segment_id == snapshot.segment.as_ref().map(|segment| segment.id.clone())
-            && self.idle_detected_at_ms == snapshot.idle_detected_at_ms
+            && self.idle_detected_at_ms == snapshot.mode.idle_detected_at_ms()
     }
 }
 
@@ -547,7 +547,7 @@ pub(crate) fn focus_phase_activity_of(
     if snapshot.segment.as_ref()?.phase != FocusPhase::Focus {
         return None;
     }
-    match snapshot.mode {
+    match snapshot.mode.kind() {
         FocusMode::Running => Some(FocusPhaseActivity {
             deadline_ms: snapshot.phase_deadline_ms,
         }),

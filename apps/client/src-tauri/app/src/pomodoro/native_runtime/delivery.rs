@@ -204,7 +204,7 @@ fn retain_closed_phase(
 ) {
     let compatible = projection.snapshot.as_ref().is_some_and(|snapshot| {
         matches!(
-            snapshot.mode,
+            snapshot.mode.kind(),
             FocusMode::Running | FocusMode::ReturnWait | FocusMode::Expired
         ) && snapshot.run.is_some()
             && desired.accepted.as_ref().is_some_and(|previous| {

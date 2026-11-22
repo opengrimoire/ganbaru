@@ -1,4 +1,5 @@
 use super::*;
+use ganbaru_pomodoro::{FocusModeState, FocusSegmentStatus};
 use serde_json::{Value, json};
 
 fn copy() -> FocusNotificationCopy {
@@ -32,8 +33,8 @@ fn snapshot(mode: FocusMode) -> FocusExecutionSnapshot {
         "elapsedMs": 0, "completedFocusCount": 0, "skipNextBreak": false,
         "focusExtensionUsed": false, "breakExtensionMs": 0, "dismissedOccurrenceId": null,
         "automaticAdmissionSuppressed": false, "pausedPromptsDismissed": false,
-        "idleStartedAtMs": null, "idleDetectedAtMs": null, "focusFailedAtMs": null,
-        "suspendStartedAtMs": null, "suspendReturnedAtMs": null, "returnStartedAtMs": null,
+        "idleStartedAtMs": 100_000, "idleDetectedAtMs": 100_000, "focusFailedAtMs": 100_000,
+        "suspendStartedAtMs": 100_000, "suspendReturnedAtMs": 100_000, "returnStartedAtMs": 100_000,
         "activitySourceUnavailable": false, "effectiveIdleTimeoutMinutes": null
     }))
     .unwrap()
@@ -149,7 +150,7 @@ fn committed_boundaries_prepare_reminders_without_fabricating_an_active_phase() 
     ended.revision = 2;
     let phase = ended.segment.as_mut().unwrap();
     phase.actual_end_ms = Some(220_000);
-    phase.status = "completed".into();
+    phase.status = FocusSegmentStatus::Completed;
     phase.end_reason = Some("completed".into());
     let reminder = completion_notification(
         ended.run.as_ref().unwrap(),
@@ -166,7 +167,10 @@ fn committed_boundaries_prepare_reminders_without_fabricating_an_active_phase() 
     assert_eq!(reminder["phases"][0]["id"], "phase");
     assert_eq!(reminder["phases"][0]["endsAtEpochMs"], 220_000);
     assert_eq!(ended.mode, FocusMode::ReturnWait);
-    assert_eq!(ended.segment.as_ref().unwrap().status, "completed");
+    assert_eq!(
+        ended.segment.as_ref().unwrap().status,
+        FocusSegmentStatus::Completed
+    );
     assert!(
         completion_notification(
             ended.run.as_ref().unwrap(),
@@ -189,7 +193,7 @@ fn completion_delivery_requires_a_new_close_of_the_previously_published_phase() 
     };
     let mut ended = snapshot(FocusMode::ReturnWait);
     ended.revision = 2;
-    ended.segment.as_mut().unwrap().status = "completed".into();
+    ended.segment.as_mut().unwrap().status = FocusSegmentStatus::Completed;
     ended.segment.as_mut().unwrap().actual_end_ms = Some(220_000);
     assert_eq!(
         newly_closed_phase(Some(&previous), 1, &ended).unwrap().id,
@@ -203,9 +207,9 @@ fn completion_delivery_requires_a_new_close_of_the_previously_published_phase() 
     ended.revision = 1;
     assert!(newly_closed_phase(Some(&previous), 1, &ended).is_none());
     ended.revision = 2;
-    ended.mode = FocusMode::Stopped;
+    ended.mode = FocusModeState::Stopped;
     assert!(newly_closed_phase(Some(&previous), 1, &ended).is_none());
-    ended.mode = FocusMode::Running;
+    ended.mode = FocusModeState::Running;
     let closed = ended.segment.take().unwrap();
     ended.changed_segments.push(closed);
     ended.segment = snapshot(FocusMode::Running).segment;

@@ -259,11 +259,11 @@ impl Owner {
                             vault_id: vault_id.clone(),
                             vault_generation: self.projection.vault_generation,
                             revision: snapshot.revision,
-                            mode: snapshot.mode,
+                            mode: snapshot.mode.kind(),
                             phase: snapshot.segment.as_ref().map(|segment| segment.phase),
                             run_id: snapshot.run.as_ref().map(|run| run.id.clone()),
                             segment_id: snapshot.segment.as_ref().map(|segment| segment.id.clone()),
-                            idle_detected_at_ms: snapshot.idle_detected_at_ms,
+                            idle_detected_at_ms: snapshot.mode.idle_detected_at_ms(),
                         })
                 }),
         );

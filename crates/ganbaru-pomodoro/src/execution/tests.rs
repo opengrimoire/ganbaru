@@ -383,7 +383,7 @@ fn execution_failure_rolls_back_outgoing_phase_events_revision_and_receipt() {
             .await
             .unwrap();
         assert_eq!(current.revision, initial.revision);
-        assert_eq!(current.segment.unwrap().status, "active");
+        assert_eq!(current.segment.unwrap().status, FocusSegmentStatus::Active);
         let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pomodoro_run_events")
             .fetch_one(&pool)
             .await
@@ -545,11 +545,11 @@ fn execution_idle_failure_is_backdated_and_missing_activity_cannot_pause_or_admi
         assert_eq!(idle.elapsed_ms, 20_000);
         let unseen = observe(&pool, FocusObservation::Deadline, &context(START + 140_000)).await;
         assert_eq!(unseen.mode, FocusMode::IdlePause);
-        assert_eq!(unseen.idle_overlay_visible_at_ms, None);
+        assert_eq!(unseen.mode.idle_overlay_visible_at_ms(), None);
         let acknowledgement = FocusObservation::IdleOverlayVisible {
             run_id: idle.run.as_ref().unwrap().id.clone(),
             segment_id: idle.segment.as_ref().unwrap().id.clone(),
-            detected_at_ms: idle.idle_detected_at_ms.unwrap(),
+            detected_at_ms: idle.mode.idle_detected_at_ms().unwrap(),
         };
         let wrong_episode = observe(
             &pool,
@@ -561,7 +561,7 @@ fn execution_idle_failure_is_backdated_and_missing_activity_cannot_pause_or_admi
             &context(START + 144_000),
         )
         .await;
-        assert_eq!(wrong_episode.idle_overlay_visible_at_ms, None);
+        assert_eq!(wrong_episode.mode.idle_overlay_visible_at_ms(), None);
         for (run_id, segment_id) in [
             (
                 "previous-run".to_owned(),
@@ -577,19 +577,25 @@ fn execution_idle_failure_is_backdated_and_missing_activity_cannot_pause_or_admi
                 FocusObservation::IdleOverlayVisible {
                     run_id,
                     segment_id,
-                    detected_at_ms: idle.idle_detected_at_ms.unwrap(),
+                    detected_at_ms: idle.mode.idle_detected_at_ms().unwrap(),
                 },
                 &context(START + 144_000),
             )
             .await;
             assert_eq!(stale.revision, idle.revision);
-            assert_eq!(stale.idle_overlay_visible_at_ms, None);
+            assert_eq!(stale.mode.idle_overlay_visible_at_ms(), None);
         }
         let visible = observe(&pool, acknowledgement.clone(), &context(START + 145_000)).await;
-        assert_eq!(visible.idle_overlay_visible_at_ms, Some(START + 145_000));
+        assert_eq!(
+            visible.mode.idle_overlay_visible_at_ms(),
+            Some(START + 145_000)
+        );
         let retried = observe(&pool, acknowledgement, &context(START + 175_000)).await;
         assert_eq!(retried.revision, visible.revision);
-        assert_eq!(retried.idle_overlay_visible_at_ms, Some(START + 145_000));
+        assert_eq!(
+            retried.mode.idle_overlay_visible_at_ms(),
+            Some(START + 145_000)
+        );
         let wall_jump = observe(&pool, FocusObservation::Deadline, &context(START + 300_000)).await;
         assert_eq!(wall_jump.mode, FocusMode::IdlePause);
         let grace = |elapsed_ms| FocusObservation::IdleGraceElapsed {
@@ -704,7 +710,7 @@ fn execution_idle_visibility_failure_rolls_back_and_retry_keeps_first_accepted_t
         let acknowledgement = FocusObservation::IdleOverlayVisible {
             run_id: idle.run.as_ref().unwrap().id.clone(),
             segment_id: idle.segment.as_ref().unwrap().id.clone(),
-            detected_at_ms: idle.idle_detected_at_ms.unwrap(),
+            detected_at_ms: idle.mode.idle_detected_at_ms().unwrap(),
         };
         sqlx::raw_sql("CREATE TRIGGER reject_visibility BEFORE UPDATE OF state_json ON pomodoro_execution_state BEGIN SELECT RAISE(ABORT, 'injected visibility failure'); END;")
             .execute(&pool).await.unwrap();
@@ -719,7 +725,7 @@ fn execution_idle_visibility_failure_rolls_back_and_retry_keeps_first_accepted_t
             .await
             .unwrap();
         assert_eq!(unchanged.revision, idle.revision);
-        assert_eq!(unchanged.idle_overlay_visible_at_ms, None);
+        assert_eq!(unchanged.mode.idle_overlay_visible_at_ms(), None);
         sqlx::raw_sql("DROP TRIGGER reject_visibility")
             .execute(&pool)
             .await
@@ -728,10 +734,16 @@ fn execution_idle_visibility_failure_rolls_back_and_retry_keeps_first_accepted_t
         let restored = focus_read_execution_snapshot(&pool, START + 110_000)
             .await
             .unwrap();
-        assert_eq!(restored.idle_overlay_visible_at_ms, Some(START + 100_000));
+        assert_eq!(
+            restored.mode.idle_overlay_visible_at_ms(),
+            Some(START + 100_000)
+        );
         let retried = observe(&pool, acknowledgement, &context(START + 120_000)).await;
         assert_eq!(retried.revision, accepted.revision);
-        assert_eq!(retried.idle_overlay_visible_at_ms, Some(START + 100_000));
+        assert_eq!(
+            retried.mode.idle_overlay_visible_at_ms(),
+            Some(START + 100_000)
+        );
     });
 }
 
@@ -761,7 +773,7 @@ fn recovery_closes_an_open_run_even_when_the_state_row_names_a_closed_mode() {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        state.mode = FocusMode::Stopped;
+        state.mode = FocusModeState::Stopped;
         sqlx::query("UPDATE pomodoro_execution_state SET state_json = ?")
             .bind(state)
             .execute(&pool)
@@ -798,17 +810,20 @@ fn execution_recovery_preserves_idle_pause_without_reusing_a_previous_controller
             FocusObservation::IdleOverlayVisible {
                 run_id: idle.run.as_ref().unwrap().id.clone(),
                 segment_id: idle.segment.as_ref().unwrap().id.clone(),
-                detected_at_ms: idle.idle_detected_at_ms.unwrap(),
+                detected_at_ms: idle.mode.idle_detected_at_ms().unwrap(),
             },
             &context(START + 90_000),
         )
         .await;
-        assert_eq!(visible.idle_overlay_visible_at_ms, Some(START + 90_000));
+        assert_eq!(
+            visible.mode.idle_overlay_visible_at_ms(),
+            Some(START + 90_000)
+        );
         let mut recovery = context(START + 200_000);
         recovery.platform = FocusPlatform::Android;
         let restored = observe(&pool, FocusObservation::Recover, &recovery).await;
         assert_eq!(restored.mode, FocusMode::IdlePause);
-        assert_eq!(restored.idle_overlay_visible_at_ms, None);
+        assert_eq!(restored.mode.idle_overlay_visible_at_ms(), None);
         assert_eq!(restored.elapsed_ms, idle.elapsed_ms);
         assert_eq!(
             restored.segment.as_ref().unwrap().pauses,
@@ -989,7 +1004,10 @@ fn every_focus_mode_pair_is_legal_only_when_the_lifecycle_allows_it() {
 fn an_illegal_focus_mode_move_is_rejected_without_changing_the_mode() {
     let mut session = super::mutations::Session {
         state: ExecutionState {
-            mode: FocusMode::ReturnWait,
+            mode: FocusModeState::ReturnWait {
+                return_started_at_ms: 0,
+                paused_prompts_dismissed: false,
+            },
             ..ExecutionState::default()
         },
         run: None,
@@ -1000,19 +1018,44 @@ fn an_illegal_focus_mode_move_is_rejected_without_changing_the_mode() {
         adaptive_degraded: None,
     };
     for illegal in [
-        FocusMode::ManualPause,
-        FocusMode::IdlePause,
-        FocusMode::IdleFailed,
-        FocusMode::Suspended,
-        FocusMode::ReturnWait,
+        FocusModeState::ManualPause {
+            paused_prompts_dismissed: false,
+        },
+        FocusModeState::IdlePause {
+            idle_started_at_ms: 0,
+            idle_detected_at_ms: 0,
+            idle_overlay_visible_at_ms: None,
+            paused_prompts_dismissed: false,
+        },
+        FocusModeState::IdleFailed {
+            idle_started_at_ms: 0,
+            idle_detected_at_ms: 0,
+            focus_failed_at_ms: 0,
+            paused_prompts_dismissed: false,
+        },
+        FocusModeState::Suspended {
+            suspend_started_at_ms: 0,
+            suspend_returned_at_ms: 0,
+            paused_prompts_dismissed: false,
+        },
+        FocusModeState::ReturnWait {
+            return_started_at_ms: 1,
+            paused_prompts_dismissed: false,
+        },
     ] {
         let error = session.enter_mode(illegal).unwrap_err();
         assert_eq!(error.code, FocusErrorCode::InvalidState);
         assert_eq!(session.state.mode, FocusMode::ReturnWait);
     }
-    session.enter_mode(FocusMode::Running).unwrap();
-    session.enter_mode(FocusMode::Expired).unwrap();
-    assert!(session.enter_mode(FocusMode::ManualPause).is_err());
+    session.enter_mode(FocusModeState::Running).unwrap();
+    session.enter_mode(FocusModeState::Expired).unwrap();
+    assert!(
+        session
+            .enter_mode(FocusModeState::ManualPause {
+                paused_prompts_dismissed: false,
+            })
+            .is_err()
+    );
     assert_eq!(session.state.mode, FocusMode::Expired);
 }
 
@@ -1187,11 +1230,78 @@ fn a_reconfigured_break_that_ends_while_suspended_waits_without_suspend_evidence
         .await;
         assert_eq!(waiting.mode, FocusMode::ReturnWait);
         assert_eq!(
-            waiting.return_started_at_ms,
-            Some(START + 4 * MINUTE + 1_000)
+            waiting.mode,
+            FocusModeState::ReturnWait {
+                return_started_at_ms: START + 4 * MINUTE + 1_000,
+                paused_prompts_dismissed: false,
+            }
         );
-        assert_eq!(waiting.suspend_started_at_ms, None);
-        assert_eq!(waiting.suspend_returned_at_ms, None);
-        assert!(!waiting.paused_prompts_dismissed);
+    });
+}
+
+#[test]
+fn stored_execution_state_nests_each_mode_with_only_its_own_facts() {
+    let state = ExecutionState {
+        run_id: Some("run".into()),
+        mode: FocusModeState::Suspended {
+            suspend_started_at_ms: 10,
+            suspend_returned_at_ms: 20,
+            paused_prompts_dismissed: true,
+        },
+        ..ExecutionState::default()
+    };
+    let value = serde_json::to_value(&state).unwrap();
+    assert_eq!(value["runId"], "run");
+    assert_eq!(
+        value["mode"],
+        serde_json::json!({
+            "mode": "suspended",
+            "suspendStartedAtMs": 10,
+            "suspendReturnedAtMs": 20,
+            "pausedPromptsDismissed": true,
+        })
+    );
+    let restored: ExecutionState = serde_json::from_value(value).unwrap();
+    assert_eq!(restored.mode, state.mode);
+}
+
+#[test]
+fn an_empty_stored_execution_state_is_stopped() {
+    let state: ExecutionState = serde_json::from_str("{}").unwrap();
+    assert_eq!(state.mode, FocusModeState::Stopped);
+    assert_eq!(state.run_id, None);
+}
+
+#[test]
+fn stored_execution_state_rejects_mode_facts_outside_their_mode() {
+    let missing = serde_json::json!({ "mode": { "mode": "return_wait" } });
+    assert!(serde_json::from_value::<ExecutionState>(missing).is_err());
+    let flat = serde_json::json!({ "mode": "running", "returnStartedAtMs": 5 });
+    assert!(serde_json::from_value::<ExecutionState>(flat).is_err());
+}
+
+#[test]
+fn snapshot_carries_the_mode_name_and_its_facts_at_the_top_level() {
+    block_on(async {
+        let pool = pool().await;
+        start(&pool).await;
+        let mut snapshot = observe(
+            &pool,
+            FocusObservation::Suspend {
+                started_at_ms: START + MINUTE,
+                returned_at_ms: START + 2 * MINUTE,
+            },
+            &context(START + 2 * MINUTE),
+        )
+        .await;
+        let value = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(value["mode"], "suspended");
+        assert_eq!(value["suspendStartedAtMs"], START + MINUTE);
+        assert_eq!(value["suspendReturnedAtMs"], START + 2 * MINUTE);
+        assert_eq!(value["pausedPromptsDismissed"], false);
+        assert!(value.get("returnStartedAtMs").is_none());
+        let restored: FocusExecutionSnapshot = serde_json::from_value(value).unwrap();
+        snapshot.adaptive_degraded = None;
+        assert_eq!(restored, snapshot);
     });
 }

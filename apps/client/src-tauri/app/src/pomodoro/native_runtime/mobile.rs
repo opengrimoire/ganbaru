@@ -2,7 +2,7 @@
 
 use ganbaru_pomodoro::{
     FocusExecutionError, FocusExecutionSnapshot, FocusMode, FocusPhase, FocusRunSnapshot,
-    FocusSegmentSnapshot,
+    FocusSegmentSnapshot, FocusSegmentStatus,
 };
 use serde::{Deserialize, Serialize};
 
@@ -100,7 +100,7 @@ fn accepted_notification(
 ) -> Result<Option<AcceptedNotification>, FocusExecutionError> {
     copy.validate()?;
     if !matches!(
-        snapshot.mode,
+        snapshot.mode.kind(),
         FocusMode::Running | FocusMode::ManualPause | FocusMode::IdlePause | FocusMode::Suspended
     ) {
         return Ok(None);
@@ -117,7 +117,7 @@ fn accepted_notification(
         return Ok(None);
     }
     if segment.run_id != run.id
-        || segment.status != "active"
+        || segment.status != FocusSegmentStatus::Active
         || segment.actual_end_ms.is_some()
         || segment.actual_start_ms > now
         || segment.chosen_duration_ms <= 0
@@ -157,7 +157,7 @@ fn accepted_notification(
             remaining_ms,
             running,
             resumable: snapshot.mode == FocusMode::ManualPause,
-            pause_lifts_blocking: FocusPhaseHold::of(snapshot.mode).pause_lifts_blocking(),
+            pause_lifts_blocking: FocusPhaseHold::of(snapshot.mode.kind()).pause_lifts_blocking(),
         },
         copy,
     )
@@ -237,7 +237,7 @@ fn completion_notification(
         .actual_end_ms
         .ok_or_else(|| "Focus completion has no committed phase ending".to_owned())?;
     if segment.run_id != run.id
-        || segment.status == "active"
+        || segment.status == FocusSegmentStatus::Active
         || ended_at <= segment.actual_start_ms
         || ended_at > now
         || ended_at > run.planned_end_ms
@@ -284,7 +284,7 @@ fn newly_closed_phase<'a>(
         || snapshot.revision <= previous.revision
         || previous.run_id.as_deref() != Some(run.id.as_str())
         || !matches!(
-            snapshot.mode,
+            snapshot.mode.kind(),
             FocusMode::Running | FocusMode::ReturnWait | FocusMode::Expired
         )
     {
@@ -297,7 +297,7 @@ fn newly_closed_phase<'a>(
         .find(|segment| {
             Some(segment.id.as_str()) == previous.phase_id.as_deref()
                 && segment.run_id == run.id
-                && segment.status != "active"
+                && segment.status != FocusSegmentStatus::Active
                 && segment
                     .actual_end_ms
                     .is_some_and(|end| end > segment.actual_start_ms)
@@ -357,7 +357,7 @@ impl AndroidPresentation {
             self.completion_captured_at = None;
         }
         let has_phase = matches!(
-            snapshot.mode,
+            snapshot.mode.kind(),
             FocusMode::Running
                 | FocusMode::ManualPause
                 | FocusMode::IdlePause
@@ -425,7 +425,7 @@ impl AndroidPresentation {
             self.completion_captured_at = Some(std::time::Instant::now());
         }
         if matches!(
-            snapshot.mode,
+            snapshot.mode.kind(),
             FocusMode::Stopped | FocusMode::IdleFailed | FocusMode::Suspended
         ) || self
             .pending_completion

@@ -21,4 +21,5 @@ sqlx = { workspace = true }
 
 [dev-dependencies]
 ganbaru-db = { workspace = true, features = ["test-support"] }
+serde_json = { workspace = true }
 tokio = { workspace = true }

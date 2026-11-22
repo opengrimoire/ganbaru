@@ -23,15 +23,28 @@ export interface FocusSegment {
   actualEndMs: number | null; chosenDurationMs: number; status: PersistedSegment["status"];
   endReason: string | null; pauses: FocusPause[];
 }
-export interface FocusSnapshot {
-  revision: number; observedAtMs: number; mode: FocusMode; run: FocusRun | null; segment: FocusSegment | null;
+/** Idle, suspend, and return facts exist only beside the mode they belong to. */
+export type FocusModeState =
+  | { mode: "stopped" }
+  | { mode: "running" }
+  | { mode: "expired" }
+  | { mode: "manual_pause"; pausedPromptsDismissed: boolean }
+  | {
+    mode: "idle_pause"; idleStartedAtMs: number; idleDetectedAtMs: number;
+    /** Visibility acknowledged by the current controller; unseen warnings cannot trigger idle failure. */
+    idleOverlayVisibleAtMs: number | null; pausedPromptsDismissed: boolean;
+  }
+  | { mode: "idle_failed"; idleStartedAtMs: number; idleDetectedAtMs: number; focusFailedAtMs: number; pausedPromptsDismissed: boolean }
+  | { mode: "suspended"; suspendStartedAtMs: number; suspendReturnedAtMs: number; pausedPromptsDismissed: boolean }
+  | { mode: "return_wait"; returnStartedAtMs: number; pausedPromptsDismissed: boolean };
+interface FocusSnapshotBase {
+  revision: number; observedAtMs: number; run: FocusRun | null; segment: FocusSegment | null;
   changedSegments: FocusSegment[]; phaseDeadlineMs: number | null; remainingMs: number; elapsedMs: number;
   completedFocusCount: number; skipNextBreak: boolean; focusExtensionUsed: boolean; breakExtensionMs: number;
-  dismissedOccurrenceId: string | null; automaticAdmissionSuppressed: boolean; pausedPromptsDismissed: boolean;
-  idleStartedAtMs: number | null; idleDetectedAtMs: number | null; idleOverlayVisibleAtMs: number | null; focusFailedAtMs: number | null;
-  suspendStartedAtMs: number | null; suspendReturnedAtMs: number | null; returnStartedAtMs: number | null;
+  dismissedOccurrenceId: string | null; automaticAdmissionSuppressed: boolean;
   activitySourceUnavailable: boolean; effectiveIdleTimeoutMinutes: number | null;
 }
+export type FocusSnapshot = FocusSnapshotBase & FocusModeState;
 export interface FocusProjection { vaultId: string | null; vaultGeneration: number; snapshot: FocusSnapshot | null; error: string | null }
 export interface FocusCommand { commandId: string; expectedRevision: number; intent: FocusIntent }
 export interface FocusRequest { vaultId: string; vaultGeneration: number; command: FocusCommand }
@@ -71,21 +84,44 @@ const run = record<FocusRun>({
   startedAtMs: instant, plannedStartMs: instant, plannedEndMs: instant, endedAtMs: nullable(instant),
   inheritedFocusMs: integer, inheritedPhaseMs: integer, configuration: isValidPomodoroConfig,
 });
-const snapshotFields = record<FocusSnapshot>({
-  revision: integer, observedAtMs: instant, mode: choice(["stopped", "running", "manual_pause", "idle_pause", "idle_failed", "suspended", "return_wait", "expired"]),
+const snapshotFields = record<FocusSnapshotBase>({
+  revision: integer, observedAtMs: instant,
   run: nullable(run), segment: nullable(segment), changedSegments: list(segment, MAX_CHANGED_SEGMENTS),
   phaseDeadlineMs: nullable(instant), remainingMs: integer, elapsedMs: integer, completedFocusCount: integer,
   skipNextBreak: boolean, focusExtensionUsed: boolean, breakExtensionMs: integer, dismissedOccurrenceId: nullable(text),
-  automaticAdmissionSuppressed: boolean, pausedPromptsDismissed: boolean, idleStartedAtMs: nullable(instant),
-  idleDetectedAtMs: nullable(instant), idleOverlayVisibleAtMs: nullable(instant), focusFailedAtMs: nullable(instant), suspendStartedAtMs: nullable(instant),
-  suspendReturnedAtMs: nullable(instant), returnStartedAtMs: nullable(instant), activitySourceUnavailable: boolean,
+  automaticAdmissionSuppressed: boolean, activitySourceUnavailable: boolean,
   effectiveIdleTimeoutMinutes: nullable(integer),
 });
+type ModeStateOf<M extends FocusMode> = Extract<FocusModeState, { mode: M }>;
+const modeName = <M extends FocusMode>(mode: M): Validator<M> => (value): value is M => value === mode;
+const modeStates: { [M in FocusMode]: Validator<ModeStateOf<M>> } = {
+  stopped: record<ModeStateOf<"stopped">>({ mode: modeName("stopped") }),
+  running: record<ModeStateOf<"running">>({ mode: modeName("running") }),
+  expired: record<ModeStateOf<"expired">>({ mode: modeName("expired") }),
+  manual_pause: record<ModeStateOf<"manual_pause">>({ mode: modeName("manual_pause"), pausedPromptsDismissed: boolean }),
+  idle_pause: record<ModeStateOf<"idle_pause">>({
+    mode: modeName("idle_pause"), idleStartedAtMs: instant, idleDetectedAtMs: instant,
+    idleOverlayVisibleAtMs: nullable(instant), pausedPromptsDismissed: boolean,
+  }),
+  idle_failed: record<ModeStateOf<"idle_failed">>({
+    mode: modeName("idle_failed"), idleStartedAtMs: instant, idleDetectedAtMs: instant,
+    focusFailedAtMs: instant, pausedPromptsDismissed: boolean,
+  }),
+  suspended: record<ModeStateOf<"suspended">>({
+    mode: modeName("suspended"), suspendStartedAtMs: instant, suspendReturnedAtMs: instant, pausedPromptsDismissed: boolean,
+  }),
+  return_wait: record<ModeStateOf<"return_wait">>({ mode: modeName("return_wait"), returnStartedAtMs: instant, pausedPromptsDismissed: boolean }),
+};
+const focusModes = Object.keys(modeStates) as FocusMode[];
+const modeState: Validator<FocusModeState> = (value): value is FocusModeState => {
+  if (typeof value !== "object" || value === null || !("mode" in value)) return false;
+  const mode = focusModes.find((candidate) => candidate === value.mode);
+  return mode !== undefined && modeStates[mode](value);
+};
 const snapshot: Validator<FocusSnapshot> = (value): value is FocusSnapshot => {
-  if (!snapshotFields(value)) return false;
-  if (value.idleOverlayVisibleAtMs !== null && (value.idleDetectedAtMs === null
-    || value.idleOverlayVisibleAtMs < value.idleDetectedAtMs
-    || value.idleOverlayVisibleAtMs > value.observedAtMs)) return false;
+  if (!snapshotFields(value) || !modeState(value)) return false;
+  if (value.mode === "idle_pause" && value.idleOverlayVisibleAtMs !== null
+    && (value.idleOverlayVisibleAtMs < value.idleDetectedAtMs || value.idleOverlayVisibleAtMs > value.observedAtMs)) return false;
   if (value.segment && value.segment.runId !== value.run?.id) return false;
   if (value.mode !== "stopped" && (!value.run || !value.segment)) return false;
   if (value.mode === "running" && (value.run?.endedAtMs !== null
@@ -173,8 +209,7 @@ export function focusDisplayRemainingSeconds(snapshot: FocusSnapshot, visualElap
 export function focusNeedsVisualClock(snapshot: FocusSnapshot | null | undefined): boolean {
   if (!snapshot) return false;
   return (snapshot.run !== null && snapshot.run.endedAtMs === null)
-    || snapshot.idleStartedAtMs !== null
-    || snapshot.returnStartedAtMs !== null;
+    || snapshot.mode === "idle_pause" || snapshot.mode === "idle_failed" || snapshot.mode === "return_wait";
 }
 
 /** A delayed native reply cannot make the visual counter credit extra phase work. */

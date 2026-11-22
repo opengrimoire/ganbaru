@@ -2099,6 +2099,7 @@ dependencies = [
  "chrono",
  "ganbaru-db",
  "serde",
+ "serde_json",
  "sqlx",
  "tokio",
 ]

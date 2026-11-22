@@ -1,4 +1,5 @@
 use super::*;
+use ganbaru_pomodoro::{FocusModeState, FocusSegmentStatus};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -201,7 +202,7 @@ async fn native_delivery_backoff_cannot_retry_on_presentation_traffic_or_pollute
 fn active_projection() -> FocusProjection {
     let mut projection = projection(1, 1);
     let snapshot = projection.snapshot.as_mut().unwrap();
-    snapshot.mode = FocusMode::Running;
+    snapshot.mode = FocusModeState::Running;
     snapshot.run = Some(
         serde_json::from_value(serde_json::json!({
             "id": "run", "eventId": "event", "occurrenceId": "event", "eventDate": "2026-10-03",
@@ -228,7 +229,7 @@ fn break_projection() -> FocusProjection {
     snapshot.revision += 1;
     let mut closed = snapshot.segment.clone().unwrap();
     closed.actual_end_ms = Some(100_000);
-    closed.status = "completed".into();
+    closed.status = FocusSegmentStatus::Completed;
     snapshot.changed_segments = vec![closed];
     let segment = snapshot.segment.as_mut().unwrap();
     segment.id = "break".into();
@@ -292,7 +293,7 @@ fn native_delivery_phase_closure_cannot_survive_expiry_stop_or_a_new_vault() {
         let now = match reason {
             "expiry" => start + Duration::from_millis(super::super::EFFECT_LEASE_MS as u64),
             "stop" => {
-                next.snapshot.as_mut().unwrap().mode = FocusMode::Stopped;
+                next.snapshot.as_mut().unwrap().mode = FocusModeState::Stopped;
                 start
             }
             "vault" => {

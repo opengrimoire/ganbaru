@@ -45,6 +45,8 @@ Run events are append-only explanations for lifecycle decisions not fully expres
 
 `pomodoro_execution_state` holds the accepted execution snapshot with a revision. Every command validates the expected revision and stores its receipt in the same transaction as the canonical rows it changes, so a retried command returns the original result. Recovery rules are in [Focus authority](../../algorithms/pomodoro/focus-authority.md#recovery); the heartbeat bounds desktop recovery and is not an activity log. Recovery is idempotent.
 
+The stored state nests the execution mode as a tagged object that carries only that mode's facts (idle, suspend, return, and paused prompt evidence), so evidence cannot outlive its mode; an empty object is the stopped state. The command snapshot flattens the same mode, so `mode` stays a string beside its facts. Segment status is typed as active, completed, or interrupted, matching the segment CHECK.
+
 ## Adaptive data
 
 Adaptive Pomodoro is local and explicit opt-in. Storage separates:

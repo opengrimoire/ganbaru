@@ -711,7 +711,7 @@ pub(crate) async fn reconcile_committed_focus(
     }
     let running = snapshot.mode == FocusMode::Running;
     let activity = TrayFocusActivity::from_mode(
-        snapshot.mode,
+        snapshot.mode.kind(),
         snapshot
             .run
             .as_ref()

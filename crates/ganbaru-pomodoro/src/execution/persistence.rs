@@ -340,7 +340,10 @@ pub(super) async fn load_segment(
             .ok_or_else(|| {
                 super::decisions::invalid_state("Focus segment is missing its accepted duration")
             })?,
-        status: row.try_get("status").map_err(|error| error.to_string())?,
+        status: FocusSegmentStatus::parse(
+            &row.try_get::<String, _>("status")
+                .map_err(|error| error.to_string())?,
+        )?,
         end_reason: row
             .try_get("end_reason")
             .map_err(|error| error.to_string())?,
@@ -421,7 +424,7 @@ pub(super) async fn load_snapshot(
         .unwrap_or(0);
     let work_remaining_ms = segment
         .as_ref()
-        .filter(|segment| segment.status == "active")
+        .filter(|segment| segment.status == FocusSegmentStatus::Active)
         .map(|segment| segment.chosen_duration_ms.saturating_sub(elapsed_ms).max(0))
         .unwrap_or(0);
     let event_end = run.as_ref().map(|run| run.planned_end_ms);
@@ -445,7 +448,7 @@ pub(super) async fn load_snapshot(
     Ok(FocusExecutionSnapshot {
         revision,
         observed_at_ms: now_ms,
-        mode: state.mode,
+        mode: state.mode.clone(),
         run,
         segment,
         changed_segments,
@@ -458,14 +461,6 @@ pub(super) async fn load_snapshot(
         break_extension_ms: state.break_extension_ms,
         dismissed_occurrence_id: state.dismissed_occurrence_id.clone(),
         automatic_admission_suppressed: state.automatic_admission_suppressed,
-        paused_prompts_dismissed: state.paused_prompts_dismissed,
-        idle_started_at_ms: state.idle_started_at_ms,
-        idle_detected_at_ms: state.idle_detected_at_ms,
-        idle_overlay_visible_at_ms: state.idle_overlay_visible_at_ms,
-        focus_failed_at_ms: state.focus_failed_at_ms,
-        suspend_started_at_ms: state.suspend_started_at_ms,
-        suspend_returned_at_ms: state.suspend_returned_at_ms,
-        return_started_at_ms: state.return_started_at_ms,
         activity_source_unavailable: state.activity_source_unavailable,
         effective_idle_timeout_minutes,
         adaptive_degraded: None,

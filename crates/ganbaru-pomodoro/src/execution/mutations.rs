@@ -61,18 +61,23 @@ impl Session {
         self.live_run()?;
         self.segment
             .as_ref()
-            .filter(|segment| segment.status == "active" && segment.actual_end_ms.is_none())
+            .filter(|segment| {
+                segment.status == FocusSegmentStatus::Active && segment.actual_end_ms.is_none()
+            })
             .ok_or_else(|| invalid_state("There is no active Focus phase"))
     }
 
     /// The only writer of the execution mode. A move outside `FOCUS_MODE_TRANSITIONS`
     /// is rejected, so the caller's transaction rolls back instead of committing it.
-    pub fn enter_mode(&mut self, next: FocusMode) -> Result<(), FocusExecutionError> {
-        let current = self.state.mode;
-        if !current.can_transition_to(next) {
+    /// The facts of the previous mode are dropped with it, so no idle, suspend, or return
+    /// evidence survives into a mode it does not belong to.
+    pub fn enter_mode(&mut self, next: FocusModeState) -> Result<(), FocusExecutionError> {
+        let current = self.state.mode.kind();
+        let target = next.kind();
+        if !current.can_transition_to(target) {
             return Err(execution_error(
                 FocusErrorCode::InvalidState,
-                format!("Focus cannot move from {current:?} to {next:?}"),
+                format!("Focus cannot move from {current:?} to {target:?}"),
             ));
         }
         self.state.mode = next;
@@ -213,7 +218,7 @@ impl Session {
         &mut self,
         tx: &mut Transaction<'_, Sqlite>,
         at_ms: i64,
-        status: &str,
+        status: FocusSegmentStatus,
         reason: &str,
     ) -> Result<(), FocusExecutionError> {
         let segment = self.active_segment()?;
@@ -227,7 +232,7 @@ impl Session {
         let id = segment.id.clone();
         self.close_pause(tx, end_ms).await?;
         let closed = sqlx::query("UPDATE pomodoro_segments SET actual_end = ?, status = ?, end_reason = ? WHERE id = ? AND status = 'active' AND actual_end IS NULL")
-            .bind(format_timestamp(end_ms)?).bind(status).bind(reason).bind(&id).execute(&mut **tx).await
+            .bind(format_timestamp(end_ms)?).bind(status.as_str()).bind(reason).bind(&id).execute(&mut **tx).await
             .map_err(|error| format!("Close Focus phase: {error}"))?;
         expect_one_row(closed, "Close Focus phase")?;
         self.record_event(
@@ -247,7 +252,7 @@ impl Session {
             .as_mut()
             .ok_or_else(|| invalid_state("Focus phase disappeared"))?;
         segment.actual_end_ms = Some(end_ms);
-        segment.status = status.to_owned();
+        segment.status = status;
         segment.end_reason = Some(reason.to_owned());
         self.mark_changed(&id);
         Ok(())
@@ -260,7 +265,7 @@ impl Session {
         reason: &str,
         segment_reason: &str,
         event_type: &str,
-        mode: FocusMode,
+        mode: FocusModeState,
     ) -> Result<(), FocusExecutionError> {
         let run = self.live_run()?;
         let id = run.id.clone();
@@ -268,7 +273,7 @@ impl Session {
         if self
             .segment
             .as_ref()
-            .is_some_and(|segment| segment.status == "active")
+            .is_some_and(|segment| segment.status == FocusSegmentStatus::Active)
         {
             let segment = self.active_segment()?;
             let phase_end_ms = if self.state.mode == FocusMode::Running
@@ -281,8 +286,13 @@ impl Session {
             } else {
                 ended_at_ms
             };
-            self.close_segment(tx, phase_end_ms, "interrupted", segment_reason)
-                .await?;
+            self.close_segment(
+                tx,
+                phase_end_ms,
+                FocusSegmentStatus::Interrupted,
+                segment_reason,
+            )
+            .await?;
         }
         writes::close_run_tx(
             tx,
@@ -290,7 +300,7 @@ impl Session {
                 run_id: id,
                 ended_at: format_timestamp(ended_at_ms)?,
                 end_reason: reason.to_owned(),
-                segment_status: "interrupted".to_owned(),
+                segment_status: FocusSegmentStatus::Interrupted.as_str().to_owned(),
                 segment_end_reason: segment_reason.to_owned(),
                 event_type: event_type.to_owned(),
             },
@@ -302,19 +312,7 @@ impl Session {
             .ended_at_ms = Some(ended_at_ms);
         self.enter_mode(mode)?;
         self.state.last_transition_at_ms = ended_at_ms;
-        self.clear_waits();
         Ok(())
-    }
-
-    pub fn clear_waits(&mut self) {
-        self.state.idle_started_at_ms = None;
-        self.state.idle_detected_at_ms = None;
-        self.state.idle_overlay_visible_at_ms = None;
-        self.state.focus_failed_at_ms = None;
-        self.state.suspend_started_at_ms = None;
-        self.state.suspend_returned_at_ms = None;
-        self.state.return_started_at_ms = None;
-        self.state.paused_prompts_dismissed = false;
     }
 
     pub async fn update_deadline(
@@ -410,10 +408,9 @@ impl Session {
         self.segment = Some(load_segment(tx, &segment.id).await?);
         self.run = Some(run);
         self.mark_changed(&segment.id);
-        self.enter_mode(FocusMode::Running)?;
+        self.enter_mode(FocusModeState::Running)?;
         self.state.focus_extension_used = false;
         self.state.break_extension_ms = 0;
-        self.clear_waits();
         self.record_event(tx, "phase_start", now_ms, None, None)
             .await?;
         Ok(())
@@ -529,7 +526,7 @@ impl Session {
         self.state.run_id = Some(run_id);
         self.state.calendar_configuration = Some(commitment.configuration.clone());
         self.state.segment_id = Some(segment.id.clone());
-        self.enter_mode(FocusMode::Running)?;
+        self.enter_mode(FocusModeState::Running)?;
         self.state.dismissed_occurrence_id = None;
         if !continues_work {
             self.state.skip_next_break = false;
@@ -537,7 +534,6 @@ impl Session {
         self.state.focus_extension_used = false;
         self.state.break_extension_ms = 0;
         self.state.last_transition_at_ms = now_ms;
-        self.clear_waits();
         self.run = Some(run);
         self.segment = Some(load_segment(tx, &segment.id).await?);
         self.mark_changed(&segment.id);
@@ -585,7 +581,7 @@ async fn build_segment_write(
         actual_start: Some(format_timestamp(now_ms)?),
         actual_end: None,
         pauses: Vec::new(),
-        status: "active".to_owned(),
+        status: FocusSegmentStatus::Active.as_str().to_owned(),
         end_reason: None,
     })
 }

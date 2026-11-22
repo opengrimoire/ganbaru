@@ -68,8 +68,8 @@ impl IdleGraceClock {
         }
         Some(IdleEpisode {
             generation,
-            detected_at_ms: snapshot.idle_detected_at_ms?,
-            visible_at_ms: snapshot.idle_overlay_visible_at_ms?,
+            detected_at_ms: snapshot.mode.idle_detected_at_ms()?,
+            visible_at_ms: snapshot.mode.idle_overlay_visible_at_ms()?,
         })
     }
 }

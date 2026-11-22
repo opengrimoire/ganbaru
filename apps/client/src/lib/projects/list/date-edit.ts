@@ -10,7 +10,8 @@ export type ProjectListTaskDatePatch = Partial<Pick<ProjectTask, "startDate" | "
 export interface ProjectListTaskDateEditInput {
   task: Pick<ProjectTask, "id" | "archivedAt" | "startDate" | "dueDate">;
   selectedDate: string | undefined;
-  rangeDateColumnsVisible: boolean;
+  /** Whether picking one endpoint of an empty range opens the other endpoint's menu next. */
+  chainPairedMenu: boolean;
 }
 
 export interface ProjectListTaskDateEditPlan {
@@ -47,7 +48,7 @@ export function projectListStartDateEditPlan(input: ProjectListTaskDateEditInput
 
   return {
     closeMenu: "start",
-    nextOpenMenu: input.rangeDateColumnsVisible && !input.task.dueDate && !nextRange.endDate ? "due" : null,
+    nextOpenMenu: input.chainPairedMenu && !input.task.dueDate && !nextRange.endDate ? "due" : null,
     patch: {
       startDate: nextRange.startDate,
       dueDate: nextRange.endDate,
@@ -83,7 +84,7 @@ export function projectListDueDateEditPlan(input: ProjectListTaskDateEditInput):
 
   return {
     closeMenu: "due",
-    nextOpenMenu: input.rangeDateColumnsVisible && !input.task.startDate && !nextRange.startDate ? "start" : null,
+    nextOpenMenu: input.chainPairedMenu && !input.task.startDate && !nextRange.startDate ? "start" : null,
     patch: {
       startDate: nextRange.startDate,
       dueDate: nextRange.endDate,

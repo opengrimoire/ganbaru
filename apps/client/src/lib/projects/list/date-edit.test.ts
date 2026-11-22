@@ -17,7 +17,7 @@ describe("project list date edit helpers", () => {
     expect(projectListStartDateEditPlan({
       task: task({ archivedAt: "2026-06-21T00:00:00.000Z" }),
       selectedDate: "2026-06-22",
-      rangeDateColumnsVisible: true,
+      chainPairedMenu: true,
     })).toEqual({
       closeMenu: "start",
       nextOpenMenu: null,
@@ -26,7 +26,7 @@ describe("project list date edit helpers", () => {
     expect(projectListDueDateEditPlan({
       task: task({ archivedAt: "2026-06-21T00:00:00.000Z" }),
       selectedDate: "2026-06-22",
-      rangeDateColumnsVisible: true,
+      chainPairedMenu: true,
     })).toEqual({
       closeMenu: "due",
       nextOpenMenu: null,
@@ -37,7 +37,7 @@ describe("project list date edit helpers", () => {
     expect(projectListStartDateEditPlan({
       task: task({ startDate: "2026-06-20", dueDate: "2026-06-24" }),
       selectedDate: undefined,
-      rangeDateColumnsVisible: true,
+      chainPairedMenu: true,
     })).toEqual({
       closeMenu: "start",
       nextOpenMenu: null,
@@ -47,7 +47,7 @@ describe("project list date edit helpers", () => {
     expect(projectListDueDateEditPlan({
       task: task({ startDate: "2026-06-20", dueDate: "2026-06-24" }),
       selectedDate: undefined,
-      rangeDateColumnsVisible: true,
+      chainPairedMenu: true,
     })).toEqual({
       closeMenu: "due",
       nextOpenMenu: null,
@@ -57,12 +57,12 @@ describe("project list date edit helpers", () => {
     expect(projectListStartDateEditPlan({
       task: task(),
       selectedDate: undefined,
-      rangeDateColumnsVisible: true,
+      chainPairedMenu: true,
     }).patch).toBeUndefined();
     expect(projectListDueDateEditPlan({
       task: task(),
       selectedDate: undefined,
-      rangeDateColumnsVisible: true,
+      chainPairedMenu: true,
     }).patch).toBeUndefined();
   });
 
@@ -70,7 +70,7 @@ describe("project list date edit helpers", () => {
     expect(projectListStartDateEditPlan({
       task: task({ startDate: "2026-06-20", dueDate: "2026-06-24" }),
       selectedDate: "2026-06-22",
-      rangeDateColumnsVisible: true,
+      chainPairedMenu: true,
     })).toEqual({
       closeMenu: "start",
       nextOpenMenu: null,
@@ -83,7 +83,7 @@ describe("project list date edit helpers", () => {
     expect(projectListDueDateEditPlan({
       task: task({ startDate: "2026-06-20", dueDate: "2026-06-24" }),
       selectedDate: "2026-06-22",
-      rangeDateColumnsVisible: true,
+      chainPairedMenu: true,
     })).toEqual({
       closeMenu: "due",
       nextOpenMenu: null,
@@ -98,7 +98,7 @@ describe("project list date edit helpers", () => {
     expect(projectListStartDateEditPlan({
       task: task({ startDate: "2026-06-20", dueDate: "2026-06-24" }),
       selectedDate: "2026-06-26",
-      rangeDateColumnsVisible: true,
+      chainPairedMenu: true,
     }).patch).toEqual({
       startDate: "2026-06-26",
       dueDate: "2026-06-26",
@@ -107,18 +107,18 @@ describe("project list date edit helpers", () => {
     expect(projectListDueDateEditPlan({
       task: task({ startDate: "2026-06-20", dueDate: "2026-06-24" }),
       selectedDate: "2026-06-18",
-      rangeDateColumnsVisible: true,
+      chainPairedMenu: true,
     }).patch).toEqual({
       startDate: "2026-06-18",
       dueDate: "2026-06-18",
     });
   });
 
-  it("prompts for the missing opposite endpoint only when both date columns are visible", () => {
+  it("prompts for the missing opposite endpoint only when chaining is allowed", () => {
     expect(projectListStartDateEditPlan({
       task: task(),
       selectedDate: "2026-06-22",
-      rangeDateColumnsVisible: true,
+      chainPairedMenu: true,
     })).toEqual({
       closeMenu: "start",
       nextOpenMenu: "due",
@@ -131,7 +131,7 @@ describe("project list date edit helpers", () => {
     expect(projectListDueDateEditPlan({
       task: task(),
       selectedDate: "2026-06-22",
-      rangeDateColumnsVisible: true,
+      chainPairedMenu: true,
     })).toEqual({
       closeMenu: "due",
       nextOpenMenu: "start",
@@ -144,12 +144,12 @@ describe("project list date edit helpers", () => {
     expect(projectListStartDateEditPlan({
       task: task(),
       selectedDate: "2026-06-22",
-      rangeDateColumnsVisible: false,
+      chainPairedMenu: false,
     }).nextOpenMenu).toBeNull();
     expect(projectListDueDateEditPlan({
       task: task(),
       selectedDate: "2026-06-22",
-      rangeDateColumnsVisible: false,
+      chainPairedMenu: false,
     }).nextOpenMenu).toBeNull();
   });
 
@@ -157,13 +157,13 @@ describe("project list date edit helpers", () => {
     expect(projectListStartDateEditPlan({
       task: task({ startDate: "2026-06-22", dueDate: "2026-06-24" }),
       selectedDate: "2026-06-22",
-      rangeDateColumnsVisible: true,
+      chainPairedMenu: true,
     }).patch).toBeUndefined();
 
     expect(projectListDueDateEditPlan({
       task: task({ startDate: "2026-06-22", dueDate: "2026-06-24" }),
       selectedDate: "2026-06-24",
-      rangeDateColumnsVisible: true,
+      chainPairedMenu: true,
     }).patch).toBeUndefined();
   });
 });

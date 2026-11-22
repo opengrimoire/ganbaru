@@ -181,7 +181,8 @@
   const taskListGridMinWidth = $derived(projectTaskListGridMinWidth(taskListGridInput));
   const taskListLeadingGridTemplate = $derived(projectTaskListLeadingGridTemplate(taskListGridInput));
   const taskListContentStart = collectionRowContentStart(projectTaskListGutterWidth());
-  const listRangeDateColumnsVisible = $derived(taskListColumns.includes("start") && taskListColumns.includes("due"));
+  /** Picking one endpoint of an empty range chains to the other date menu on desktop; touch dialogs edit one date at a time. */
+  const listDateMenusChain = $derived(!TOUCH_PICKERS && taskListColumns.includes("start") && taskListColumns.includes("due"));
   const frozenOffsets: Partial<Record<ProjectTaskListResizableColumn | "selection" | "expand", number>> = $derived(taskQuery ? projectListFrozenOffsets(taskQuery.listPresentation, taskListGridInput, listViewportWidthRem) : {});
   $effect(() => {
     sections.length;
@@ -395,7 +396,7 @@
     const plan = projectListStartDateEditPlan({
       task,
       selectedDate: startDate,
-      rangeDateColumnsVisible: listRangeDateColumnsVisible,
+      chainPairedMenu: listDateMenusChain,
     });
     if (plan.patch) {
       await projects.updateTask(task, plan.patch);
@@ -410,7 +411,7 @@
     const plan = projectListDueDateEditPlan({
       task,
       selectedDate: dueDate,
-      rangeDateColumnsVisible: listRangeDateColumnsVisible,
+      chainPairedMenu: listDateMenusChain,
     });
     if (plan.patch) {
       await projects.updateTask(task, plan.patch);

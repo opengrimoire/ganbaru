@@ -669,7 +669,7 @@ describe("MusicSourcesController", () => {
   it("keeps a refresh failure from the previous vault off the next vault", async () => {
     const refresh = refreshStub();
     let resolveRun!: (statuses: Awaited<ReturnType<MusicSourceRefreshController["run"]>>) => void;
-    refresh.run = vi.fn(() => new Promise((resolve) => { resolveRun = resolve; }));
+    refresh.run = vi.fn(() => new Promise<Awaited<ReturnType<MusicSourceRefreshController["run"]>>>((resolve) => { resolveRun = resolve; }));
     const controller = createMusicSourcesController(api(), () => 20, () => "id", refresh);
     controller.setVault("vault-1");
     const running = controller.runRefresh(refresh.prepare([]), true);

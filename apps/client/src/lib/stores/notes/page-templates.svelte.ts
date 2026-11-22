@@ -1,5 +1,16 @@
 import { notesErrorDetail } from "$lib/notes/failure";
 import {
+  asyncResourceError,
+  failAsyncRequest,
+  idleAsyncResource,
+  isAsyncResourceLoading,
+  isCurrentAsyncRequest,
+  resolveAsyncRequest,
+  startAsyncRequest,
+  updateAsyncResourceData,
+  type AsyncResource,
+} from "$lib/utils/async-resource";
+import {
   applyNotesPageTemplate,
   createNotesPageTemplateFromPage,
   deleteNotesPageTemplate,
@@ -27,25 +38,25 @@ interface NotesPageTemplatesControllerContext {
 export function createNotesPageTemplatesController(
   context: NotesPageTemplatesControllerContext,
 ) {
-  let templates = $state<NotesPageTemplate[]>([]);
-  let loading = $state(false);
-  let error = $state<string | null>(null);
-  let requestId = 0;
+  let resource = $state<AsyncResource<NotesPageTemplate[]>>(idleAsyncResource([]));
+  const templates = $derived(resource.data);
+  const loading = $derived(isAsyncResourceLoading(resource));
+  const error = $derived(asyncResourceError(resource));
+
+  function updateTemplates(update: (current: NotesPageTemplate[]) => NotesPageTemplate[]): void {
+    resource = updateAsyncResourceData(resource, update);
+  }
 
   async function reload(): Promise<void> {
-    const currentRequestId = ++requestId;
-    loading = true;
-    error = null;
+    const started = startAsyncRequest(resource);
+    resource = started.resource;
     try {
       const next = await listNotesPageTemplates();
-      if (currentRequestId !== requestId) return;
-      templates = [...next];
+      resource = resolveAsyncRequest(resource, started.token, [...next]);
     } catch (caught) {
-      if (currentRequestId !== requestId) return;
-      error = notesErrorDetail(caught);
+      if (!isCurrentAsyncRequest(resource, started.token)) return;
+      resource = failAsyncRequest(resource, started.token, notesErrorDetail(caught));
       throw caught;
-    } finally {
-      if (currentRequestId === requestId) loading = false;
     }
   }
 
@@ -69,7 +80,7 @@ export function createNotesPageTemplatesController(
       source_page_id: page.id,
       name,
     });
-    templates = [template, ...templates.filter((item) => item.id !== template.id)];
+    updateTemplates((current) => [template, ...current.filter((item) => item.id !== template.id)]);
   }
 
   async function updateFromCurrentPage(templateId: string): Promise<void> {
@@ -77,12 +88,12 @@ export function createNotesPageTemplatesController(
     if (!page) return;
     await context.flushPendingBlockSaves();
     const template = await updateNotesPageTemplate(templateId, { source_page_id: page.id });
-    templates = templates.map((item) => item.id === template.id ? template : item);
+    updateTemplates((current) => current.map((item) => item.id === template.id ? template : item));
   }
 
   async function rename(templateId: string, name: string): Promise<void> {
     const template = await updateNotesPageTemplate(templateId, { name });
-    templates = templates.map((item) => item.id === template.id ? template : item);
+    updateTemplates((current) => current.map((item) => item.id === template.id ? template : item));
   }
 
   async function duplicate(templateId: string, name: string): Promise<void> {
@@ -90,12 +101,12 @@ export function createNotesPageTemplatesController(
       id: crypto.randomUUID(),
       name,
     });
-    templates = [template, ...templates];
+    updateTemplates((current) => [template, ...current]);
   }
 
   async function remove(templateId: string): Promise<void> {
     const deletedId = await deleteNotesPageTemplate(templateId);
-    templates = templates.filter((template) => template.id !== deletedId);
+    updateTemplates((current) => current.filter((template) => template.id !== deletedId));
   }
 
   return {

@@ -152,3 +152,80 @@ describe("page history actions", () => {
     expect(setLoadError).not.toHaveBeenCalled();
   });
 });
+
+describe("page history snapshots", () => {
+  type Snapshots = Awaited<ReturnType<typeof import("$lib/api/notes").listNotesPageHistorySnapshots>>;
+
+  async function queueSnapshots() {
+    const api = await import("$lib/api/notes");
+    const pending: Array<{ resolve: (value: Snapshots) => void; reject: (error: Error) => void }> = [];
+    vi.mocked(api.listNotesPageHistorySnapshots).mockReset().mockImplementation(
+      () => new Promise<Snapshots>((resolve, reject) => pending.push({ resolve, reject })),
+    );
+    return pending;
+  }
+
+  function snapshot(id: string): Snapshots[number] {
+    return { id } as Snapshots[number];
+  }
+
+  it("keeps the newest snapshot list when an older reload answers late", async () => {
+    const pending = await queueSnapshots();
+    const { controller } = await setup();
+    const stale = controller.reloadSnapshots();
+    const current = controller.reloadSnapshots();
+    expect(controller.snapshotsLoading).toBe(true);
+    pending[1]?.resolve([snapshot("new")]);
+    await current;
+    pending[0]?.resolve([snapshot("old")]);
+    await stale;
+    expect(controller.snapshotsLoading).toBe(false);
+    expect(controller.snapshots.map((item) => item.id)).toEqual(["new"]);
+  });
+
+  it("clears the snapshot list and reports a failed reload", async () => {
+    const pending = await queueSnapshots();
+    const { controller } = await setup();
+    const first = controller.reloadSnapshots();
+    pending[0]?.resolve([snapshot("a")]);
+    await first;
+    const failed = controller.reloadSnapshots();
+    expect(controller.snapshots.map((item) => item.id)).toEqual(["a"]);
+    pending[1]?.reject(new Error("offline"));
+    await failed;
+    expect(controller.snapshots).toEqual([]);
+    expect(controller.snapshotsError).toContain("offline");
+    expect(controller.snapshotsLoading).toBe(false);
+  });
+
+  it("drops a snapshot list for a page no longer open and ends the load", async () => {
+    const pending = await queueSnapshots();
+    let selected = "page-a";
+    const { createNotesPageHistoryController } = await import("./page-history.svelte");
+    const controller = createNotesPageHistoryController({
+      readSelectedPageId: () => selected,
+      applyPostMutation: vi.fn(),
+      requestPageLoadFocus: vi.fn(),
+      flushPendingBlockSaves: async () => undefined,
+      setLoadError: vi.fn(),
+    });
+    const running = controller.reloadSnapshots();
+    selected = "page-b";
+    pending[0]?.resolve([snapshot("a")]);
+    await running;
+    expect(controller.snapshots).toEqual([]);
+    expect(controller.snapshotsLoading).toBe(false);
+  });
+
+  it("ends a running reload when the page state resets", async () => {
+    const pending = await queueSnapshots();
+    const { controller, select } = await setup();
+    const running = controller.reloadSnapshots();
+    select("page-b");
+    expect(controller.snapshotsLoading).toBe(false);
+    pending[0]?.resolve([snapshot("a")]);
+    await running;
+    expect(controller.snapshots).toEqual([]);
+    expect(controller.snapshotsLoading).toBe(false);
+  });
+});

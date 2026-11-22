@@ -6,6 +6,8 @@ import type {
   NotesPageSummaryWindow,
   NotesSearchWindow,
   NotesWorkspaceShell,
+  NotesPageTemplate,
+  NotesSearchResult,
 } from "$lib/notes/types";
 
 const backend = vi.hoisted(() => {
@@ -25,6 +27,7 @@ const backend = vi.hoisted(() => {
     archive: queue<NotesPageSummaryWindow>(),
     search: queue<NotesSearchWindow>(),
     destinations: queue<NotesWorkspaceShell>(),
+    templates: queue<NotesPageTemplate[]>(),
   };
 });
 
@@ -36,6 +39,7 @@ vi.mock("$lib/api/notes", async (importOriginal) => {
     listTrashedNotesPages: vi.fn(),
     searchNotes: backend.search.next,
     listNotesDestinationCandidates: backend.destinations.next,
+    listNotesPageTemplates: backend.templates.next,
   };
 });
 
@@ -206,4 +210,146 @@ describe("Notes query controllers", () => {
     await late;
     expect(controller.destinations).toEqual([extra]);
   });
+
+  it("rejects a stale template reload and keeps templates visible while reloading", async () => {
+    const { createNotesPageTemplatesController } = await import("./page-templates.svelte");
+    const controller = createNotesPageTemplatesController(templatesContext());
+    const first = controller.reloadPageTemplates();
+    backend.templates.resolve(lastCall(backend.templates.next), [template("a")]);
+    await first;
+
+    const stale = controller.reloadPageTemplates();
+    const staleIndex = lastCall(backend.templates.next);
+    const current = controller.reloadPageTemplates();
+    expect(controller.loading).toBe(true);
+    expect(controller.templates.map((item) => item.id)).toEqual(["a"]);
+    backend.templates.resolve(lastCall(backend.templates.next), [template("b")]);
+    await current;
+    backend.templates.resolve(staleIndex, [template("stale")]);
+    await stale;
+
+    expect(controller.loading).toBe(false);
+    expect(controller.templates.map((item) => item.id)).toEqual(["b"]);
+  });
+
+  it("reports a failed template reload without discarding loaded templates", async () => {
+    const { createNotesPageTemplatesController } = await import("./page-templates.svelte");
+    const controller = createNotesPageTemplatesController(templatesContext());
+    const first = controller.reloadPageTemplates();
+    backend.templates.resolve(lastCall(backend.templates.next), [template("a")]);
+    await first;
+
+    const failed = controller.reloadPageTemplates();
+    backend.templates.reject(lastCall(backend.templates.next), new Error("offline"));
+    await expect(failed).rejects.toThrow("offline");
+    expect(controller.loading).toBe(false);
+    expect(controller.error).toContain("offline");
+    expect(controller.templates.map((item) => item.id)).toEqual(["a"]);
+
+    const retry = controller.reloadPageTemplates();
+    expect(controller.error).toBeNull();
+    backend.templates.resolve(lastCall(backend.templates.next), []);
+    await retry;
+  });
+
+  it("clears search results when a search fails and keeps them when a later page fails", async () => {
+    const { createNotesSearchController } = await import("./search.svelte");
+    const controller = createNotesSearchController();
+    const first = controller.search("tasks");
+    backend.search.resolve(lastCall(backend.search.next), { results: [searchResult("a")], next_cursor: "next" });
+    await first;
+
+    const more = controller.loadMoreSearchResults();
+    expect(controller.loading).toBe(true);
+    backend.search.reject(lastCall(backend.search.next), new Error("offline"));
+    await more;
+    expect(controller.loading).toBe(false);
+    expect(controller.error).toContain("offline");
+    expect(controller.results.map((result) => result.id)).toEqual(["a"]);
+    expect(controller.hasMore).toBe(true);
+
+    const failed = controller.search("tasks");
+    expect(controller.error).toBeNull();
+    backend.search.reject(lastCall(backend.search.next), new Error("offline"));
+    await failed;
+    expect(controller.results).toEqual([]);
+    expect(controller.error).toContain("offline");
+  });
+
+  it("ends a running search when the query is cleared", async () => {
+    const { createNotesSearchController } = await import("./search.svelte");
+    const controller = createNotesSearchController();
+    const running = controller.search("tasks");
+    const index = lastCall(backend.search.next);
+    await controller.search("  ");
+    expect(controller.loading).toBe(false);
+    backend.search.resolve(index, { results: [searchResult("late")], next_cursor: "late" });
+    await running;
+    expect(controller.results).toEqual([]);
+    expect(controller.hasMore).toBe(false);
+  });
+
+  it("merges a later search page without duplicating results", async () => {
+    const { createNotesSearchController } = await import("./search.svelte");
+    const controller = createNotesSearchController();
+    const first = controller.search("tasks");
+    backend.search.resolve(lastCall(backend.search.next), { results: [searchResult("a")], next_cursor: "next" });
+    await first;
+    const more = controller.loadMoreSearchResults();
+    backend.search.resolve(lastCall(backend.search.next), {
+      results: [searchResult("a"), searchResult("b")],
+      next_cursor: null,
+    });
+    await more;
+    expect(controller.results.map((result) => result.id)).toEqual(["a", "b"]);
+    expect(controller.hasMore).toBe(false);
+  });
 });
+
+function lastCall(mock: { mock: { calls: unknown[] } }): number {
+  return mock.mock.calls.length - 1;
+}
+
+function templatesContext() {
+  return {
+    readLoadedPage: () => null,
+    readProjectId: () => null,
+    flushPendingBlockSaves: async () => {},
+    activateReturnedPage: async () => {},
+    queueDescendantHydration: () => {},
+    requestPageLoadFocus: () => {},
+  };
+}
+
+function template(id: string): NotesPageTemplate {
+  return {
+    object: "page_template",
+    id,
+    name: id,
+    source_page_id: null,
+    properties: {},
+    icon: null,
+    cover: null,
+    block_count: 0,
+    created_time: "2026-07-03T00:00:00.000Z",
+    last_edited_time: "2026-07-03T00:00:00.000Z",
+  };
+}
+
+function searchResult(id: string): NotesSearchResult {
+  return {
+    object: "search_result",
+    id,
+    type: "page",
+    page: destinationPage(id, null),
+    block_id: null,
+    block_type: null,
+    comment_id: null,
+    discussion_id: null,
+    comment_status: null,
+    comment_author: null,
+    comment_anchor: null,
+    snippet: "",
+    last_edited_time: "2026-07-03T00:00:00.000Z",
+  };
+}

@@ -14,6 +14,17 @@ import type {
 } from "$lib/notes/types";
 import type { NotesHistoryRetentionDays } from "$lib/notes/history/retention";
 import {
+  abandonAsyncRequest,
+  asyncResourceError,
+  failAsyncRequest,
+  idleAsyncResource,
+  isAsyncResourceLoading,
+  isCurrentAsyncRequest,
+  resolveAsyncRequest,
+  startAsyncRequest,
+  type AsyncResource,
+} from "$lib/utils/async-resource";
+import {
   notesPostAppendResult,
   type NotesPostMutationResult,
 } from "$lib/notes/post-mutation";
@@ -61,9 +72,7 @@ export interface NotesPageHistoryController {
 export function createNotesPageHistoryController(
   context: NotesPageHistoryControllerContext,
 ): NotesPageHistoryController {
-  let snapshots = $state<NotesPageHistorySnapshot[]>([]);
-  let snapshotsLoading = $state(false);
-  let snapshotsError = $state<string | null>(null);
+  let snapshots = $state<AsyncResource<NotesPageHistorySnapshot[]>>(idleAsyncResource([]));
   let version = $state<NotesLoadedPage | null>(null);
   let versionSnapshotId: string | null = null;
   let versionLoading = $state(false);
@@ -73,16 +82,12 @@ export function createNotesPageHistoryController(
   let settingsError = $state<string | null>(null);
   let action = $state<NotesPageHistoryAction>(IDLE_PAGE_HISTORY_ACTION);
   let actionToken = 0;
-  let snapshotsRequestId = 0;
   let versionRequestId = 0;
   let settingsRequestId = 0;
 
   function resetPageState(): void {
-    snapshotsRequestId += 1;
     versionRequestId += 1;
-    snapshots = [];
-    snapshotsLoading = false;
-    snapshotsError = null;
+    snapshots = idleAsyncResource([]);
     version = null;
     versionSnapshotId = null;
     versionLoading = false;
@@ -126,17 +131,20 @@ export function createNotesPageHistoryController(
   }
 
   async function reloadSnapshots(pageId: string | null = context.readSelectedPageId()): Promise<void> {
-    const requestId = ++snapshotsRequestId;
     if (!pageId) {
       resetPageState();
       return;
     }
-    snapshotsLoading = true;
-    snapshotsError = null;
+    const started = startAsyncRequest(snapshots);
+    snapshots = started.resource;
     try {
       const nextSnapshots = await listNotesPageHistorySnapshots(pageId);
-      if (requestId !== snapshotsRequestId || pageId !== context.readSelectedPageId()) return;
-      snapshots = [...nextSnapshots];
+      if (pageId !== context.readSelectedPageId()) {
+        snapshots = abandonAsyncRequest(snapshots, started.token);
+        return;
+      }
+      if (!isCurrentAsyncRequest(snapshots, started.token)) return;
+      snapshots = resolveAsyncRequest(snapshots, started.token, [...nextSnapshots]);
       if (version && version.page.id !== pageId) {
         version = null;
         versionSnapshotId = null;
@@ -146,11 +154,9 @@ export function createNotesPageHistoryController(
         versionSnapshotId = null;
       }
     } catch (error) {
-      if (requestId !== snapshotsRequestId || pageId !== context.readSelectedPageId()) return;
-      snapshots = [];
-      snapshotsError = notesErrorDetail(error);
-    } finally {
-      if (requestId === snapshotsRequestId) snapshotsLoading = false;
+      snapshots = pageId === context.readSelectedPageId()
+        ? failAsyncRequest(snapshots, started.token, notesErrorDetail(error), [])
+        : abandonAsyncRequest(snapshots, started.token);
     }
   }
 
@@ -249,13 +255,13 @@ export function createNotesPageHistoryController(
 
   return {
     get snapshots() {
-      return snapshots;
+      return snapshots.data;
     },
     get snapshotsLoading() {
-      return snapshotsLoading;
+      return isAsyncResourceLoading(snapshots);
     },
     get snapshotsError() {
-      return snapshotsError;
+      return asyncResourceError(snapshots);
     },
     get version() {
       return version;

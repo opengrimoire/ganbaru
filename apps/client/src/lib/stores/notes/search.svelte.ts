@@ -1,18 +1,32 @@
 import { notesErrorDetail } from "$lib/notes/failure";
 import { searchNotes } from "$lib/api/notes";
 import type { NotesSearchResult } from "$lib/notes/types";
+import {
+  asyncResourceError,
+  failAsyncRequest,
+  idleAsyncResource,
+  isAsyncResourceLoading,
+  resolveAsyncRequest,
+  startAsyncRequest,
+  type AsyncResource,
+} from "$lib/utils/async-resource";
+
+/** The loaded search results and the cursor of the next page, or `null` when there is none. */
+interface NotesSearchPages {
+  readonly results: NotesSearchResult[];
+  readonly nextCursor: string | null;
+}
+
+const NO_SEARCH_PAGES: NotesSearchPages = { results: [], nextCursor: null };
 
 /** Own Notes search pagination and stale-result rejection. */
 export function createNotesSearchController() {
-  let results = $state<NotesSearchResult[]>([]);
-  let nextCursor = $state<string | null>(null);
-  let loading = $state(false);
-  let error = $state<string | null>(null);
+  let resource = $state<AsyncResource<NotesSearchPages>>(idleAsyncResource(NO_SEARCH_PAGES));
+  const loading = $derived(isAsyncResourceLoading(resource));
   let includeResolvedComments = $state(false);
   let activeQuery = "";
   let activePageSize = 20;
   let activeIncludeResolved = false;
-  let requestId = 0;
 
   async function search(
     query: string,
@@ -20,38 +34,34 @@ export function createNotesSearchController() {
     includeResolved = includeResolvedComments,
   ): Promise<void> {
     const trimmed = query.trim();
-    const currentRequestId = ++requestId;
     if (!trimmed) {
-      results = [];
-      nextCursor = null;
-      error = null;
-      loading = false;
+      resource = idleAsyncResource(NO_SEARCH_PAGES);
       return;
     }
-    loading = true;
+    const started = startAsyncRequest(resource);
+    resource = started.resource;
     activeQuery = trimmed;
     activePageSize = pageSize;
     activeIncludeResolved = includeResolved;
-    error = null;
     try {
       const window = await searchNotes(trimmed, pageSize, includeResolved);
-      if (currentRequestId !== requestId) return;
-      results = [...window.results];
-      nextCursor = window.next_cursor;
+      resource = resolveAsyncRequest(resource, started.token, {
+        results: [...window.results],
+        nextCursor: window.next_cursor,
+      });
     } catch (caught) {
-      if (currentRequestId !== requestId) return;
-      results = [];
-      error = notesErrorDetail(caught);
-    } finally {
-      if (currentRequestId === requestId) loading = false;
+      resource = failAsyncRequest(resource, started.token, notesErrorDetail(caught), {
+        ...resource.data,
+        results: [],
+      });
     }
   }
 
   async function loadMore(): Promise<void> {
-    const cursor = nextCursor;
+    const cursor = resource.data.nextCursor;
     if (!cursor || loading || !activeQuery) return;
-    const currentRequestId = ++requestId;
-    loading = true;
+    const started = startAsyncRequest(resource);
+    resource = started.resource;
     try {
       const window = await searchNotes(
         activeQuery,
@@ -59,23 +69,23 @@ export function createNotesSearchController() {
         activeIncludeResolved,
         cursor,
       );
-      if (currentRequestId !== requestId) return;
-      results = [
-        ...new Map([...results, ...window.results].map((result) => [result.id, result])).values(),
-      ];
-      nextCursor = window.next_cursor;
+      const loaded = resource.data.results;
+      resource = resolveAsyncRequest(resource, started.token, {
+        results: [
+          ...new Map([...loaded, ...window.results].map((result) => [result.id, result])).values(),
+        ],
+        nextCursor: window.next_cursor,
+      });
     } catch (caught) {
-      if (currentRequestId === requestId) error = notesErrorDetail(caught);
-    } finally {
-      if (currentRequestId === requestId) loading = false;
+      resource = failAsyncRequest(resource, started.token, notesErrorDetail(caught));
     }
   }
 
   return {
-    get results(): NotesSearchResult[] { return results; },
-    get hasMore(): boolean { return nextCursor !== null; },
+    get results(): NotesSearchResult[] { return resource.data.results; },
+    get hasMore(): boolean { return resource.data.nextCursor !== null; },
     get loading(): boolean { return loading; },
-    get error(): string | null { return error; },
+    get error(): string | null { return asyncResourceError(resource); },
     get includeResolvedComments(): boolean { return includeResolvedComments; },
     search,
     loadMoreSearchResults: loadMore,

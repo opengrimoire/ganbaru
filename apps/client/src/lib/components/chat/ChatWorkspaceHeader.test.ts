@@ -459,4 +459,20 @@ describe("ChatWorkspaceHeader", () => {
     expect(header?.querySelector("[data-test-view-switcher]")).not.toBeNull();
   });
 
+  it("leaves a failed folder open behind when another working folder is selected", async () => {
+    const chat = getChat();
+    const [managed] = chat.workingFolders;
+    if (!managed) throw new Error("The managed working folder fixture is missing");
+    chat.workingFolders = [managed, { ...managed, workingFolder: { ...managed.workingFolder, id: "other" } }];
+    vi.spyOn(chat, "openWorkingFolder").mockRejectedValue(new Error("No file manager"));
+    const target = setup(true);
+
+    target.querySelector<HTMLButtonElement>("button[aria-label='Open working folder']")?.click();
+    await vi.waitFor(() => expect(target.querySelector(".header-action-error")).not.toBeNull());
+    chat.selectedWorkingFolderId = "other";
+    await tick();
+
+    expect(target.querySelector(".header-action-error")).toBeNull();
+  });
+
 });

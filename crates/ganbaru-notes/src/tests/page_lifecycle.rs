@@ -498,6 +498,40 @@ fn trashing_nested_page_hides_and_restores_child_page_block() {
 }
 
 #[test]
+fn restoring_a_stale_block_deletion_keeps_the_child_page_block_of_a_trashed_page_hidden() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        writes::create_page(
+            &pool,
+            NotePageCreate {
+                id: PAGE_B.to_string(),
+                title: "Nested".to_string(),
+                parent: page_parent(PAGE_A),
+                folder_id: None,
+                project_id: None,
+                first_block_id: BLOCK_B.to_string(),
+                after_block_id: None,
+                properties: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        writes::trash_block(&pool, PAGE_B, true).await.unwrap();
+        writes::trash_page(&pool, PAGE_B, false).await.unwrap();
+        assert!(reads::get_block(&pool, PAGE_B, false).await.is_ok());
+        writes::trash_page(&pool, PAGE_B, true).await.unwrap();
+        writes::trash_block(&pool, PAGE_B, false).await.unwrap();
+
+        let page =
+            serde_json::to_value(reads::get_page(&pool, PAGE_B, true).await.unwrap()).unwrap();
+        assert_eq!(page["in_trash"], true);
+        assert!(reads::get_block(&pool, PAGE_B, false).await.is_err());
+    });
+}
+
+#[test]
 fn restoring_nested_page_with_trashed_parent_promotes_to_workspace() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;

@@ -10,6 +10,13 @@ use std::collections::{HashSet, VecDeque};
 const JOURNAL_KEY: &str = "__ganbaru_trash";
 const MAX_TRASH_OBJECTS: usize = super::database_copy::MAX_COPY_OBJECTS;
 
+/// A restored `child_page` block shows only a live page nested through it, so restoring an older
+/// block deletion never shows the block of a page that was trashed or archived since.
+const CHILD_PAGE_BLOCK_RESTORABLE_SQL: &str = "(notes_blocks.type <> 'child_page' OR EXISTS (
+    SELECT 1 FROM notes_pages WHERE notes_pages.id = notes_blocks.id
+      AND notes_pages.child_block_id = notes_blocks.id
+      AND notes_pages.in_trash = 0 AND notes_pages.archived = 0))";
+
 #[derive(Clone, Hash, PartialEq, Eq)]
 enum TrashObject {
     Page(String),
@@ -134,9 +141,14 @@ async fn set_graph_trash(
                 let request = PageMove::Restore { owner: None };
                 page_lifecycle::move_page_lifecycle_tx(tx, id, &request).await?;
             } else {
+                let child_page_guard = if table == "notes_blocks" {
+                    format!(" AND {CHILD_PAGE_BLOCK_RESTORABLE_SQL}")
+                } else {
+                    String::new()
+                };
                 sqlx::query(AssertSqlSafe(format!(
                     "UPDATE {table} SET in_trash = 0,
-                    last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?"
+                    last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?{child_page_guard}"
                 )))
                 .bind(id)
                 .execute(&mut **tx)
@@ -374,8 +386,9 @@ async fn restore_journal(
         data_sources::rollups::invalidate_rollup_cache_for_page_tx(tx, id).await?;
     }
     for id in &journal.blocks {
-        sqlx::query("UPDATE notes_blocks SET in_trash = 0, trash_owner = NULL,
-            last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND trash_owner = ?")
+        sqlx::query(AssertSqlSafe(format!("UPDATE notes_blocks SET in_trash = 0, trash_owner = NULL,
+            last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND trash_owner = ?
+            AND {CHILD_PAGE_BLOCK_RESTORABLE_SQL}")))
             .bind(id).bind(&journal.token).execute(&mut **tx).await.map_err(|e| format!("restore owned Notes block: {e}"))?;
     }
     Ok(())

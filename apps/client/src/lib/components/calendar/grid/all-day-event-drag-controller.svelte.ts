@@ -39,7 +39,9 @@ export interface AllDayEventDragControllerConfig {
 }
 
 export function createAllDayEventDragController(config: AllDayEventDragControllerConfig) {
-  let dragState = $state<AllDayDragState | null>(null);
+  let dragState = $state.raw<AllDayDragState | null>(null);
+  // The released drag whose update is still settling; a press waits until it settles.
+  let committing: AllDayDragState | null = null;
   let allDayDragPreview = $state<PositionedAllDayEvent | null>(null);
   let draggingEventId = $state<string | null>(null);
   let grabbingId = $state<string | null>(null); // Set immediately on pointerdown for visual feedback
@@ -74,7 +76,7 @@ export function createAllDayEventDragController(config: AllDayEventDragControlle
   }
 
   function handleDragStart(eventId: string, e: PointerEvent) {
-    if (!canStartDrag(eventId)) return;
+    if (committing || !canStartDrag(eventId)) return;
     if (config.mobileLayout() && e.pointerType === "touch") {
       touchHold.begin(e, () => {
         if (!canStartDrag(eventId) || !beginDragStart(eventId, e)) {
@@ -245,16 +247,23 @@ export function createAllDayEventDragController(config: AllDayEventDragControlle
       : state.type === "resize-end"
         ? visibleEndDate
         : eventEndDate;
-    await config.onEventUpdate({
-      ...event,
-      start: `${newStartDate} 00:00`,
-      end: `${newEndDate} 00:00`,
-    });
-
-    dragState = null;
-    allDayDragPreview = null;
-    draggingEventId = null;
-    grabbingId = null;
+    committing = state;
+    try {
+      await config.onEventUpdate({
+        ...event,
+        start: `${newStartDate} 00:00`,
+        end: `${newEndDate} 00:00`,
+      });
+    } finally {
+      if (committing === state) committing = null;
+      // A cancel while the update ran already ended this drag.
+      if (dragState === state) {
+        dragState = null;
+        allDayDragPreview = null;
+        draggingEventId = null;
+        grabbingId = null;
+      }
+    }
   }
 
   function handleDragCancel(): void {

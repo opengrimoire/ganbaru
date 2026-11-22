@@ -220,7 +220,7 @@
   let uploadError = $state<string | null>(null);
   /** One upload at a time across picking, pasting, and fetching, so the first to settle cannot clear another's progress. */
   let uploading = $state(false);
-  /** Counts picker closes, so an upload failure that settles after a close never shows in the reopened picker. */
+  /** Counts picker closes, so an upload that settles after a close neither shows its failure in nor closes the reopened picker. */
   let pickerSession = 0;
   let iconColor = $state<IconPickerColor>("default");
   let emojiSkinTone = $state<ProjectEmojiSkinTone>("default");
@@ -848,7 +848,7 @@
         : await pickProjectIconImageFile();
       if (asset && uploadAdapter?.selectPickedAssetImmediately) {
         await uploadAdapter.selectAsset(asset);
-        closePicker(pickerInteractionSource);
+        if (session === pickerSession) closePicker(pickerInteractionSource);
       } else {
         uploadDraft = asset;
       }
@@ -869,7 +869,7 @@
       const asset = await saveFileAsUploadAsset(file);
       if (uploadAdapter?.selectPickedAssetImmediately) {
         await uploadAdapter.selectAsset(asset);
-        closePicker(pickerInteractionSource);
+        if (session === pickerSession) closePicker(pickerInteractionSource);
       } else {
         uploadDraft = asset;
       }
@@ -898,8 +898,10 @@
     try {
       if (uploadAdapter?.selectExternalUrl) {
         await uploadAdapter.selectExternalUrl(url);
-        uploadUrl = "";
-        closePicker(pickerInteractionSource);
+        if (session === pickerSession) {
+          uploadUrl = "";
+          closePicker(pickerInteractionSource);
+        }
       } else {
         uploadDraft = uploadAdapter?.downloadImageUrl
           ? await uploadAdapter.downloadImageUrl(url)

@@ -126,4 +126,25 @@ describe("IconPicker uploads", () => {
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
     expect(document.body.textContent).not.toContain("Could not add this image.");
   });
+
+  it("keeps a reopened picker open when an earlier immediate upload finishes", async () => {
+    const pending = deferred<IconPickerAsset>();
+    const selectAsset = vi.fn();
+    const save = vi.fn<IconPickerUploadAdapter["saveImageDataUrl"]>().mockReturnValueOnce(pending.promise);
+    const panel = await openUploadTab({ ...adapter(save), selectAsset, selectPickedAssetImmediately: true });
+
+    paste(panel, "slow.png");
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    const trigger = target?.querySelector<HTMLButtonElement>("button");
+    if (!trigger) throw new Error("The picker trigger did not render");
+    trigger.click();
+    flushSync();
+    trigger.click();
+    await tick();
+    pending.resolve({ relativePath: "slow.png" });
+    await vi.waitFor(() => expect(selectAsset).toHaveBeenCalledTimes(1));
+    await tick();
+
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  });
 });

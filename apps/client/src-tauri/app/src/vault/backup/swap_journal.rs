@@ -624,6 +624,59 @@ pub(crate) fn swap(staging: &Path, target: &Path, replacement: Replacement) -> R
     Ok(())
 }
 
+/// How far a preserving swap got before the process ended, for crash tests outside this module.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PreserveCrash {
+    /// The journal is written and no folder moved.
+    Journaled,
+    /// The target moved to the preserved folder and the staged folder did not move yet.
+    TargetMoved,
+    /// Both folders moved and the journal still says the renames may be partly done.
+    BothMoved,
+    /// Both folders moved and the journal recorded it.
+    Activated,
+}
+
+/// Leaves the folders and the journal of a swap of `staging` into `target` that preserves the
+/// replaced folder as `folder`, as a crash at `crash` would.
+#[cfg(test)]
+pub(crate) fn crash_preserve_swap(
+    staging: &Path,
+    target: &Path,
+    folder: &Path,
+    crash: PreserveCrash,
+) -> Result<(), String> {
+    let name = |path: &Path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+            .ok_or_else(|| "a crash test folder has no name".to_string())
+    };
+    let mut record = SwapRecord::begin(
+        target,
+        Journal {
+            phase: Phase::Swapping,
+            replaced: Replaced::Preserve { discard: false },
+            vault: vault_info_from_path(staging)?.vault_id,
+            rollback: name(folder)?,
+            staging: name(staging)?,
+        },
+    )?;
+    if matches!(crash, PreserveCrash::Journaled) {
+        return Ok(());
+    }
+    fs::rename(target, folder).map_err(|error| error.to_string())?;
+    if matches!(crash, PreserveCrash::TargetMoved) {
+        return Ok(());
+    }
+    fs::rename(staging, target).map_err(|error| error.to_string())?;
+    if matches!(crash, PreserveCrash::Activated) {
+        record.advance(Event::Renamed)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "swap_journal_tests.rs"]
 mod tests;

@@ -561,6 +561,13 @@ fn validate_vault_candidate(path: &Path) -> Result<VaultInfo, String> {
 }
 
 fn initialize_vault(path: &Path) -> Result<VaultInfo, String> {
+    initialize_named_vault(path, None)
+}
+
+/// Creates a vault in the empty folder at `path`, or validates the vault already there. A new
+/// vault takes `display_name`, or the folder name when it is `None`, so a vault staged beside
+/// its final place can carry the name of that place.
+fn initialize_named_vault(path: &Path, display_name: Option<String>) -> Result<VaultInfo, String> {
     let path = canonical_vault_path(path.to_path_buf())?;
     reject_symlinked_vault_entries(&path)?;
     if manifest_path(&path).exists() {
@@ -573,7 +580,7 @@ fn initialize_vault(path: &Path) -> Result<VaultInfo, String> {
         app: VAULT_APP_MARKER.to_string(),
         schema_version: VAULT_SCHEMA_VERSION,
         vault_id: new_vault_id(),
-        display_name: display_name_from_path(&path),
+        display_name: display_name.unwrap_or_else(|| display_name_from_path(&path)),
         created_at: now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
         has_data: false,
     };

@@ -6,6 +6,7 @@
 //! sets the old folder aside the same way. On Android these siblings live in application-private
 //! storage, where no file manager reaches them, so Settings > Data lists them.
 
+use super::backup::swap_journal::{self, Replacement};
 use super::{MAX_VAULT_MANIFEST_BYTES, parse_vault_manifest};
 use serde::Serialize;
 use std::fs;
@@ -181,34 +182,152 @@ fn folder_size(folder: &Path) -> u64 {
 pub(crate) const VAULT_NOT_LOST: &str =
     "only a vault whose database is missing can be set aside to start a new one";
 
-/// Moves the vault at `target`, whose marker records data while its database is gone, whole into
-/// a kept sibling folder and returns that folder's name. Nothing is deleted. Any other vault, and
-/// a vault an unfinished replacement or restore still needs, is refused before anything moves.
+/// Error of a new vault start that finds an earlier staging folder holding data.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub(crate) fn set_aside_lost_vault(target: &Path) -> Result<String, String> {
-    set_aside_lost_vault_at(target, unix_seconds()?)
+const STAGING_HOLDS_DATA: &str =
+    "an earlier new vault folder holds data, so a new vault was not started";
+
+/// Name prefix of the folder a new vault is prepared in beside the lost one.
+const NEW_VAULT_STAGING_PREFIX: &str = ".ganbaru.new-vault-";
+
+/// The folder beside `target` where a new vault is prepared before it takes the place of the
+/// lost one. It is named after the target, so vaults sharing a parent never share it.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn new_vault_staging_path(target: &Path) -> Result<PathBuf, String> {
+    Ok(parent_of(target)?.join(format!(
+        "{NEW_VAULT_STAGING_PREFIX}{}.staging",
+        folder_name(target)
+    )))
 }
 
+/// Refuses unless `target` is a vault whose marker records data while its database is gone, and
+/// no unfinished rollback restore still needs it.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-fn set_aside_lost_vault_at(target: &Path, seconds: u64) -> Result<String, String> {
+fn refuse_unless_lost(target: &Path) -> Result<(), String> {
     match super::refuse_lost_database(target) {
         Err(error) if error == super::VAULT_DATABASE_MISSING => {}
         Err(error) => return Err(error),
         Ok(()) => return Err(VAULT_NOT_LOST.to_string()),
     }
-    if super::backup::swap_journal::has_unfinished_swap(target)
-        || super::database_rollback::has_unfinished_restore(target)
-    {
+    if super::database_rollback::has_unfinished_restore(target) {
         return Err(super::backup::swap_journal::SWAP_RECOVERY_PENDING.to_string());
     }
+    Ok(())
+}
+
+/// Whether the folder at `staging` holds nothing but what preparing a new vault writes before
+/// it is ever opened: directories, empty files, the lock file, and a marker that records no data.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn holds_only_an_unopened_vault(staging: &Path) -> Result<bool, String> {
+    let read_error = |error: std::io::Error| format!("read the earlier new vault folder: {error}");
+    let mut pending = vec![staging.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).map_err(read_error)? {
+            let entry = entry.map_err(read_error)?;
+            let kind = entry.file_type().map_err(read_error)?;
+            let path = entry.path();
+            if kind.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if !kind.is_file() {
+                return Ok(false);
+            }
+            let at_root = directory == staging;
+            let name = entry.file_name();
+            if at_root && name == super::vault_lock::VAULT_LOCK_FILE {
+                continue;
+            }
+            if at_root && name == super::VAULT_MANIFEST_FILE {
+                if super::read_vault_manifest(staging).is_ok_and(|manifest| !manifest.has_data) {
+                    continue;
+                }
+                return Ok(false);
+            }
+            if entry.metadata().map_err(read_error)?.len() > 0 {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Removes the folder an interrupted new vault start left at `staging`, which no swap moved into
+/// place, and refuses with [`STAGING_HOLDS_DATA`] when it holds anything such a start does not
+/// write.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn clear_leftover_staging(staging: &Path) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(staging) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("read the earlier new vault folder: {error}")),
+    };
+    if !metadata.is_dir() || !holds_only_an_unopened_vault(staging)? {
+        return Err(STAGING_HOLDS_DATA.to_string());
+    }
+    fs::remove_dir_all(staging)
+        .map_err(|error| format!("remove the earlier new vault folder: {error}"))
+}
+
+/// A new vault started in place of a lost one.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[derive(Debug)]
+pub(crate) struct StartedVault {
+    /// The new vault, now at the place of the lost one.
+    pub info: super::VaultInfo,
+    /// Name of the kept folder that holds the lost vault whole.
+    pub kept: String,
+}
+
+/// Starts a new empty vault in place of the vault at `target`, whose marker records data while
+/// its database is gone, and keeps the lost vault whole in a kept sibling folder named for
+/// `seconds`. Nothing is deleted.
+///
+/// The new vault is prepared beside the lost one first, and `activate` swaps it into place
+/// through the crash-safe swap journal, so a crash at any point leaves either the lost vault or
+/// the new one at `target`, and startup recovery settles the journal. An earlier unfinished swap
+/// is settled first. Any other vault, and a vault an unfinished restore still needs, is refused
+/// before anything moves.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn start_new_vault_at(
+    target: &Path,
+    seconds: u64,
+    activate: impl FnOnce(&Path, &Path, Replacement) -> Result<(), String>,
+) -> Result<StartedVault, String> {
+    swap_journal::recover_or_refuse(target)?;
+    refuse_unless_lost(target)?;
+    let staging = new_vault_staging_path(target)?;
+    clear_leftover_staging(&staging)?;
+    ganbaru_atomic_files::create_private_directories(&staging)
+        .map_err(|error| format!("create the new vault folder: {error}"))?;
+    let staged =
+        super::initialize_named_vault(&staging, Some(super::display_name_from_path(target)))?;
     let kept = kept_folder_path_at(target, seconds)?;
-    fs::rename(target, &kept).map_err(|error| format!("set the lost vault aside: {error}"))?;
-    ganbaru_atomic_files::sync_directory_entries(parent_of(target)?)
-        .map_err(|error| format!("set the lost vault aside: {error}"))?;
-    kept.file_name()
+    let kept_name = kept
+        .file_name()
         .and_then(|name| name.to_str())
         .map(str::to_string)
-        .ok_or_else(|| "the kept folder name is not valid text".to_string())
+        .ok_or_else(|| "the kept folder name is not valid text".to_string())?;
+    activate(
+        &staging,
+        target,
+        Replacement::Preserve {
+            folder: kept,
+            discard: false,
+        },
+    )?;
+    // The preserved folder is never discarded, so its journal is settled right away.
+    if let swap_journal::Recovery::Pending(reason) = swap_journal::recover(target)? {
+        eprintln!("New vault start cleanup: {reason}");
+    }
+    let info = super::vault_info_from_path(target)?;
+    if info.vault_id != staged.vault_id {
+        return Err("the new vault did not take the place of the lost one".to_string());
+    }
+    Ok(StartedVault {
+        info,
+        kept: kept_name,
+    })
 }
 
 /// Error of a new vault started after a lost database while this Android device is linked. The
@@ -240,9 +359,10 @@ pub async fn vault_kept_folders(app: tauri::AppHandle) -> Result<Vec<KeptVaultFo
         .map_err(|error| format!("kept vault folder worker failed: {error}"))?
 }
 
-/// Sets the vault whose database is lost aside whole and starts a new empty vault in its place.
-/// It is not recorded as a starter vault, so a first link backs it up like any other vault. A
-/// linked phone is refused before anything moves.
+/// Starts a new empty vault in place of the vault whose database is lost and keeps the lost one
+/// whole beside it, through the crash-safe swap of [`start_new_vault_at`]. It is not recorded as
+/// a starter vault, so a first link backs it up like any other vault. A linked phone is refused
+/// before anything moves.
 #[cfg(target_os = "android")]
 #[tauri::command]
 pub async fn vault_start_new_after_lost_database(
@@ -258,13 +378,18 @@ pub async fn vault_start_new_after_lost_database(
     let creation_transition = transition.clone();
     let info = tauri::async_runtime::spawn_blocking(move || {
         let _transition = creation_transition;
-        let kept = set_aside_lost_vault(&target)?;
-        eprintln!("Vault with a lost database kept whole as '{kept}'");
-        // The held lock names the folder that moved aside, so the new vault takes its own.
-        super::vault_lock::process_vault_lock().release();
-        ganbaru_atomic_files::create_private_directories(&target)
-            .map_err(|error| format!("create Ganbaru folder: {error}"))?;
-        super::initialize_vault(&target)
+        let started =
+            start_new_vault_at(&target, unix_seconds()?, |staging, target, replacement| {
+                // The lock moves with the swapped folders, so the new vault is fenced throughout.
+                super::vault_lock::process_vault_lock().replace_with(staging, target, || {
+                    swap_journal::swap(staging, target, replacement)
+                })
+            })?;
+        eprintln!(
+            "Vault with a lost database kept whole as '{}'",
+            started.kept
+        );
+        Ok::<_, String>(started.info)
     })
     .await
     .map_err(|error| format!("new vault worker failed: {error}"))??;
@@ -337,23 +462,51 @@ mod tests {
         files
     }
 
+    /// Starts a new vault in place of `target` with the real swap.
+    fn start_new(target: &Path, seconds: u64) -> Result<StartedVault, String> {
+        start_new_vault_at(target, seconds, swap_journal::swap)
+    }
+
+    fn kept_path(target: &Path, name: &str) -> PathBuf {
+        target.parent().unwrap().join(name)
+    }
+
+    /// Asserts that `target` holds a new empty vault named after its folder and that nothing a
+    /// start leaves while unfinished remains beside it.
+    fn assert_new_vault_in_place(target: &Path) {
+        let info = crate::vault::vault_info_from_path(target).unwrap();
+        assert_eq!(info.display_name, "Ganbaru");
+        assert!(!crate::vault::read_vault_manifest(target).unwrap().has_data);
+        assert!(crate::vault::refuse_lost_database(target).is_ok());
+        assert!(!swap_journal::has_unfinished_swap(target));
+        assert!(!new_vault_staging_path(target).unwrap().exists());
+    }
+
     #[test]
     fn a_lost_vault_moves_aside_whole_and_is_listed() {
         let target = vault_in("kept-folders-lost");
         lose_database(&target);
         fs::create_dir_all(target.join("assets/profile")).unwrap();
         fs::write(target.join("assets/profile/avatar.png"), b"image").unwrap();
+        let lost_id = crate::vault::vault_info_from_path(&target)
+            .unwrap()
+            .vault_id;
         let before = inventory(&target);
 
-        let id = set_aside_lost_vault_at(&target, 1_700_000_000).unwrap();
+        let started = start_new(&target, 1_700_000_000).unwrap();
 
-        assert_eq!(id, "Ganbaru before replacement 1700000000");
-        assert!(!target.exists(), "the vault folder is free for a new vault");
-        let kept = target.parent().unwrap().join(&id);
+        assert_eq!(started.kept, "Ganbaru before replacement 1700000000");
+        assert_ne!(started.info.vault_id, lost_id);
+        assert_eq!(
+            fs::canonicalize(&started.info.path).unwrap(),
+            fs::canonicalize(&target).unwrap()
+        );
+        assert_new_vault_in_place(&target);
+        let kept = kept_path(&target, &started.kept);
         assert_eq!(inventory(&kept), before, "nothing was deleted or changed");
         let listed = list_kept_vault_folders(&target).unwrap();
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].id, id);
+        assert_eq!(listed[0].id, started.kept);
         assert_eq!(listed[0].kept_at_ms, 1_700_000_000_000);
         assert_eq!(listed[0].display_name.as_deref(), Some("Ganbaru"));
         assert_eq!(
@@ -366,12 +519,10 @@ mod tests {
     fn setting_aside_in_the_same_second_takes_the_next_free_name() {
         let target = vault_in("kept-folders-collision");
         lose_database(&target);
-        let first = set_aside_lost_vault_at(&target, 50).unwrap();
-        fs::create_dir_all(&target).unwrap();
-        crate::vault::initialize_vault(&target).unwrap();
+        let first = start_new(&target, 50).unwrap().kept;
         lose_database(&target);
 
-        let second = set_aside_lost_vault_at(&target, 50).unwrap();
+        let second = start_new(&target, 50).unwrap().kept;
 
         assert_eq!(first, "Ganbaru before replacement 50");
         assert_eq!(second, "Ganbaru before replacement 51");
@@ -388,20 +539,18 @@ mod tests {
         let target = vault_in("kept-folders-healthy");
         let before = inventory(&target);
 
-        assert_eq!(
-            set_aside_lost_vault_at(&target, 7).unwrap_err(),
-            VAULT_NOT_LOST
-        );
+        assert_eq!(start_new(&target, 7).unwrap_err(), VAULT_NOT_LOST);
 
         fs::write(crate::vault::database_path(&target), b"SQLite format 3\0").unwrap();
         crate::vault::record_vault_data(&target, true).unwrap();
         assert_eq!(
-            set_aside_lost_vault_at(&target, 7).unwrap_err(),
+            start_new(&target, 7).unwrap_err(),
             VAULT_NOT_LOST,
             "a vault holding data with its database is refused too"
         );
         assert!(target.exists());
         assert!(list_kept_vault_folders(&target).unwrap().is_empty());
+        assert!(!new_vault_staging_path(&target).unwrap().exists());
         let after = inventory(&target);
         assert!(
             before.keys().all(|path| after.contains_key(path)),
@@ -415,8 +564,63 @@ mod tests {
         let target = parent.join("Ganbaru");
         fs::create_dir_all(&target).unwrap();
 
-        assert!(set_aside_lost_vault_at(&target, 7).is_err());
+        assert!(start_new(&target, 7).is_err());
         assert!(target.exists());
+        assert!(!new_vault_staging_path(&target).unwrap().exists());
+    }
+
+    #[test]
+    fn a_failed_swap_leaves_the_lost_vault_in_place() {
+        let target = vault_in("kept-folders-failed-swap");
+        lose_database(&target);
+        let before = inventory(&target);
+
+        let error = start_new_vault_at(&target, 9, |_, _, _| Err("swap failed".to_string()));
+
+        assert_eq!(error.unwrap_err(), "swap failed");
+        assert_eq!(inventory(&target), before);
+        assert!(list_kept_vault_folders(&target).unwrap().is_empty());
+        start_new(&target, 9).unwrap();
+        assert_new_vault_in_place(&target);
+    }
+
+    #[test]
+    fn an_earlier_new_vault_folder_holding_data_is_never_removed() {
+        let target = vault_in("kept-folders-staging-data");
+        lose_database(&target);
+        let before = inventory(&target);
+        let staging = new_vault_staging_path(&target).unwrap();
+        fs::create_dir_all(staging.join("assets")).unwrap();
+        fs::write(crate::vault::database_path(&staging), b"SQLite format 3\0").unwrap();
+        fs::write(staging.join("assets/photo.png"), b"image").unwrap();
+        let staged = inventory(&staging);
+
+        assert_eq!(start_new(&target, 3).unwrap_err(), STAGING_HOLDS_DATA);
+
+        assert_eq!(inventory(&staging), staged);
+        assert_eq!(inventory(&target), before);
+        fs::remove_dir_all(&staging).unwrap();
+        fs::create_dir_all(&staging).unwrap();
+        crate::vault::initialize_vault(&staging).unwrap();
+        crate::vault::record_vault_data(&staging, true).unwrap();
+        assert_eq!(
+            start_new(&target, 3).unwrap_err(),
+            STAGING_HOLDS_DATA,
+            "a marker that records data is kept too"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_earlier_new_vault_folder_holding_a_link_is_never_removed() {
+        let target = vault_in("kept-folders-staging-link");
+        lose_database(&target);
+        let staging = new_vault_staging_path(&target).unwrap();
+        fs::create_dir_all(&staging).unwrap();
+        std::os::unix::fs::symlink(&target, staging.join("linked")).unwrap();
+
+        assert_eq!(start_new(&target, 3).unwrap_err(), STAGING_HOLDS_DATA);
+        assert!(fs::symlink_metadata(staging.join("linked")).is_ok());
     }
 
     #[test]
@@ -464,5 +668,94 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "Ganbaru before replacement 4");
         assert_eq!(listed[0].size_bytes, 0);
+    }
+
+    /// A point where the process may end while a new vault starts.
+    #[derive(Clone, Copy, Debug)]
+    enum CrashWindow {
+        /// Preparing the new vault created its skeleton but no marker.
+        StagingPartial,
+        /// The new vault is prepared and no swap began.
+        StagingReady,
+        /// The swap reached `crash`.
+        Swap(swap_journal::PreserveCrash),
+        /// The swap finished and its journal was not settled yet.
+        Swapped,
+    }
+
+    /// Leaves the folders as a process that ended at `window` while starting a new vault in
+    /// place of `target` would.
+    fn crash_at(target: &Path, window: CrashWindow) {
+        let staging = new_vault_staging_path(target).unwrap();
+        if let CrashWindow::StagingPartial = window {
+            fs::create_dir_all(staging.join("assets")).unwrap();
+            fs::create_dir_all(staging.join("projects")).unwrap();
+            fs::write(crate::vault::database_path(&staging), b"").unwrap();
+            return;
+        }
+        let crashed = start_new_vault_at(target, 20, |staging, target, replacement| {
+            let Replacement::Preserve { folder, .. } = &replacement else {
+                panic!("a new vault preserves the lost one");
+            };
+            match window {
+                CrashWindow::StagingPartial | CrashWindow::StagingReady => {}
+                CrashWindow::Swap(crash) => {
+                    swap_journal::crash_preserve_swap(staging, target, folder, crash)?;
+                }
+                CrashWindow::Swapped => swap_journal::swap(staging, target, replacement)?,
+            }
+            Err("the process ended".to_string())
+        });
+        assert_eq!(crashed.unwrap_err(), "the process ended");
+    }
+
+    #[test]
+    fn a_crash_in_every_window_leaves_a_vault_in_place_and_keeps_the_lost_one() {
+        use swap_journal::PreserveCrash;
+        let windows = [
+            (CrashWindow::StagingPartial, false),
+            (CrashWindow::StagingReady, false),
+            (CrashWindow::Swap(PreserveCrash::Journaled), false),
+            (CrashWindow::Swap(PreserveCrash::TargetMoved), false),
+            (CrashWindow::Swap(PreserveCrash::BothMoved), true),
+            (CrashWindow::Swap(PreserveCrash::Activated), true),
+            (CrashWindow::Swapped, true),
+        ];
+        for (window, swapped) in windows {
+            let target = vault_in("kept-folders-crash");
+            lose_database(&target);
+            fs::create_dir_all(target.join("assets/profile")).unwrap();
+            fs::write(target.join("assets/profile/avatar.png"), b"image").unwrap();
+            let lost = inventory(&target);
+
+            crash_at(&target, window);
+            // Startup recovery runs before anything opens the vault.
+            assert_eq!(
+                swap_journal::recover(&target).unwrap(),
+                swap_journal::Recovery::Settled,
+                "{window:?}"
+            );
+
+            assert!(
+                crate::vault::vault_info_from_path(&target).is_ok(),
+                "{window:?} leaves a vault in place"
+            );
+            if swapped {
+                assert_new_vault_in_place(&target);
+            } else {
+                assert_eq!(inventory(&target), lost, "{window:?} keeps the lost vault");
+                assert!(list_kept_vault_folders(&target).unwrap().is_empty());
+                // Starting over finishes what the crash interrupted.
+                start_new(&target, 30).unwrap();
+                assert_new_vault_in_place(&target);
+            }
+            let kept = list_kept_vault_folders(&target).unwrap();
+            assert_eq!(kept.len(), 1, "{window:?}");
+            assert_eq!(
+                inventory(&kept_path(&target, &kept[0].id)),
+                lost,
+                "{window:?} keeps every file of the lost vault"
+            );
+        }
     }
 }

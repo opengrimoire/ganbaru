@@ -1,12 +1,14 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   calendarScrollbarThumb,
   calendarTimelineScrollSpeedForDistance,
   calendarTimelineWheelMultiplierForDeltaPixels,
+  createTimelineWheelScroll,
   CALENDAR_TIMELINE_LOW_DELTA_WHEEL_MULTIPLIER,
   CALENDAR_TIMELINE_WHEEL_MULTIPLIER,
   wheelDeltaToScrollPixels,
 } from "./timeline-scroll";
+import { createFakeScrollElement, installFakeFrameClock, verticalWheel } from "./scroll-animation.fixtures";
 
 describe("wheelDeltaToScrollPixels", () => {
   it("keeps pixel-mode wheel deltas unchanged", () => {
@@ -78,5 +80,77 @@ describe("calendarScrollbarThumb", () => {
     const scroll = { scrollHeight: 2400, clientHeight: 600 };
     expect(calendarScrollbarThumb({ ...scroll, scrollTop: -40 }, 600).top).toBe(0);
     expect(calendarScrollbarThumb({ ...scroll, scrollTop: 1900 }, 600).top).toBe(450);
+  });
+});
+
+describe("createTimelineWheelScroll", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function setup() {
+    const clock = installFakeFrameClock();
+    const el = createFakeScrollElement(5000, 500);
+    const scroll = createTimelineWheelScroll(() => el as HTMLElement);
+    return { clock, el, scroll };
+  }
+
+  it("reaches the wheel target through rounded offsets", () => {
+    const { clock, el, scroll } = setup();
+
+    scroll(verticalWheel(102));
+    clock.runUntilIdle();
+
+    expect(el.scrollTop).toBe(Math.round(102 * CALENDAR_TIMELINE_WHEEL_MULTIPLIER));
+  });
+
+  it("stops when other code moves the offset during the animation", () => {
+    const { clock, el, scroll } = setup();
+
+    scroll(verticalWheel(102));
+    clock.runFrame();
+    expect(el.scrollTop).toBeGreaterThan(0);
+    el.scrollTop = 2000;
+    clock.runUntilIdle();
+
+    expect(el.scrollTop).toBe(2000);
+    expect(clock.pendingFrames()).toBe(0);
+  });
+
+  it("starts the next wheel scroll from an offset that other code wrote", () => {
+    const { clock, el, scroll } = setup();
+
+    scroll(verticalWheel(102));
+    clock.runFrame();
+    el.scrollTop = 2000;
+    scroll(verticalWheel(102));
+    clock.runUntilIdle();
+
+    expect(el.scrollTop).toBe(Math.round(2000 + 102 * CALENDAR_TIMELINE_WHEEL_MULTIPLIER));
+  });
+
+  it("accumulates wheel input while the animation runs undisturbed", () => {
+    const { clock, el, scroll } = setup();
+
+    scroll(verticalWheel(102));
+    clock.runFrame();
+    scroll(verticalWheel(102));
+    clock.runUntilIdle();
+
+    expect(el.scrollTop).toBe(Math.round(2 * 102 * CALENDAR_TIMELINE_WHEEL_MULTIPLIER));
+  });
+
+  it("cancels the scheduled frame", () => {
+    const { clock, el, scroll } = setup();
+
+    scroll(verticalWheel(102));
+    clock.runFrame();
+    const reached = el.scrollTop;
+    scroll.cancel();
+
+    expect(clock.pendingFrames()).toBe(0);
+    clock.runUntilIdle();
+    expect(el.scrollTop).toBe(reached);
   });
 });

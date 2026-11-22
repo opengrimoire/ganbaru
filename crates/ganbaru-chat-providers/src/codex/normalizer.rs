@@ -87,7 +87,7 @@ pub struct CodexRouteState {
     pub rate_limits: CodexRateLimits,
     /// A retry `turn/start` is awaiting its response. The chat turn may already have settled, so
     /// a new turn must wait until the retried provider turn is known and can be ignored.
-    pub retry_request_in_flight: bool,
+    retry_request_in_flight: bool,
     /// Recent provider turns started by a retry after their chat turn had settled. Their late
     /// notifications must not touch the active chat turn.
     abandoned_provider_turn_ids: VecDeque<String>,
@@ -138,9 +138,24 @@ impl CodexRouteState {
         self.turn.cancel_retry()
     }
 
-    /// The capacity retry armed for the running chat turn.
-    pub fn capacity_retry_mut(&mut self) -> Option<&mut super::capacity_retry::CodexCapacityRetry> {
-        self.turn.retry_mut()
+    /// Spends one attempt of the armed capacity retry; see [`TurnRoute::claim_retry_attempt`].
+    pub fn claim_retry_attempt(&mut self) -> Option<super::capacity_retry::CodexCapacityRetry> {
+        self.turn.claim_retry_attempt()
+    }
+
+    /// Whether a retry `turn/start` is awaiting its response.
+    pub fn retry_request_in_flight(&self) -> bool {
+        self.retry_request_in_flight
+    }
+
+    /// Marks a retry `turn/start` as sent; new turns wait until [`Self::finish_retry_request`].
+    pub fn begin_retry_request(&mut self) {
+        self.retry_request_in_flight = true;
+    }
+
+    /// Marks the retry `turn/start` response as received, whatever its outcome.
+    pub fn finish_retry_request(&mut self) {
+        self.retry_request_in_flight = false;
     }
 
     /// Remembers a provider turn no chat turn owns, dropping the oldest past the bound.

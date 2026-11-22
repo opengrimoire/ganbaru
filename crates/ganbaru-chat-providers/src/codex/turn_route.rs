@@ -97,10 +97,11 @@ impl TurnRoute {
         }
     }
 
-    /// The capacity retry armed for the running chat turn, for counting its attempts.
-    pub fn retry_mut(&mut self) -> Option<&mut CodexCapacityRetry> {
+    /// Spends one attempt of the capacity retry armed for the running chat turn and returns a
+    /// copy of it, or `None` when no retry is armed or its attempts are used up.
+    pub fn claim_retry_attempt(&mut self) -> Option<CodexCapacityRetry> {
         match self {
-            Self::Chat { retry, .. } => retry.as_mut(),
+            Self::Chat { retry, .. } => retry.as_mut().and_then(CodexCapacityRetry::claim_attempt),
             Self::Idle | Self::Unowned { .. } => None,
         }
     }

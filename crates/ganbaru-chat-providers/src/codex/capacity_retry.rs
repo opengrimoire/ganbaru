@@ -51,6 +51,20 @@ impl CodexCapacityRetry {
         self.attempts < CODEX_CAPACITY_MAX_RETRIES && !self.cancellation.is_cancelled()
     }
 
+    /// Spends one attempt when another is still available and returns the updated retry.
+    pub(super) fn claim_attempt(&mut self) -> Option<Self> {
+        if !self.available() {
+            return None;
+        }
+        self.attempts += 1;
+        Some(self.clone())
+    }
+
+    /// The attempts spent so far.
+    pub(super) fn attempts(&self) -> u32 {
+        self.attempts
+    }
+
     /// Whether a retry is waiting out its backoff or starting, with no provider turn running.
     pub(super) fn retrying(&self) -> bool {
         self.attempts > 0 && !self.cancellation.is_cancelled()
@@ -111,12 +125,10 @@ pub(super) async fn begin_capacity_retry(
         let Some(chat_turn) = state.turn().chat_turn().cloned() else {
             return Ok(false);
         };
-        let Some(retry) = state.capacity_retry_mut().filter(|retry| retry.available()) else {
+        let Some(retry) = state.claim_retry_attempt() else {
             return Ok(false);
         };
-        retry.attempts += 1;
-        let attempt = retry.attempts;
-        let retry = retry.clone();
+        let attempt = retry.attempts();
         state.transition_turn(TurnRouteEvent::RestartAttempt)?;
         state.stream_indexes.clear();
         let provider_turn = turn
@@ -194,7 +206,7 @@ async fn run_capacity_retry(
         });
     let (current, abandoned) = match resources.route.lock() {
         Ok(mut state) => {
-            state.retry_request_in_flight = false;
+            state.finish_retry_request();
             let current = retry_is_current_in(&state, &resources, &chat_turn, &retry);
             let abandoned = match &accepted {
                 Ok(provider_turn_id) if current => {
@@ -274,7 +286,7 @@ fn begin_retry_request(
     };
     let current = retry_is_current_in(&state, resources, chat_turn, retry);
     if current {
-        state.retry_request_in_flight = true;
+        state.begin_retry_request();
     }
     current
 }
@@ -294,7 +306,7 @@ fn retry_is_current_in(
 /// Refuses to start a turn while a retry request is in flight, because the retried provider turn
 /// is not known yet and could not be told apart from the new one.
 pub(super) fn ensure_no_retry_in_flight(state: &CodexRouteState) -> ChatResult<()> {
-    if state.retry_request_in_flight {
+    if state.retry_request_in_flight() {
         return Err(ChatError::new(
             ChatErrorCode::Busy,
             "Codex is still stopping a retried turn",

@@ -291,23 +291,6 @@ pub(crate) async fn insert_task_update_change_events(
         )
         .await?;
     }
-    if previous.archived_at != next.archived_at {
-        let event_type = if previous.archived_at.is_none() && next.archived_at.is_some() {
-            "archived"
-        } else {
-            "updated"
-        };
-        insert_task_field_change_event(
-            tx,
-            task_id,
-            event_type,
-            "archived_at",
-            previous.archived_at.clone(),
-            next.archived_at.clone(),
-            change_reason.as_deref(),
-        )
-        .await?;
-    }
     if previous.blocker_reason != next.blocker_reason {
         insert_task_field_change_event(
             tx,

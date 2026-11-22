@@ -66,7 +66,6 @@ export function taskUpdatePayload(task: ProjectTask, patch: ProjectTaskUpdatePat
     startTime: merged.startDate ? merged.startTime ?? null : null,
     startReminderMinutes: taskDateReminderMinutes(merged.startDate, merged.startTime, merged.startReminderMinutes),
     targetEndDate: merged.targetEndDate ?? null,
-    archivedAt: merged.archivedAt ?? null,
     blockerReason: merged.blockerReason ?? null,
     milestone: merged.milestone,
     changeReason: patch.changeReason ?? null,

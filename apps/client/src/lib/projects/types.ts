@@ -831,7 +831,6 @@ export interface ProjectTaskUpdate {
   startTime: string | null;
   startReminderMinutes: number | null;
   targetEndDate: string | null;
-  archivedAt: string | null;
   blockerReason: string | null;
   milestone: boolean;
   changeReason: string | null;

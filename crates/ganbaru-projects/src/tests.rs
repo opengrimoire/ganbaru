@@ -111,7 +111,6 @@ pub(super) fn task_update_from_row(task: &ProjectTaskRow) -> ProjectTaskUpdate {
         start_time: task.start_time.clone(),
         start_reminder_minutes: task.start_reminder_minutes,
         target_end_date: task.target_end_date.clone(),
-        archived_at: task.archived_at.clone(),
         blocker_reason: task.blocker_reason.clone(),
         milestone: task.milestone != 0,
         change_reason: None,

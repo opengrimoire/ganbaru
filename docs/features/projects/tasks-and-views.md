@@ -18,7 +18,7 @@ Manual order is meaningful only in views and groups that use it; sorting or comp
 
 ## Archive and restore
 
-Archive is preferred to deletion when a task has history, scheduled blocks, dependencies, subtasks, Notes, or review context. Archiving a parent also archives its descendants, so active children never hide under an inactive parent, and restore follows the same closure. Archived tasks remain reachable through explicit filters and history.
+Archive is preferred to deletion when a task has history, scheduled blocks, dependencies, subtasks, Notes, or review context. Archiving a parent also archives its descendants, so active children never hide under an inactive parent, and restore follows the same closure. Archive and restore go only through the bulk task change, so a task edit never changes archive state. Archived tasks remain reachable through explicit filters and history.
 
 ## Selection and bulk actions
 

@@ -44,6 +44,37 @@ fn archive_and_restore_include_descendants_absent_from_the_selection() {
 }
 
 #[test]
+fn a_field_edit_without_an_archive_value_keeps_an_archived_task_archived() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        apply_task_bulk(&pool, &archive_request()).await.unwrap();
+        let archived: ProjectTaskRow =
+            sqlx::query_as("SELECT * FROM project_tasks WHERE id = 'task-a'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let edit: ProjectTaskUpdate = serde_json::from_value(serde_json::json!({
+            "id": archived.id,
+            "sectionId": archived.section_id,
+            "statusId": archived.status_id,
+            "parentTaskId": archived.parent_task_id,
+            "title": "Renamed",
+            "description": archived.description,
+            "priority": archived.priority,
+            "taskType": archived.task_type,
+            "milestone": archived.milestone != 0,
+        }))
+        .unwrap();
+
+        let mutation = crate::task_commands::update_task(&pool, edit).await.unwrap();
+
+        assert_eq!(mutation.tasks[0].title, "Renamed");
+        assert_eq!(mutation.tasks[0].archived_at, archived.archived_at);
+    });
+}
+
+#[test]
 fn a_late_descendant_failure_rolls_back_rows_history_and_receipt() {
     block_on(async {
         let pool = migrated_memory_pool().await;

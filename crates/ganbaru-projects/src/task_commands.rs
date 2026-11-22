@@ -181,7 +181,6 @@ pub async fn update_task(
              start_reminder_minutes = ?,
              target_end_date = ?,
              completed_at = ?,
-             archived_at = ?,
              blocker_reason = ?,
              milestone = ?,
              revision = revision + 1,
@@ -206,7 +205,6 @@ pub async fn update_task(
     .bind(task.start_reminder_minutes)
     .bind(&task.target_end_date)
     .bind(&completed_at)
-    .bind(&task.archived_at)
     .bind(&task.blocker_reason)
     .bind(if task.milestone { 1_i64 } else { 0_i64 })
     .bind(&task.id)

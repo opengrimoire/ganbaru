@@ -980,6 +980,8 @@ pub struct ProjectTaskCreate {
     pub(crate) title: String,
 }
 
+/// A task field edit. Archiving and restoring belong to the bulk task change, which keeps a
+/// subtree together, so an edit leaves `archived_at` as it is.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectTaskUpdate {
@@ -1006,7 +1008,6 @@ pub struct ProjectTaskUpdate {
     pub(crate) start_time: Option<String>,
     pub(crate) start_reminder_minutes: Option<i64>,
     pub(crate) target_end_date: Option<String>,
-    pub(crate) archived_at: Option<String>,
     pub(crate) blocker_reason: Option<String>,
     pub(crate) milestone: bool,
     pub(crate) change_reason: Option<String>,

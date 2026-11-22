@@ -670,21 +670,8 @@ pub async fn resolve_codex_approval(
         restore_pending(pending_requests, pending)?;
         return Err(error.to_chat_error("approval response"));
     }
-    if request.decision.kind == ApprovalDecisionKind::Cancel {
-        let state = route.lock().map_err(|_| router_state_error())?.clone();
-        if let (Some(thread_id), Some(turn_id)) =
-            (state.provider_thread_id, state.active_provider_turn_id)
-        {
-            client
-                .request(
-                    "turn/interrupt",
-                    json!({ "threadId": thread_id, "turnId": turn_id }),
-                    context,
-                )
-                .await
-                .map_err(|error| error.to_chat_error("approval cancel"))?;
-        }
-    }
+    // Codex holds the decision once the response is sent, so the request is resolved whatever
+    // the interrupt below does.
     let state = route.lock().map_err(|_| router_state_error())?.clone();
     let event = normalizer.request_event(
         &state,
@@ -699,6 +686,20 @@ pub async fn resolve_codex_approval(
         }),
     )?;
     sink.emit(event).await?;
+    if request.decision.kind == ApprovalDecisionKind::Cancel
+        && let (Some(thread_id), Some(turn_id)) =
+            (state.provider_thread_id, state.active_provider_turn_id)
+    {
+        // Best effort: a refused interrupt leaves the turn running, and the person can still
+        // interrupt it from the turn itself.
+        let _ = client
+            .request(
+                "turn/interrupt",
+                json!({ "threadId": thread_id, "turnId": turn_id }),
+                context,
+            )
+            .await;
+    }
     Ok(())
 }
 

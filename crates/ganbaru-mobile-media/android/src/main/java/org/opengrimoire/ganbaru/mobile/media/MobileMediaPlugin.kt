@@ -176,7 +176,7 @@ class MobileMediaPlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
-  private var pendingTreePick: PendingTreePick? = null
+  private val pendingTreePick = PendingPicker<PendingTreePick>("A music folder picker is already active")
   private val pickedTreeScans = PickedTreeScanCache<JSObject>(PICKED_TREE_REUSE_WINDOW_MS) { SystemClock.elapsedRealtime() }
   private val pendingArtworkPick = AtomicBoolean(false)
 
@@ -208,14 +208,19 @@ class MobileMediaPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun pickMediaTree(invoke: Invoke) {
-    if (pendingTreePick != null) {
-      invoke.reject("A music folder picker is already active")
+    val args = try {
+      invoke.parseArgs(TreePickArgs::class.java).also { validateScanLimits(it.maxFiles, it.maxDepth) }
+    } catch (error: Exception) {
+      invoke.reject(error.message ?: "Failed to open music folder picker")
       return
     }
     try {
-      val args = invoke.parseArgs(TreePickArgs::class.java)
-      validateScanLimits(args.maxFiles, args.maxDepth)
-      pendingTreePick = PendingTreePick(args.maxFiles, args.maxDepth)
+      pendingTreePick.begin(invoke.id, PendingTreePick(args.maxFiles, args.maxDepth))
+    } catch (error: IllegalStateException) {
+      invoke.reject(error.message ?: "A music folder picker is already active")
+      return
+    }
+    try {
       pickedTreeScans.clear()
       val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -224,7 +229,7 @@ class MobileMediaPlugin(private val activity: Activity) : Plugin(activity) {
       }
       startActivityForResult(invoke, intent, "pickMediaTreeResult")
     } catch (error: Exception) {
-      pendingTreePick = null
+      pendingTreePick.release(invoke.id)
       invoke.reject(error.message ?: "Failed to open music folder picker")
     }
   }
@@ -236,8 +241,7 @@ class MobileMediaPlugin(private val activity: Activity) : Plugin(activity) {
 
   @ActivityCallback
   fun pickMediaTreeResult(invoke: Invoke, result: ActivityResult) {
-    val pending = pendingTreePick
-    pendingTreePick = null
+    val pending = pendingTreePick.take(invoke.id)
     if (result.resultCode == Activity.RESULT_CANCELED) {
       invoke.resolve(JSObject().apply { put("tree", null) })
       return

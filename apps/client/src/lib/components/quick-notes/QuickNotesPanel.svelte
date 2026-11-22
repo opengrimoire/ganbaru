@@ -91,9 +91,12 @@
   let animateLayout = $state(false);
   let notes = $state<QuickNote[]>(initialSnapshot?.window.notes ?? []);
   let nextCursor = $state<string | null>(initialSnapshot?.window.nextCursor ?? null);
-  let loading = $state(false);
+  /** The note window read; a reset replaces the window and supersedes a page append, and an append waits for any read. */
+  type NotesLoad = { phase: "idle" } | { phase: "loading"; mode: "reset" | "more"; generation: number };
+  let notesLoad = $state.raw<NotesLoad>({ phase: "idle" });
+  const loading = $derived(notesLoad.phase === "loading" && notesLoad.mode === "reset");
+  const loadingMore = $derived(notesLoad.phase === "loading" && notesLoad.mode === "more");
   let initializing = $state(initialSnapshot === null);
-  let loadingMore = $state(false);
   let loadError = $state("");
   let editorNote = $state<QuickNote | null | undefined>(undefined);
   let deleteTarget = $state<QuickNote | null>(null);
@@ -151,17 +154,14 @@
     : "flex size-7 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent/60");
 
   async function load(reset = true): Promise<void> {
+    if (!reset && notesLoad.phase === "loading") return;
     const generation = ++loadGeneration;
     const requestedCollection = collection;
     const requestedTagId = requestedCollection === "active" ? selectedTagId : null;
     const requestedSearchText = searchText.trim();
     const requestedCursor = reset ? null : nextCursor;
-    if (reset) {
-      loading = true;
-      loadError = "";
-    } else {
-      loadingMore = true;
-    }
+    notesLoad = { phase: "loading", mode: reset ? "reset" : "more", generation };
+    if (reset) loadError = "";
     try {
       const noteWindow = await listQuickNotes(
         requestedCollection,
@@ -185,10 +185,7 @@
       console.warn("Quick notes could not be loaded:", error);
       loadError = userErrorMessage(error, t("quickNotes.loadFailed"));
     } finally {
-      if (generation === loadGeneration) {
-        loading = false;
-        loadingMore = false;
-      }
+      if (notesLoad.phase === "loading" && notesLoad.generation === generation) notesLoad = { phase: "idle" };
     }
   }
 

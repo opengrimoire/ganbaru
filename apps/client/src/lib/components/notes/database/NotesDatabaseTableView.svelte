@@ -1536,7 +1536,7 @@
                     {/if}
                     </div>
                     {#if column.type === "title"}
-                      <button type="button" data-collection-hover-reveal="" class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground opacity-100 hover:bg-accent hover:text-accent-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-has-focus-visible/row:opacity-100 peer-focus-within:invisible"
+                      <button type="button" data-collection-hover-reveal="" class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground opacity-100 hover:bg-accent hover:text-accent-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-has-focus-visible/row:opacity-100 peer-focus-within:hidden [@media(hover:none)]:static [@media(hover:none)]:ml-1 [@media(hover:none)]:shrink-0 [@media(hover:none)]:translate-y-0"
                         aria-label={t("notes.databaseRowsOpen", title)} disabled={mutating || rowCreation.blocked(row.id)} onclick={() => openRow(row)}>
                         {#if !mobileShell}<PanelRight class="size-3.5" aria-hidden="true" />{/if}<span>{t("collections.property.open")}</span>
                       </button>

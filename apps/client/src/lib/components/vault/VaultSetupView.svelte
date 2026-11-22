@@ -13,7 +13,6 @@
     pickOpenVault,
     pickCreateVault,
     useDefaultVault,
-    type VaultErrorAction,
     type VaultDefaultLocation,
     type VaultInfo,
   } from "$lib/vault/state";
@@ -22,6 +21,7 @@
   import OnboardingWindowFrame from "./OnboardingWindowFrame.svelte";
   import VaultWelcomeContent from "./VaultWelcomeContent.svelte";
   import WelcomeDataStep from "./welcome/WelcomeDataStep.svelte";
+  import { NO_VAULT_SETUP_ERRORS, recordVaultSetupFailure, vaultSetupErrorText, type VaultSetupErrors } from "./vault-setup-errors";
 
   let {
     initialError = null,
@@ -36,15 +36,13 @@
   const fallbackDefaultPath = import.meta.env.DEV
     ? "Documents/Ganbaru Dev"
     : "Documents/Ganbaru";
-  type SetupError = { raw: unknown; action: VaultErrorAction };
-
   let defaultLocation = $state<VaultDefaultLocation | null>(null);
   let busy = $state<"default" | "change" | "import" | null>(null);
-  let setupError = $state<SetupError | null>(null);
+  let setupErrors = $state.raw<VaultSetupErrors>(NO_VAULT_SETUP_ERRORS);
   /** A vault that failed to open at startup skips the language screen and lands on the data screen with the error. */
   let step = $state(untrack(() => (initialError ? WELCOME_DATA_STEP : 0)));
   const error = $derived(
-    setupError ? formatVaultError(setupError.raw, setupError.action, t) : null,
+    vaultSetupErrorText(setupErrors, (failure) => formatVaultError(failure.raw, failure.action, t)),
   );
 
   function safeStorage(): Storage | undefined {
@@ -57,7 +55,9 @@
   }
 
   onMount(() => {
-    setupError = initialError ? { raw: initialError, action: "startup" } : null;
+    if (initialError) {
+      setupErrors = recordVaultSetupFailure(setupErrors, "attempt", { raw: initialError, action: "startup" });
+    }
     void loadDefaultLocation();
   });
 
@@ -66,7 +66,7 @@
       defaultLocation = await getDefaultVaultLocation();
     } catch (err) {
       console.warn("Could not load the default vault location:", err);
-      setupError = { raw: err, action: "general" };
+      setupErrors = recordVaultSetupFailure(setupErrors, "location", { raw: err, action: "general" });
     }
   }
 
@@ -102,7 +102,7 @@
       }
     } catch (err) {
       console.warn(`Could not ${mode} the vault:`, err);
-      setupError = { raw: err, action: mode };
+      setupErrors = recordVaultSetupFailure(setupErrors, "attempt", { raw: err, action: mode });
     } finally {
       busy = null;
     }

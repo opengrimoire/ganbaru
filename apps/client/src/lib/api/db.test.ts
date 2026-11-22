@@ -15,6 +15,9 @@ beforeEach(() => {
 function pendingState(overrides: Record<string, unknown> = {}): string {
   const now = new Date().toISOString();
   return JSON.stringify({
+    scenarioId: "dense",
+    platform: "linux",
+    anchorDate: "2026-01-01",
     vaultMode: "benchmark",
     stage: "phase-a-pending",
     harnessVersion: HARNESS_VERSION,

@@ -81,6 +81,24 @@ describe("ChatComposerRuntimeController sending", () => {
 
     expect(api.importImage).not.toHaveBeenCalled();
   });
+
+  it("keeps an image imported for a draft that was replaced meanwhile out of the shown draft", async () => {
+    const controller = new ChatComposerRuntimeController(controllerOptions());
+    await controller.bind("working-folder-1", "thread-1");
+    const imported = deferred<ChatAttachmentRead>();
+    api.importImage.mockReturnValueOnce(imported.promise);
+
+    const importing = controller.importImages([new File([new Uint8Array([1])], "image.png", { type: "image/png" })]);
+    await vi.waitFor(() => expect(api.importImage).toHaveBeenCalledTimes(1));
+    api.readDraft.mockResolvedValueOnce({ ...composerDraft(), id: "draft-2", threadId: "thread-2" });
+    await controller.bind("working-folder-1", "thread-2");
+    imported.resolve(attachmentRead("attachment-1"));
+    await importing;
+
+    expect(controller.composer.threadId).toBe("thread-2");
+    expect(controller.composer.attachmentIds).toEqual([]);
+    expect(controller.attachments).toEqual([]);
+  });
 });
 
 describe("ChatComposerRuntimeController interactions", () => {
@@ -320,5 +338,20 @@ function threadShell(): ChatThreadShellRead {
     lastActivityAt: "2026-08-04T12:00:00.000Z",
     unreadAt: null,
     archivedAt: null,
+  };
+}
+
+function attachmentRead(id: string): ChatAttachmentRead {
+  return {
+    id,
+    workingFolderId: "working-folder-1",
+    kind: "image",
+    originalDisplayName: "image.png",
+    mimeType: "image/png",
+    byteSize: 1,
+    sha256: "0".repeat(64),
+    managedRelativePath: `chat/attachments/${id}.png`,
+    signatureKind: "png",
+    createdAt: "2026-08-04T12:00:00.000Z",
   };
 }

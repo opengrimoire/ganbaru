@@ -524,6 +524,7 @@ export class ChatComposerRuntimeController {
     if (this.attachments.length + files.length > CHAT_IMAGE_LIMIT) {
       throw new Error(`Attach up to ${CHAT_IMAGE_LIMIT} Chat images`);
     }
+    const draftId = this.composer.draftId;
     for (const file of files) {
       const attachment = await chatApi.importChatImage(
         workingFolderId,
@@ -531,6 +532,7 @@ export class ChatComposerRuntimeController {
         file.name,
         new Uint8Array(await file.arrayBuffer()),
       );
+      if (this.composer.draftId !== draftId) return;
       this.attachments = [...this.attachments, attachment];
       this.composerController.setAttachments(this.attachments.map((entry) => entry.id));
     }
@@ -546,7 +548,9 @@ export class ChatComposerRuntimeController {
     const workingFolderId = this.composer.workingFolderId;
     if (!workingFolderId) throw new Error("Choose a project working folder before attaching pasted text");
     if (this.attachments.length >= CHAT_IMAGE_LIMIT) throw new Error(`Attach up to ${CHAT_IMAGE_LIMIT} Chat attachments`);
+    const draftId = this.composer.draftId;
     const attachment = await chatApi.importChatTextSnippet(workingFolderId, crypto.randomUUID(), displayName, text);
+    if (this.composer.draftId !== draftId) return;
     this.attachments = [...this.attachments, attachment];
     this.composerController.setAttachments(this.attachments.map((entry) => entry.id));
   }
@@ -556,11 +560,14 @@ export class ChatComposerRuntimeController {
     if (!workingFolderId) throw new Error("Choose a project working folder before attaching images");
     const available = Math.max(0, CHAT_IMAGE_LIMIT - this.attachments.length);
     if (available === 0) throw new Error(`Attach up to ${CHAT_IMAGE_LIMIT} Chat images`);
+    const draftId = this.composer.draftId;
     const imported = await chatApi.pickChatImages(
       workingFolderId,
       Array.from({ length: available }, () => crypto.randomUUID()),
       title,
     );
+    // Attachments imported for a draft that was replaced meanwhile stay out of the draft now shown.
+    if (this.composer.draftId !== draftId) return;
     this.attachments = [...this.attachments, ...imported];
     this.composerController.setAttachments(this.attachments.map((attachment) => attachment.id));
   }

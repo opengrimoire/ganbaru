@@ -170,6 +170,41 @@ describe("ChatComposerRuntimeController sending", () => {
     expect(savedSent.at(-1)?.sentSnapshot?.value).toMatchObject({ text: "Run the tests" });
   });
 
+  it.each(["fails", "succeeds"] as const)(
+    "keeps the pending message of a later send when an earlier send %s",
+    async (outcome) => {
+      let shown = threadShell();
+      const options = { ...controllerOptions(), selectedThread: () => shown, selectedThreadId: () => shown.id };
+      const controller = new ChatComposerRuntimeController(options);
+      await controller.bind("working-folder-1", "thread-1");
+      const first = deferred<SendChatTurnResult>();
+      const second = deferred<SendChatTurnResult>();
+      api.sendTurn.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+      const firstSend = controller.send();
+      await vi.waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(1));
+      shown = { ...threadShell(), id: "thread-2" };
+      api.readDraft.mockResolvedValueOnce({ ...composerDraft(), id: "draft-2", threadId: "thread-2", text: "Second prompt" });
+      await controller.bind("working-folder-1", "thread-2");
+      const secondSend = controller.send();
+      await vi.waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(2));
+      const secondMessageId = api.sendTurn.mock.calls[1]?.[0].messageId;
+      if (outcome === "fails") {
+        first.reject(new Error("Provider unavailable"));
+        await expect(firstSend).rejects.toThrow("Provider unavailable");
+      } else {
+        first.resolve({ thread: threadShell(), dispatch: null, launchError: null });
+        await firstSend;
+      }
+
+      expect(controller.pendingUserMessage?.row.id).toBe(secondMessageId);
+      expect(controller.pendingUserMessage?.threadId).toBe("thread-2");
+      second.resolve({ thread: shown, dispatch: null, launchError: null });
+      await secondSend;
+      expect(controller.pendingUserMessage).toBeNull();
+    },
+  );
+
   it("rejects pasted or dropped images beyond the attachment limit before importing", async () => {
     const controller = new ChatComposerRuntimeController(controllerOptions());
     await controller.bind("working-folder-1", "thread-1");

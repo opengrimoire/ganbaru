@@ -226,6 +226,15 @@ export class ChatComposerRuntimeController {
     return JSON.stringify([this.options.selectedThreadId(), this.composer.draftId]);
   }
 
+  /**
+   * Drops the optimistic user message only while it is still the one a send showed, so a later send keeps its own.
+   *
+   * @param messageId Message ID of the send that is settling.
+   */
+  private clearPendingUserMessage(messageId: string): void {
+    if (this.pendingUserMessage?.row.id === messageId) this.pendingUserMessage = null;
+  }
+
   private dispatchInteraction(event: InteractionLoadEvent): void {
     this.interactionLoad = transitionInteractionLoad(this.interactionLoad, event);
   }
@@ -329,7 +338,7 @@ export class ChatComposerRuntimeController {
         mentions,
       });
     } catch (error: unknown) {
-      this.pendingUserMessage = null;
+      this.clearPendingUserMessage(messageId);
       // Another draft shown meanwhile must not receive this text; the sent draft keeps it in its stored sent snapshot.
       if (this.composer.draftId === sentDraftId) {
         this.composerController.restoreSentSnapshot();
@@ -351,7 +360,7 @@ export class ChatComposerRuntimeController {
     try {
       await this.options.refreshTimeline(result.thread.id);
     } finally {
-      this.pendingUserMessage = null;
+      this.clearPendingUserMessage(messageId);
     }
     // The turn is already sent, so preference bookkeeping must not report a send failure.
     try {

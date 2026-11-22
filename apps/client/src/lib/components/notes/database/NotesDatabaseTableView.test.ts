@@ -1018,4 +1018,24 @@ describe("Notes table load more", () => {
     finishReload(table(320));
     await vi.waitFor(() => expect(document.body.textContent).not.toContain("The table could not be loaded."));
   });
+
+  it("keeps a change failure once a reload that was already running replaces the window", async () => {
+    const onPropertyAction = vi.fn<(request: NotesDatabasePropertyActionRequest) => Promise<void>>().mockRejectedValueOnce(new Error("Disk full"));
+    vi.mocked(getNotesDataSourceTableView).mockResolvedValue(configuredTable());
+    vi.mocked(listNotesDataSourceTemplates).mockResolvedValue([]);
+    component = mount(NotesDatabaseTableView, { target: document.body, props: {
+      dataSourceId: "source", onSelectPage: vi.fn(), onAddProperty: vi.fn(), onPropertyAction, onEditProperties: vi.fn(), onCloseSettings: vi.fn(),
+    } });
+    await vi.waitFor(() => expect(document.querySelector('[role="columnheader"] button[aria-label="Name"]')).not.toBeNull());
+    let finishReload: (view: NotesDataSourceTableView) => void = () => {};
+    vi.mocked(getNotesDataSourceTableView).mockImplementation(() => new Promise((resolve) => { finishReload = resolve; }));
+    notesDatabaseSession.invalidate();
+    await vi.waitFor(() => expect(getNotesDataSourceTableView).toHaveBeenCalledTimes(2));
+    action(await propertyMenu("Status"), "Delete property").click();
+    await vi.waitFor(() => expect(document.body.textContent).toContain("The change could not be saved."));
+    finishReload(configuredTable());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await tick();
+    expect(document.body.textContent).toContain("The change could not be saved.");
+  });
 });

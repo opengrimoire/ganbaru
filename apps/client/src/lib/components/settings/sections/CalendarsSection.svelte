@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { untrack } from "svelte";
   import {
     isPreservedDataOmissionMessage,
     timingTooLargeImportLabel,
@@ -150,14 +150,11 @@
     }
   }
 
-  onMount(() => {
-    void refreshCounts();
-  });
-
   $effect(() => {
-    // Re-count whenever the calendars list changes (add/remove).
+    // Counts on open and whenever the calendars list changes (add/remove). The refresh reads and writes the counts
+    // resource, so it runs untracked to keep this effect from rerunning on its own write.
     calendarsStore.list.length;
-    void refreshCounts();
+    untrack(() => void refreshCounts());
   });
 
   /**

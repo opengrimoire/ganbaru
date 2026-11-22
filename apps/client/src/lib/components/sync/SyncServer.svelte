@@ -15,6 +15,7 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { SERVER_GUIDE_URL, syncServerErrorLabel, syncServerLines } from "$lib/sync/server";
+  import { IDLE_SYNC_ACTIONS, runSyncAction, type SyncActionAccess, type SyncActionState } from "./sync-action-state";
 
   let {
     buttonClass,
@@ -36,59 +37,61 @@
   let server = $state<SyncServerView | null>(null);
   let loading = $state(true);
   let loadFailed = $state(false);
-  let busy = $state(false);
+  let actions = $state<SyncActionState<"server">>(IDLE_SYNC_ACTIONS);
+  const actionAccess: SyncActionAccess<"server"> = { read: () => actions, write: (next) => { actions = next; } };
+  const busy = $derived(actions.running.length > 0);
   let code = $state("");
   let takeAnchor = $state(true);
   /** Whether an anchor server is being added and the form stays up to repeat it with the same code. */
   let resuming = $state(false);
-  let message = $state("");
-  let failed = $state(false);
   let removeConfirming = $state(false);
 
   const lines = $derived(server ? syncServerLines(t, server) : []);
   const isAnchorCode = $derived(code.trim().startsWith(ANCHOR_CODE_PREFIX));
 
-  /** Loads the server the vault names and probes a relay; a probe failure is part of the view. */
+  /** Counts status reads, so only the newest one settles the view and ends the loading state. */
+  let statusReads = 0;
+
+  /**
+   * Loads the server the vault names and probes a relay; a probe failure is part of the view. A refresh after an add
+   * or removal can overlap another, and an older read never replaces a newer one.
+   */
   async function refresh(): Promise<void> {
+    const read = ++statusReads;
     loading = true;
     try {
-      server = await getSyncServerStatus();
+      const next = await getSyncServerStatus();
+      if (read !== statusReads) return;
+      server = next;
       loadFailed = false;
     } catch (cause: unknown) {
       console.warn("sync server status could not be loaded", cause);
-      loadFailed = true;
+      if (read === statusReads) loadFailed = true;
     } finally {
-      loading = false;
+      if (read === statusReads) loading = false;
     }
   }
 
-  function showError(cause: unknown): void {
+  /** The message for a failed server change, which it also logs. */
+  function errorMessage(cause: unknown): string {
     console.warn("sync server change failed", cause);
-    failed = true;
-    message = cause instanceof SyncServerError ? syncServerErrorLabel(t, cause) : t("sync.server.errors.failed");
+    return cause instanceof SyncServerError ? syncServerErrorLabel(t, cause) : t("sync.server.errors.failed");
   }
 
   async function add(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     const entered = code.trim();
-    if (busy || entered.length === 0) return;
-    busy = true;
-    message = "";
-    failed = false;
-    try {
+    if (entered.length === 0) return;
+    await runSyncAction(actionAccess, "server", async () => {
       const step = await addSyncServer(entered, isAnchorCode && takeAnchor);
       resuming = step === "waitingForAnchor";
       if (!resuming) {
         code = "";
       }
-      message = addedMessage(step);
       await refresh();
       onAdded?.();
-    } catch (cause: unknown) {
-      showError(cause);
-    } finally {
-      busy = false;
-    }
+      return step;
+    }, { success: addedMessage, failure: errorMessage, exclusive: true });
   }
 
   function addedMessage(step: SyncServerAddStep): string {
@@ -104,19 +107,11 @@
 
   async function remove(): Promise<void> {
     removeConfirming = false;
-    if (busy) return;
-    busy = true;
-    message = "";
-    failed = false;
-    try {
+    await runSyncAction(actionAccess, "server", async () => {
       const removal = await removeSyncServer();
-      message = removedMessage(removal);
       await refresh();
-    } catch (cause: unknown) {
-      showError(cause);
-    } finally {
-      busy = false;
-    }
+      return removal;
+    }, { success: removedMessage, failure: errorMessage, exclusive: true });
   }
 
   async function openGuide(url: string): Promise<void> {
@@ -206,12 +201,10 @@
     </button>
   </div>
 
-  {#if message}
-    {#if failed}
-      <Notice class="px-1 text-[0.8rem] leading-5" {message} copy={false} />
-    {:else}
-      <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{message}</p>
-    {/if}
+  {#if actions.feedback.kind === "failed"}
+    <Notice class="px-1 text-[0.8rem] leading-5" message={actions.feedback.message} copy={false} />
+  {:else if actions.feedback.kind === "done"}
+    <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{actions.feedback.message}</p>
   {/if}
 </div>
 

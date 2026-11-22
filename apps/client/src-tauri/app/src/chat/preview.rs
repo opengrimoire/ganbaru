@@ -82,8 +82,7 @@ pub struct OpenBrowserTabRequest {
     pub external_navigation_confirmed: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BrowserTabRead {
     pub thread_id: ChatThreadId,
     pub tab_id: String,
@@ -93,7 +92,31 @@ pub struct BrowserTabRead {
     pub loading: bool,
     pub viewport_width: u32,
     pub viewport_height: u32,
-    pub external_origin: bool,
+}
+
+impl BrowserTabRead {
+    /// Whether the current page is outside loopback. Derived from `current_url` so it always describes the
+    /// page the tab shows; a URL that does not parse reports false.
+    pub fn external_origin(&self) -> bool {
+        reqwest::Url::parse(&self.current_url).is_ok_and(|url| !is_loopback(&url))
+    }
+}
+
+impl Serialize for BrowserTabRead {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut wire = serializer.serialize_struct("BrowserTabRead", 9)?;
+        wire.serialize_field("threadId", &self.thread_id)?;
+        wire.serialize_field("tabId", &self.tab_id)?;
+        wire.serialize_field("currentUrl", &self.current_url)?;
+        wire.serialize_field("title", &self.title)?;
+        wire.serialize_field("visible", &self.visible)?;
+        wire.serialize_field("loading", &self.loading)?;
+        wire.serialize_field("viewportWidth", &self.viewport_width)?;
+        wire.serialize_field("viewportHeight", &self.viewport_height)?;
+        wire.serialize_field("externalOrigin", &self.external_origin())?;
+        wire.end()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -140,7 +163,7 @@ struct BrowserArtifactPayload<'a> {
 pub struct ChatBrowserManager {
     tabs: Arc<Mutex<HashMap<String, RuntimeBrowserTab>>>,
     recording: Arc<Mutex<Option<ActiveRecording>>>,
-    pending_approvals: Arc<Mutex<HashMap<ChatThreadId, approvals::PendingPreviewApproval>>>,
+    pending_approvals: Arc<Mutex<approvals::PendingApprovals>>,
     /// Page permission requests and dialogs waiting for the user, and remembered answers.
     page_requests: Arc<Mutex<page_requests::PageRequestState>>,
     data_sweeps: data_store::PreviewDataSweeps,
@@ -240,7 +263,7 @@ impl ChatBrowserManager {
     ) {
         self.cancel_recording(|recording| &recording.thread_id == thread_id);
         if let Ok(mut pending) = self.pending_approvals.lock() {
-            pending.remove(thread_id);
+            pending.forget(thread_id);
         }
         self.forget_thread_page_requests(app, thread_id);
         let labels = if let Ok(mut tabs) = self.tabs.lock() {
@@ -349,7 +372,6 @@ async fn navigated_read(
     manager.update(tab_id, |read| {
         read.current_url = url.to_string();
         read.loading = true;
-        read.external_origin = !is_loopback(url);
     });
     let read = manager.read(tab_id)?.read;
     persist_tab(pool, &read).await?;
@@ -470,9 +492,6 @@ pub async fn chat_browser_status(
         if reads.iter().any(|read| read.tab_id == tab_id) {
             continue;
         }
-        let external_origin = reqwest::Url::parse(&current_url)
-            .ok()
-            .is_some_and(|url| !is_loopback(&url));
         reads.push(BrowserTabRead {
             thread_id: thread_id.clone(),
             tab_id,
@@ -482,7 +501,6 @@ pub async fn chat_browser_status(
             loading: false,
             viewport_width: u32::try_from(width.unwrap_or(800)).unwrap_or(800),
             viewport_height: u32::try_from(height.unwrap_or(600)).unwrap_or(600),
-            external_origin,
         });
     }
     reads.sort_by(|left, right| left.tab_id.cmp(&right.tab_id));
@@ -569,7 +587,6 @@ pub async fn chat_browser_open(
         app.state::<ChatBrowserManager>()
             .update(&request.tab_id, |read| {
                 read.current_url = url.to_string();
-                read.external_origin = !is_loopback(&url);
                 read.visible = true;
                 read.loading = true;
                 read.viewport_width = bounds.width.round() as u32;

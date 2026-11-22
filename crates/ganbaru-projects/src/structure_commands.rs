@@ -9,7 +9,7 @@ use super::models::{
     GroupProjectReorder, ProjectGroupCreate, ProjectGroupReorder, ProjectGroupRow,
     ProjectGroupUpdate, ProjectMutationRemoval, ProjectPriorityCreate, ProjectPriorityUpdate,
     ProjectRow, ProjectSectionCreate, ProjectSectionUpdate, ProjectStatusCreate,
-    ProjectStatusUpdate, ProjectTagCreate, ProjectTagUpdate, ProjectsMutationRows,
+    ProjectStatusUpdate, ProjectTagCreate, ProjectTagUpdate, ProjectTaskRow, ProjectsMutationRows,
 };
 use super::mutations::{
     UniqueName, delete_tag_with_history, delete_unused_priority, delete_unused_status,
@@ -19,6 +19,7 @@ use super::mutations::{
 use super::order::{OrderGroup, OrderPlacement};
 use super::project_commands::project_order;
 use super::routine::ROUTINE_GROUP_ID;
+use super::task_completion::move_status_task_completion;
 use super::validation::{
     require_non_empty, validate_group_create, validate_group_update, validate_optional_group_id,
     validate_priority_create, validate_priority_update, validate_section_create,
@@ -356,15 +357,11 @@ pub async fn update_section(
         "UPDATE project_sections
          SET name = ?,
              collapsed = ?,
-             hidden_at = ?,
-             archived_at = ?,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
     .bind(section.name.trim())
     .bind(if section.collapsed { 1_i64 } else { 0_i64 })
-    .bind(&section.hidden_at)
-    .bind(&section.archived_at)
     .bind(&section.id)
     .execute(&mut *tx)
     .await
@@ -431,23 +428,49 @@ pub async fn update_status(
         "project status not found",
     )
     .await?;
-    sqlx::query(
+    let previous: Option<(i64, String)> =
+        sqlx::query_as("SELECT terminal, name FROM project_statuses WHERE id = ?")
+            .bind(&status.id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| format!("load project status: {e}"))?;
+    let Some((previous_terminal, previous_name)) = previous else {
+        return Err("project status not found".to_string());
+    };
+    let updated = sqlx::query(
         "UPDATE project_statuses
          SET name = ?,
              category = ?,
              color = ?,
              terminal = ?,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ?",
+         WHERE id = ? AND terminal = ?",
     )
     .bind(status.name.trim())
     .bind(&status.category)
     .bind(status.color)
     .bind(if status.terminal { 1_i64 } else { 0_i64 })
     .bind(&status.id)
+    .bind(previous_terminal)
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("update project status: {e}"))?;
+    if updated.rows_affected() != 1 {
+        return Err("project status changed; reload before retrying".to_string());
+    }
+    let changed_task_ids = if (previous_terminal != 0) == status.terminal {
+        Vec::new()
+    } else {
+        move_status_task_completion(
+            &mut tx,
+            &status.id,
+            previous_terminal != 0,
+            &previous_name,
+            status.terminal,
+            status.name.trim(),
+        )
+        .await?
+    };
     move_if_placed(
         &mut tx,
         project_scoped_order("project_statuses", &project_id),
@@ -458,7 +481,20 @@ pub async fn update_status(
     tx.commit()
         .await
         .map_err(|e| format!("commit project status update: {e}"))?;
-    status_mutation(pool, &status.id).await
+    let mut mutation = status_mutation(pool, &status.id).await?;
+    for task_id in &changed_task_ids {
+        mutation.tasks.push(
+            sqlx::query_as::<_, ProjectTaskRow>("SELECT * FROM project_tasks WHERE id = ?")
+                .bind(task_id)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| format!("load moved status task: {e}"))?,
+        );
+        mutation
+            .task_change_events
+            .extend(latest_task_change_events(pool, task_id).await?);
+    }
+    Ok(mutation)
 }
 
 /// Deletes an unused status softly and returns the row with its deletion time.

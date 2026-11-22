@@ -2,10 +2,16 @@
 
 use super::internal_mcp::{InternalMcpRunScope, generate_opaque_handle};
 use ganbaru_chat::coordination::revocation::PARENT_AUTHORITY_REVOKED_REASON;
+use ganbaru_chat::repository::state_writes::{
+    StateWriteColumns, StateWriteValue, guarded_thread_state_assignment, narrowed_sources_sql,
+    persist_turn_transition, sources_sql,
+};
 use ganbaru_chat::runtime::ChatRuntimeRegistry;
+use ganbaru_chat::state::ChatDispatchJobState;
 use ganbaru_chat_contracts::models::{
     ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatProjectionKey,
-    ChatResult, ChatThreadId, ChatTurnId, ProjectWorkingFolderId,
+    ChatResult, ChatThreadId, ChatThreadState, ChatTurnId, ChatTurnState, ChatWorkAssignmentState,
+    ProjectWorkingFolderId,
 };
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeSet;
@@ -645,25 +651,26 @@ pub(super) async fn persist_revocation_before_cleanup(
             .execute(&mut *transaction)
             .await
             .map_err(persistence_error)?;
-        sqlx::query(
+        let to = ChatWorkAssignmentState::Cancelled;
+        let assignment_cancel = format!(
             "UPDATE chat_work_assignments
-             SET state = 'cancelled', state_reason = ?, settled_at = coalesce(settled_at, ?),
+             SET state = '{}', state_reason = ?, settled_at = coalesce(settled_at, ?),
                  revision = revision + 1, updated_at = ?
              WHERE id IN (
                SELECT assignment_id FROM chat_assignment_authorization_revisions
                WHERE id = ?
-             ) AND state IN (
-               'queued', 'working', 'waiting_for_answer',
-               'waiting_for_approval', 'ready_for_review'
-             )",
-        )
-        .bind(reason)
-        .bind(&settled_at)
-        .bind(&settled_at)
-        .bind(authorization_revision_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
+             ) AND state IN ({})",
+            to.as_str(),
+            narrowed_sources_sql(to, ChatWorkAssignmentState::is_active)
+        );
+        sqlx::query(sqlx::AssertSqlSafe(assignment_cancel.as_str()))
+            .bind(reason)
+            .bind(&settled_at)
+            .bind(&settled_at)
+            .bind(authorization_revision_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(persistence_error)?;
         let assignment_id: Option<String> = sqlx::query_scalar(
             "SELECT assignment_id FROM chat_assignment_authorization_revisions WHERE id = ?",
         )
@@ -683,17 +690,19 @@ pub(super) async fn persist_revocation_before_cleanup(
                     )
                     .await?;
                 for descendant_id in &cancelled {
-                    sqlx::query(
+                    let end_jobs = format!(
                         "UPDATE chat_assignment_dispatch_jobs
                          SET state = 'cancelled', last_error = ?, updated_at = ?
-                         WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
-                    )
-                    .bind(PARENT_AUTHORITY_REVOKED_REASON)
-                    .bind(&settled_at)
-                    .bind(descendant_id)
-                    .execute(&mut *transaction)
-                    .await
-                    .map_err(persistence_error)?;
+                         WHERE assignment_id = ? AND state IN ({})",
+                        sources_sql(ChatDispatchJobState::Cancelled)
+                    );
+                    sqlx::query(sqlx::AssertSqlSafe(end_jobs.as_str()))
+                        .bind(PARENT_AUTHORITY_REVOKED_REASON)
+                        .bind(&settled_at)
+                        .bind(descendant_id)
+                        .execute(&mut *transaction)
+                        .await
+                        .map_err(persistence_error)?;
                 }
             }
             ganbaru_chat::coordination::delegation::post_delegation_outcome(
@@ -704,41 +713,46 @@ pub(super) async fn persist_revocation_before_cleanup(
             .await?;
         }
         settled_assignment = assignment_id;
-        sqlx::query(
+        let end_jobs = format!(
             "UPDATE chat_assignment_dispatch_jobs
              SET state = 'cancelled', last_error = ?, updated_at = ?
              WHERE assignment_id IN (
                SELECT assignment_id FROM chat_assignment_authorization_revisions
                WHERE id = ?
-             ) AND state IN ('queued', 'claimed')",
-        )
-        .bind(reason)
-        .bind(&settled_at)
-        .bind(authorization_revision_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
+             ) AND state IN ({})",
+            sources_sql(ChatDispatchJobState::Cancelled)
+        );
+        sqlx::query(sqlx::AssertSqlSafe(end_jobs.as_str()))
+            .bind(reason)
+            .bind(&settled_at)
+            .bind(authorization_revision_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(persistence_error)?;
     }
     for run in runs {
-        sqlx::query(
-            "UPDATE chat_turns
-             SET state = 'interrupted', completed_at = coalesce(completed_at, ?),
-                 stop_reason = ?, updated_at = ?
-             WHERE id = ? AND thread_id = ?
-               AND state IN ('pending', 'dispatching', 'active',
-                             'waiting_for_approval', 'waiting_for_user_input')",
+        // A turn that already settled keeps its outcome; only a turn still in progress is
+        // interrupted by the revocation.
+        let interrupted = persist_turn_transition(
+            &mut transaction,
+            run.thread_id.as_str(),
+            run.turn_id.as_str(),
+            ChatTurnState::Interrupted,
+            StateWriteColumns {
+                assignments: "completed_at = coalesce(completed_at, ?), stop_reason = ?,
+                              updated_at = ?",
+                values: &[
+                    StateWriteValue::Text(&settled_at),
+                    StateWriteValue::Text(&turn_reason),
+                    StateWriteValue::Text(&settled_at),
+                ],
+            },
         )
-        .bind(&settled_at)
-        .bind(&turn_reason)
-        .bind(&settled_at)
-        .bind(run.turn_id.as_str())
-        .bind(run.thread_id.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
-        sqlx::query(
+        .await?
+        .is_applied();
+        let statement = format!(
             "UPDATE chat_threads
-             SET state = 'closed', latest_turn_state = 'interrupted',
+             SET {}, latest_turn_state = CASE WHEN ? THEN ? ELSE latest_turn_state END,
                  provider_thread_id = NULL, resume_cursor_schema_version = NULL,
                  resume_cursor_data = NULL, revision = revision + 1, updated_at = ?
              WHERE id = ? AND NOT EXISTS (
@@ -747,13 +761,17 @@ pub(super) async fn persist_revocation_before_cleanup(
                  AND newer.authorization_revision_id != ?
                  AND newer.state IN ('starting', 'working', 'waiting')
              )",
-        )
-        .bind(&settled_at)
-        .bind(run.thread_id.as_str())
-        .bind(run.authorization_revision_id.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
+            guarded_thread_state_assignment(ChatThreadState::Closed)
+        );
+        sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
+            .bind(interrupted)
+            .bind(ChatTurnState::Interrupted.as_str())
+            .bind(&settled_at)
+            .bind(run.thread_id.as_str())
+            .bind(run.authorization_revision_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(persistence_error)?;
     }
     transaction.commit().await.map_err(persistence_error)?;
     Ok(settled_assignment)

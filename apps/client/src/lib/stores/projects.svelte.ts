@@ -120,6 +120,8 @@ onConfigChangedElsewhere((keys) => {
 let loadedProjectIds = $state<string[]>([]);
 let loadRequestId = 0;
 let initialLoadPromise: Promise<void> | null = null;
+/** The newest workspace load a person asked for, which {@link reloadUntilApplied} waits for before loading. */
+let visibleReload: Promise<void> | null = null;
 const optionalDataLoadedKeys = new Set<string>();
 const optionalDataRequests = new Map<string, Promise<void>>();
 let optionalDataVersion = $state(0);
@@ -316,11 +318,29 @@ function applyLoadedSnapshot(incoming: ProjectsSnapshot, projectId: string | nul
  * an open detail panel never falls back to a summary. When a pane asks, the project the workspace resolves becomes
  * that pane's selection and its pending task view request is dropped.
  */
-async function reload(
+function reload(
   projectId: string | null = primaryPane.selectedProjectId,
   quiet = false,
   pane: ProjectsPane | null = null,
 ): Promise<void> {
+  const request = loadWorkspace(projectId, quiet, pane);
+  if (!quiet) {
+    visibleReload = request;
+    void request.catch(() => undefined).finally(() => {
+      if (visibleReload === request) visibleReload = null;
+    });
+  }
+  return request;
+}
+
+/**
+ * Loads the workspace for {@link reload}; a newer load supersedes this one, so only the newest load applies.
+ *
+ * @param projectId - The project to resolve.
+ * @param quiet - Whether the load leaves the loading state and errors alone and refreshes open task details.
+ * @param pane - The pane whose selection becomes the resolved project.
+ */
+async function loadWorkspace(projectId: string | null, quiet: boolean, pane: ProjectsPane | null): Promise<void> {
   listenForOtherWindows();
   if (pane && !quiet) cancelTaskView(pane);
   const requestId = ++loadRequestId;
@@ -351,6 +371,7 @@ async function reload(
       }
     }
     applyLoadedSnapshot(response.snapshot, resolvedProjectId);
+    loadError = null;
     if (quiet) {
       restoreTaskDetails(details, resolvedProjectId);
       taskMutationRevision += 1;
@@ -415,14 +436,36 @@ async function ensureProjectData(projectId: string | null | undefined): Promise<
 
 async function selectProject(pane: ProjectsPane, projectId: string | null): Promise<void> {
   const requestId = ++pane.selectProjectRequestId;
+  const isCurrent = () => requestId === pane.selectProjectRequestId;
   if (!projectId || isProjectDataLoaded(projectId)) {
     setSelectedProjectId(pane, projectId);
     return;
   }
-  await ensureProjectData(projectId);
-  if (requestId !== pane.selectProjectRequestId) return;
-  if (!isProjectDataLoaded(projectId)) return;
+  if (!loaded) await ensureLoaded();
+  await reloadUntilApplied(projectId, false, () => isCurrent() && !isProjectDataLoaded(projectId));
+  if (!isCurrent() || !isProjectDataLoaded(projectId)) return;
   setSelectedProjectId(pane, projectId);
+}
+
+/**
+ * Loads the workspace for a project until a load applies, since a newer workspace load supersedes the one in flight.
+ * A load after a superseded one, and every quiet load, first waits for the visible load in flight, so a quiet load
+ * never supersedes a load a person asked for and two loads never keep superseding each other.
+ *
+ * @param projectId - The project to resolve.
+ * @param quiet - Whether the loads are quiet.
+ * @param wanted - Whether the load is still needed; it stops loading once false.
+ */
+async function reloadUntilApplied(projectId: string | null, quiet: boolean, wanted: () => boolean): Promise<void> {
+  for (let attempt = 0; wanted(); attempt += 1) {
+    if (quiet || attempt > 0) {
+      while (visibleReload) await visibleReload.catch(() => undefined);
+      if (!wanted()) return;
+    }
+    const requestId = loadRequestId + 1;
+    await reload(projectId, quiet);
+    if (requestId === loadRequestId) return;
+  }
 }
 
 async function ensureOptionalData(
@@ -735,7 +778,7 @@ async function reloadQuietlyBetweenCommands(): Promise<void> {
     const committed = actions.readMutationActivity().committed;
     const shown = shownProjectIds().filter((projectId): projectId is string => Boolean(projectId));
     // One at a time, since a newer workspace load supersedes the one in flight.
-    for (const projectId of shown.length > 0 ? shown : [null]) await reload(projectId, true);
+    for (const projectId of shown.length > 0 ? shown : [null]) await reloadUntilApplied(projectId, true, () => loaded);
     if (actions.readMutationActivity().committed === committed) return;
   }
 }

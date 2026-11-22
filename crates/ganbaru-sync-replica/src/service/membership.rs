@@ -8,7 +8,7 @@ use super::host::SyncHost;
 use super::{ProposalRequest, linked_enrollment, tls_fingerprint};
 use super::{Session, acquire, blocking, discovery_keys, peers};
 #[cfg(desktop)]
-use crate::authority::{self, AnchorKeys, Founding, ensure_anchor_keys, ensure_charter};
+use crate::authority::{self, Founding};
 use crate::now_ms;
 #[cfg(desktop)]
 use crate::outbox::Outbox;
@@ -57,7 +57,15 @@ impl<H: SyncHost> Session<'_, H> {
                         .to_string(),
                 );
             };
-            let anchor = self.anchor_keys().await?;
+            // Writers without a charter come from a build before the authorization log, and
+            // only Reset sync state may found a space over them.
+            {
+                let mut conn = acquire(&self.pool).await?;
+                self.engine
+                    .refuse_legacy_state(&mut conn, &self.ctx)
+                    .await
+                    .map_err(|error| format!("open sync space: {error}"))?;
+            }
             let tls_fingerprint = tls_fingerprint(manager.certificate()?.as_ref());
             let discovery_key = ganbaru_handoff::discovery::DiscoveryKey::generate()?;
             let founding = Founding {
@@ -67,15 +75,15 @@ impl<H: SyncHost> Session<'_, H> {
                 person: &person,
                 now_ms: now_ms()?,
             };
-            let mut conn = acquire(&self.pool).await?;
-            // Writers without a charter come from a build before the authorization log, and
-            // only Reset sync state may found a space over them.
-            self.engine
-                .refuse_legacy_state(&mut conn, &self.ctx)
-                .await
-                .map_err(|error| format!("open sync space: {error}"))?;
-            let charter =
-                ensure_charter(&self.engine, &mut conn, &self.ctx, &anchor, &founding).await?;
+            let charter = authority::found_with_recovery_kit(
+                &self.engine,
+                &self.pool,
+                &self.ctx,
+                self.keys.clone(),
+                &self.files.vault_id,
+                &founding,
+            )
+            .await?;
             Ok(Some(self.pinned_charter(&charter)))
         }
         #[cfg(mobile)]
@@ -187,29 +195,6 @@ impl<H: SyncHost> Session<'_, H> {
             blocking(move || DiscoveryKeys::follow(&path, &vault_id, view.as_ref(), now)).await?;
         discovery_keys::publish(keys);
         Ok(())
-    }
-
-    /// The anchor keys of the vault, each created once. The recovery kit is the one the vault
-    /// database keeps, as for a kit created before the vault linked; without one, the kit that
-    /// founds the space is stored there before the charter names it.
-    #[cfg(desktop)]
-    async fn anchor_keys(&self) -> Result<AnchorKeys, String> {
-        let stored = {
-            let mut conn = acquire(&self.pool).await?;
-            ganbaru_sync::local::recovery_kit_keys(&mut conn)
-                .await
-                .map_err(|error| format!("read the sync recovery kit: {error}"))?
-        };
-        let keys = self.keys.clone();
-        let vault_id = self.files.vault_id.clone();
-        let anchor = blocking(move || ensure_anchor_keys(keys.as_ref(), &vault_id, stored)).await?;
-        if stored.is_none() {
-            let mut conn = acquire(&self.pool).await?;
-            ganbaru_sync::local::store_recovery_kit_keys(&mut conn, &anchor.recovery, now_ms()?)
-                .await
-                .map_err(|error| format!("store the sync recovery kit: {error}"))?;
-        }
-        Ok(anchor)
     }
 
     /// On the coordinator, unlinks every linked device the selected log removed, whichever admin

@@ -740,6 +740,41 @@ pub struct ChatScratchReclaimReportRead {
 }
 
 impl ChatWorkAssignmentState {
+    pub const ALL: [Self; 8] = [
+        Self::Queued,
+        Self::Working,
+        Self::WaitingForAnswer,
+        Self::WaitingForApproval,
+        Self::ReadyForReview,
+        Self::Completed,
+        Self::Failed,
+        Self::Cancelled,
+    ];
+
+    /// Returns the persisted and wire literal of the state.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Working => "working",
+            Self::WaitingForAnswer => "waiting_for_answer",
+            Self::WaitingForApproval => "waiting_for_approval",
+            Self::ReadyForReview => "ready_for_review",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// Parses a stored state, or returns `None` for an unknown value.
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|state| state.as_str() == value)
+    }
+
+    /// Returns whether the work ended for good: only a settled assignment has a settle time.
+    pub fn is_settled(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+
     /// Returns whether the assignment still occupies the thread's active work slot.
     pub fn is_active(self) -> bool {
         matches!(
@@ -772,6 +807,20 @@ mod tests {
         ChatScratchPromotionDestinationRead, ChatWorkAssignmentState, UtcTimestamp,
     };
     use serde_json::json;
+
+    #[test]
+    fn work_assignment_states_round_trip_their_stored_literals_and_settle_only_when_ended() {
+        for state in ChatWorkAssignmentState::ALL {
+            assert_eq!(ChatWorkAssignmentState::parse(state.as_str()), Some(state));
+            assert_eq!(
+                serde_json::to_value(state).unwrap(),
+                json!(state.as_str()),
+                "{state:?}"
+            );
+            assert_eq!(state.is_settled(), !state.is_active(), "{state:?}");
+        }
+        assert_eq!(ChatWorkAssignmentState::parse("waiting"), None);
+    }
 
     #[test]
     fn review_queue_round_trips_with_camel_case_fields_and_snake_case_kinds() {

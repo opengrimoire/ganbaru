@@ -115,6 +115,8 @@
   let nameDraft = $state("");
   let renameHistory = $state(createInlineRenameHistory(""));
   let pendingName = $state<string | null>(null);
+  /** Names the latest rename; an earlier rename that settles later leaves the newer pending name and draft alone. */
+  let renameRequest: symbol | null = null;
   let renameInput = $state<HTMLInputElement | null>(null);
   let handledRenameRequestId = 0;
   let shouldSuppressFolderActivation = false;
@@ -252,15 +254,17 @@
     menuOpen = false;
     nameDraft = name || folder.name;
     if (!name || name === folder.name) return;
+    const request = Symbol("folder rename");
+    renameRequest = request;
     pendingName = name;
-    void Promise.resolve(onRename(name)).then((renamed) => {
+    const settle = (renamed: boolean): void => {
+      if (renameRequest !== request) return;
+      renameRequest = null;
       if (renamed) return;
       pendingName = null;
-      nameDraft = previousName;
-    }).catch(() => {
-      pendingName = null;
-      nameDraft = previousName;
-    });
+      if (!editing) nameDraft = previousName;
+    };
+    void Promise.resolve(onRename(name)).then(settle, () => settle(false));
   }
 
   function beginRename(): void {

@@ -129,12 +129,13 @@ VALUES ('authorization-1', 'source-handle-general-0000000000000', 'reference-fol
 
 INSERT INTO chat_threads
     (id, working_folder_id, project_id, title, provider_family_id, provider_instance_id,
-     continuation_group_id, safety_mode, interaction_mode, state, last_activity_at, created_at, updated_at)
+     continuation_group_id, safety_mode, interaction_mode, state, last_activity_at, archived_at, created_at, updated_at)
 VALUES ('thread-managed', 'folder-managed', 'project-chat', 'Implement', 'codex', 'codex-personal',
-        'continuation-1', 'ask_for_approval', 'build', 'idle', '2026-10-23T00:00:00.000Z',
+        'continuation-1', 'ask_for_approval', 'build', 'idle', '2026-10-23T00:00:00.000Z', NULL,
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z'),
        ('thread-archived', 'folder-archived', 'project-chat', 'Old work', 'codex', 'codex-personal',
-        'continuation-2', 'ask_for_approval', 'build', 'archived', '2026-10-23T00:00:00.000Z',
+        'continuation-2', 'ask_for_approval', 'build', 'idle', '2026-10-23T00:00:00.000Z',
+        '2026-10-23T00:00:00.000Z',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_turns (id, thread_id, ordinal, state, safety_mode, interaction_mode, created_at, updated_at)
 VALUES ('turn-1', 'thread-managed', 0, 'active', 'ask_for_approval', 'build',

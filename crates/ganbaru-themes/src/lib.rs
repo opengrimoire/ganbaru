@@ -1,10 +1,11 @@
-//! User theme persistence independent of Tauri: current and seed tokens and event palettes, seed
-//! resets, upgrade dismissals, sync conflicts on theme content, and validation of every row
+//! User theme persistence independent of Tauri: current and seed tokens and event palettes,
+//! upgrade dismissals, sync conflicts on theme content, and validation of every row
 //! written to or read from SQLite. Built-in themes are not stored; their reserved ids are rejected.
 //!
 //! A theme's seed is written once when the theme is created and never changes afterwards, so
-//! every linked device resets to the same values. Writes leave rows that already hold the
-//! requested values untouched, so a save that changes nothing replicates nothing.
+//! every linked device resets to the same values. A reset to the seed is an ordinary content save
+//! of the seed values. Writes leave rows that already hold the requested values untouched, so a
+//! save that changes nothing replicates nothing.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -39,6 +40,8 @@ pub struct UserThemeWrite {
     blend_canvas: String,
     seed_blend_canvas: String,
     derivation_engine_version: i64,
+    /// Engine version the seed tokens were derived with; a reset to the seed restores it.
+    seed_derivation_engine_version: i64,
     calendar_default_mode: String,
     calendar_default_custom: String,
     seed_calendar_default_mode: String,
@@ -77,6 +80,7 @@ pub struct ThemeRowRead {
     blend_canvas: String,
     seed_blend_canvas: String,
     derivation_engine_version: i64,
+    seed_derivation_engine_version: i64,
     calendar_default_mode: String,
     calendar_default_custom: String,
     seed_calendar_default_mode: String,
@@ -94,6 +98,7 @@ impl_sqlite_from_row!(ThemeRowRead {
     blend_canvas,
     seed_blend_canvas,
     derivation_engine_version,
+    seed_derivation_engine_version,
     calendar_default_mode,
     calendar_default_custom,
     seed_calendar_default_mode,
@@ -174,7 +179,8 @@ fn has_conflict_column() -> String {
 pub async fn load_all(pool: &SqlitePool) -> Result<Vec<UserThemeRead>, String> {
     let themes = sqlx::query_as::<_, ThemeRowRead>(sqlx::AssertSqlSafe(format!(
         "SELECT t.id, t.display_name, t.blend_canvas, t.seed_blend_canvas,
-                t.derivation_engine_version, t.calendar_default_mode,
+                t.derivation_engine_version, t.seed_derivation_engine_version,
+                t.calendar_default_mode,
                 t.calendar_default_custom, t.seed_calendar_default_mode,
                 t.seed_calendar_default_custom, t.icon_label, t.seed_icon_label,
                 t.created_at_ms, t.updated_at_ms, {}
@@ -284,10 +290,10 @@ async fn insert_on(conn: &mut SqliteConnection, write: &UserThemeWrite) -> Resul
     sqlx::query(
         "INSERT INTO themes
             (id, display_name, icon_label, seed_icon_label, blend_canvas,
-             seed_blend_canvas, derivation_engine_version, calendar_default_mode,
-             calendar_default_custom, seed_calendar_default_mode,
+             seed_blend_canvas, derivation_engine_version, seed_derivation_engine_version,
+             calendar_default_mode, calendar_default_custom, seed_calendar_default_mode,
              seed_calendar_default_custom, created_at_ms, updated_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&write.id)
     .bind(&write.display_name)
@@ -296,6 +302,7 @@ async fn insert_on(conn: &mut SqliteConnection, write: &UserThemeWrite) -> Resul
     .bind(&write.blend_canvas)
     .bind(&write.seed_blend_canvas)
     .bind(write.derivation_engine_version)
+    .bind(write.seed_derivation_engine_version)
     .bind(&write.calendar_default_mode)
     .bind(&write.calendar_default_custom)
     .bind(&write.seed_calendar_default_mode)
@@ -450,107 +457,6 @@ pub async fn rename(pool: &SqlitePool, id: &str, display_name: &str) -> Result<(
     if result.rows_affected() == 0 {
         ensure_theme_exists(&mut conn, id, "rename theme").await?;
     }
-    Ok(())
-}
-
-/// Restore one current token's value and isolation from the theme's seed. Fails when the theme
-/// has no such token.
-pub async fn reset_token_to_seed(
-    pool: &SqlitePool,
-    id: &str,
-    kind: &str,
-    key: &str,
-) -> Result<(), String> {
-    validate_theme_id(id)?;
-    validate_token_identity(kind, key, "token")?;
-    let now = now_ms()?;
-    let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
-    let exists = sqlx::query_scalar::<_, i64>(
-        "SELECT 1 FROM theme_tokens WHERE theme_id = ? AND kind = ? AND key = ?",
-    )
-    .bind(id)
-    .bind(kind)
-    .bind(key)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| format!("read theme token: {e}"))?;
-    if exists.is_none() {
-        return Err("reset theme token to seed: no matching row".to_string());
-    }
-    let result = sqlx::query(
-        "UPDATE theme_tokens AS t
-            SET value = s.value, isolated = s.isolated
-           FROM theme_seed_tokens AS s
-          WHERE t.theme_id = ? AND t.kind = ? AND t.key = ?
-            AND s.theme_id = t.theme_id AND s.kind = t.kind AND s.key = t.key
-            AND (t.value IS NOT s.value OR t.isolated IS NOT s.isolated)",
-    )
-    .bind(id)
-    .bind(kind)
-    .bind(key)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("reset theme token to seed: {e}"))?;
-    if result.rows_affected() > 0 {
-        touch_theme(&mut tx, id, now).await?;
-    }
-    tx.commit().await.map_err(|e| format!("commit: {e}"))?;
-    Ok(())
-}
-
-/// Restore every current token, palette slot, blend canvas, and Calendar default from the theme's
-/// seed. The display name and icon label are kept. Fails when the theme does not exist.
-pub async fn reset_to_seed(pool: &SqlitePool, id: &str) -> Result<(), String> {
-    validate_theme_id(id)?;
-    let now = now_ms()?;
-    let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
-    ensure_theme_exists(&mut tx, id, "reset theme to seed").await?;
-
-    let tokens = sqlx::query(
-        "UPDATE theme_tokens AS t
-            SET value = s.value, isolated = s.isolated
-           FROM theme_seed_tokens AS s
-          WHERE t.theme_id = ?
-            AND s.theme_id = t.theme_id AND s.kind = t.kind AND s.key = t.key
-            AND (t.value IS NOT s.value OR t.isolated IS NOT s.isolated)",
-    )
-    .bind(id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("reset theme tokens to seed: {e}"))?;
-
-    let palette = sqlx::query(
-        "UPDATE theme_event_palette AS p
-            SET value = s.value
-           FROM theme_seed_event_palette AS s
-          WHERE p.theme_id = ?
-            AND s.theme_id = p.theme_id AND s.slot = p.slot
-            AND p.value IS NOT s.value",
-    )
-    .bind(id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("reset theme palette to seed: {e}"))?;
-
-    let theme = sqlx::query(
-        "UPDATE themes
-            SET blend_canvas = seed_blend_canvas,
-                calendar_default_mode = seed_calendar_default_mode,
-                calendar_default_custom = seed_calendar_default_custom
-          WHERE id = ?
-            AND (blend_canvas IS NOT seed_blend_canvas
-                 OR calendar_default_mode IS NOT seed_calendar_default_mode
-                 OR calendar_default_custom IS NOT seed_calendar_default_custom)",
-    )
-    .bind(id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("reset theme to seed: {e}"))?;
-
-    if tokens.rows_affected() + palette.rows_affected() + theme.rows_affected() > 0 {
-        touch_theme(&mut tx, id, now).await?;
-    }
-    tx.commit().await.map_err(|e| format!("commit: {e}"))?;
     Ok(())
 }
 
@@ -799,6 +705,9 @@ fn validate_theme_read(theme: &ThemeRowRead) -> Result<(), String> {
     if theme.derivation_engine_version < 0 {
         return Err("derivation_engine_version cannot be negative".to_string());
     }
+    if theme.seed_derivation_engine_version < 0 {
+        return Err("seed_derivation_engine_version cannot be negative".to_string());
+    }
     validate_calendar_mode(&theme.calendar_default_mode, "calendar_default_mode")?;
     validate_calendar_mode(
         &theme.seed_calendar_default_mode,
@@ -853,6 +762,9 @@ fn validate_theme_write(write: &UserThemeWrite) -> Result<(), String> {
     )?;
     if write.derivation_engine_version < 0 {
         return Err("derivation_engine_version cannot be negative".to_string());
+    }
+    if write.seed_derivation_engine_version < 0 {
+        return Err("seed_derivation_engine_version cannot be negative".to_string());
     }
     validate_token_rows(&write.tokens, "tokens")?;
     validate_palette_rows(&write.palette, "palette")?;

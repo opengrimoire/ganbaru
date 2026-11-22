@@ -44,6 +44,8 @@ let lateTotal = $state(0);
 let pendingKit = $state<SyncPendingRecoveryKit | null>(null);
 let loadFailed = $state(false);
 let generation = 0;
+/** Number of the latest load; an earlier load that finishes after it is discarded. */
+let latestLoad = 0;
 let subscribers = 0;
 let lastStatusKey: string | null = null;
 let stopListening: (() => void) | null = null;
@@ -63,10 +65,11 @@ onActiveVaultIdentityChange(() => {
 
 /**
  * Reloads the authorization state, the contests, the outbox, the late changes, and, on an admin desktop, the
- * recovery kit that waits to be saved. A vault change during the load discards its results.
+ * recovery kit that waits to be saved. A vault change or a later load discards its results.
  */
 async function refresh(): Promise<void> {
   const expected = generation;
+  const load = ++latestLoad;
   try {
     const [nextAuthority, nextContests, nextOutbox, nextLate] = await Promise.all([
       getSyncAuthority(),
@@ -75,7 +78,7 @@ async function refresh(): Promise<void> {
       listSyncLateChanges(),
     ]);
     const nextKit = KIT_CAPABLE && nextAuthority?.ownIsAdmin ? (await getSyncRecoveryKitState()).pending : null;
-    if (expected !== generation) return;
+    if (expected !== generation || load !== latestLoad) return;
     authority = nextAuthority;
     contests = nextContests;
     outbox = nextOutbox;
@@ -84,7 +87,7 @@ async function refresh(): Promise<void> {
     pendingKit = nextKit;
     loadFailed = false;
   } catch (cause: unknown) {
-    if (expected !== generation) return;
+    if (expected !== generation || load !== latestLoad) return;
     console.warn("sync authority state could not be loaded", cause);
     loadFailed = true;
   }

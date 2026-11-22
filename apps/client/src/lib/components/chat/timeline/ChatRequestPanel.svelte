@@ -81,7 +81,7 @@
     resolving = true;
     error = null;
     try {
-      await chat.resolveApproval({ kind: choice.decisionKind, providerOptionId: choice.id, updatedToolInput: null }, remember);
+      await chat.resolveApproval(pending, { kind: choice.decisionKind, providerOptionId: choice.id, updatedToolInput: null }, remember);
     } catch (cause: unknown) {
       error = chatErrorMessage(cause, t("chatErrors.actions.requestAction"));
       resolving = false;
@@ -282,7 +282,7 @@
     resolving = true;
     error = null;
     try {
-      await chat.resolveUserInput(response);
+      await chat.resolveUserInput(pending, response);
     } catch (cause: unknown) {
       error = chatErrorMessage(cause, t("chatErrors.actions.requestAction"));
       resolving = false;

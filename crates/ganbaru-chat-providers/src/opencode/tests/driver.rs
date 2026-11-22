@@ -53,6 +53,12 @@ struct OpenCodeServerState {
     event_connections: AtomicUsize,
     event_sender: broadcast::Sender<String>,
     stopping: AtomicBool,
+    /// Holds a provider command open until the session abort arrives, then fails it, and delays
+    /// the abort reply past that failure, as OpenCode does when a running command is aborted.
+    command_fails_on_abort: AtomicBool,
+    command_failed: AtomicBool,
+    /// Rejects every prompt and command dispatch with a server error.
+    dispatch_fails: AtomicBool,
     health_version: &'static str,
 }
 
@@ -83,6 +89,9 @@ impl OpenCodeServerFixture {
             event_connections: AtomicUsize::new(0),
             event_sender,
             stopping: AtomicBool::new(false),
+            command_fails_on_abort: AtomicBool::new(false),
+            command_failed: AtomicBool::new(false),
+            dispatch_fails: AtomicBool::new(false),
             health_version,
         });
         let server_state = Arc::clone(&state);
@@ -170,6 +179,37 @@ async fn handle_connection(
                 Err(_) => {}
             }
         }
+    }
+    if method == "POST" && state.command_fails_on_abort.load(Ordering::Acquire) {
+        if path == "/session/ses_new/command" {
+            wait_until(|| {
+                state
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|request| request.starts_with("POST /session/ses_new/abort"))
+            })
+            .await;
+            state.command_failed.store(true, Ordering::Release);
+            let body = br#"{"name":"MessageAbortedError"}"#;
+            let response = response(500, "Internal Server Error", "application/json", body);
+            connection.write_all(response.as_bytes()).await?;
+            return connection.flush().await;
+        }
+        if path == "/session/ses_new/abort" {
+            wait_until(|| state.command_failed.load(Ordering::Acquire)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+    if method == "POST"
+        && state.dispatch_fails.load(Ordering::Acquire)
+        && (path == "/session/ses_new/prompt_async" || path == "/session/ses_new/command")
+    {
+        let body = br#"{"name":"UnknownError"}"#;
+        let response = response(500, "Internal Server Error", "application/json", body);
+        connection.write_all(response.as_bytes()).await?;
+        return connection.flush().await;
     }
     let response = route_response(method, path, &state);
     connection.write_all(response.as_bytes()).await?;
@@ -975,6 +1015,81 @@ fn session_approvals_are_capped_with_a_warning_and_end_with_the_session() {
     });
 }
 
+async fn wait_until(condition: impl Fn() -> bool) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[test]
+fn a_command_that_fails_because_of_an_interrupt_settles_the_turn_as_interrupted() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("interrupted-command");
+        let server = OpenCodeServerFixture::start(workspace.path(), None, false).await;
+        server
+            .state
+            .command_fails_on_abort
+            .store(true, Ordering::Release);
+        let mut driver =
+            OpenCodeProviderDriver::new(external_configuration(&server.origin, true)).unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let snapshot = driver
+            .start_session(
+                start_request(workspace.path()),
+                sink.clone(),
+                &context("start"),
+            )
+            .await
+            .unwrap();
+        driver
+            .send_turn(
+                turn_request(&snapshot, "turn-command", "/release now", modes()),
+                &context("send"),
+            )
+            .await
+            .unwrap();
+        server
+            .wait_for_request("POST /session/ses_new/command?")
+            .await;
+        driver
+            .interrupt_turn(
+                InterruptTurnRequest {
+                    command: command("interrupt"),
+                    session_id: snapshot.session_id.clone(),
+                    turn_id: ChatTurnId::new("turn-command").unwrap(),
+                },
+                &context("interrupt"),
+            )
+            .await
+            .unwrap();
+
+        let settlements = sink
+            .events()
+            .into_iter()
+            .filter_map(|event| match event.event {
+                CanonicalEvent::TurnAborted(aborted) => Some(aborted.state),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(settlements, vec![ChatTurnState::Interrupted]);
+        driver
+            .stop_session(
+                StopSessionRequest {
+                    session_id: snapshot.session_id.clone(),
+                    force: false,
+                },
+                &context("stop"),
+            )
+            .await
+            .unwrap();
+        server.shutdown().await;
+    });
+}
+
 async fn wait_for_event(sink: &RecordingSink, predicate: impl Fn(&CanonicalRuntimeEvent) -> bool) {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
@@ -1073,6 +1188,17 @@ fn a_silent_stream_during_a_turn_reconnects_then_fails_unless_idle_or_waiting_fo
         assert_eq!(
             sink.events().iter().filter(|event| silent(event)).count(),
             1
+        );
+        assert!(
+            sink.events().iter().any(|event| matches!(&event.event,
+                CanonicalEvent::RuntimeError(error)
+                    if error.code == "opencode_event_stream_silent" && !error.recoverable)),
+            "a stream that failed for good fails the turn"
+        );
+        server.wait_for_request("POST /session/ses_new/abort").await;
+        assert!(
+            driver.live_mut(&snapshot.session_id).is_err(),
+            "a failed session refuses further work"
         );
         server.shutdown().await;
     });
@@ -1347,5 +1473,95 @@ fn organizational_sessions_fail_closed_before_creating_a_session() {
             "no refused launch creates a session"
         );
         server.shutdown().await;
+    });
+}
+
+/// Starts an OpenCode session whose prompt and command dispatches fail, then sends `prompt` as
+/// `turn-failed` and returns the dispatch result with the recorded `TurnAborted` events.
+async fn send_turn_with_failing_dispatch(
+    name: &str,
+    prompt: &str,
+    command_dispatch: bool,
+) -> (bool, Vec<(Option<ChatTurnId>, ChatTurnState)>) {
+    let workspace = TestDirectory::new(name);
+    let server = OpenCodeServerFixture::start(workspace.path(), None, false).await;
+    server.state.dispatch_fails.store(true, Ordering::Release);
+    let mut driver =
+        OpenCodeProviderDriver::new(external_configuration(&server.origin, true)).unwrap();
+    let sink = Arc::new(RecordingSink::default());
+    let snapshot = driver
+        .start_session(
+            start_request(workspace.path()),
+            sink.clone(),
+            &context("start"),
+        )
+        .await
+        .unwrap();
+    let dispatched = driver
+        .send_turn(
+            turn_request(&snapshot, "turn-failed", prompt, modes()),
+            &context("send"),
+        )
+        .await
+        .is_ok();
+    if command_dispatch {
+        wait_for_event(&sink, |event| {
+            matches!(event.event, CanonicalEvent::TurnAborted(_))
+        })
+        .await;
+    }
+    let aborts = sink
+        .events()
+        .into_iter()
+        .filter_map(|event| match event.event {
+            CanonicalEvent::TurnAborted(aborted) => Some((event.turn_id, aborted.state)),
+            _ => None,
+        })
+        .collect();
+    driver
+        .stop_session(
+            StopSessionRequest {
+                session_id: snapshot.session_id.clone(),
+                force: false,
+            },
+            &context("stop"),
+        )
+        .await
+        .unwrap();
+    server.shutdown().await;
+    (dispatched, aborts)
+}
+
+#[test]
+fn a_failed_prompt_dispatch_settles_the_turn_it_started_as_failed() {
+    crate::test_block_on(async {
+        let (dispatched, aborts) =
+            send_turn_with_failing_dispatch("failed-prompt-dispatch", "Hello", false).await;
+
+        assert!(!dispatched);
+        assert_eq!(
+            aborts,
+            vec![(
+                Some(ChatTurnId::new("turn-failed").unwrap()),
+                ChatTurnState::Failed
+            )]
+        );
+    });
+}
+
+#[test]
+fn a_failed_command_dispatch_settles_the_turn_it_started_as_failed() {
+    crate::test_block_on(async {
+        let (dispatched, aborts) =
+            send_turn_with_failing_dispatch("failed-command-dispatch", "/release now", true).await;
+
+        assert!(dispatched);
+        assert_eq!(
+            aborts,
+            vec![(
+                Some(ChatTurnId::new("turn-failed").unwrap()),
+                ChatTurnState::Failed
+            )]
+        );
     });
 }

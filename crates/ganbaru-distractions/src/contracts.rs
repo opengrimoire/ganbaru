@@ -2,20 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DistractionsRuntimeState {
-    pub active: bool,
-    pub paused: bool,
-    pub pause_reason: Option<String>,
-    pub phase: String,
-    pub active_run_id: Option<String>,
-    pub active_occurrence_id: Option<String>,
-    pub remaining_seconds: Option<i64>,
-    pub updated_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub valid_until_ms: Option<i64>,
-}
+pub use ganbaru_distractions_authority::spool;
+pub use ganbaru_distractions_authority::{
+    ActivePhase, BlockingPhase, DistractionsRuntimeState, PauseReason, PhaseBlockingSettings,
+    RuntimeAuthority,
+};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

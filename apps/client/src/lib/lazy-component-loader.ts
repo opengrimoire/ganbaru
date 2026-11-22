@@ -39,6 +39,17 @@ export type LazyComponentLoadState<Key extends string, Component> =
   | FailedLazyComponentState<Key>;
 
 /**
+ * Whether a load may start from `state`, where `null` means none has started. A failed load starts again only on an
+ * explicit retry, so a view that loads on its own never loops over an import that keeps failing.
+ */
+export function lazyLoadCanStart<Key extends string, Component>(
+  state: LazyComponentLoadState<Key, Component> | null,
+  retry = false,
+): boolean {
+  return state === null || (retry && state.status === "failed");
+}
+
+/**
  * Creates a process-local loader that caches successful component modules and
  * deduplicates concurrent imports for the same key.
  */

@@ -278,13 +278,18 @@
   async function retryFailedWork(): Promise<boolean> {
     const failed = assignment;
     if (failed?.state !== "failed") return false;
+    const replyThreadId = chat.openReplyThreadId;
     messageActionError = null;
     try {
       await chat.retryAssignment(failed.id);
-      scrollToBottomForUserAction();
+      // A retry that settles after another thread opened leaves that thread's scroll position alone.
+      if (chat.openReplyThreadId === replyThreadId) scrollToBottomForUserAction();
       return true;
     } catch (cause: unknown) {
-      messageActionError = chatErrorMessage(cause, t("chatErrors.actions.workAction"));
+      // The failure belongs to the thread the retry started in, not to one opened since.
+      if (chat.openReplyThreadId === replyThreadId) {
+        messageActionError = chatErrorMessage(cause, t("chatErrors.actions.workAction"));
+      }
       return false;
     }
   }
@@ -604,7 +609,7 @@
 
   {#if composerDocked}
     <div class="thread-dock" use:chatComposerDock={{ onMeasure: reserveDockSpace, scroller }}>
-      {#if chat.interaction?.pendingRequest}<div class="thread-request"><ChatRequestPanel pending={chat.interaction.pendingRequest} /></div>{/if}
+      {#each chat.interaction?.pendingRequests ?? [] as pending (pending.id)}<div class="thread-request"><ChatRequestPanel {pending} /></div>{/each}
       {#if remoteApproval}
         <div class="thread-request">
           {#key remoteApproval.requestId}

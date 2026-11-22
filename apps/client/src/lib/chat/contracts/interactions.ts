@@ -76,7 +76,8 @@ export interface ChatInteractionStateRead {
   sessionState: ProviderSessionState;
   activeTurnId: string | null;
   capabilities: ProviderCapabilities;
-  pendingRequest: ChatPendingRequestRead | null;
+  /** Open requests of the thread, oldest first. */
+  pendingRequests: ChatPendingRequestRead[];
   queuedFollowup: ChatQueuedFollowupRead | null;
   usage: ThreadUsageUpdatedEvent | null;
   accountStatus: AccountStatusEvent | null;

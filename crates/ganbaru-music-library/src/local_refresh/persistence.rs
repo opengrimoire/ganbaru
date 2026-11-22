@@ -228,6 +228,10 @@ pub(super) async fn cancel(
             "must be a positive Unix epoch millisecond value",
         ));
     }
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|error| MusicLibraryError::database("begin cancel music refresh", error))?;
     let result = sqlx::query(
         "UPDATE music_refresh_jobs
          SET state = 'cancelled', status_message = 'Refresh cancelled. Existing availability was preserved.',
@@ -237,10 +241,11 @@ pub(super) async fn cancel(
     .bind(cancelled_at)
     .bind(cancelled_at)
     .bind(job_id)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await
     .map_err(|error| MusicLibraryError::database("cancel music refresh", error))?;
     if result.rows_affected() == 0 {
+        drop(transaction);
         let progress = load_progress(pool, job_id).await?;
         if matches!(
             progress.state,
@@ -255,7 +260,78 @@ pub(super) async fn cancel(
             "the music refresh could not be cancelled",
         ));
     }
+    sqlx::query(
+        "UPDATE music_source_collections
+         SET refresh_state = 'idle', version = version + 1
+         WHERE id = (SELECT source_collection_id FROM music_refresh_jobs WHERE id = ?)
+           AND refresh_state IN ('queued', 'running')
+           AND NOT EXISTS (
+               SELECT 1 FROM music_refresh_jobs AS active
+               WHERE active.source_collection_id = music_source_collections.id
+                 AND active.state IN ('queued', 'running')
+           )",
+    )
+    .bind(job_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("settle cancelled source refresh", error))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| MusicLibraryError::database("commit cancelled music refresh", error))?;
     load_progress(pool, job_id).await
+}
+
+pub(super) async fn settle_interrupted(
+    pool: &SqlitePool,
+    settled_at: i64,
+) -> MusicLibraryResult<()> {
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|error| MusicLibraryError::database("begin settle music refreshes", error))?;
+    sqlx::query(
+        "UPDATE music_refresh_jobs
+         SET state = 'cancelled',
+             status_message = 'Refresh interrupted. Existing availability was preserved.',
+             finished_at_ms = MAX(?, requested_at_ms, COALESCE(started_at_ms, 0)),
+             updated_at_ms = MAX(?, updated_at_ms)
+         WHERE state IN ('queued', 'running')",
+    )
+    .bind(settled_at)
+    .bind(settled_at)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("settle interrupted music refreshes", error))?;
+    sqlx::query(
+        "UPDATE music_source_collections
+         SET refresh_state = 'idle', version = version + 1
+         WHERE refresh_state IN ('queued', 'running')",
+    )
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("settle interrupted source refreshes", error))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| MusicLibraryError::database("commit settled music refreshes", error))
+}
+
+/// Takes the write lock for a refresh batch and reports whether the job is still running, so a
+/// batch of a cancelled or superseded job writes nothing.
+async fn claim_running(
+    transaction: &mut Transaction<'_, Sqlite>,
+    job_id: &str,
+) -> MusicLibraryResult<bool> {
+    let result = sqlx::query(
+        "UPDATE music_refresh_jobs SET updated_at_ms = ? WHERE id = ? AND state = 'running'",
+    )
+    .bind(now_ms())
+    .bind(job_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("claim music refresh batch", error))?;
+    Ok(result.rows_affected() > 0)
 }
 
 pub(super) async fn is_current(pool: &SqlitePool, job_id: &str) -> MusicLibraryResult<bool> {
@@ -302,6 +378,9 @@ pub(super) async fn save_discovery_batch(
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin music discovery batch", error))?;
+    if !claim_running(&mut transaction, job_id).await? {
+        return Ok(());
+    }
     let mut discovered = 0_i64;
     let mut skipped = 0_i64;
     for entry in entries {
@@ -391,6 +470,9 @@ pub(super) async fn record_unchanged_batch(
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin unchanged music batch", error))?;
+    if !claim_running(&mut transaction, &request.job_id).await? {
+        return Ok(Vec::new());
+    }
     let mut changed = Vec::new();
     let mut unchanged_count = 0_i64;
     for (relative_path, stat) in observed {
@@ -460,6 +542,9 @@ pub(super) async fn reconcile_batch(
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin music reconciliation batch", error))?;
+    if !claim_running(&mut transaction, &request.job_id).await? {
+        return Ok(());
+    }
     let mut issue_count = 0_i64;
     let mut refreshed_item_ids = Vec::with_capacity(evidence.len());
     for media in evidence {
@@ -562,6 +647,9 @@ pub(super) async fn record_media_failure(
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin music refresh issue", error))?;
+    if !claim_running(&mut transaction, &request.job_id).await? {
+        return Ok(());
+    }
     sqlx::query(
         "UPDATE music_refresh_job_entries SET state = 'skipped'
          WHERE job_id = ? AND relative_path = ? AND entry_kind = 'media'",
@@ -606,15 +694,7 @@ pub(super) async fn finalize_success(
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin complete music refresh", error))?;
-    local_scan::mark_unseen(
-        &mut transaction,
-        &request.collection_id,
-        &request.root_id,
-        generation,
-    )
-    .await?;
-    local_scan::reconcile_item_availability(&mut transaction, &request.root_id).await?;
-    sqlx::query(
+    let completed = sqlx::query(
         "UPDATE music_refresh_jobs
          SET state = 'completed', absence_determined = 1,
              status_message = 'Refresh complete.', finished_at_ms = ?, updated_at_ms = ?
@@ -626,6 +706,17 @@ pub(super) async fn finalize_success(
     .execute(&mut *transaction)
     .await
     .map_err(|error| MusicLibraryError::database("complete local music refresh", error))?;
+    if completed.rows_affected() == 0 {
+        return Ok(());
+    }
+    local_scan::mark_unseen(
+        &mut transaction,
+        &request.collection_id,
+        &request.root_id,
+        generation,
+    )
+    .await?;
+    local_scan::reconcile_item_availability(&mut transaction, &request.root_id).await?;
     sqlx::query(
         "UPDATE music_source_collections
          SET refresh_state = 'idle', last_successful_refresh_at_ms = ?,
@@ -674,16 +765,7 @@ pub(super) async fn finish_incomplete(
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin incomplete music refresh", error))?;
-    insert_issue(
-        &mut transaction,
-        request,
-        "refresh-incomplete",
-        None,
-        None,
-        message,
-    )
-    .await?;
-    sqlx::query(
+    let finished = sqlx::query(
         "UPDATE music_refresh_jobs
          SET state = ?, issue_count = issue_count + 1, absence_determined = 0,
              status_message = ?, finished_at_ms = ?, updated_at_ms = ?
@@ -697,6 +779,18 @@ pub(super) async fn finish_incomplete(
     .execute(&mut *transaction)
     .await
     .map_err(|error| MusicLibraryError::database("finish incomplete music refresh", error))?;
+    if finished.rows_affected() == 0 {
+        return Ok(());
+    }
+    insert_issue(
+        &mut transaction,
+        request,
+        "refresh-incomplete",
+        None,
+        None,
+        message,
+    )
+    .await?;
     sqlx::query(
         "UPDATE music_source_collections
          SET refresh_state = ?, last_refresh_error_code = 'refresh-incomplete',

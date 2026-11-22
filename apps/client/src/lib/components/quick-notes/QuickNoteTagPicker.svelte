@@ -55,6 +55,8 @@
   let createError = $state("");
   let nameInput = $state<HTMLInputElement | null>(null);
   let newTagButton = $state<HTMLButtonElement | null>(null);
+  /** Counts picker closes, so a save that outlives the picker it started in applies nothing. */
+  let pickerSession = 0;
   const canCreate = $derived(tags.length < QUICK_NOTE_TAG_LIMIT);
 
   /** Places the picker against its button, above it when the rendered height does not fit below. */
@@ -82,6 +84,7 @@
   }
 
   function closePicker(): void {
+    pickerSession += 1;
     open = false;
     creating = false;
     name = "";
@@ -107,25 +110,32 @@
     void tick().then(() => newTagButton?.focus());
   }
 
-  /** Creates the tag and assigns it, which also closes the picker. */
+  /**
+   * Creates the tag and assigns it, which also closes the picker.
+   * A picker closed while saving, including by choosing another tag, keeps the created tag unassigned.
+   */
   async function submitCreate(): Promise<void> {
     const value = name.trim();
     if (!value || busy) return;
+    const session = pickerSession;
     busy = true;
     createError = "";
     let created: QuickNoteTag | null = null;
+    let failure: unknown = null;
     try {
       created = await onCreate(value, newColor);
     } catch (cause: unknown) {
-      createError = userErrorMessage(cause, t("quickNotes.tag.saveFailed"));
+      failure = cause;
     } finally {
       busy = false;
     }
+    if (session !== pickerSession) return;
     if (created) {
       onSelect(created.id);
-      if (open) closePicker();
+      closePicker();
       return;
     }
+    createError = userErrorMessage(failure, t("quickNotes.tag.saveFailed"));
     // The input is disabled while saving, so it can take focus back only once busy clears.
     await tick();
     nameInput?.focus();

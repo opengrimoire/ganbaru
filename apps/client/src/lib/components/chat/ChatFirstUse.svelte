@@ -4,7 +4,7 @@
   import Settings from "@lucide/svelte/icons/settings";
   import Unplug from "@lucide/svelte/icons/unplug";
   import type { ProviderInstanceId, ProviderProbeResult } from "$lib/chat/contracts";
-  import { resolveChatFirstUseState } from "$lib/chat/shell-model";
+  import { resolveChatFirstUseState, type ChatFirstUseState } from "$lib/chat/shell-model";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { chatErrorMessage, providerProbeMessage } from "$lib/chat/error-presentation";
   import { LocalizedError } from "$lib/i18n/user-errors";
@@ -19,24 +19,55 @@
   const navigation = getNavigation();
   const projects = useProjects();
   const settings = getSettingsLauncher();
-  let operationError = $state<string | null>(null);
+  /** The last failed action and the first-use target it acted on; shown only while that target is still shown. */
+  let operationError = $state.raw<{ target: string; message: string } | null>(null);
   const firstUse = $derived(resolveChatFirstUseState({ providers: chat.settings?.providerInstances ?? [], workingFolders: chat.workingFolders, selectedProjectId: projects.selectedProjectId, selectedProjectArchived: projects.selectedProject?.status === "archived", selectedWorkingFolderId: chat.selectedWorkingFolderId, selectedThreadId: chat.selectedThreadId, threads: [...chat.activeThreads, ...chat.archivedThreads] }));
+  const firstUseTarget = $derived(targetKey(firstUse));
+  const visibleOperationError = $derived(operationError?.target === firstUseTarget ? operationError.message : null);
 
+  /**
+   * Names the item a first-use action acts on, so a failure stays with that item.
+   *
+   * @param state The resolved first-use state.
+   * @returns A key that changes whenever the shown item changes.
+   */
+  function targetKey(state: ChatFirstUseState): string {
+    switch (state.kind) {
+      case "missing_binding":
+      case "no_thread":
+        return `${state.kind}:${state.workingFolder.workingFolder.id}`;
+      case "provider_unavailable":
+        return `${state.kind}:${state.providerInstanceId}`;
+      case "archived_thread":
+      case "conversation":
+        return `${state.kind}:${state.thread.id}`;
+      default:
+        return state.kind;
+    }
+  }
+
+  /**
+   * Runs a first-use action and records its failure against the item shown when it started.
+   *
+   * @param action The action to run.
+   */
   function run(action: () => Promise<unknown>): void {
+    const target = firstUseTarget;
     operationError = null;
     void action().catch((error: unknown) => {
-      operationError = chatErrorMessage(error);
+      operationError = { target, message: chatErrorMessage(error) };
     });
   }
 
   /** Probes the provider again and rejects unless it reports healthy, so the notice can show the retry outcome. */
   async function retryProvider(instanceId: ProviderInstanceId): Promise<void> {
+    const target = firstUseTarget;
     operationError = null;
     let result: ProviderProbeResult;
     try {
       result = await chat.probeProvider(instanceId);
     } catch (error: unknown) {
-      operationError = chatErrorMessage(error);
+      operationError = { target, message: chatErrorMessage(error) };
       throw error;
     }
     if (result.state !== "healthy") throw new LocalizedError(providerProbeMessage(result.state));
@@ -46,7 +77,7 @@
 
 <div data-mobile-scroll-fade class="first-use-shell">
   <section class="first-use-content">
-    {#if operationError}<Notice class="mb-3 text-sm" message={operationError} />{/if}
+    {#if visibleOperationError}<Notice class="mb-3 text-sm" message={visibleOperationError} />{/if}
     {#if firstUse.kind !== "no_thread" && firstUse.kind !== "provider_unavailable"}<div class="mb-4 flex size-12 items-center justify-center rounded-2xl border border-border bg-card"><MessageSquare size={22} /></div>{/if}
     {#if firstUse.kind === "no_provider"}
       <h2 class="text-lg font-semibold">{t("chat.firstUse.noProviderTitle")}</h2><p class="mt-2 max-w-lg text-sm text-muted-foreground">{t("chat.firstUse.noProviderDescription")}</p><div class="mt-5 flex flex-wrap justify-center gap-2"><button type="button" class="chat-primary-button" onclick={() => settings.open("agents", { agentsSubsection: "providers" })}><Settings size={15} />{t("chat.firstUse.setUpProvider")}</button></div><div class="mt-5 flex flex-wrap justify-center gap-2 text-xs text-muted-foreground"><span>Codex</span><span>Claude</span><span>Cursor</span><span>OpenCode</span></div>

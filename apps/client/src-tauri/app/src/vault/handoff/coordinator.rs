@@ -1,11 +1,10 @@
-//! Desktop coordinator dispatch and shared single-transfer state.
+//! Desktop coordinator dispatch. The pairing manager owns the one copy offered at a time.
 
 mod outgoing;
 
 use super::pairing::{LinkedPeer, PairingManager};
 use super::protocol::{BundleMetadata, HandoffCompatibility};
 use ganbaru_sync_replica::serve::bundles::BundlePreparationWindows;
-use std::fs;
 use tauri::Runtime;
 
 #[derive(Debug)]
@@ -20,8 +19,10 @@ pub(crate) enum CoordinatorOperation {
         device_id: String,
         transfer_id: String,
     },
+    /// Cancels the transfer prepared for `device_id`, the authenticated device that asks.
     Cancel {
         transfer_id: String,
+        device_id: String,
     },
     /// Authenticated request from a linked device for the person's signing key of the vault
     /// it is linked for.
@@ -62,23 +63,9 @@ pub(crate) struct CoordinatorRequest {
 
 pub(crate) type CoordinatorSender = tokio::sync::mpsc::Sender<CoordinatorRequest>;
 
-struct PreparedTransfer {
-    metadata: BundleMetadata,
-    archive_path: std::path::PathBuf,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct CompletedActivation {
-    vault_id: String,
-    device_id: String,
-    transfer_id: String,
-}
-
 struct CoordinatorState<R: Runtime> {
     app: tauri::AppHandle<R>,
     pairing: PairingManager,
-    prepared: Option<PreparedTransfer>,
-    completed: Option<CompletedActivation>,
     bundle_preparations: BundlePreparationWindows,
 }
 
@@ -87,21 +74,9 @@ pub(crate) async fn run<R: Runtime>(
     pairing: PairingManager,
     mut receiver: tokio::sync::mpsc::Receiver<CoordinatorRequest>,
 ) {
-    let prepared = restore_prepared(&pairing).ok().flatten();
-    let completed = pairing
-        .completed_activation()
-        .ok()
-        .flatten()
-        .map(|activation| CompletedActivation {
-            vault_id: activation.vault_id,
-            device_id: activation.device_id,
-            transfer_id: activation.transfer_id,
-        });
     let mut state = CoordinatorState {
         app,
         pairing,
-        prepared,
-        completed,
         bundle_preparations: BundlePreparationWindows::default(),
     };
     while let Some(request) = receiver.recv().await {
@@ -138,7 +113,10 @@ impl<R: Runtime> CoordinatorState<R> {
                 device_id,
                 transfer_id,
             } => self.activated(vault_id, device_id, transfer_id),
-            CoordinatorOperation::Cancel { transfer_id } => self.cancel(transfer_id),
+            CoordinatorOperation::Cancel {
+                transfer_id,
+                device_id,
+            } => self.cancel(transfer_id, device_id),
             CoordinatorOperation::ReleasePersonKey {
                 vault_id,
                 device_id,
@@ -157,31 +135,6 @@ impl<R: Runtime> CoordinatorState<R> {
         require_linked_for(self.pairing.linked_peer(&device_id)?.as_ref(), &vault_id)?;
         crate::contacts::identity::release_key_for_coordinator(&self.app, &vault_id).await
     }
-
-    fn cleanup_prepared(&mut self) {
-        if let Some(prepared) = self.prepared.take() {
-            let _ = self
-                .pairing
-                .unregister_outgoing_bundle(&prepared.metadata.transfer_id);
-            let _ = self
-                .pairing
-                .clear_outgoing_transfer(&prepared.metadata.transfer_id);
-            let _ = fs::remove_file(prepared.archive_path);
-        }
-    }
-}
-
-fn restore_prepared(pairing: &PairingManager) -> Result<Option<PreparedTransfer>, String> {
-    let Some(transfer) = pairing.outgoing_transfer()? else {
-        return Ok(None);
-    };
-    let (_, archive_path) = pairing.outgoing_snapshot_paths(&transfer.metadata.transfer_id)?;
-    super::protocol::validate_staging_file(&archive_path, &transfer.metadata)?;
-    pairing.register_outgoing_bundle(transfer.metadata.clone(), archive_path.clone())?;
-    Ok(Some(PreparedTransfer {
-        metadata: transfer.metadata,
-        archive_path,
-    }))
 }
 
 pub(crate) async fn request(
@@ -222,8 +175,6 @@ fn require_linked_for(peer: Option<&LinkedPeer>, vault_id: &str) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::handoff::pairing::{StoredOutgoingTransfer, random_token};
-    use crate::vault::handoff::protocol::PROTOCOL_VERSION;
 
     fn peer_linked_for(vault_id: &str) -> LinkedPeer {
         LinkedPeer {
@@ -249,50 +200,5 @@ mod tests {
         assert!(inactive.contains("not active on the coordinator"));
         assert!(require_linked_for(Some(&peer_linked_for("vault-a")), "vault-b").is_err());
         assert!(require_linked_for(None, "vault-a").is_err());
-    }
-
-    #[test]
-    fn prepared_download_is_restored_from_private_state() {
-        let root = std::env::temp_dir().join(format!(
-            "ganbaru-coordinator-restart-{}",
-            random_token("test").unwrap()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let manager = PairingManager::default();
-        manager
-            .initialize(root.clone(), "desktop".to_string())
-            .unwrap();
-        let transfer_id = "restart-transfer";
-        let (_, archive_path) = manager.outgoing_snapshot_paths(transfer_id).unwrap();
-        fs::write(&archive_path, b"durable prepared archive").unwrap();
-        let metadata = BundleMetadata {
-            protocol_version: PROTOCOL_VERSION,
-            compatibility: crate::vault::handoff::protocol::test_compatibility(),
-            vault_id: "vault".to_string(),
-            device_id: "phone".to_string(),
-            transfer_id: transfer_id.to_string(),
-            archive_bytes: archive_path.metadata().unwrap().len(),
-            archive_sha256: super::super::sha256_file(&archive_path).unwrap(),
-            derived_state_stale: false,
-        };
-        manager
-            .store_outgoing_transfer(StoredOutgoingTransfer {
-                metadata: metadata.clone(),
-            })
-            .unwrap();
-        drop(manager);
-
-        let restarted = PairingManager::default();
-        restarted
-            .initialize(root.clone(), "desktop".to_string())
-            .unwrap();
-        let prepared = restore_prepared(&restarted).unwrap().unwrap();
-        assert_eq!(prepared.metadata, metadata);
-        assert_eq!(prepared.archive_path, archive_path);
-        assert_eq!(
-            restarted.outgoing_bundle(transfer_id).unwrap().metadata,
-            prepared.metadata
-        );
-        fs::remove_dir_all(root).unwrap();
     }
 }

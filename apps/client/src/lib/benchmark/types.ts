@@ -270,19 +270,8 @@ export interface PhaseResult {
   datasetId?: string;
 }
 
-/**
- * Persisted across each restart in the benchmark sequence. Lives in
- * `app_config_dir/benchmark-state.json`, not the vault, so a
- * `reset_database` call does not delete it mid-run and vault backups never
- * include it.
- *
- * The harness writes this file before each intentional restart with a
- * `*-pending` stage, then flips that stage to `*-running` before the
- * measured pass starts. A later boot that sees `*-running` means the
- * process was killed mid-pass, so the runner discards benchmark artifacts
- * instead of resuming from a possibly dirty isolated DB.
- */
-export interface BenchmarkState {
+/** Fields every persisted benchmark stage carries. */
+interface BenchmarkStateBase {
   scenarioId: string;
   /** ISO 8601 from when the run was confirmed. Drives the stale TTL check. */
   startedAt: string;
@@ -306,23 +295,45 @@ export interface BenchmarkState {
    * and to leave room for future scenarios that need user-DB access.
    */
   vaultMode: "user" | "benchmark";
-  /** Pending stages intentionally resume; running stages mean interrupted work. */
-  stage: "phase-a-pending" | "phase-a-running" | "phase-b-pending" | "phase-b-running";
-  /** Baseline result, present once that pass has run (i.e., from `phase-b-pending` onward). */
-  phaseA?: PhaseResult;
-  /** Calendar id holding the seeded dense events; absent during `phase-a-pending`. */
-  seedHandle?: BenchmarkSeedHandle;
   /** Dense datasets to run after the baseline pass. Defaults to the scenario's default dataset. */
   benchmarkDatasets?: BenchmarkDatasetProfile[];
-  /** Index into `benchmarkDatasets` for the pending or running dense pass. */
-  datasetIndex?: number;
-  /** Completed dense passes before the pending or running one. */
-  datasetPhases?: PhaseResult[];
   /** Present when the user chose Run all instead of one scenario. */
   suite?: BenchmarkSuiteState;
   /** Accumulated repeated launch samples for the startup benchmark. */
   startupRuns?: StartupRunState;
 }
+
+/** The baseline stage: nothing is seeded yet. */
+export interface BenchmarkPhaseAState extends BenchmarkStateBase {
+  stage: "phase-a-pending" | "phase-a-running";
+}
+
+/** A dense stage: a dataset is seeded and the baseline result, when the scenario measures one, is captured. */
+export interface BenchmarkPhaseBState extends BenchmarkStateBase {
+  stage: "phase-b-pending" | "phase-b-running";
+  /** Baseline result; absent for dense-only scenarios. */
+  phaseA?: PhaseResult;
+  /** What the seed of the pending or running dense pass created. */
+  seedHandle: BenchmarkSeedHandle;
+  /** Index into `benchmarkDatasets` for the pending or running dense pass. */
+  datasetIndex?: number;
+  /** Completed dense passes before the pending or running one. */
+  datasetPhases?: PhaseResult[];
+}
+
+/**
+ * Persisted across each restart in the benchmark sequence, discriminated by `stage`. Lives in
+ * `app_config_dir/benchmark-state.json`, not the vault, so a `reset_database` call does not delete it mid-run and
+ * vault backups never include it. Read it only through `parseBenchmarkState`.
+ *
+ * The harness writes this file before each intentional restart with a `*-pending` stage, then flips that stage to
+ * `*-running` before the measured pass starts. A later boot that sees `*-running` means the process was killed
+ * mid-pass, so the runner discards benchmark artifacts instead of resuming from a possibly dirty isolated DB.
+ */
+export type BenchmarkState = BenchmarkPhaseAState | BenchmarkPhaseBState;
+
+/** Every persisted stage. Pending stages intentionally resume; running stages mean interrupted work. */
+export type BenchmarkStage = BenchmarkState["stage"];
 
 export interface BenchmarkSuiteState {
   scenarioIds: string[];
@@ -417,11 +428,13 @@ export interface BenchmarkScenario extends BenchmarkScenarioMetadata {
   ): Promise<void | BenchmarkMetric[]>;
   /**
    * Seed the dense dataset. Called once between the baseline pass and
-   * the restart. Returns a handle that `cleanup()` can use to undo.
+   * the restart. Returns a handle that `cleanup()` can use to undo. Stops
+   * between write batches with an `AbortError` once `signal` aborts.
    */
   seed(
     dataset: BenchmarkDatasetProfile,
     context: BenchmarkScenarioContext,
+    signal: AbortSignal,
   ): Promise<BenchmarkSeedHandle>;
   /**
    * Undo whatever `seed()` created. Runs on summary close, on cancel, and

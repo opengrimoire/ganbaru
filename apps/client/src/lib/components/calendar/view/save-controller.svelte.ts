@@ -3,6 +3,7 @@ import type { EditSessionState } from "$lib/components/calendar/edit-session.sve
 import type { PanelSaveData } from "$lib/components/calendar/event-panel/payloads";
 import type { CalendarEditIntent } from "$lib/api/calendar-edit";
 import type { CalendarViewCommitService } from "./commit-service";
+import type { CommitDisplayHold } from "./commit-display";
 import type { createCalendarViewToastController } from "./toasts.svelte";
 
 type ToastController = ReturnType<typeof createCalendarViewToastController>;
@@ -18,11 +19,8 @@ export interface CalendarViewSaveControllerOptions {
   confirmSaveStop: (action: () => Promise<void>) => void;
   confirmEndStop: (action: () => Promise<void>) => void;
   buildFreeze: (data: PanelSaveData, scope?: RecurringScope) => CalendarEvent[];
-  setDisplayState: (state: {
-    suppressGlow: boolean;
-    suppressPreview: boolean;
-    frozenEvents: CalendarEvent[] | null;
-  }) => void;
+  /** Holds the save's projection on screen, or releases it with `null`. */
+  setSaveHold: (hold: CommitDisplayHold | null) => void;
   refreshWindow: () => Promise<void>;
   closeSession: () => void;
   afterRender: () => Promise<void>;
@@ -84,10 +82,7 @@ export class CalendarViewSaveController {
     this.endingActiveEvent = action === "end_now";
     let toastId: string | undefined;
     try {
-      this.options.setDisplayState({
-        suppressGlow: true, suppressPreview: true,
-        frozenEvents: this.options.buildFreeze(data, scope),
-      });
+      this.options.setSaveHold({ frozenEvents: this.options.buildFreeze(data, scope) });
       toastId = this.options.toasts.showSavePendingToast(this.options.savePendingLabel());
       const result = await this.options.commitService.persist(data, scope, { action });
       if (!result.saveRefreshedVisibleWindow) await this.options.refreshWindow();
@@ -107,7 +102,7 @@ export class CalendarViewSaveController {
       }
       this.saving = false;
       this.endingActiveEvent = false;
-      this.options.setDisplayState({ suppressGlow: false, suppressPreview: false, frozenEvents: null });
+      this.options.setSaveHold(null);
     }
   }
 }

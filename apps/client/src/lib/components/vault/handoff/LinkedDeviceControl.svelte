@@ -9,6 +9,13 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import {
+    beginLazyComponentLoad,
+    lazyLoadCanStart,
+    rejectLazyComponentLoad,
+    resolveLazyComponentLoad,
+    type LazyComponentLoadState,
+  } from "$lib/lazy-component-loader";
   import { mobileTopBarPanelGeometry } from "$lib/mobile/layout";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
@@ -45,12 +52,14 @@
   const settingsLauncher = getSettingsLauncher();
   let status = $state<PairingStatus | null>(null);
   let open = $state(false);
-  let panelLoading = $state(false);
-  let panelLoadError = $state<string | null>(null);
-  let mobileLinkingLoading = $state(false);
-  let mobileLinkingLoadError = $state<string | null>(null);
-  let HandoffPanel = $state<Component<HandoffPanelProps> | null>(null);
-  let MobileLinkingScreen = $state<Component<MobileLinkingProps> | null>(null);
+  let panelLoad = $state.raw<LazyComponentLoadState<"panel", Component<HandoffPanelProps>> | null>(null);
+  let mobileLinkingLoad = $state.raw<LazyComponentLoadState<"linking", Component<MobileLinkingProps>> | null>(null);
+  const HandoffPanel = $derived(panelLoad?.status === "ready" ? panelLoad.component : null);
+  const panelLoadError = $derived(panelLoad?.status === "failed" ? t("vaultHandoff.unknownError") : null);
+  const MobileLinkingScreen = $derived(mobileLinkingLoad?.status === "ready" ? mobileLinkingLoad.component : null);
+  const mobileLinkingLoadError = $derived(
+    mobileLinkingLoad?.status === "failed" ? t("vaultHandoff.unknownError") : null,
+  );
   let triggerElement = $state<HTMLButtonElement | null>(null);
   let mobilePanelStyle = $state("");
 
@@ -74,32 +83,28 @@
   }
 
   async function loadPanel(): Promise<void> {
-    if (HandoffPanel || panelLoading) return;
-    panelLoading = true;
-    panelLoadError = null;
+    if (!lazyLoadCanStart(panelLoad, true)) return;
+    const loading = beginLazyComponentLoad(panelLoad, "panel");
+    panelLoad = loading;
     try {
       const module = await import("./VaultHandoffPanel.svelte");
-      HandoffPanel = module.default;
+      panelLoad = resolveLazyComponentLoad(panelLoad, "panel", loading.requestId, module.default);
     } catch (error) {
-      panelLoadError = t("vaultHandoff.unknownError");
+      panelLoad = rejectLazyComponentLoad(panelLoad, "panel", loading.requestId, error);
       console.error("Failed to load linked-device controls:", error);
-    } finally {
-      panelLoading = false;
     }
   }
 
   async function loadMobileLinkingScreen(): Promise<void> {
-    if (MobileLinkingScreen || mobileLinkingLoading) return;
-    mobileLinkingLoading = true;
-    mobileLinkingLoadError = null;
+    if (!lazyLoadCanStart(mobileLinkingLoad, true)) return;
+    const loading = beginLazyComponentLoad(mobileLinkingLoad, "linking");
+    mobileLinkingLoad = loading;
     try {
       const module = await import("$lib/components/mobile/MobileVaultHandoffOnboarding.svelte");
-      MobileLinkingScreen = module.default;
+      mobileLinkingLoad = resolveLazyComponentLoad(mobileLinkingLoad, "linking", loading.requestId, module.default);
     } catch (error) {
-      mobileLinkingLoadError = t("vaultHandoff.unknownError");
+      mobileLinkingLoad = rejectLazyComponentLoad(mobileLinkingLoad, "linking", loading.requestId, error);
       console.error("Failed to load device linking:", error);
-    } finally {
-      mobileLinkingLoading = false;
     }
   }
 

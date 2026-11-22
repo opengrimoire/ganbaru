@@ -162,7 +162,6 @@ async fn serve_with(
         commits,
         version: VERSION,
         upload: tokio::sync::Mutex::new(()),
-        binding: std::sync::Mutex::new(()),
     };
     let bundles = MemberBundles::new(activation::snapshot_preparer(
         host.clone(),
@@ -246,6 +245,7 @@ pub async fn backup(config: AnchorBackupConfig) -> Result<String, String> {
     let _lock = lock_data_dir(paths.root())?;
     let active =
         Activation::load(&paths)?.ok_or_else(|| "this server runs no vault yet".to_string())?;
+    paths.refuse_lost_database()?;
     let pools = DatabasePoolRegistry::default();
     let pool = pools.connect_path(paths.database()).await?;
     let keys = async {

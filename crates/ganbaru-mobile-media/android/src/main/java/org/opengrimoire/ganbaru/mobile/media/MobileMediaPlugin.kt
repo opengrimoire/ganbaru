@@ -5,6 +5,7 @@ import android.content.Intent
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Environment
+import android.os.SystemClock
 import android.provider.DocumentsContract
 import android.util.Base64
 import androidx.activity.result.ActivityResult
@@ -22,6 +23,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private const val MAX_SCANNED_ENTRIES = 20_000
 private const val EXTERNAL_STORAGE_DOCUMENTS_AUTHORITY = "com.android.externalstorage.documents"
+
+/** How long the scan a folder pick produced may answer the refresh that follows the pick. */
+private const val PICKED_TREE_REUSE_WINDOW_MS = 30_000L
 
 @InvokeArg
 internal class AttachSessionArgs {
@@ -172,8 +176,8 @@ class MobileMediaPlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
-  private var pendingTreePick: PendingTreePick? = null
-  @Volatile private var pendingTreeCache: Pair<String, JSObject>? = null
+  private val pendingTreePick = PendingPicker<PendingTreePick>("A music folder picker is already active")
+  private val pickedTreeScans = PickedTreeScanCache<JSObject>(PICKED_TREE_REUSE_WINDOW_MS) { SystemClock.elapsedRealtime() }
   private val pendingArtworkPick = AtomicBoolean(false)
 
   @Command
@@ -204,11 +208,20 @@ class MobileMediaPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun pickMediaTree(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(TreePickArgs::class.java).also { validateScanLimits(it.maxFiles, it.maxDepth) }
+    } catch (error: Exception) {
+      invoke.reject(error.message ?: "Failed to open music folder picker")
+      return
+    }
     try {
-      require(pendingTreePick == null) { "A music folder picker is already active" }
-      val args = invoke.parseArgs(TreePickArgs::class.java)
-      validateScanLimits(args.maxFiles, args.maxDepth)
-      pendingTreePick = PendingTreePick(args.maxFiles, args.maxDepth)
+      pendingTreePick.begin(invoke.id, PendingTreePick(args.maxFiles, args.maxDepth))
+    } catch (error: IllegalStateException) {
+      invoke.reject(error.message ?: "A music folder picker is already active")
+      return
+    }
+    try {
+      pickedTreeScans.clear()
       val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
@@ -216,7 +229,7 @@ class MobileMediaPlugin(private val activity: Activity) : Plugin(activity) {
       }
       startActivityForResult(invoke, intent, "pickMediaTreeResult")
     } catch (error: Exception) {
-      pendingTreePick = null
+      pendingTreePick.release(invoke.id)
       invoke.reject(error.message ?: "Failed to open music folder picker")
     }
   }
@@ -228,8 +241,7 @@ class MobileMediaPlugin(private val activity: Activity) : Plugin(activity) {
 
   @ActivityCallback
   fun pickMediaTreeResult(invoke: Invoke, result: ActivityResult) {
-    val pending = pendingTreePick
-    pendingTreePick = null
+    val pending = pendingTreePick.take(invoke.id)
     if (result.resultCode == Activity.RESULT_CANCELED) {
       invoke.resolve(JSObject().apply { put("tree", null) })
       return
@@ -251,7 +263,7 @@ class MobileMediaPlugin(private val activity: Activity) : Plugin(activity) {
     Thread {
       try {
         val tree = scanTree(treeUri, pending.maxFiles, pending.maxDepth)
-        pendingTreeCache = treeUri.toString() to tree
+        pickedTreeScans.store(TreeScanRequest(treeUri.toString(), pending.maxFiles, pending.maxDepth), tree)
         invoke.resolve(JSObject().apply {
           put("tree", tree)
         })
@@ -270,9 +282,8 @@ class MobileMediaPlugin(private val activity: Activity) : Plugin(activity) {
         val treeUri = Uri.parse(args.treeUri)
         require(treeUri.scheme == "content") { "Music folder access is invalid" }
         require(hasPersistedReadPermission(treeUri)) { "Music folder access needs to be selected again" }
-        val cached = pendingTreeCache?.takeIf { it.first == treeUri.toString() }
-        if (cached != null) pendingTreeCache = null
-        invoke.resolve(cached?.second ?: scanTree(treeUri, args.maxFiles, args.maxDepth))
+        val picked = pickedTreeScans.take(TreeScanRequest(treeUri.toString(), args.maxFiles, args.maxDepth))
+        invoke.resolve(picked ?: scanTree(treeUri, args.maxFiles, args.maxDepth))
       } catch (error: Exception) {
         invoke.reject(error.message ?: "Failed to refresh selected music folder")
       }

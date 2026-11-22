@@ -9,7 +9,8 @@ use crate::chat::organization::tests::{
 use crate::chat::organization::workflow::PostingDevice;
 use crate::chat::organization::{ScheduledSend, persist_post};
 use ganbaru_chat::coordination::contracts::{
-    ChatScheduledMessageRead, PostChatMessageCommand, UpdateScheduledChatMessageCommand,
+    ChatScheduledMessageRead, ChatScheduledMessageState, PostChatMessageCommand,
+    UpdateScheduledChatMessageCommand,
 };
 
 /// Due time of the first occurrence of the test series, its anchor.
@@ -223,7 +224,7 @@ fn scheduled_series_posts_each_occurrence_once_and_advances() {
             ("2026-08-04T01:00:00.000Z".to_owned(), 0, None, 0)
         );
         let read = read_scheduled_message(&pool, &test_id()).await.unwrap();
-        assert_eq!(read.state, "scheduled");
+        assert_eq!(read.state, ChatScheduledMessageState::Scheduled);
         let recurrence = read.recurrence.unwrap();
         assert_eq!(recurrence.spec, hourly());
         assert_eq!(

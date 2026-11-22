@@ -102,7 +102,10 @@ pub(crate) mod firewall {
             }
             SyncRole::Client => {
                 note_member_listener(app, reasons).await;
-                if !dial.is_some_and(|report| report.discovery_found_nothing) {
+                if !dial
+                    .and_then(CoordinatorDialReport::failure)
+                    .is_some_and(|failure| failure.discovery_found_nothing)
+                {
                     return;
                 }
                 tauri::async_runtime::spawn_blocking(|| {

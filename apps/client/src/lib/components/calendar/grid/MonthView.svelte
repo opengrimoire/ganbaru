@@ -76,7 +76,6 @@
 
   interface MonthMoreModalState {
     day: Date;
-    events: CalendarEvent[];
   }
 
   /**
@@ -268,12 +267,16 @@
     });
   }
 
-  function openMonthMoreModal(day: Date, events: CalendarEvent[]): void {
-    monthMoreModal = {
-      day: new Date(day),
-      events: [...events],
-    };
+  function openMonthMoreModal(day: Date): void {
+    monthMoreModal = { day: new Date(day) };
   }
+
+  // The modal lists the live events of its day, so an edit or delete made from it shows at once.
+  const monthMoreEvents = $derived(
+    monthMoreModal
+      ? sortDayCellEvents(eventsByDay.get(formatDatePart(monthMoreModal.day)) ?? EMPTY_DAY)
+      : EMPTY_DAY,
+  );
 
   function closeMonthMoreModal(): void {
     onRequestPanelClose?.();
@@ -305,7 +308,7 @@
 
   const monthMoreModalWidthPx = $derived.by(() => {
     if (!monthMoreModal) return MONTH_MORE_MODAL_MIN_WIDTH_PX;
-    const longestLabelLength = monthMoreModal.events.reduce(
+    const longestLabelLength = monthMoreEvents.reduce(
       (max, event) => Math.max(max, monthMoreEventLabel(event).length),
       0,
     );
@@ -460,7 +463,7 @@
                       --month-more-color: {moreColor};
                       color: var(--month-more-color);
                     "
-                    onclick={(e) => { e.stopPropagation(); openMonthMoreModal(day, dayEvents); }}
+                    onclick={(e) => { e.stopPropagation(); openMonthMoreModal(day); }}
                   >
                     {item.label}
                   </button>
@@ -522,7 +525,7 @@
           style="max-height: min(62vh, 34rem);"
         >
           <div class="flex min-w-0 flex-col gap-1.5">
-            {#each monthMoreModal.events as evt (evt.id)}
+            {#each monthMoreEvents as evt (evt.id)}
               {@const evtColors = preferences.calendarDimPastEvents && modalPast
                 ? getPastEventColor(evt.color, theme)
                 : !modalInMonth

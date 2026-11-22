@@ -705,13 +705,46 @@ fn the_recovery_kit_keys_are_replaced_whole_and_copied_with_snapshots() {
     });
 }
 
+/// Founding stores its kit only into a vault that keeps none, and founds with the kit the
+/// vault keeps, so a kit the user stored first is never overwritten.
+#[test]
+fn founding_keeps_a_recovery_kit_stored_first() {
+    block_on(async {
+        let mut replica = Replica::anchor(0, 32).await;
+        let first = RecoverySeed::from_bytes([0x43; 32]).public_keys().unwrap();
+        let second = RecoverySeed::from_bytes([0x44; 32]).public_keys().unwrap();
+        assert_eq!(
+            local::store_recovery_kit_keys_if_absent(&mut replica.conn, &first, replica.now_ms)
+                .await
+                .unwrap(),
+            first,
+            "a vault without a kit keeps the founding kit"
+        );
+        assert_eq!(
+            local::store_recovery_kit_keys_if_absent(
+                &mut replica.conn,
+                &second,
+                replica.now_ms + 1
+            )
+            .await
+            .unwrap(),
+            first,
+            "the kit the vault keeps founds the charter"
+        );
+        assert_eq!(
+            local::recovery_kit_keys(&mut replica.conn).await.unwrap(),
+            Some(first)
+        );
+    });
+}
+
 /// The app rotates once when sealing or acknowledging finds its writer inactive. Captures are
 /// not bound to a writer and a refused seal rolls back, so the successor seals every capture
 /// taken under the inactive writer and none is orphaned.
 #[test]
 fn rotating_after_an_inactive_writer_seals_every_pending_capture() {
     block_on(async {
-        for state in ["retired", "revoked", "forked"] {
+        for state in ["revoked", "forked"] {
             let mut replica = Replica::anchor(0, 31).await;
             add_note(&mut replica, "note-1", "One").await;
             replica.seal().await.unwrap();
@@ -723,7 +756,8 @@ fn rotating_after_an_inactive_writer_seals_every_pending_capture() {
             let hex: String = old.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
             replica
                 .exec(&format!(
-                    "UPDATE sync_writers SET state = '{state}', cutoff_seq = 2
+                    "UPDATE sync_writers SET state = '{state}', cutoff_seq = 2,
+                    removal_cutoff_seq = CASE '{state}' WHEN 'revoked' THEN 2 END
                      WHERE writer_id = x'{hex}'"
                 ))
                 .await;

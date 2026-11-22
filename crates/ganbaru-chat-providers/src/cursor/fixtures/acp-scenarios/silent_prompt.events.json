@@ -27,6 +27,11 @@
       "turn": "turn-1",
       "state": "completed",
       "stopReason": "end_turn"
+    },
+    {
+      "type": "session_state_changed",
+      "state": "failed",
+      "reason": "ACP agent ACP transport closed"
     }
   ]
 }

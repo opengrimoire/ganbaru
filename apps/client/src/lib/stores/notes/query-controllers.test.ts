@@ -2,10 +2,15 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type {
+  NotesBacklink,
   NotesPage,
+  NotesPageAlias,
+  NotesUnresolvedLink,
   NotesPageSummaryWindow,
   NotesSearchWindow,
   NotesWorkspaceShell,
+  NotesPageTemplate,
+  NotesSearchResult,
 } from "$lib/notes/types";
 
 const backend = vi.hoisted(() => {
@@ -25,6 +30,11 @@ const backend = vi.hoisted(() => {
     archive: queue<NotesPageSummaryWindow>(),
     search: queue<NotesSearchWindow>(),
     destinations: queue<NotesWorkspaceShell>(),
+    templates: queue<NotesPageTemplate[]>(),
+    backlinks: queue<NotesBacklink[]>(),
+    aliases: queue<NotesPageAlias[]>(),
+    unresolved: queue<NotesUnresolvedLink[]>(),
+    addAlias: vi.fn<() => Promise<NotesPageAlias[]>>(),
   };
 });
 
@@ -36,6 +46,11 @@ vi.mock("$lib/api/notes", async (importOriginal) => {
     listTrashedNotesPages: vi.fn(),
     searchNotes: backend.search.next,
     listNotesDestinationCandidates: backend.destinations.next,
+    listNotesPageTemplates: backend.templates.next,
+    listNotesBacklinks: backend.backlinks.next,
+    listNotesPageAliases: backend.aliases.next,
+    listNotesUnresolvedLinks: backend.unresolved.next,
+    addNotesPageAlias: backend.addAlias,
   };
 });
 
@@ -172,6 +187,120 @@ describe("Notes query controllers", () => {
     warn.mockRestore();
   });
 
+  it("ends running page link reads and clears their errors when the page state resets", async () => {
+    const { createNotesLinksController } = await import("./links.svelte");
+    const controller = createNotesLinksController({
+      readSelectedPageId: () => "page-a",
+      readSelectedProjectId: () => null,
+      readAllPages: () => [],
+      reloadSelectedPage: async () => undefined,
+      scheduleVisibleMetadataRefresh: () => undefined,
+    });
+    const failedBacklinks = controller.reloadBacklinks();
+    const failedAliases = controller.reloadPageAliases();
+    const failedUnresolved = controller.reloadUnresolvedLinks();
+    backend.backlinks.reject(lastCall(backend.backlinks.next), new Error("offline"));
+    backend.aliases.reject(lastCall(backend.aliases.next), new Error("offline"));
+    backend.unresolved.reject(lastCall(backend.unresolved.next), new Error("offline"));
+    await Promise.all([failedBacklinks, failedAliases, failedUnresolved]);
+    expect(controller.backlinksError).toContain("offline");
+
+    controller.resetPageState();
+    expect(controller.backlinksError).toBeNull();
+    expect(controller.aliasesError).toBeNull();
+    expect(controller.unresolvedError).toBeNull();
+
+    const backlinks = controller.reloadBacklinks();
+    const aliases = controller.reloadPageAliases();
+    const unresolved = controller.reloadUnresolvedLinks();
+    controller.resetAll();
+    expect(controller.backlinksLoading).toBe(false);
+    expect(controller.aliasesLoading).toBe(false);
+    expect(controller.unresolvedLoading).toBe(false);
+    backend.backlinks.resolve(lastCall(backend.backlinks.next), []);
+    backend.aliases.resolve(lastCall(backend.aliases.next), []);
+    backend.unresolved.resolve(lastCall(backend.unresolved.next), []);
+    await Promise.all([backlinks, aliases, unresolved]);
+    expect(controller.backlinksLoading).toBe(false);
+    expect(controller.aliasesLoading).toBe(false);
+    expect(controller.unresolvedLoading).toBe(false);
+  });
+
+  it("keeps an alias write when an older alias read finishes after it", async () => {
+    const { createNotesLinksController } = await import("./links.svelte");
+    const written: NotesPageAlias = {
+      object: "page_alias",
+      id: "alias-new",
+      page_id: "page-a",
+      alias: "New",
+      normalized_alias: "new",
+      created_time: "2026-07-03T00:00:00.000Z",
+      last_edited_time: "2026-07-03T00:00:00.000Z",
+    };
+    backend.addAlias.mockResolvedValueOnce([written]);
+    const controller = createNotesLinksController({
+      readSelectedPageId: () => "page-a",
+      readSelectedProjectId: () => null,
+      readAllPages: () => [],
+      reloadSelectedPage: async () => undefined,
+      scheduleVisibleMetadataRefresh: () => undefined,
+    });
+    const staleRead = controller.reloadPageAliases();
+    const staleCall = lastCall(backend.aliases.next);
+    const write = controller.addPageAlias("New");
+    await vi.waitFor(() => expect(controller.aliases).toEqual([written]));
+    backend.aliases.resolve(staleCall, []);
+    await staleRead;
+    expect(controller.aliases).toEqual([written]);
+    expect(controller.aliasesLoading).toBe(false);
+    backend.unresolved.resolve(lastCall(backend.unresolved.next), []);
+    backend.backlinks.resolve(lastCall(backend.backlinks.next), []);
+    await write;
+  });
+
+  it("keeps the newly selected page's aliases when an alias write for the previous page finishes late", async () => {
+    const { createNotesLinksController } = await import("./links.svelte");
+    let selectedPageId = "page-a";
+    let finishWrite: (aliases: NotesPageAlias[]) => void = () => undefined;
+    backend.addAlias.mockImplementationOnce(() => new Promise((resolve) => { finishWrite = resolve; }));
+    const controller = createNotesLinksController({
+      readSelectedPageId: () => selectedPageId,
+      readSelectedProjectId: () => null,
+      readAllPages: () => [],
+      reloadSelectedPage: async () => undefined,
+      scheduleVisibleMetadataRefresh: () => undefined,
+    });
+    const write = controller.addPageAlias("Old page alias");
+    selectedPageId = "page-b";
+    const reads = Promise.all([
+      controller.reloadPageAliases(),
+      controller.reloadBacklinks(),
+      controller.reloadUnresolvedLinks(),
+    ]);
+    const aliasCall = lastCall(backend.aliases.next);
+    const backlinkCall = lastCall(backend.backlinks.next);
+    const unresolvedCall = lastCall(backend.unresolved.next);
+    finishWrite([{
+      object: "page_alias",
+      id: "alias-a",
+      page_id: "page-a",
+      alias: "Old page alias",
+      normalized_alias: "old page alias",
+      created_time: "2026-07-03T00:00:00.000Z",
+      last_edited_time: "2026-07-03T00:00:00.000Z",
+    }]);
+    await write;
+    expect(controller.aliases).toEqual([]);
+    expect(controller.aliasesLoading).toBe(true);
+    backend.aliases.resolve(aliasCall, []);
+    backend.backlinks.resolve(backlinkCall, []);
+    backend.unresolved.resolve(unresolvedCall, []);
+    await reads;
+    expect(controller.aliasesLoading).toBe(false);
+    expect(controller.backlinksLoading).toBe(false);
+    expect(controller.unresolvedLoading).toBe(false);
+  });
+
   it("keeps changed and removed pages current when a destination read finishes late", async () => {
     const { createNotesLinksController } = await import("./links.svelte");
     const stale = destinationPage("page-a", "old-folder");
@@ -206,4 +335,182 @@ describe("Notes query controllers", () => {
     await late;
     expect(controller.destinations).toEqual([extra]);
   });
+
+  it("rejects a stale template reload and keeps templates visible while reloading", async () => {
+    const { createNotesPageTemplatesController } = await import("./page-templates.svelte");
+    const controller = createNotesPageTemplatesController(templatesContext());
+    const first = controller.reloadPageTemplates();
+    backend.templates.resolve(lastCall(backend.templates.next), [template("a")]);
+    await first;
+
+    const stale = controller.reloadPageTemplates();
+    const staleIndex = lastCall(backend.templates.next);
+    const current = controller.reloadPageTemplates();
+    expect(controller.loading).toBe(true);
+    expect(controller.templates.map((item) => item.id)).toEqual(["a"]);
+    backend.templates.resolve(lastCall(backend.templates.next), [template("b")]);
+    await current;
+    backend.templates.resolve(staleIndex, [template("stale")]);
+    await stale;
+
+    expect(controller.loading).toBe(false);
+    expect(controller.templates.map((item) => item.id)).toEqual(["b"]);
+  });
+
+  it("reports a failed template reload without discarding loaded templates", async () => {
+    const { createNotesPageTemplatesController } = await import("./page-templates.svelte");
+    const controller = createNotesPageTemplatesController(templatesContext());
+    const first = controller.reloadPageTemplates();
+    backend.templates.resolve(lastCall(backend.templates.next), [template("a")]);
+    await first;
+
+    const failed = controller.reloadPageTemplates();
+    backend.templates.reject(lastCall(backend.templates.next), new Error("offline"));
+    await expect(failed).rejects.toThrow("offline");
+    expect(controller.loading).toBe(false);
+    expect(controller.error).toContain("offline");
+    expect(controller.templates.map((item) => item.id)).toEqual(["a"]);
+
+    const retry = controller.reloadPageTemplates();
+    expect(controller.error).toBeNull();
+    backend.templates.resolve(lastCall(backend.templates.next), []);
+    await retry;
+  });
+
+  it("clears search results when a search fails and keeps them when a later page fails", async () => {
+    const { createNotesSearchController } = await import("./search.svelte");
+    const controller = createNotesSearchController();
+    const first = controller.search("tasks");
+    backend.search.resolve(lastCall(backend.search.next), { results: [searchResult("a")], next_cursor: "next" });
+    await first;
+
+    const more = controller.loadMoreSearchResults();
+    expect(controller.loading).toBe(true);
+    backend.search.reject(lastCall(backend.search.next), new Error("offline"));
+    await more;
+    expect(controller.loading).toBe(false);
+    expect(controller.error).toContain("offline");
+    expect(controller.results.map((result) => result.id)).toEqual(["a"]);
+    expect(controller.hasMore).toBe(true);
+
+    const failed = controller.search("tasks");
+    expect(controller.error).toBeNull();
+    backend.search.reject(lastCall(backend.search.next), new Error("offline"));
+    await failed;
+    expect(controller.results).toEqual([]);
+    expect(controller.error).toContain("offline");
+  });
+
+  it("stops offering more results once a new search fails", async () => {
+    const { createNotesSearchController } = await import("./search.svelte");
+    const controller = createNotesSearchController();
+    const first = controller.search("tasks");
+    backend.search.resolve(lastCall(backend.search.next), { results: [searchResult("a")], next_cursor: "next" });
+    await first;
+    expect(controller.hasMore).toBe(true);
+
+    const failed = controller.search("projects");
+    backend.search.reject(lastCall(backend.search.next), new Error("offline"));
+    await failed;
+    expect(controller.hasMore).toBe(false);
+    const calls = backend.search.next.mock.calls.length;
+    await controller.loadMoreSearchResults();
+    expect(backend.search.next.mock.calls.length).toBe(calls);
+  });
+
+  it("clears a failed later page's error once a retry starts", async () => {
+    const { createNotesSearchController } = await import("./search.svelte");
+    const controller = createNotesSearchController();
+    const first = controller.search("tasks");
+    backend.search.resolve(lastCall(backend.search.next), { results: [searchResult("a")], next_cursor: "next" });
+    await first;
+    const failed = controller.loadMoreSearchResults();
+    backend.search.reject(lastCall(backend.search.next), new Error("offline"));
+    await failed;
+    expect(controller.error).toContain("offline");
+
+    const retry = controller.loadMoreSearchResults();
+    expect(controller.error).toBeNull();
+    backend.search.resolve(lastCall(backend.search.next), { results: [searchResult("b")], next_cursor: null });
+    await retry;
+    expect(controller.error).toBeNull();
+    expect(controller.results.map((result) => result.id)).toEqual(["a", "b"]);
+  });
+
+  it("ends a running search when the query is cleared", async () => {
+    const { createNotesSearchController } = await import("./search.svelte");
+    const controller = createNotesSearchController();
+    const running = controller.search("tasks");
+    const index = lastCall(backend.search.next);
+    await controller.search("  ");
+    expect(controller.loading).toBe(false);
+    backend.search.resolve(index, { results: [searchResult("late")], next_cursor: "late" });
+    await running;
+    expect(controller.results).toEqual([]);
+    expect(controller.hasMore).toBe(false);
+  });
+
+  it("merges a later search page without duplicating results", async () => {
+    const { createNotesSearchController } = await import("./search.svelte");
+    const controller = createNotesSearchController();
+    const first = controller.search("tasks");
+    backend.search.resolve(lastCall(backend.search.next), { results: [searchResult("a")], next_cursor: "next" });
+    await first;
+    const more = controller.loadMoreSearchResults();
+    backend.search.resolve(lastCall(backend.search.next), {
+      results: [searchResult("a"), searchResult("b")],
+      next_cursor: null,
+    });
+    await more;
+    expect(controller.results.map((result) => result.id)).toEqual(["a", "b"]);
+    expect(controller.hasMore).toBe(false);
+  });
 });
+
+function lastCall(mock: { mock: { calls: unknown[] } }): number {
+  return mock.mock.calls.length - 1;
+}
+
+function templatesContext() {
+  return {
+    readLoadedPage: () => null,
+    readProjectId: () => null,
+    flushPendingBlockSaves: async () => {},
+    activateReturnedPage: async () => {},
+    queueDescendantHydration: () => {},
+    requestPageLoadFocus: () => {},
+  };
+}
+
+function template(id: string): NotesPageTemplate {
+  return {
+    object: "page_template",
+    id,
+    name: id,
+    source_page_id: null,
+    properties: {},
+    icon: null,
+    cover: null,
+    block_count: 0,
+    created_time: "2026-07-03T00:00:00.000Z",
+    last_edited_time: "2026-07-03T00:00:00.000Z",
+  };
+}
+
+function searchResult(id: string): NotesSearchResult {
+  return {
+    object: "search_result",
+    id,
+    type: "page",
+    page: destinationPage(id, null),
+    block_id: null,
+    block_type: null,
+    comment_id: null,
+    discussion_id: null,
+    comment_status: null,
+    comment_author: null,
+    comment_anchor: null,
+    snippet: "",
+    last_edited_time: "2026-07-03T00:00:00.000Z",
+  };
+}

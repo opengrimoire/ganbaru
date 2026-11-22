@@ -209,10 +209,16 @@ export const dataFolderError = {
     "Folder not found. Choose another or import an existing one.",
   openElsewhere:
     "This folder is open in another Ganbaru app. Close that app or choose another folder.",
+  linkedAndroidNewVault:
+    "This phone is linked to other devices. Unlink this phone first, then start a new vault.",
   linkedAndroid:
     "This phone is linked to other devices. Unlink this phone first, then restore.",
   anchorRollback:
     "This computer anchors your linked devices and this copy would undo changes they already follow. Hand the anchor over or remove those devices, then restore.",
+  lostDatabase:
+    "This folder's data is missing, so it wasn't opened to avoid starting over empty. Choose another folder or import a copy.",
+  lostDatabaseMobile:
+    "Ganbaru's data on this phone is missing, so it wasn't opened to avoid starting over empty; restore a backup file or an earlier copy listed below, or start a new vault.",
 } as const;
 
 export const language = {

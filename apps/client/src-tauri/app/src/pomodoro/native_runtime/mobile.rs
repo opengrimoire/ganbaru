@@ -2,9 +2,11 @@
 
 use ganbaru_pomodoro::{
     FocusExecutionError, FocusExecutionSnapshot, FocusMode, FocusPhase, FocusRunSnapshot,
-    FocusSegmentSnapshot,
+    FocusSegmentSnapshot, FocusSegmentStatus,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::distractions::focus_pause::FocusPhaseHold;
 
 const MAX_TEXT_UTF16_UNITS: usize = 160;
 const MILLIS_PER_SECOND: i64 = 1000;
@@ -76,6 +78,9 @@ struct AcceptedNotification {
     is_running: bool,
     /// Whether the notification may offer Resume: only a manual pause, which Resume ends.
     is_resumable: bool,
+    /// Whether the distraction blocker's pause setting lifts phase blocking now, computed by the
+    /// shared rule so Android only applies it.
+    pause_lifts_blocking: bool,
     remaining_seconds: i64,
     total_seconds: i64,
     config_json: String,
@@ -95,7 +100,7 @@ fn accepted_notification(
 ) -> Result<Option<AcceptedNotification>, FocusExecutionError> {
     copy.validate()?;
     if !matches!(
-        snapshot.mode,
+        snapshot.mode.kind(),
         FocusMode::Running | FocusMode::ManualPause | FocusMode::IdlePause | FocusMode::Suspended
     ) {
         return Ok(None);
@@ -112,7 +117,7 @@ fn accepted_notification(
         return Ok(None);
     }
     if segment.run_id != run.id
-        || segment.status != "active"
+        || segment.status != FocusSegmentStatus::Active
         || segment.actual_end_ms.is_some()
         || segment.actual_start_ms > now
         || segment.chosen_duration_ms <= 0
@@ -152,6 +157,7 @@ fn accepted_notification(
             remaining_ms,
             running,
             resumable: snapshot.mode == FocusMode::ManualPause,
+            pause_lifts_blocking: FocusPhaseHold::of(snapshot.mode.kind()).pause_lifts_blocking(),
         },
         copy,
     )
@@ -164,6 +170,7 @@ struct NotificationTiming {
     remaining_ms: i64,
     running: bool,
     resumable: bool,
+    pause_lifts_blocking: bool,
 }
 
 fn notification_payload(
@@ -202,6 +209,7 @@ fn notification_payload(
         generated_at_epoch_ms: timing.now,
         is_running: timing.running,
         is_resumable: timing.resumable,
+        pause_lifts_blocking: timing.pause_lifts_blocking,
         remaining_seconds,
         total_seconds,
         config_json: serde_json::to_string(&run.configuration)
@@ -229,7 +237,7 @@ fn completion_notification(
         .actual_end_ms
         .ok_or_else(|| "Focus completion has no committed phase ending".to_owned())?;
     if segment.run_id != run.id
-        || segment.status == "active"
+        || segment.status == FocusSegmentStatus::Active
         || ended_at <= segment.actual_start_ms
         || ended_at > now
         || ended_at > run.planned_end_ms
@@ -248,6 +256,7 @@ fn completion_notification(
             remaining_ms: 0,
             running: false,
             resumable: false,
+            pause_lifts_blocking: false,
         },
         copy,
     )
@@ -275,7 +284,7 @@ fn newly_closed_phase<'a>(
         || snapshot.revision <= previous.revision
         || previous.run_id.as_deref() != Some(run.id.as_str())
         || !matches!(
-            snapshot.mode,
+            snapshot.mode.kind(),
             FocusMode::Running | FocusMode::ReturnWait | FocusMode::Expired
         )
     {
@@ -288,7 +297,7 @@ fn newly_closed_phase<'a>(
         .find(|segment| {
             Some(segment.id.as_str()) == previous.phase_id.as_deref()
                 && segment.run_id == run.id
-                && segment.status != "active"
+                && segment.status != FocusSegmentStatus::Active
                 && segment
                     .actual_end_ms
                     .is_some_and(|end| end > segment.actual_start_ms)
@@ -348,7 +357,7 @@ impl AndroidPresentation {
             self.completion_captured_at = None;
         }
         let has_phase = matches!(
-            snapshot.mode,
+            snapshot.mode.kind(),
             FocusMode::Running
                 | FocusMode::ManualPause
                 | FocusMode::IdlePause
@@ -416,7 +425,7 @@ impl AndroidPresentation {
             self.completion_captured_at = Some(std::time::Instant::now());
         }
         if matches!(
-            snapshot.mode,
+            snapshot.mode.kind(),
             FocusMode::Stopped | FocusMode::IdleFailed | FocusMode::Suspended
         ) || self
             .pending_completion

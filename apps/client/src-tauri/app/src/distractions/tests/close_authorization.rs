@@ -383,7 +383,7 @@ fn persisted_desktop_rule_authorization_tracks_current_phase_and_rule_state() {
             }
         }
     });
-    let runtime = state("focus");
+    let runtime = focus_state();
     let identity = super::DistractionsDesktopRuleIdentity::DesktopApp {
         rule_id: "Steam".to_string(),
     };
@@ -397,13 +397,38 @@ fn persisted_desktop_rule_authorization_tracks_current_phase_and_rule_state() {
     .unwrap();
     assert!(super::validate_names_authorized(vec!["steam".to_string()], &authorization).is_ok());
 
-    let mut paused = state("focus");
-    paused.paused = true;
-    paused.pause_reason = Some("manual".to_string());
+    let paused = state(BlockingPhase::Focus, Some(PauseReason::Manual));
     assert!(
         super::configured_close_authorization(
             &config,
             Some(&paused),
+            None,
+            &identity,
+            &super::DesktopCatalogIndex::default()
+        )
+        .is_err()
+    );
+    for reason in [PauseReason::Idle, PauseReason::Suspend] {
+        assert!(
+            super::configured_close_authorization(
+                &config,
+                Some(&state(BlockingPhase::Focus, Some(reason))),
+                None,
+                &identity,
+                &super::DesktopCatalogIndex::default()
+            )
+            .is_ok(),
+            "a {reason:?} pause keeps closing blocked apps"
+        );
+    }
+    let inactive = DistractionsRuntimeState {
+        authority: RuntimeAuthority::Inactive {},
+        ..focus_state()
+    };
+    assert!(
+        super::configured_close_authorization(
+            &config,
+            Some(&inactive),
             None,
             &identity,
             &super::DesktopCatalogIndex::default()
@@ -690,7 +715,7 @@ fn desktop_rule_authorization_addresses_the_stored_identity() {
     let authorize = |rule_id: &str| {
         super::configured_close_authorization(
             &config,
-            Some(&state("focus")),
+            Some(&focus_state()),
             None,
             &super::DistractionsDesktopRuleIdentity::DesktopApp {
                 rule_id: rule_id.to_string(),
@@ -719,7 +744,7 @@ fn desktop_rule_closes_only_names_its_own_name_or_the_app_catalog_vouches_for() 
         }]);
     let authorization = super::configured_close_authorization(
         &config,
-        Some(&state("focus")),
+        Some(&focus_state()),
         None,
         &identity,
         &catalog,
@@ -735,7 +760,7 @@ fn desktop_rule_closes_only_names_its_own_name_or_the_app_catalog_vouches_for() 
 
     let without_catalog = super::configured_close_authorization(
         &config,
-        Some(&state("focus")),
+        Some(&focus_state()),
         None,
         &identity,
         &super::DesktopCatalogIndex::default(),
@@ -754,7 +779,7 @@ fn desktop_rule_naming_only_a_session_service_is_not_closeable() {
         assert!(
             super::configured_close_authorization(
                 &config,
-                Some(&state("focus")),
+                Some(&focus_state()),
                 None,
                 &identity,
                 &super::DesktopCatalogIndex::default(),

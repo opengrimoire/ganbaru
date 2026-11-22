@@ -269,19 +269,6 @@ pub(crate) fn seal_replaced_backup(
         .map_err(|error| format!("seal the replaced vault backup: {error}"))
 }
 
-/// Whether `root` keeps a backup of the vault `vault_id` written at or after `since_ms`, in Unix
-/// milliseconds.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub(crate) fn has_backup_since(root: &Path, vault_id: &str, since_ms: i64) -> bool {
-    list_replaced_vault_backups(root).is_ok_and(|backups| {
-        backups.iter().any(|backup| {
-            backup.replaced_at_ms >= since_ms
-                && archived_manifest(&root.join(&backup.id))
-                    .is_some_and(|manifest| manifest.vault_id == vault_id)
-        })
-    })
-}
-
 /// Resolves the backup an identifier names inside `root`.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) fn replaced_vault_backup_path(root: &Path, id: &str) -> Result<PathBuf, String> {

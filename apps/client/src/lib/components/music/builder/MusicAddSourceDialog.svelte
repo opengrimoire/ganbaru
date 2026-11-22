@@ -32,6 +32,7 @@
   let preview = $state<MusicYouTubeSourcePreview | null>(null);
   let error = $state<string | null>(null);
   let saving = $state(false);
+  let resolveRequest = 0;
 
   function dialogTitle(): string {
     if (kind === "local-root") return t("music.builder.localFolder");
@@ -47,16 +48,29 @@
     name = result.name;
   }
 
+  /** Resolve the typed link into a preview, ignoring a result that lands after the link changed. */
   async function resolveLink(): Promise<void> {
     const parsed = controller.parseYouTubeInput(link);
     if (!parsed.source) {
       error = parsed.error;
       return;
     }
+    const request = ++resolveRequest;
     error = null;
-    preview = await controller.resolveYouTube(parsed.source);
-    if (!preview) error = controller.resolutionError;
-    else if (!name.trim()) name = preview.title;
+    const resolved = await controller.resolveYouTube(parsed.source);
+    if (request !== resolveRequest) return;
+    preview = resolved;
+    if (!resolved) error = controller.resolutionError;
+    else if (!name.trim()) name = resolved.title;
+  }
+
+  /** Drop the preview and any resolution still running for the previous link. */
+  function editLink(): void {
+    resolveRequest += 1;
+    controller.cancelResolution();
+    if (preview) name = "";
+    preview = null;
+    error = null;
   }
 
   async function saveLocal(): Promise<void> {
@@ -111,7 +125,7 @@
       <label class="block">
         <span class="sr-only">{t("music.builder.youtubeLink")}</span>
         <span class="grid grid-cols-[minmax(0,1fr)_auto] gap-2 max-[480px]:grid-cols-1">
-          <input data-dialog-autofocus bind:value={link} oninput={() => { if (preview) name = ""; preview = null; error = null; }} class="source-input field min-w-0" placeholder="https://www.youtube.com/…" />
+          <input data-dialog-autofocus bind:value={link} oninput={editLink} class="source-input field min-w-0" placeholder="https://www.youtube.com/…" />
           <button type="button" onclick={() => { void resolveLink(); }} disabled={controller.resolving || !link.trim()} class="source-action h-(--control-height)">{#if controller.resolving}<LoaderCircle class="animate-spin motion-reduce:animate-none" size={15} />{:else}{t("music.builder.resolveLink")}{/if}</button>
         </span>
       </label>

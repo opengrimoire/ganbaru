@@ -799,3 +799,154 @@ fn inspection_workers_are_bounded_by_files_cpus_and_disk_pressure_cap() {
     assert_eq!(inspection_worker_count(64, 2), 2);
     assert_eq!(inspection_worker_count(64, 16), 4);
 }
+
+async fn source_refresh_row(pool: &SqlitePool) -> (String, i64, Option<i64>) {
+    sqlx::query_as(
+        "SELECT refresh_state, snapshot_generation, last_successful_refresh_at_ms
+         FROM music_source_collections WHERE id = 'collection-1'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn cancelling_a_refresh_settles_the_source_refresh_state() {
+    crate::test_support::block_on(async {
+        let pool = migrated_pool().await;
+        seed_root(&pool).await;
+        let root = temporary_root("cancel-settles");
+        fs::write(root.join("kept.mp3"), b"kept media").unwrap();
+
+        let queued = request("cancel-queued", &root, 1_700_000_000_000);
+        prepare(&pool, &queued).await.unwrap();
+        assert_eq!(source_refresh_row(&pool).await.0, "queued");
+        cancel(&pool, &queued.job_id, 1_700_000_000_500)
+            .await
+            .unwrap();
+        assert_eq!(source_refresh_row(&pool).await.0, "idle");
+
+        let running = request("cancel-running", &root, 1_700_000_100_000);
+        prepare(&pool, &running).await.unwrap();
+        persistence::mark_running(&pool, &running.job_id)
+            .await
+            .unwrap();
+        cancel(&pool, &running.job_id, 1_700_000_100_500)
+            .await
+            .unwrap();
+        assert_eq!(source_refresh_row(&pool).await.0, "idle");
+        fs::remove_dir_all(root).unwrap();
+    });
+}
+
+#[test]
+fn cancelling_an_older_refresh_leaves_the_newer_refresh_queued() {
+    crate::test_support::block_on(async {
+        let pool = migrated_pool().await;
+        seed_root(&pool).await;
+        let root = temporary_root("cancel-older");
+        let older = request("cancel-older", &root, 1_700_000_000_000);
+        prepare(&pool, &older).await.unwrap();
+        let newer = request("cancel-newer", &root, 1_700_000_100_000);
+        prepare(&pool, &newer).await.unwrap();
+        cancel(&pool, &older.job_id, 1_700_000_100_500)
+            .await
+            .unwrap();
+        assert_eq!(source_refresh_row(&pool).await.0, "queued");
+        fs::remove_dir_all(root).unwrap();
+    });
+}
+
+#[test]
+fn a_cancelled_refresh_cannot_finalize_its_snapshot() {
+    crate::test_support::block_on(async {
+        let pool = migrated_pool().await;
+        seed_root(&pool).await;
+        let root = temporary_root("cancel-finalize");
+        fs::write(root.join("kept.mp3"), b"kept media").unwrap();
+        fs::write(root.join("removed.mp3"), b"removed media").unwrap();
+        let first = request("finalize-first", &root, 1_700_000_000_000);
+        prepare(&pool, &first).await.unwrap();
+        run_prepared(&pool, first).await.unwrap();
+        let before = source_refresh_row(&pool).await;
+
+        let cancelled = request("finalize-cancelled", &root, 1_700_000_100_000);
+        let queued = prepare(&pool, &cancelled).await.unwrap();
+        persistence::mark_running(&pool, &cancelled.job_id)
+            .await
+            .unwrap();
+        cancel(&pool, &cancelled.job_id, 1_700_000_100_500)
+            .await
+            .unwrap();
+        persistence::finalize_success(&pool, &cancelled, queued.generation)
+            .await
+            .unwrap();
+        persistence::finish_incomplete(&pool, &cancelled, "Stopped early.")
+            .await
+            .unwrap();
+
+        let missing: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM music_local_locations WHERE availability <> 'available'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(missing, 0);
+        let after = source_refresh_row(&pool).await;
+        assert_eq!(after.1, before.1);
+        assert_eq!(after.2, before.2);
+        assert_eq!(after.0, "idle");
+        let job = progress(&pool, &cancelled.job_id).await.unwrap();
+        assert_eq!(job.state, super::super::MusicRefreshJobState::Cancelled);
+        assert!(!job.absence_determined);
+        let issues: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM music_refresh_job_issues WHERE job_id = 'finalize-cancelled'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(issues, 0);
+        fs::remove_dir_all(root).unwrap();
+    });
+}
+
+#[test]
+fn interrupted_refreshes_settle_when_the_vault_opens() {
+    crate::test_support::block_on(async {
+        let pool = migrated_pool().await;
+        seed_root(&pool).await;
+        let root = temporary_root("interrupted");
+        fs::write(root.join("kept.mp3"), b"kept media").unwrap();
+        let first = request("interrupted-first", &root, 1_700_000_000_000);
+        prepare(&pool, &first).await.unwrap();
+        run_prepared(&pool, first).await.unwrap();
+        let before = source_refresh_row(&pool).await;
+
+        let interrupted = request("interrupted-running", &root, 1_700_000_100_000);
+        prepare(&pool, &interrupted).await.unwrap();
+        persistence::mark_running(&pool, &interrupted.job_id)
+            .await
+            .unwrap();
+        settle_interrupted(&pool, 1_700_000_200_000).await.unwrap();
+
+        let job = progress(&pool, &interrupted.job_id).await.unwrap();
+        assert_eq!(job.state, super::super::MusicRefreshJobState::Cancelled);
+        assert!(job.finished_at_ms.is_some() && job.finished_at_ms >= job.started_at_ms);
+        assert!(
+            !persistence::is_current(&pool, &interrupted.job_id)
+                .await
+                .unwrap()
+        );
+        let after = source_refresh_row(&pool).await;
+        assert_eq!(after.0, "idle");
+        assert_eq!((after.1, after.2), (before.1, before.2));
+        let available: String = sqlx::query_scalar(
+            "SELECT availability FROM music_local_locations WHERE relative_path = 'kept.mp3'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(available, "available");
+        fs::remove_dir_all(root).unwrap();
+    });
+}

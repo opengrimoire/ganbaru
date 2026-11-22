@@ -29,6 +29,7 @@
   } from "$lib/components/calendar/view/music-inspection";
   import { getNativeCalendarEditController } from "$lib/components/calendar/view/native-edit-controller.svelte";
   import type { CalendarEditDraft } from "$lib/components/calendar/view/native-edit-controller.svelte";
+  import { commitDisplay, NO_COMMIT_DISPLAY, type CommitDisplaySlots } from "$lib/components/calendar/view/commit-display";
   import type { CalendarDeleteOutcome } from "$lib/api/calendar-edit";
   import { activeVaultIdentity } from "$lib/vault/active-vault";
   import CalendarX from "@lucide/svelte/icons/calendar-x";
@@ -203,11 +204,13 @@
   // Display events are a pure overlay with no store mutation. While edits are
   // saving, preview computation is suppressed to prevent a flash: the store
   // updates before the session closes, so the preview would briefly conflict.
-  let suppressEditPreview = $state(false);
-  let panelCommitHidden = $state(false);
+  let commitHolds = $state<CommitDisplaySlots>(NO_COMMIT_DISPLAY);
+  const committingDisplay = $derived(commitDisplay(commitHolds));
+  const suppressEditPreview = $derived(committingDisplay.suppressPreview);
+  const panelCommitHidden = $derived(committingDisplay.panelHidden);
   /** Whether a touch is moving, resizing, or drawing an event on the mobile grid. */
   let mobileGridEditing = $state(false);
-  let saveDisplayFreeze = $state<CalendarEvent[] | null>(null);
+  const saveDisplayFreeze = $derived(committingDisplay.frozenEvents);
 
   // Visible viewport window. Navigation commits this target only after the
   // matching event and rail snapshots are ready.
@@ -385,7 +388,7 @@
   }));
   const eventsByDay = $derived(calendarViewModel.eventsByDay);
 
-  let suppressEditingGlow = $state(false);
+  const suppressEditingGlow = $derived(committingDisplay.suppressGlow);
   const previewedIds = $derived(suppressEditingGlow ? new Set<string>() : displayResult.previewedIds);
   const editingId = $derived(suppressEditingGlow ? undefined : displayResult.editingId);
   const visualEditingId = $derived(
@@ -526,11 +529,7 @@
       });
     },
     buildFreeze: buildSaveDisplayFreeze,
-    setDisplayState: ({ suppressGlow, suppressPreview, frozenEvents }) => {
-      suppressEditingGlow = suppressGlow;
-      suppressEditPreview = suppressPreview;
-      saveDisplayFreeze = frozenEvents;
-    },
+    setSaveHold: (hold) => { commitHolds = { ...commitHolds, save: hold }; },
     refreshWindow: () => calendarStore.refreshWindow(viewWindow.start, viewWindow.end),
     closeSession,
     afterRender: tick,
@@ -1146,11 +1145,7 @@
           && JSON.stringify(current.edit) === JSON.stringify(input.edit);
       } catch { return false; }
     },
-    setCommitState: ({ hidden, suppressPreview, frozenEvents }) => {
-      panelCommitHidden = hidden;
-      suppressEditPreview = suppressPreview;
-      saveDisplayFreeze = frozenEvents;
-    },
+    setDeleteHold: (hold) => { commitHolds = { ...commitHolds, delete: hold }; },
     closeSession,
     pendingLabel: eventDeletePendingLabel,
     outcomeLabel: eventDeleteOutcomeLabel,
@@ -1329,7 +1324,7 @@
       icon={CalendarX}
       copy={false}
       message={t("calendar.view.eventsLoadFailed")}
-      onRetry={() => calendarStore.load()}
+      onRetry={() => calendarStore.retryWindow()}
     />
   {/if}
 

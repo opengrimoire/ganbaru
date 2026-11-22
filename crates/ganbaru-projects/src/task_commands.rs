@@ -16,6 +16,7 @@ use super::mutations::{
     task_status_order,
 };
 use super::order::{OrderGroup, OrderPlacement};
+use super::task_completion::TaskCompletion;
 use super::validation::{
     require_non_empty, validate_checklist_item_create, validate_checklist_item_update,
     validate_task_create, validate_task_update,
@@ -151,12 +152,15 @@ pub async fn update_task(
         previous_task.status_order_key.clone(),
     )
     .await?;
-    let terminal_status = status_is_terminal(&mut tx, &task.status_id).await?;
-    let completed_at = if terminal_status {
-        Some(current_timestamp(&mut tx).await?)
-    } else {
-        None
-    };
+    let completion = TaskCompletion::of(
+        status_is_terminal(&mut tx, &previous_task.status_id).await?,
+        previous_task.completed_at.as_deref(),
+    )
+    .transition(
+        status_is_terminal(&mut tx, &task.status_id).await?,
+        &current_timestamp(&mut tx).await?,
+    );
+    let completed_at = completion.completed_at;
     let updated = sqlx::query(
         "UPDATE project_tasks
          SET section_id = ?,
@@ -177,7 +181,6 @@ pub async fn update_task(
              start_reminder_minutes = ?,
              target_end_date = ?,
              completed_at = ?,
-             archived_at = ?,
              blocker_reason = ?,
              milestone = ?,
              revision = revision + 1,
@@ -202,7 +205,6 @@ pub async fn update_task(
     .bind(task.start_reminder_minutes)
     .bind(&task.target_end_date)
     .bind(&completed_at)
-    .bind(&task.archived_at)
     .bind(&task.blocker_reason)
     .bind(if task.milestone { 1_i64 } else { 0_i64 })
     .bind(&task.id)
@@ -259,20 +261,18 @@ pub async fn update_checklist_item(
     validate_checklist_item_update(&item)?;
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
     let task_id = task_id_for_checklist_item(&mut tx, &item.id).await?;
-    let completed_at = if item.completed {
-        Some(current_timestamp(&mut tx).await?)
-    } else {
-        None
-    };
+    // A checked item keeps the time it was first checked across later edits.
     sqlx::query(
         "UPDATE project_checklist_items
          SET title = ?,
-             completed_at = ?,
+             completed_at = CASE WHEN ? THEN
+                 COALESCE(completed_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+             END,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
     .bind(item.title.trim())
-    .bind(&completed_at)
+    .bind(item.completed)
     .bind(&item.id)
     .execute(&mut *tx)
     .await
@@ -316,6 +316,6 @@ pub async fn delete_checklist_item(
 /// Message prefix the frontend recognizes to reload the task and reapply only its own edit.
 pub const TASK_CONFLICT_PREFIX: &str = "Project task conflict:";
 
-fn task_conflict(task_id: &str) -> String {
+pub(crate) fn task_conflict(task_id: &str) -> String {
     format!("{TASK_CONFLICT_PREFIX} task {task_id} changed; reload before retrying")
 }

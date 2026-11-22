@@ -115,4 +115,51 @@ describe("Notes page creation controller", () => {
     expect(await edited.awaitAttempt(request.id)).toBe("ready");
     expect(edited.previewForSelection(request.id)).toBeNull();
   });
+
+  it("retries only the reconcile of a page the backend already created", async () => {
+    backend.createNotesPage.mockResolvedValue(loaded);
+    const reconcile = vi.fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("hydrate failed"))
+      .mockResolvedValueOnce();
+    const { createNotesPageCreationController } = await import("./page-creation.svelte");
+    const controller = createNotesPageCreationController({ reconcile });
+
+    controller.begin(request, loaded);
+    const blockedEdit = controller.awaitReady(request.id);
+    expect(await controller.awaitAttempt(request.id)).toBe("unshown");
+    expect(controller.errorFor(request.id)).toBe("hydrate failed");
+    expect(controller.isSaved(request.id)).toBe(true);
+    expect(controller.previewForSelection(request.id)).toBeNull();
+
+    controller.retry(request.id);
+    await blockedEdit;
+    expect(backend.createNotesPage).toHaveBeenCalledOnce();
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(controller.isPending(request.id)).toBe(false);
+  });
+
+  it("never discards a created page whose reconcile failed", async () => {
+    backend.createNotesPage.mockResolvedValue(loaded);
+    const { createNotesPageCreationController } = await import("./page-creation.svelte");
+    const controller = createNotesPageCreationController({ reconcile: () => Promise.reject(new Error("hydrate failed")) });
+
+    controller.begin(request, loaded);
+    await controller.awaitAttempt(request.id);
+    controller.discardFailed(request.id);
+    expect(controller.isPending(request.id)).toBe(true);
+    expect(controller.errorFor(request.id)).toBe("hydrate failed");
+  });
+
+  it("releases the waiting edits of an unshown page once it is removed", async () => {
+    backend.createNotesPage.mockResolvedValue(loaded);
+    const { createNotesPageCreationController } = await import("./page-creation.svelte");
+    const controller = createNotesPageCreationController({ reconcile: () => Promise.reject(new Error("hydrate failed")) });
+
+    controller.begin(request, loaded);
+    const blockedEdit = controller.awaitReady(request.id);
+    expect(await controller.awaitAttempt(request.id)).toBe("unshown");
+    controller.releaseRemoved(request.id);
+    await expect(blockedEdit).rejects.toThrow("notes page was discarded");
+    expect(controller.isPending(request.id)).toBe(false);
+  });
 });

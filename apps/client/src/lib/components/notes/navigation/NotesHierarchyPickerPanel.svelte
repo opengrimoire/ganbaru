@@ -136,7 +136,8 @@
   let views = $state<NotesDatabaseView[]>([]);
   let isLoadingViews = $state(false);
   let viewError = $state<NotesFailure | null>(null);
-  let navigationError = $state<NotesFailure | null>(null);
+  /** A failed open or restore, kept with the level it happened on so another level shows its own rows. */
+  let navigationError = $state.raw<{ parentKey: string; failure: NotesFailure } | null>(null);
   let viewRetryCount = $state(0);
   let childMeasuredItemCount = $state<number | null>(null);
   let mobileParent = $state<NotesHierarchyParent>(untrack(() => parent));
@@ -145,6 +146,13 @@
   const requestedPageIds = new Set<string>();
 
   const effectiveParent = $derived(mobileLayout ? mobileParent : parent);
+  const effectiveParentKey = $derived(parentKey(effectiveParent));
+  const shownNavigationError = $derived(navigationError?.parentKey === effectiveParentKey ? navigationError.failure : null);
+  $effect(() => {
+    const key = effectiveParentKey;
+    // Leaving a level dismisses its failure, so returning to it lists its rows again.
+    untrack(() => { if (navigationError && navigationError.parentKey !== key) navigationError = null; });
+  });
 
   const projectPages = $derived.by(() => notesPagesForProject(notes.allPages, projectId));
   const projectFolders = $derived.by(() => notesFoldersForProject(notes.folders, projectId));
@@ -274,12 +282,13 @@
 
   /** Archived notes cannot open as they are, so selecting one restores it and opens it. */
   async function restoreArchivedPage(pageId: string): Promise<void> {
+    const parentKeyAtStart = effectiveParentKey;
     navigationError = null;
     try {
       await notes.unarchivePage(pageId);
       await onPageSelected();
     } catch (error: unknown) {
-      navigationError = notesFailure(error, t("notes.archivedNoteRestoreFailed"));
+      failNavigation(parentKeyAtStart, notesFailure(error, t("notes.archivedNoteRestoreFailed")));
     }
   }
 
@@ -313,6 +322,16 @@
     if (node.kind === "folder") return { kind: "folder", id: node.folder.id };
     if (node.kind === "page") return { kind: "page", id: node.page.id };
     return { kind: "database", id: node.database.id };
+  }
+
+  /** Identifies a hierarchy level, so a failure stays with the level it happened on. */
+  function parentKey(level: NotesHierarchyParent): string {
+    return level.kind === "root" ? "root" : `${level.kind}:${level.id}`;
+  }
+
+  /** Records a failure for the level the action started on. */
+  function failNavigation(levelKey: string, failure: NotesFailure): void {
+    navigationError = { parentKey: levelKey, failure };
   }
 
   function nodeTitle(node: NotesHierarchyPickerNode): string {
@@ -390,6 +409,7 @@
 
   /** Open a database shell or preselect a saved view without adding a view destination. */
   async function selectNode(node: NotesHierarchyPickerNode): Promise<void> {
+    const parentKeyAtStart = effectiveParentKey;
     navigationError = null;
     try {
       if (node.kind === "page") await selectPage(node.page.id);
@@ -399,10 +419,10 @@
           ...(node.kind === "view" ? { viewId: node.view.id } : {}),
         });
         if (opened) await onPageSelected();
-        else navigationError = { message: t("notes.databaseUnavailable"), detail: undefined };
+        else failNavigation(parentKeyAtStart, { message: t("notes.databaseUnavailable"), detail: undefined });
       }
     } catch (error: unknown) {
-      navigationError = notesFailure(error, t("notes.pageOpenFailed"));
+      failNavigation(parentKeyAtStart, notesFailure(error, t("notes.pageOpenFailed")));
     }
   }
 
@@ -645,8 +665,8 @@
   {/if}
   <div class="relative flex min-h-0 flex-auto flex-col">
     <div bind:this={scrollElement} use:scrollEdgeFadeAction class={cn("hide-scrollbar min-h-0 flex-auto overflow-y-auto", mobileLayout ? "overscroll-contain px-2 py-2" : "surface-floating-body")}>
-      {#if navigationError || viewError}
-        <Notice class="px-3 py-2" message={(navigationError ?? viewError)?.message ?? ""} copy={(navigationError ?? viewError)?.detail} onRetry={viewError ? () => { viewRetryCount += 1; } : undefined} />
+      {#if shownNavigationError || viewError}
+        <Notice class="px-3 py-2" message={(shownNavigationError ?? viewError)?.message ?? ""} copy={(shownNavigationError ?? viewError)?.detail} onRetry={viewError ? () => { viewRetryCount += 1; } : undefined} />
       {:else if isLoadingViews || (notes.loading && projectPages.length === 0 && projectFolders.length === 0)}
         <Loading layout="rows" rows={3} label={t("notes.loading")} />
       {:else if notes.loadError}

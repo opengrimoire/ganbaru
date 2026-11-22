@@ -321,15 +321,16 @@ impl<H: SyncHost> Session<'_, H> {
     }
 
     /// Replaces the writer of an anchor whose database was restored behind its log, keeping the
-    /// high-water marked as restored.
+    /// high-water marked as restored since `restored_at_ms` unless it already is.
     #[cfg(desktop)]
     pub(super) async fn rotate_restored(
         &self,
         writer: &mut Option<ActiveWriter>,
+        restored_at_ms: u64,
     ) -> Result<bool, String> {
         let plan = writer
             .as_ref()
-            .map(SuccessorPlan::after_restore)
+            .map(|active| SuccessorPlan::after_restore(active, restored_at_ms))
             .unwrap_or_default();
         *writer = self.create_successor(plan).await?;
         self.attach_space_keys(writer).await?;

@@ -323,6 +323,9 @@
     tabController.cancelDrag();
     tabController.closeRename();
     loadedKey = key;
+    // A review still resolving or an error shown belongs to the previous scope's panel.
+    reviewOpenRequest += 1;
+    error = null;
     panelState = placementSession().read(key);
   });
 
@@ -1007,12 +1010,12 @@
         </div>
       {:else if selectedTerminal}
         <div class="flex h-full min-h-0 flex-col">
-          {#if !selectedTerminal.running}
+          {#if selectedTerminal.status.kind !== "running"}
             <div class="terminal-stopped-bar">
-              <span>{selectedTerminal.exitCode === null ? t("chat.inspector.terminalStopped") : t("chat.inspector.terminalExited", formatNumber(localization.locale, selectedTerminal.exitCode))}</span>
+              <span>{selectedTerminal.status.kind === "exited" ? t("chat.inspector.terminalExited", formatNumber(localization.locale, selectedTerminal.status.exitCode)) : t("chat.inspector.terminalStopped")}</span>
             </div>
           {/if}
-          {#key `${selectedTerminal.id}:${selectedTerminal.generation}`}
+          {#key selectedTerminal.id}
             <ChatTerminalView terminalRead={selectedTerminal} onState={updateTerminal} />
           {/key}
         </div>

@@ -110,7 +110,12 @@ export class ChatOrganizationalController {
     this.setDraft(destination, emptyOrganizationalDraft());
     options.onWritten?.(result);
     await this.options.loadChannelMessages(channel.id, true);
-    if ((replyThreadId || result.assignment) && result.replyThreadId) {
+    // A reply thread opens only in the channel it belongs to, not in a channel selected while the post was written.
+    if (
+      (replyThreadId || result.assignment)
+      && result.replyThreadId
+      && this.options.selectedChannelId() === channel.id
+    ) {
       await this.options.openReplyThread(result.replyThreadId);
     }
     this.options.upsertChannel(await chatApi.readChatChannel(channel.id));

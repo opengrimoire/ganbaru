@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
   import MobileSidebarPanel from "$lib/components/mobile/MobileSidebarPanel.svelte";
   import SearchField from "$lib/components/ui/SearchField.svelte";
@@ -137,9 +137,15 @@
   let archiveCandidate = $state<ChatChannelRead | null>(null);
   let deleteSectionCandidate = $state<ChatSidebarSection | null>(null);
   let railError = $state<string | null>(null);
-  let messageSearchResults = $state<ChatMessageSearchResultRead[]>([]);
-  let messageSearchLoading = $state(false);
+  /** Message search for the current query; a failure replaces the results and belongs to the query that failed. */
+  type MessageSearch =
+    | { status: "idle" }
+    | { status: "loading"; results: ChatMessageSearchResultRead[] }
+    | { status: "ready"; results: ChatMessageSearchResultRead[] }
+    | { status: "failed"; error: string };
+  let messageSearch = $state.raw<MessageSearch>({ status: "idle" });
   let messageSearchRequest = 0;
+  const messageSearchResults = $derived(messageSearch.status === "loading" || messageSearch.status === "ready" ? messageSearch.results : []);
   const matchingChannels = $derived(chat.activeChannels.filter(matchesQuery));
   const assignedChannelIds = $derived(new Set(sections.flatMap((section) => section.channelIds)));
   const unsectionedChannels = $derived(
@@ -200,24 +206,20 @@
     const normalized = query.trim();
     if (normalized.length < 2) {
       messageSearchRequest += 1;
-      messageSearchResults = [];
-      messageSearchLoading = false;
+      messageSearch = { status: "idle" };
       return;
     }
     const request = ++messageSearchRequest;
-    messageSearchLoading = true;
+    messageSearch = { status: "loading", results: untrack(() => messageSearchResults) };
     const timeout = window.setTimeout(() => {
       void chat.searchOrganizationalMessages(normalized)
         .then((results) => {
-          if (request === messageSearchRequest) messageSearchResults = results;
+          if (request === messageSearchRequest) messageSearch = { status: "ready", results };
         })
         .catch((cause: unknown) => {
           if (request === messageSearchRequest) {
-            railError = chatErrorMessage(cause, t("chatErrors.actions.channelAction"));
+            messageSearch = { status: "failed", error: chatErrorMessage(cause, t("chatErrors.actions.channelAction")) };
           }
-        })
-        .finally(() => {
-          if (request === messageSearchRequest) messageSearchLoading = false;
         });
     }, 180);
     return () => window.clearTimeout(timeout);
@@ -882,14 +884,15 @@
       <div use:scrollOverflowAction class={listClass}>
         {#if query.trim().length >= 2}
           <section class="message-results" aria-label={t("chat.organization.messageSearchResults")}>
-            <div class="section-heading"><span>{t("chat.organization.messages")}</span>{#if messageSearchLoading}<LoaderCircle size={12} class="animate-spin" aria-label={t("common.loading")} />{/if}</div>
+            <div class="section-heading"><span>{t("chat.organization.messages")}</span>{#if messageSearch.status === "loading"}<LoaderCircle size={12} class="animate-spin" aria-label={t("common.loading")} />{/if}</div>
             {#each messageSearchResults as result (result.messageItemId)}
               <button type="button" class="message-result" onclick={() => void openMessageResult(result)}>
                 <span><strong>{searchAuthorDisplayName(result)}</strong><small>{projectName(result.projectId)} · #{result.channelName}{#if result.replyThreadId} · {t("chat.organization.thread")}{/if}</small></span>
                 <span>{searchExcerpt(result)}</span>
               </button>
             {/each}
-            {#if !messageSearchLoading && messageSearchResults.length === 0}<p class="px-2 py-1 text-xs text-muted-foreground">{t("chat.organization.noMessageSearchResults")}</p>{/if}
+            {#if messageSearch.status === "failed"}<Notice class="mx-2 mb-1 px-2 py-1 text-xs" message={messageSearch.error} />
+            {:else if messageSearch.status === "ready" && messageSearchResults.length === 0}<p class="px-2 py-1 text-xs text-muted-foreground">{t("chat.organization.noMessageSearchResults")}</p>{/if}
           </section>
         {:else}
           {#if reviewQueueTotal > 0}

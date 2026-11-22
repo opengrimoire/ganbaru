@@ -1421,7 +1421,13 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("music_recent_selections"),
         device("music_refresh_job_entries"),
         device("music_refresh_job_issues"),
-        device("music_refresh_jobs"),
+        DeviceTable {
+            triggers: &[
+                applier_visible("music_refresh_jobs_times_agree_insert"),
+                applier_visible("music_refresh_jobs_times_agree_update"),
+            ],
+            ..device("music_refresh_jobs")
+        },
         device("music_relink_plan_entries"),
         device("music_relink_plans"),
         device("music_session_checkpoints"),

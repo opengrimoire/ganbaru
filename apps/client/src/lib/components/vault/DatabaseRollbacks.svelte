@@ -13,6 +13,7 @@
     pendingFlaggedRollbacks,
     restoreDatabaseRollback,
     type DatabaseRollback,
+    type UnreadableDatabaseRollback,
   } from "$lib/vault/state";
 
   /**
@@ -29,6 +30,7 @@
     "inline-flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-55 dark:bg-transparent";
 
   let rollbacks = $state<DatabaseRollback[]>([]);
+  let unreadable = $state<UnreadableDatabaseRollback[]>([]);
   let pendingRollback = $state<DatabaseRollback | null>(null);
   let busy = $state<string | null>(null);
   let error = $state<string | null>(null);
@@ -36,13 +38,15 @@
 
   async function loadRollbacks(): Promise<void> {
     try {
-      rollbacks = await listDatabaseRollbacks();
+      const listing = await listDatabaseRollbacks();
+      rollbacks = listing.restorable;
+      unreadable = listing.unreadable;
     } catch (cause: unknown) {
       error = formatVaultError(cause, "general", t);
     }
   }
 
-  function formatRollbackLabel(rollback: DatabaseRollback): string {
+  function formatRollbackLabel(rollback: DatabaseRollback | UnreadableDatabaseRollback): string {
     const date = formatDateTime(localization.locale, new Date(rollback.createdAt), {
       dateStyle: "medium",
       timeStyle: "short",
@@ -92,7 +96,7 @@
   });
 </script>
 
-{#if rollbacks.length > 0 || error}
+{#if rollbacks.length > 0 || unreadable.length > 0 || error}
   <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 
   <section class="flex flex-col gap-4">
@@ -149,6 +153,14 @@
             {/if}
             <span>{t("settings.data.rollbackRestore")}</span>
           </button>
+        </div>
+      {/each}
+      {#each unreadable as rollback (rollback.id)}
+        <div class="flex items-center justify-between gap-4 px-1 py-1">
+          <div class="min-w-0 flex-1 text-[0.8rem] leading-5">
+            <div class="text-foreground">{formatRollbackLabel(rollback)}</div>
+            <div class="text-muted-foreground">{t("settings.data.rollbackUnreadable")}</div>
+          </div>
         </div>
       {/each}
     </div>

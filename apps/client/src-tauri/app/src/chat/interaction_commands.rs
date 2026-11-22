@@ -75,7 +75,8 @@ pub struct ChatInteractionStateRead {
     pub session_state: ProviderSessionState,
     pub active_turn_id: Option<String>,
     pub capabilities: ProviderCapabilities,
-    pub pending_request: Option<ChatPendingRequestRead>,
+    /// Open requests of the thread, oldest first.
+    pub pending_requests: Vec<ChatPendingRequestRead>,
     pub queued_followup: Option<ChatQueuedFollowupRead>,
     pub usage: Option<ThreadUsageUpdatedEvent>,
     pub account_status: Option<AccountStatusEvent>,

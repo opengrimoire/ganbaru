@@ -47,8 +47,16 @@
   import NumberedStep, { stepCenteredBlockClass } from "$lib/components/ui/NumberedStep.svelte";
   import ConnectSteps, { type ConnectSource } from "./ConnectSteps.svelte";
   import SettingsPath from "$lib/components/settings/SettingsPath.svelte";
+  import {
+    handoffBusy,
+    handoffInviting,
+    initialHandoffActivity,
+    transitionHandoffActivity,
+    type HandoffAction,
+    type HandoffActivity,
+    type HandoffConfirmation,
+  } from "./handoff-flow";
 
-  type BusyAction = "status" | "invite" | "network" | "pair" | "approval" | "bootstrap" | "unlink" | "recover" | "linkFolder";
 
   /** How long onboarding waits for an approved device to appear before it shows a new code. */
   const APPROVED_ENROLLMENT_SETTLE_ATTEMPTS = 20;
@@ -100,7 +108,11 @@
   let onboardingServerBusy = $state(false);
   let onboardingSteps = $state<{ focusField: () => Promise<void> } | null>(null);
   let qrDialogVisible = $state(false);
-  let busy = $state<BusyAction | null>(untrack(() => status ? null : "status"));
+  let activity = $state<HandoffActivity>(untrack(() => initialHandoffActivity(status !== null)));
+  let activityRequest = 0;
+  const busy = $derived(handoffBusy(activity));
+  /** Whether a pairing invitation is being created, even while another action runs beside it. */
+  const inviting = $derived(handoffInviting(activity));
   let statusRefreshing = false;
   let notice = $state<string | null>(null);
   let error = $state<string | null>(null);
@@ -108,8 +120,7 @@
   let networkError = $state<string | null>(null);
   let approvalError = $state<string | null>(null);
   let enrollmentCode = $state<string | null>(null);
-  let confirmation = $state<"network" | "networkRevoke" | "unlink" | "recover" | "firstCopy" | null>(null);
-  let unlinkDeviceId = $state<string | null>(null);
+  let confirmation = $state<HandoffConfirmation | null>(null);
   /** The folder chosen for the first copy of the linked vault on this computer; null uses the default. */
   let linkFolder = $state<string | null>(null);
   let networkAccess = $state<DesktopNetworkAccess | null>(
@@ -189,11 +200,34 @@
   const errorShownInPlace = $derived(
     error !== null
       && (!status
-        || (!status.linked && platform === "desktop" && presentation === "onboarding" && !invitation)),
+        || (!status.linked && platform === "desktop" && presentation === "onboarding" && !invitation)
+        || (status.linked && presentation === "onboarding" && bootstrapReplicaOnLink && !status.replicaReady)),
   );
 
   function fail(cause: unknown): void {
     error = formatHandoffError(cause, t);
+  }
+
+  /** Marks `kind` as running and returns the request its end must name. */
+  function startHandoffAction(kind: HandoffAction): number {
+    const request = ++activityRequest;
+    activity = transitionHandoffActivity(activity, { type: "actionStarted", kind, request });
+    return request;
+  }
+
+  function finishHandoffAction(request: number): void {
+    activity = transitionHandoffActivity(activity, { type: "actionFinished", request });
+  }
+
+  /** Marks a pairing invitation as being created and returns the request its end must name. */
+  function startHandoffInvite(): number {
+    const request = ++activityRequest;
+    activity = transitionHandoffActivity(activity, { type: "inviteStarted", request });
+    return request;
+  }
+
+  function finishHandoffInvite(request: number): void {
+    activity = transitionHandoffActivity(activity, { type: "inviteFinished", request });
   }
 
   function applyNetworkAccess(next: DesktopNetworkAccess): void {
@@ -214,7 +248,7 @@
     if (presentation === "settings" && platform === "desktop") {
       if (next.pendingEnrollment) {
         qrDialogVisible = true;
-      } else if (qrDialogVisible && !invitation && busy !== "invite" && !error) {
+      } else if (qrDialogVisible && !invitation && !inviting && !error) {
         // A dialog opened only for a request that ended without an answer has nothing left to show.
         qrDialogVisible = false;
       }
@@ -227,7 +261,7 @@
   async function respondToPendingEnrollment(approve: boolean): Promise<void> {
     const pending = status?.pendingEnrollment;
     if (!pending || busy !== null) return;
-    busy = "approval";
+    const started = startHandoffAction("approval");
     error = null;
     approvalError = null;
     notice = null;
@@ -238,7 +272,7 @@
     } catch (cause) {
       approvalError = formatHandoffError(cause, t);
     } finally {
-      busy = null;
+      finishHandoffAction(started);
     }
     if (answered && !approve) {
       invitation = null;
@@ -288,7 +322,7 @@
     if (statusRefreshing) return;
     statusRefreshing = true;
     const showLoadingState = status === null;
-    if (showLoadingState) busy = "status";
+    const started = showLoadingState ? startHandoffAction("status") : null;
     error = null;
     try {
       await loadStatus();
@@ -296,12 +330,12 @@
       fail(cause);
     } finally {
       statusRefreshing = false;
-      if (showLoadingState) busy = null;
+      if (started !== null) finishHandoffAction(started);
     }
   }
 
   async function showInvitation(): Promise<void> {
-    busy = "invite";
+    const started = startHandoffInvite();
     error = null;
     notice = null;
     approvalError = null;
@@ -315,7 +349,7 @@
     } catch (cause) {
       fail(cause);
     } finally {
-      busy = null;
+      finishHandoffInvite(started);
     }
   }
 
@@ -329,14 +363,14 @@
       return;
     }
     qrDialogVisible = true;
-    if (busy === "invite") return;
+    if (inviting) return;
     invitation = null;
     error = null;
     void showInvitation();
   }
 
   async function updateNetworkAccess(grant: boolean): Promise<void> {
-    busy = "network";
+    const started = startHandoffAction("network");
     error = null;
     networkError = null;
     notice = null;
@@ -350,7 +384,7 @@
     } catch (cause) {
       networkError = formatHandoffError(cause, t);
     } finally {
-      busy = null;
+      finishHandoffAction(started);
     }
   }
 
@@ -365,8 +399,8 @@
   }
 
   function setNetworkAccess(enabled: boolean): void {
-    if (enabled) confirmation = "network";
-    else confirmation = "networkRevoke";
+    if (enabled) confirmation = { kind: "network" };
+    else confirmation = { kind: "networkRevoke" };
   }
 
   /** Shows `next` below the onboarding title, focusing its code field unless the keyboard chose it from the tabs. */
@@ -378,39 +412,57 @@
   }
 
   async function acceptInvitation(encoded: string): Promise<void> {
-    busy = "pair";
+    const started = startHandoffAction("pair");
     error = null;
     codeError = null;
     notice = null;
+    let linked: PairingStatus | null = null;
     try {
       const deviceLabel = await readSuggestedDeviceLabel();
       enrollmentCode = await readEnrollmentCode(encoded);
       await enrollWithDesktop(encoded, deviceLabel);
-      const next = await loadStatus();
-      if (
-        platform === "android"
-        && presentation === "onboarding"
-        && bootstrapReplicaOnLink
-        && !next.replicaReady
-      ) {
-        const outcome = await requestVaultBootstrap();
-        if (outcome.inProgress) throw new Error("initial linked vault activation is already running");
-        await loadStatus();
-      }
+      linked = await loadStatus();
       codeDialogVisible = false;
       codeError = null;
     } catch (cause) {
       codeError = formatPairingCodeError(cause, t);
     } finally {
       enrollmentCode = null;
-      busy = null;
+      finishHandoffAction(started);
+    }
+    if (linked && needsLinkedVaultCopy(linked)) await copyLinkedVault();
+  }
+
+  /** Whether this phone is linked during onboarding but still waits for its first copy of the vault. */
+  function needsLinkedVaultCopy(current: PairingStatus): boolean {
+    return platform === "android"
+      && presentation === "onboarding"
+      && bootstrapReplicaOnLink
+      && current.linked
+      && !current.replicaReady;
+  }
+
+  /**
+   * Copies the linked vault onto this phone during onboarding. A failure shows in place of the loader with a retry, and a
+   * copy that is already running is left to the status poll.
+   */
+  async function copyLinkedVault(): Promise<void> {
+    const started = startHandoffAction("bootstrap");
+    error = null;
+    try {
+      const outcome = await requestVaultBootstrap();
+      if (!outcome.inProgress) await loadStatus();
+    } catch (cause) {
+      fail(cause);
+    } finally {
+      finishHandoffAction(started);
     }
   }
 
   /** Copies the linked vault to this device for the first time. */
   async function copyFirst(): Promise<void> {
     confirmation = null;
-    busy = "bootstrap";
+    const started = startHandoffAction("bootstrap");
     error = null;
     notice = null;
     try {
@@ -425,31 +477,29 @@
     } catch (cause) {
       fail(cause);
     } finally {
-      busy = null;
+      finishHandoffAction(started);
     }
   }
 
-  async function unlink(): Promise<void> {
+  async function unlink(deviceId: string): Promise<void> {
     confirmation = null;
-    busy = "unlink";
+    const started = startHandoffAction("unlink");
     error = null;
     try {
-      if (!unlinkDeviceId) throw new Error("Linked device identity is unavailable");
-      await unlinkVaultDevice(unlinkDeviceId);
+      await unlinkVaultDevice(deviceId);
       await loadStatus();
       invitation = null;
       notice = t("vaultHandoff.unlinked");
     } catch (cause) {
       fail(cause);
     } finally {
-      unlinkDeviceId = null;
-      busy = null;
+      finishHandoffAction(started);
     }
   }
 
   async function recover(): Promise<void> {
     confirmation = null;
-    busy = "recover";
+    const started = startHandoffAction("recover");
     error = null;
     try {
       await recoverLocalVaultCopy();
@@ -459,7 +509,7 @@
     } catch (cause) {
       fail(cause);
     } finally {
-      busy = null;
+      finishHandoffAction(started);
     }
   }
 
@@ -477,12 +527,12 @@
       void cancelReceive();
       return;
     }
-    confirmation = "firstCopy";
+    confirmation = { kind: "firstCopy" };
   }
 
   /** Lets the user choose an empty folder for the first copy of the linked vault on this computer. */
   async function chooseLinkFolder(): Promise<void> {
-    busy = "linkFolder";
+    const started = startHandoffAction("linkFolder");
     error = null;
     try {
       const chosen = await pickLinkFolder();
@@ -490,12 +540,12 @@
     } catch (cause) {
       fail(cause);
     } finally {
-      busy = null;
+      finishHandoffAction(started);
     }
   }
 
   async function useDefaultLinkFolder(): Promise<void> {
-    busy = "linkFolder";
+    const started = startHandoffAction("linkFolder");
     error = null;
     try {
       await resetLinkFolder();
@@ -503,7 +553,7 @@
     } catch (cause) {
       fail(cause);
     } finally {
-      busy = null;
+      finishHandoffAction(started);
     }
   }
 
@@ -538,6 +588,10 @@
     if (presentation === "control") void loadServer();
     if (presentation === "onboarding" && platform === "desktop" && desktopQrAvailable) void loadQrCode();
     const prepareOnboarding = (): void => {
+      if (status && needsLinkedVaultCopy(status) && busy === null) {
+        void copyLinkedVault();
+        return;
+      }
       if (presentation !== "onboarding" || status?.linked || platform !== "desktop") return;
       if (!invitation) void showInvitation();
     };
@@ -598,7 +652,7 @@
                     type="button"
                     class={`${buttonClass} bg-background`}
                     disabled={busy !== null}
-                    onclick={() => { confirmation = "network"; }}
+                    onclick={() => { confirmation = { kind: "network" }; }}
                   >
                     {#if busy === "network"}<LoaderCircle size={14} class="animate-spin" />{/if}
                     {t("vaultHandoff.allowNetworkAccess")}
@@ -738,7 +792,19 @@
     {/if}
     {#if presentation === "onboarding" && status.linked}
       {#if bootstrapReplicaOnLink && !status.replicaReady}
-        {@render onboardingLoader()}
+        {#if error && busy === null}
+          <div class="flex min-h-56">
+            <Notice
+              layout="fill"
+              class="text-sm"
+              message={error}
+              retryLabel={t("vaultHandoff.retry")}
+              onRetry={() => (busy !== null ? undefined : copyLinkedVault())}
+            />
+          </div>
+        {:else}
+          {@render onboardingLoader()}
+        {/if}
       {:else}
         <LinkedDeviceSuccess
           device={status.peerLabel ?? t(platform === "android" ? "vaultHandoff.desktopDevice" : "vaultHandoff.androidDevice")}
@@ -777,7 +843,7 @@
                 type="button"
                 class={buttonClass}
                 disabled={controlsBusy}
-                onclick={() => { unlinkDeviceId = device.deviceId; confirmation = "unlink"; }}
+                onclick={() => { confirmation = { kind: "unlink", deviceId: device.deviceId }; }}
               >
                 {t("vaultHandoff.unlink")}
               </button>
@@ -899,7 +965,7 @@
           </button>
         {/if}
         {#if presentation === "settings" && recoverAvailable}
-          <button type="button" class={buttonClass} disabled={busy !== null} onclick={() => { confirmation = "recover"; }}>
+          <button type="button" class={buttonClass} disabled={busy !== null} onclick={() => { confirmation = { kind: "recover" }; }}>
             {t("vaultHandoff.recover")}
           </button>
         {/if}
@@ -930,7 +996,7 @@
       <SyncSection
         {buttonClass}
         mobileLayout={platform === "android"}
-        onRecoverLocalCopy={recoverAvailable && busy === null ? () => { confirmation = "recover"; } : undefined}
+        onRecoverLocalCopy={recoverAvailable && busy === null ? () => { confirmation = { kind: "recover" }; } : undefined}
         onFreshCopy={isCoordinatorClient && status.replicaReady ? getFreshCopy : undefined}
       />
     {/if}
@@ -1017,7 +1083,7 @@
     {@const PairingQrDialog = module.default}
     <PairingQrDialog
       {invitation}
-      invitationError={busy === "invite" ? null : error}
+      invitationError={inviting ? null : error}
       pendingEnrollment={status?.pendingEnrollment ?? null}
       approvalBusy={busy === "approval"}
       {approvalError}
@@ -1044,7 +1110,7 @@
   {/await}
 {/if}
 
-{#if confirmation === "network"}
+{#if confirmation?.kind === "network"}
   <ConfirmDialog
     title={t("vaultHandoff.networkAccessConfirmTitle")}
     message={networkAccess?.state === "networkConfirmationRequired"
@@ -1056,7 +1122,7 @@
     onConfirm={() => void grantNetworkAccess()}
     onCancel={() => { confirmation = null; }}
   />
-{:else if confirmation === "networkRevoke"}
+{:else if confirmation?.kind === "networkRevoke"}
   <ConfirmDialog
     title={t("vaultHandoff.networkAccessRevokeTitle")}
     message={t("vaultHandoff.networkAccessRevokeMessage")}
@@ -1066,16 +1132,17 @@
     onConfirm={() => void revokeNetworkAccess()}
     onCancel={() => { confirmation = null; }}
   />
-{:else if confirmation === "unlink"}
+{:else if confirmation?.kind === "unlink"}
+  {@const deviceId = confirmation.deviceId}
   <ConfirmDialog
     title={t("vaultHandoff.unlinkTitle")}
     message={t("vaultHandoff.unlinkMessage")}
     confirmLabel={t("vaultHandoff.unlink")}
     cancelLabel={t("common.cancel")}
-    onConfirm={() => void unlink()}
-    onCancel={() => { confirmation = null; unlinkDeviceId = null; }}
+    onConfirm={() => void unlink(deviceId)}
+    onCancel={() => { confirmation = null; }}
   />
-{:else if confirmation === "recover"}
+{:else if confirmation?.kind === "recover"}
   <ConfirmDialog
     title={t("vaultHandoff.recoverTitle")}
     message={t("vaultHandoff.recoverMessage")}
@@ -1084,7 +1151,7 @@
     onConfirm={() => void recover()}
     onCancel={() => { confirmation = null; }}
   />
-{:else if confirmation === "firstCopy"}
+{:else if confirmation?.kind === "firstCopy"}
   <ConfirmDialog
     title={t("vaultHandoff.firstCopyTitle")}
     message={platform === "android"

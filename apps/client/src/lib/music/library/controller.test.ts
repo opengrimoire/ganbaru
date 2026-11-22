@@ -303,6 +303,57 @@ describe("Music library controller", () => {
     expect(itemWindow).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1, limit: 200 }));
   });
 
+  it("clears busy when a mutation summary refresh supersedes a full refresh", async () => {
+    let releaseWindow!: () => void;
+    const held = new Promise<void>((resolve) => { releaseWindow = resolve; });
+    const itemWindow = vi.fn(async (request) => {
+      await held;
+      return window(request.destination);
+    });
+    const controller = createMusicLibraryController(api(itemWindow));
+    controller.setVault("vault-1");
+    controller.navigate({ kind: "library" });
+    const refreshing = controller.refresh();
+    expect(controller.busy).toBe(true);
+
+    const summaries = controller.refreshSummariesAfterMutation();
+    releaseWindow();
+    await Promise.all([refreshing, summaries]);
+
+    expect(controller.busy).toBe(false);
+    expect(controller.currentWindow.items.map((item) => item.id)).toEqual(["library"]);
+  });
+
+  it("allows loading more after navigating away during a page load", async () => {
+    let releasePage!: () => void;
+    const held = new Promise<void>((resolve) => { releasePage = resolve; });
+    const itemWindow = vi.fn(async (request) => {
+      if (request.offset > 0 && request.destination === "library") await held;
+      return {
+        ...window(`${request.destination}-${request.offset}`),
+        totalCount: 2,
+        offset: request.offset,
+        limit: request.limit,
+      };
+    });
+    const controller = createMusicLibraryController(api(itemWindow));
+    controller.setVault("vault-1");
+    controller.navigate({ kind: "library" });
+    await controller.refresh();
+    const pending = controller.loadMore();
+    expect(controller.loadingMore).toBe(true);
+
+    controller.navigate({ kind: "playlist", playlistId: "playlist-1" });
+    await controller.refresh();
+    expect(controller.loadingMore).toBe(false);
+    expect(await controller.loadMore()).toBe(true);
+    releasePage();
+    expect(await pending).toBe(false);
+
+    expect(controller.loadingMore).toBe(false);
+    expect(controller.currentWindow.items.map((item) => item.id)).toEqual(["playlist-0", "playlist-1"]);
+  });
+
   it("loads every remaining page before a first-use projection is presented", async () => {
     const itemWindow = vi.fn(async (request) => ({
       ...window(request.offset === 0 ? "first" : request.offset === 1 ? "second" : "third"),

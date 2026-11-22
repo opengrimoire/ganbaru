@@ -1278,7 +1278,10 @@ fn adaptive_boundary_failure_preserves_the_previous_phase_rhythm_and_receipt_set
             canonical.segment.as_ref().unwrap().id,
             initial.segment.as_ref().unwrap().id
         );
-        assert_eq!(canonical.segment.as_ref().unwrap().status, "active");
+        assert_eq!(
+            canonical.segment.as_ref().unwrap().status,
+            FocusSegmentStatus::Active
+        );
         let counts: (i64, i64, i64) = sqlx::query_as("SELECT (SELECT COUNT(*) FROM pomodoro_segments), (SELECT COUNT(*) FROM pomodoro_adaptive_decisions), (SELECT COUNT(*) FROM pomodoro_execution_receipts)").fetch_one(&pool).await.unwrap();
         assert_eq!(counts, (1, 1, 1));
     });

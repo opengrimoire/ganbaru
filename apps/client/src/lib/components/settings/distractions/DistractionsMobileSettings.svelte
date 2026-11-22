@@ -18,6 +18,13 @@
     type DistractionsMobileAppSelection,
   } from "./DistractionsMobileAppSelector.svelte";
   import DistractionsRuleList from "./DistractionsRuleList.svelte";
+  import {
+    failAsyncRequest,
+    idleAsyncResource,
+    resolveAsyncRequest,
+    startAsyncRequest,
+    type AsyncResource,
+  } from "$lib/utils/async-resource";
 
   type ConfigurationToggle = "enabled" | "focus" | "shortBreaks" | "longBreaks" | "pause";
   type AccessTarget = "usage" | "accessibility";
@@ -27,9 +34,13 @@
 
   const distractions = getDistractions();
   const { t } = getLocalization();
-  let status = $state<MobileDistractionsAccessStatus | null>(null);
-  let loadingStatus = $state(true);
-  let statusError = $state(false);
+  /** Android access status; focus and visibility both refresh it on return, so only the newest read settles. */
+  let statusResource = $state.raw<AsyncResource<MobileDistractionsAccessStatus | null>>(idleAsyncResource(null));
+  /** Whether opening an Android settings screen failed since the last status refresh started. */
+  let openFailed = $state(false);
+  const status = $derived(statusResource.data);
+  const loadingStatus = $derived(status === null && statusResource.status !== "failed");
+  const statusError = $derived(statusResource.status === "failed" || openFailed);
   let pickerOpen = $state(false);
   let disclosure = $state<"accessibility" | null>(null);
   let pendingAction = $state<PendingAction | null>(null);
@@ -42,14 +53,15 @@
   })));
 
   async function refreshStatus(): Promise<void> {
+    openFailed = false;
+    const started = startAsyncRequest(statusResource);
+    statusResource = started.resource;
     try {
-      status = await mobileDistractionsAccessStatus();
-      statusError = false;
+      const next = await mobileDistractionsAccessStatus();
+      statusResource = resolveAsyncRequest(statusResource, started.token, next);
     } catch (error) {
       console.warn("Android Distractions access status failed", error);
-      statusError = true;
-    } finally {
-      loadingStatus = false;
+      statusResource = failAsyncRequest(statusResource, started.token, "unavailable");
     }
   }
 
@@ -72,7 +84,7 @@
       }
     } catch (error) {
       console.warn("Android Distractions settings failed", error);
-      statusError = true;
+      openFailed = true;
     }
   }
 

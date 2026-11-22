@@ -104,10 +104,8 @@ pub mod group_group {
     pub const COLOR: GroupId = group_id(3);
     /// `order_key`.
     pub const ORDER: GroupId = group_id(4);
-    /// `hidden_at` and `archived_at`.
-    pub const LIFECYCLE: GroupId = group_id(5);
     /// `updated_at`.
-    pub const UPDATED: GroupId = group_id(6);
+    pub const UPDATED: GroupId = group_id(5);
 }
 
 /// Project field groups.
@@ -200,18 +198,16 @@ pub mod status_group {
     pub const CREATED: GroupId = group_id(0);
     /// `name`.
     pub const NAME: GroupId = group_id(1);
-    /// `category`.
-    pub const CATEGORY: GroupId = group_id(2);
-    /// `terminal`.
-    pub const TERMINAL: GroupId = group_id(3);
+    /// `category` and `terminal`, which is set exactly when the category is done.
+    pub const KIND: GroupId = group_id(2);
     /// `color`.
-    pub const COLOR: GroupId = group_id(4);
+    pub const COLOR: GroupId = group_id(3);
     /// `order_key`.
-    pub const ORDER: GroupId = group_id(5);
+    pub const ORDER: GroupId = group_id(4);
     /// `deleted_at`.
-    pub const DELETED: GroupId = group_id(6);
+    pub const DELETED: GroupId = group_id(5);
     /// `updated_at`.
-    pub const UPDATED: GroupId = group_id(7);
+    pub const UPDATED: GroupId = group_id(6);
 }
 
 /// Priority field groups.
@@ -705,15 +701,6 @@ pub const GROUPS: TableSpec = TableSpec {
         ),
         register(group_group::COLOR, "color", &[optional_color("color")]),
         order(group_group::ORDER),
-        group(
-            group_group::LIFECYCLE,
-            "lifecycle",
-            MergeKind::Coupled,
-            &[
-                optional_timestamp("hidden_at"),
-                optional_timestamp("archived_at"),
-            ],
-        ),
         updated(group_group::UPDATED),
     ],
     local_columns: &[COLLAPSED],
@@ -977,6 +964,10 @@ pub const SECTIONS: TableSpec = TableSpec {
         updated(section_group::UPDATED),
     ],
     local_columns: &[COLLAPSED],
+    resolutions: &[within(
+        &["hidden_at", "archived_at"],
+        section_group::LIFECYCLE,
+    )],
     triggers: &[
         applier_visible("project_sections_order_key_insert"),
         applier_visible("project_sections_order_key_update"),
@@ -1000,12 +991,13 @@ pub const STATUSES: TableSpec = TableSpec {
             "name",
             &[trimmed("name", MAX_NAME_CHARS)],
         ),
-        register(
-            status_group::CATEGORY,
-            "category",
-            &[text("category", MAX_ENUM_CHARS)],
+        // The terminal flag follows the category, so both merge as one value.
+        coupled(
+            status_group::KIND,
+            "kind",
+            &[text("category", MAX_ENUM_CHARS), flag("terminal")],
+            &[],
         ),
-        register(status_group::TERMINAL, "terminal", &[flag("terminal")]),
         register(status_group::COLOR, "color", &[color("color")]),
         order(status_group::ORDER),
         register(
@@ -1015,6 +1007,7 @@ pub const STATUSES: TableSpec = TableSpec {
         ),
         updated(status_group::UPDATED),
     ],
+    resolutions: &[within(&["terminal", "category"], status_group::KIND)],
     triggers: &[
         applier_visible("project_statuses_order_key_insert"),
         applier_visible("project_statuses_order_key_update"),

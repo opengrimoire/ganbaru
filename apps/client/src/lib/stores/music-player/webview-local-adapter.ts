@@ -1,4 +1,4 @@
-import type { LocalBackendKind } from "$lib/api/media-player";
+import { transitionWebviewLocalMedia, type WebviewLocalMedia } from "./local-media-state";
 import {
   localMediaSeekTargetMs,
   normalizeLocalPlayableStartMs,
@@ -37,10 +37,7 @@ export interface MusicWebviewLocalState {
   playerError: string | null;
   muted: boolean;
   localMediaElement: HTMLMediaElement | null;
-  localMediaSrc: string | null;
-  localHasVideo: boolean;
-  localBackendKind: LocalBackendKind;
-  localVideoReady: boolean;
+  localMedia: WebviewLocalMedia;
 }
 
 interface MusicWebviewLocalAdapterContext {
@@ -336,7 +333,7 @@ export function createMusicWebviewLocalAdapter(
     updatePlayableStart(element);
     alignToPlayableStart(element);
     kickCount = 0;
-    state.localVideoReady = true;
+    state.localMedia = transitionWebviewLocalMedia(state.localMedia, { type: "videoReady" });
   }
 
   function handleTimeUpdate(event: Event): void {
@@ -402,10 +399,7 @@ export function createMusicWebviewLocalAdapter(
       element.load();
     }
     isPauseSilenced = false;
-    state.localMediaSrc = null;
-    state.localHasVideo = false;
-    state.localBackendKind = "none";
-    state.localVideoReady = false;
+    state.localMedia = transitionWebviewLocalMedia(state.localMedia, { type: "reset" });
     clearKick();
     kickCount = 0;
     pendingResumeMs = 0;

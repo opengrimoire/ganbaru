@@ -249,7 +249,9 @@
     onSavingChange(mutating || rowCreation.isSaving(dataSourceId));
     return () => onSavingChange(false);
   });
-  let error = $state<NotesFailure | null>(null);
+  let error = $state.raw<NotesFailure | null>(null);
+  /** The failure a load more reported, so a reload that lands after it clears only that failure. */
+  let loadMoreFailure: NotesFailure | null = null;
   /** Where the draft property header is shown; a null column is the add control after the last column. */
   let propertyDraft = $state.raw<{ anchor: HTMLElement; trigger: HTMLElement | null; placement: CollectionPropertyDraftPlacement; columnId: string | null; side: "left" | "right" } | null>(null);
   let columnMenuTriggers = $state<Record<string, HTMLButtonElement | undefined>>({});
@@ -564,6 +566,8 @@
       const focusedId = document.activeElement?.closest<HTMLElement>("[data-database-row-id]")?.dataset.databaseRowId ?? null;
       rowCreation.acceptWindow(dataSourceId, focusedId, settledIds);
       table = loaded;
+      if (error === loadMoreFailure) error = null;
+      loadMoreFailure = null;
       if (selectedPanelRowId && !visibleRows.some((row) => row.id === selectedPanelRowId)) {
         selectedPanelRowId = null;
       }
@@ -614,7 +618,10 @@
       table = { ...loaded, rows: [...rows.values()], row_hierarchy: { ...current.row_hierarchy, ...loaded.row_hierarchy } };
       notesDatabaseSession.write(databaseResource("table", dataSourceId, viewScope()), table);
     } catch (caught) {
-      if (requestId === tableRequestId) error = notesFailure(caught, t("notes.databaseTableFailed"));
+      if (requestId === tableRequestId && table === current) {
+        error = notesFailure(caught, t("notes.databaseTableFailed"));
+        loadMoreFailure = error;
+      }
     } finally {
       if (requestId === tableRequestId) loadingMore = false;
     }

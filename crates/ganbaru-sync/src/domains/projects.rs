@@ -530,6 +530,30 @@ fn forced_folder_groups(
     Ok(vec![(folder_group::ARCHIVED, unarchived)])
 }
 
+/// A status category from the allowed set, terminal exactly when it is done, as the table CHECK.
+fn validate_status_kind(value: &Value) -> Result<(), AdapterError> {
+    let [category, terminal] = fields(value, "project status kind")?;
+    one_of(
+        category,
+        allowed::STATUS_CATEGORIES,
+        "project status category",
+    )?;
+    let done = matches!(category, Field::Text(text) if text == "done");
+    match terminal {
+        Field::Integer(flag) if *flag == i64::from(done) => Ok(()),
+        _ => Err(AdapterError("project status terminal flag")),
+    }
+}
+
+/// A section is hidden or archived, never both, as the table CHECK.
+fn validate_section_lifecycle(value: &Value) -> Result<(), AdapterError> {
+    let [hidden_at, archived_at] = fields(value, "project section lifecycle")?;
+    match (hidden_at, archived_at) {
+        (Field::Null, _) | (_, Field::Null) => Ok(()),
+        _ => Err(AdapterError("project section lifecycle")),
+    }
+}
+
 fn validate_task(group: GroupId, value: &Value) -> Result<(), AdapterError> {
     if group == task_group::SECTION_PLACE {
         let [section, _] = fields(value, "project task section")?;
@@ -663,13 +687,9 @@ impl DomainAdapter for ProjectsAdapter {
             }
             PROJECTS_TABLE => validate_project(group, value),
             FOLDERS_TABLE => validate_folder(group, value),
-            STATUSES_TABLE if group == status_group::CATEGORY => {
-                let [category] = fields(value, "project status category")?;
-                one_of(
-                    category,
-                    allowed::STATUS_CATEGORIES,
-                    "project status category",
-                )
+            STATUSES_TABLE if group == status_group::KIND => validate_status_kind(value),
+            SECTIONS_TABLE if group == section_group::LIFECYCLE => {
+                validate_section_lifecycle(value)
             }
             PRIORITIES_TABLE if group == priority_group::IDENTITY => {
                 required_identity(value, "project priority identity")
@@ -1358,6 +1378,59 @@ mod tests {
         assert!(
             adapter
                 .validate(DEPENDENCIES_TABLE, dependency_group::IDENTITY, &edge)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn status_kind_mirrors_the_table_check() {
+        let adapter = ProjectsAdapter;
+        let kind =
+            |category: &str, terminal: i64| value(vec![text(category), Field::Integer(terminal)]);
+        for valid in [
+            kind("not_started", 0),
+            kind("active", 0),
+            kind("blocked", 0),
+            kind("done", 1),
+        ] {
+            adapter
+                .validate(STATUSES_TABLE, status_group::KIND, &valid)
+                .unwrap();
+        }
+        for invalid in [
+            kind("done", 0),
+            kind("blocked", 1),
+            kind("active", 1),
+            kind("done", 2),
+            kind("finished", 1),
+            value(vec![text("done"), Field::Null]),
+        ] {
+            assert!(
+                adapter
+                    .validate(STATUSES_TABLE, status_group::KIND, &invalid)
+                    .is_err(),
+                "{invalid:?} should be held invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn section_lifecycle_mirrors_the_table_check() {
+        let adapter = ProjectsAdapter;
+        let at = || text("2026-11-22T00:00:00.000Z");
+        for valid in [
+            value(vec![Field::Null, Field::Null]),
+            value(vec![at(), Field::Null]),
+            value(vec![Field::Null, at()]),
+        ] {
+            adapter
+                .validate(SECTIONS_TABLE, section_group::LIFECYCLE, &valid)
+                .unwrap();
+        }
+        let both = value(vec![at(), at()]);
+        assert!(
+            adapter
+                .validate(SECTIONS_TABLE, section_group::LIFECYCLE, &both)
                 .is_err()
         );
     }

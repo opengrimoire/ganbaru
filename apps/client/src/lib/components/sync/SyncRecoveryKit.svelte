@@ -9,6 +9,7 @@
   import { getSyncAuthorityState } from "$lib/stores/sync-authority.svelte";
   import { syncAuthorityDeviceName, type SyncKitUse } from "$lib/sync/authority";
   import SyncRecoveryKitSheet from "./SyncRecoveryKitSheet.svelte";
+  import { IDLE_SYNC_ACTIONS, runSyncAction, type SyncActionAccess, type SyncActionState } from "./sync-action-state";
   import { syncContestDeviceName, syncKitPointLabel, syncKitPoints, syncKitReviewDevices } from "$lib/sync/contests";
 
   let {
@@ -45,9 +46,9 @@
 
   const { t } = getLocalization();
   const authorityState = getSyncAuthorityState();
-  let busy = $state(false);
-  let message = $state("");
-  let failed = $state(false);
+  let actions = $state<SyncActionState<"kit">>(IDLE_SYNC_ACTIONS);
+  const actionAccess: SyncActionAccess<"kit"> = { read: () => actions, write: (next) => { actions = next; } };
+  const busy = $derived(actions.running.length > 0);
   let confirmation = $state<"regenerate" | "force" | "rotate" | null>(null);
   let code = $state("");
   let rotating = $state(false);
@@ -78,23 +79,18 @@
 
   /**
    * Runs a kit action and shows `success`, or the message it derives from the action's result,
-   * or `failure` when the action throws.
+   * or `failure` when the action throws. Resolves with whether the action ran and succeeded.
    */
-  async function run<T>(action: () => Promise<T>, success: string | ((result: T) => string), failure: string): Promise<void> {
-    if (busy) return;
-    busy = true;
-    message = "";
-    failed = false;
-    try {
-      const result = await action();
-      message = typeof success === "function" ? success(result) : success;
-    } catch (cause: unknown) {
-      console.warn("recovery kit action failed", cause);
-      failed = true;
-      message = failure;
-    } finally {
-      busy = false;
-    }
+  async function run<T>(task: () => Promise<T>, success: string | ((result: T) => string), failure: string): Promise<boolean> {
+    const outcome = await runSyncAction(actionAccess, "kit", task, {
+      exclusive: true,
+      success: (result) => (typeof success === "function" ? success(result) : success),
+      failure: (cause) => {
+        console.warn("recovery kit action failed", cause);
+        return failure;
+      },
+    });
+    return outcome.ok;
   }
 
   async function useKit(event: SubmitEvent): Promise<void> {
@@ -105,8 +101,7 @@
       confirmation = "force";
       return;
     }
-    await run(() => authorityState.useKit(entered), t("sync.kit.useSent"), t("sync.kit.useFailed"));
-    if (!failed) code = "";
+    if (await run(() => authorityState.useKit(entered), t("sync.kit.useSent"), t("sync.kit.useFailed"))) code = "";
   }
 
   /**
@@ -122,12 +117,12 @@
       .filter((entry) => reviewMarked(entry.device.deviceId, entry.preselected))
       .map((entry) => entry.device.deviceId);
     const request = { kitCode: entered, point, removeDevices, quarantineAnchor: quarantineAnchor && anchor !== null };
-    await run(
+    const forced = await run(
       () => authorityState.forceAnchor(request),
       (outcome) => (outcome.incomplete > 0 ? t("sync.kit.forcePartial") : t("sync.kit.forceDone")),
       t("sync.kit.useFailed"),
     );
-    if (!failed) {
+    if (forced) {
       code = "";
       quarantineAnchor = false;
       reviewMarks = {};
@@ -144,8 +139,7 @@
   async function rotateKit(): Promise<void> {
     const entered = rotateCode.trim();
     if (!entered) return;
-    await run(() => authorityState.rotateKit(entered), "", t("sync.kit.rotateFailed"));
-    if (!failed) {
+    if (await run(() => authorityState.rotateKit(entered), "", t("sync.kit.rotateFailed"))) {
       rotateCode = "";
       rotating = false;
     }
@@ -154,7 +148,7 @@
   function confirm(): void {
     const current = confirmation;
     confirmation = null;
-    if (current === "regenerate") void run(authorityState.regenerateKit, "", t("sync.kit.regenerateFailed"));
+    if (current === "regenerate") void run(() => authorityState.regenerateKit(), "", t("sync.kit.regenerateFailed"));
     else if (current === "force") void forceWithKit();
     else if (current === "rotate") void rotateKit();
   }
@@ -277,12 +271,10 @@
       </div>
     </form>
   {/if}
-  {#if message}
-    {#if failed}
-      <Notice class="px-1 text-[0.8rem] leading-5" {message} copy={false} />
-    {:else}
-      <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{message}</p>
-    {/if}
+  {#if actions.feedback.kind === "failed"}
+    <Notice class="px-1 text-[0.8rem] leading-5" message={actions.feedback.message} copy={false} />
+  {:else if actions.feedback.kind === "done"}
+    <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{actions.feedback.message}</p>
   {/if}
 </div>
 

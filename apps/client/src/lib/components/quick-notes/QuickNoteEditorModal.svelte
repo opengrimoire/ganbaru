@@ -156,6 +156,17 @@
   let selection = $state<QuickNoteSelection>({ start: 0, end: 0 });
   let typingFormatting = $state<QuickNoteFormatting>({ ...EMPTY_QUICK_NOTE_FORMATTING });
   let status = $state<"idle" | "saving" | "saved" | "failed" | "conflict">(initialNote ? "saved" : "idle");
+  /**
+   * The Reload action of a revision conflict. Each variant names the shown note it reads for, so a reload stops
+   * counting as busy or failed once a copy or another reload replaces that note.
+   */
+  type ConflictReload =
+    | { readonly phase: "idle" }
+    | { readonly phase: "reloading"; readonly shown: QuickNote; readonly token: symbol }
+    | { readonly phase: "failed"; readonly shown: QuickNote };
+  let conflictReload = $state.raw<ConflictReload>({ phase: "idle" });
+  const reloadingConflict = $derived(conflictReload.phase === "reloading" && conflictReload.shown === persisted);
+  const conflictReloadFailed = $derived(conflictReload.phase === "failed" && conflictReload.shown === persisted);
   let limitError = $state("");
   let dirtyVersion = 0;
   let savedVersion = 0;
@@ -802,9 +813,24 @@
     }
   }
 
+  /** Reads the canonical note to replace unsaved edits after a revision conflict, reporting a failed read. */
   async function reloadConflict(): Promise<void> {
-    if (!persisted) return;
-    const fresh = await getQuickNote(persisted.id);
+    const shown = persisted;
+    if (!shown || reloadingConflict) return;
+    const expectedVersion = dirtyVersion;
+    const token = Symbol("conflict reload");
+    conflictReload = { phase: "reloading", shown, token };
+    let fresh: QuickNote;
+    try {
+      fresh = await getQuickNote(shown.id);
+    } catch (error: unknown) {
+      console.warn("quick note could not be reloaded", error);
+      if (conflictReload.phase === "reloading" && conflictReload.token === token) conflictReload = { phase: "failed", shown };
+      return;
+    }
+    if (conflictReload.phase === "reloading" && conflictReload.token === token) conflictReload = { phase: "idle" };
+    // Saving a copy or editing while the read ran keeps those newer changes instead of the reloaded note.
+    if (persisted !== shown || dirtyVersion !== expectedVersion) return;
     persisted = fresh;
     revision = fresh.revision;
     title = fresh.title;
@@ -1033,11 +1059,16 @@
           <div class="mb-2 text-xs" data-quick-note-notice>
             <Notice message={t("quickNotes.editor.conflict")} tone="warning" copy={false}>
               {#snippet actions()}
-                <button class="notice-action-text" type="button" onclick={() => void reloadConflict()}>{t("quickNotes.editor.reload")}</button>
+                <button class="notice-action-text" type="button" disabled={reloadingConflict} onclick={() => void reloadConflict()}>{t("quickNotes.editor.reload")}</button>
                 <button class="notice-action-text" type="button" onclick={() => void saveAsCopy()}>{t("quickNotes.editor.saveCopy")}</button>
               {/snippet}
             </Notice>
           </div>
+          {#if conflictReloadFailed}
+            <div class="mb-2 text-xs" data-quick-note-notice>
+              <Notice message={t("quickNotes.editor.reloadFailed")} copy={false} onDismiss={() => { conflictReload = { phase: "idle" }; }} />
+            </div>
+          {/if}
         {:else if status === "failed"}
           <div class="mb-2 text-xs" data-quick-note-notice>
             <Notice message={t("quickNotes.editor.failed")} retryLabel={t("quickNotes.editor.retry")} copy={false} onRetry={flush} />

@@ -153,8 +153,9 @@ async fn apply_intent(
                 return Err(invalid_state("Only a running focus phase can be paused"));
             }
             session.pause(tx, now_ms, now_ms, "manual").await?;
-            session.state.mode = FocusMode::ManualPause;
-            session.state.paused_prompts_dismissed = false;
+            session.enter_mode(FocusModeState::ManualPause {
+                paused_prompts_dismissed: false,
+            })?;
             Ok(())
         }
         FocusIntent::Resume => {
@@ -167,7 +168,14 @@ async fn apply_intent(
             if let Some(run) = session.run.as_ref().filter(|run| run.ended_at_ms.is_none()) {
                 session.state.dismissed_occurrence_id = Some(run.occurrence_id.clone());
                 session
-                    .close_run(tx, now_ms, "stopped", "stopped", "stop", FocusMode::Stopped)
+                    .close_run(
+                        tx,
+                        now_ms,
+                        "stopped",
+                        "stopped",
+                        "stop",
+                        FocusModeState::Stopped,
+                    )
                     .await?;
             }
             Ok(())
@@ -195,7 +203,12 @@ async fn apply_intent(
                     session.active_segment()?.rhythm_position,
                 );
                 session
-                    .close_segment(tx, now_ms, "interrupted", "skipped_by_user")
+                    .close_segment(
+                        tx,
+                        now_ms,
+                        FocusSegmentStatus::Interrupted,
+                        "skipped_by_user",
+                    )
                     .await?;
                 session
                     .start_segment(tx, now_ms, FocusPhase::Focus, position)
@@ -205,8 +218,14 @@ async fn apply_intent(
             }
         }
         FocusIntent::SetSkipNextBreak { enabled } => {
-            if session.active_segment()?.phase != FocusPhase::Focus {
-                return Err(invalid_state("Skip next break requires a focus phase"));
+            if !matches!(
+                session.state.mode.kind(),
+                FocusMode::Running | FocusMode::ManualPause
+            ) || session.active_segment()?.phase != FocusPhase::Focus
+            {
+                return Err(invalid_state(
+                    "Skip next break requires a running or paused focus phase",
+                ));
             }
             session.state.skip_next_break = *enabled;
             Ok(())
@@ -219,7 +238,7 @@ async fn apply_intent(
         }
         FocusIntent::ResolveIdle { resume } => {
             if !matches!(
-                session.state.mode,
+                session.state.mode.kind(),
                 FocusMode::IdlePause | FocusMode::IdleFailed
             ) {
                 return Err(invalid_state("There is no idle pause to resolve"));
@@ -228,7 +247,14 @@ async fn apply_intent(
                 session.state.dismissed_occurrence_id =
                     Some(session.live_run()?.occurrence_id.clone());
                 session
-                    .close_run(tx, now_ms, "stopped", "stopped", "stop", FocusMode::Stopped)
+                    .close_run(
+                        tx,
+                        now_ms,
+                        "stopped",
+                        "stopped",
+                        "stop",
+                        FocusModeState::Stopped,
+                    )
                     .await
             } else if session.state.mode == FocusMode::IdleFailed {
                 let position = session
@@ -253,7 +279,14 @@ async fn apply_intent(
                 session.state.dismissed_occurrence_id =
                     Some(session.live_run()?.occurrence_id.clone());
                 session
-                    .close_run(tx, now_ms, "stopped", "stopped", "stop", FocusMode::Stopped)
+                    .close_run(
+                        tx,
+                        now_ms,
+                        "stopped",
+                        "stopped",
+                        "stop",
+                        FocusModeState::Stopped,
+                    )
                     .await
             }
         }
@@ -268,7 +301,7 @@ async fn apply_intent(
         }
         FocusIntent::DismissPausedPrompts => {
             if !matches!(
-                session.state.mode,
+                session.state.mode.kind(),
                 FocusMode::ManualPause
                     | FocusMode::IdlePause
                     | FocusMode::IdleFailed
@@ -277,7 +310,9 @@ async fn apply_intent(
             ) {
                 return Err(invalid_state("Focus has no paused prompts to dismiss"));
             }
-            session.state.paused_prompts_dismissed = true;
+            if let Some(dismissed) = session.state.mode.paused_prompts_dismissed_mut() {
+                *dismissed = true;
+            }
             Ok(())
         }
     }
@@ -303,7 +338,7 @@ impl Session {
             "completed",
             "event_expired",
             "complete",
-            FocusMode::Expired,
+            FocusModeState::Expired,
         )
         .await?;
         Ok(true)
@@ -316,8 +351,7 @@ impl Session {
     ) -> Result<(), FocusExecutionError> {
         self.active_segment()?;
         self.close_pause(tx, now_ms).await?;
-        self.state.mode = FocusMode::Running;
-        self.clear_waits();
+        self.enter_mode(FocusModeState::Running)?;
         self.update_deadline(tx, now_ms).await
     }
 
@@ -351,7 +385,8 @@ impl Session {
             now_ms,
             Some("return"),
             self.state
-                .return_started_at_ms
+                .mode
+                .return_started_at_ms()
                 .map(|start| now_ms.saturating_sub(start)),
         )
         .await?;
@@ -388,15 +423,16 @@ impl Session {
         } else {
             segment.planned_end_ms.min(now_ms)
         };
-        self.close_segment(tx, close_at, "completed", "completed")
+        self.close_segment(tx, close_at, FocusSegmentStatus::Completed, "completed")
             .await?;
         if !is_explicit
             && (phase != FocusPhase::Focus
                 || (context.platform == FocusPlatform::Android && !context.foreground))
         {
-            self.state.mode = FocusMode::ReturnWait;
-            self.state.return_started_at_ms = Some(close_at);
-            self.state.paused_prompts_dismissed = false;
+            self.enter_mode(FocusModeState::ReturnWait {
+                return_started_at_ms: close_at,
+                paused_prompts_dismissed: false,
+            })?;
             return Ok(());
         }
         if phase == FocusPhase::Focus && !self.state.skip_next_break {
@@ -421,7 +457,10 @@ impl Session {
         requested_ms: i64,
         is_focus: bool,
     ) -> Result<(), FocusExecutionError> {
-        if !matches!(self.state.mode, FocusMode::Running | FocusMode::ManualPause) {
+        if !matches!(
+            self.state.mode.kind(),
+            FocusMode::Running | FocusMode::ManualPause
+        ) {
             return Err(invalid_state("This Focus state cannot be extended"));
         }
         let run = self.live_run()?;

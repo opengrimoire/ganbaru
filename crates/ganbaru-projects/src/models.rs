@@ -62,8 +62,6 @@ pub struct ProjectGroupRow {
     pub(crate) color: Option<i64>,
     pub(crate) order_key: String,
     pub(crate) collapsed: i64,
-    pub(crate) hidden_at: Option<String>,
-    pub(crate) archived_at: Option<String>,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
 }
@@ -74,8 +72,6 @@ impl_sqlite_from_row!(ProjectGroupRow {
     color,
     order_key,
     collapsed,
-    hidden_at,
-    archived_at,
     created_at,
     updated_at,
 });
@@ -867,6 +863,8 @@ pub struct ProjectCreate {
     pub(crate) default_idle_threshold_minutes: i64,
 }
 
+/// A project field edit. The lifecycle status moves only through
+/// [`crate::lifecycle::set_project_lifecycle`], so an edit leaves it as it is.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectUpdate {
@@ -878,7 +876,6 @@ pub struct ProjectUpdate {
     pub(crate) color: Option<i64>,
     #[serde(default)]
     pub(crate) placement: Option<OrderPlacement>,
-    pub(crate) status: String,
     pub(crate) default_event_name: Option<String>,
     pub(crate) default_event_time_mode: String,
     pub(crate) default_event_duration_minutes: Option<i64>,
@@ -910,6 +907,8 @@ pub struct ProjectSectionCreate {
     pub(crate) placement: OrderPlacement,
 }
 
+/// A section field edit. Hiding, archiving, and restoring go through
+/// [`crate::lifecycle::set_section_lifecycle`], so an edit leaves the lifecycle as it is.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectSectionUpdate {
@@ -918,8 +917,6 @@ pub struct ProjectSectionUpdate {
     #[serde(default)]
     pub(crate) placement: Option<OrderPlacement>,
     pub(crate) collapsed: bool,
-    pub(crate) hidden_at: Option<String>,
-    pub(crate) archived_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -980,6 +977,8 @@ pub struct ProjectTaskCreate {
     pub(crate) title: String,
 }
 
+/// A task field edit. Archiving and restoring belong to the bulk task change, which keeps a
+/// subtree together, so an edit leaves `archived_at` as it is.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectTaskUpdate {
@@ -1006,7 +1005,6 @@ pub struct ProjectTaskUpdate {
     pub(crate) start_time: Option<String>,
     pub(crate) start_reminder_minutes: Option<i64>,
     pub(crate) target_end_date: Option<String>,
-    pub(crate) archived_at: Option<String>,
     pub(crate) blocker_reason: Option<String>,
     pub(crate) milestone: bool,
     pub(crate) change_reason: Option<String>,

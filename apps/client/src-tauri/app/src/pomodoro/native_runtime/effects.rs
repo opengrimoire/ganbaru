@@ -20,7 +20,7 @@ pub(super) fn committed_effect(
         occurrence_id: snapshot.run.as_ref().map(|run| run.occurrence_id.clone()),
         event_title: snapshot.run.as_ref().and_then(|run| run.title.clone()),
         phase: snapshot.segment.as_ref().map(|segment| segment.phase),
-        mode: snapshot.mode,
+        mode: snapshot.mode.kind(),
         phase_deadline_ms: snapshot.phase_deadline_ms,
         event_deadline_ms: snapshot.run.as_ref().map(|run| run.planned_end_ms),
         remaining_ms: snapshot.remaining_ms,

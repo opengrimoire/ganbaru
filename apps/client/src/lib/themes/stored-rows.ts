@@ -97,6 +97,7 @@ export function userThemeToWrite(theme: UserTheme): UserThemeWrite {
     blendCanvas: theme.blendCanvas,
     seedBlendCanvas: theme.seedBlendCanvas,
     derivationEngineVersion: theme.derivationEngineVersion,
+    seedDerivationEngineVersion: theme.seedDerivationEngineVersion,
     calendarDefaultMode: theme.calendarDefaultMode,
     calendarDefaultCustom: theme.calendarDefaultCustom,
     seedCalendarDefaultMode: theme.seedCalendarDefaultMode,
@@ -209,6 +210,7 @@ export function userThemeFromRead(read: UserThemeRead): UserTheme {
     seedCalendarDefaultMode,
     seedCalendarDefaultCustom,
     seedIconLabel: read.theme.seed_icon_label,
+    seedDerivationEngineVersion: read.theme.seed_derivation_engine_version,
   };
 }
 

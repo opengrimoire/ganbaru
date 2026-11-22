@@ -1,12 +1,13 @@
 //! Device snapshot discovery, vault path checks, and runtime freshness.
 
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
+use ganbaru_distractions_authority::{ActivePhase, DistractionsRuntimeState, RuntimeAuthority};
 use serde::{Deserialize, Deserializer};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::config::{DistractionsConfig, default_config, read_rules};
-use crate::{NativeResponse, now_utc};
+use crate::now_utc;
 
 const STATE_FILE: &str = "distractions-state.json";
 const LIMIT_STATE_FILE: &str = "distractions-limit-state.json";
@@ -32,29 +33,12 @@ fn read_bounded_state(path: &Path) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct RuntimeState {
-    pub(super) active: bool,
-    pub(super) paused: bool,
-    #[serde(deserialize_with = "required_nullable")]
-    pub(super) pause_reason: Option<String>,
-    #[serde(deserialize_with = "required_nullable")]
-    pub(super) active_run_id: Option<String>,
-    pub(super) phase: String,
-    #[serde(deserialize_with = "required_nullable")]
-    pub(super) remaining_seconds: Option<i64>,
-    pub(super) updated_at: String,
-    #[serde(default)]
-    pub(super) valid_until_ms: Option<i64>,
-}
-
 #[derive(Debug)]
 pub(super) struct StateSnapshot {
     pub(super) config_dir: Option<PathBuf>,
     pub(super) vault_path: Option<PathBuf>,
     pub(super) config: DistractionsConfig,
-    pub(super) runtime: Option<RuntimeState>,
+    pub(super) runtime: Option<DistractionsRuntimeState>,
     pub(super) limit_state: Option<LimitState>,
 }
 
@@ -170,9 +154,8 @@ pub(super) fn config_dir_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-fn read_runtime_state(path: &std::path::Path) -> Option<RuntimeState> {
-    let contents = read_bounded_state(path)?;
-    serde_json::from_str(&contents).ok()
+pub(super) fn read_runtime_state(path: &std::path::Path) -> Option<DistractionsRuntimeState> {
+    DistractionsRuntimeState::parse(&read_bounded_state(path)?).ok()
 }
 
 fn read_app_state(path: &std::path::Path) -> Option<AppState> {
@@ -194,118 +177,80 @@ fn read_limit_state(path: &std::path::Path, vault_path: Option<&Path>) -> Option
     limit_state_is_fresh(&state, vault_path).then_some(state)
 }
 
-pub(super) fn runtime_status(
-    snapshot: &StateSnapshot,
-) -> (bool, String, Option<i64>, Option<String>) {
+/// Runtime authority the host acts on at one instant, after its freshness and validity bounds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RuntimeStatus {
+    /// The file's authority, or inactive when rules are disabled or the file is missing, stale,
+    /// or past its validity.
+    pub(super) authority: RuntimeAuthority,
+    /// Seconds left in the active phase at the check, frozen while paused.
+    pub(super) remaining_seconds: Option<i64>,
+    /// Why the file's authority was not accepted.
+    pub(super) reason: Option<String>,
+}
+
+impl RuntimeStatus {
+    fn inactive(reason: &str) -> Self {
+        Self {
+            authority: RuntimeAuthority::Inactive {},
+            remaining_seconds: None,
+            reason: Some(reason.to_string()),
+        }
+    }
+
+    /// The accepted phase, if one is current.
+    pub(super) fn active_phase(&self) -> Option<&ActivePhase> {
+        self.authority.active_phase()
+    }
+}
+
+pub(super) fn runtime_status(snapshot: &StateSnapshot) -> RuntimeStatus {
     runtime_status_at(snapshot, now_utc())
 }
 
 pub(super) fn runtime_status_at(
     snapshot: &StateSnapshot,
     checked_at: DateTime<Utc>,
-) -> (bool, String, Option<i64>, Option<String>) {
+) -> RuntimeStatus {
     if !snapshot.config.enabled {
-        return (
-            false,
-            "inactive".to_string(),
-            None,
-            Some("distraction rules are disabled".to_string()),
-        );
+        return RuntimeStatus::inactive("distraction rules are disabled");
     }
-
     let Some(runtime) = &snapshot.runtime else {
-        return (
-            false,
-            "inactive".to_string(),
-            None,
-            Some("no runtime state".to_string()),
-        );
+        return RuntimeStatus::inactive("no runtime state");
     };
-
     let Ok(updated_at) = DateTime::parse_from_rfc3339(&runtime.updated_at) else {
-        return (
-            false,
-            "inactive".to_string(),
-            None,
-            Some("runtime state has invalid timestamp".to_string()),
-        );
+        return RuntimeStatus::inactive("runtime state has invalid timestamp");
     };
     let age = checked_at - updated_at.with_timezone(&Utc);
-    let age_seconds = age.num_seconds();
-    let stale_state_seconds = if runtime.active {
+    let active = runtime.authority.active_phase();
+    let stale_state_seconds = if active.is_some() {
         ACTIVE_STATE_STALE_SECONDS
     } else {
         STALE_STATE_SECONDS
     };
     if age < chrono::Duration::zero() || age > chrono::Duration::seconds(stale_state_seconds) {
-        return (
-            false,
-            "inactive".to_string(),
-            None,
-            Some("runtime state is stale".to_string()),
-        );
+        return RuntimeStatus::inactive("runtime state is stale");
     }
-
-    if runtime
-        .valid_until_ms
-        .is_some_and(|deadline| deadline < 0 || checked_at.timestamp_millis() >= deadline)
-        || (runtime.active
-            && !runtime.paused
-            && runtime.remaining_seconds.is_some_and(|remaining| {
-                remaining < 0
-                    || checked_at.timestamp_millis()
-                        >= updated_at
-                            .timestamp_millis()
-                            .saturating_add(remaining.saturating_mul(1000))
-            }))
-    {
-        return (
-            false,
-            "inactive".into(),
-            None,
-            Some("accepted phase validity expired".into()),
-        );
+    if runtime.validity_expired(updated_at.timestamp_millis(), checked_at.timestamp_millis()) {
+        return RuntimeStatus::inactive("accepted phase validity expired");
     }
-
-    let remaining_seconds = runtime.remaining_seconds.map(|remaining| {
-        if runtime.paused {
-            remaining
+    let remaining_seconds = active.map(|active| {
+        if active.is_paused() {
+            active.remaining_seconds
         } else {
-            (remaining - age_seconds).max(0)
+            (active.remaining_seconds - age.num_seconds()).max(0)
         }
     });
-    (
-        runtime.active,
-        runtime.phase.clone(),
+    RuntimeStatus {
+        authority: runtime.authority.clone(),
         remaining_seconds,
-        None,
-    )
-}
-
-pub(super) fn should_enforce(snapshot: &StateSnapshot, response: &NativeResponse) -> bool {
-    if !response.active {
-        return false;
-    }
-
-    if snapshot
-        .runtime
-        .as_ref()
-        .is_some_and(pause_should_suspend_enforcement)
-        && snapshot.config.pause_during_focus_pause
-    {
-        return false;
-    }
-
-    match response.phase.as_str() {
-        "focus" => snapshot.config.block_during_focus,
-        "short_break" => snapshot.config.block_during_short_breaks,
-        "long_break" => snapshot.config.block_during_long_breaks,
-        _ => false,
+        reason: None,
     }
 }
 
-fn pause_should_suspend_enforcement(runtime: &RuntimeState) -> bool {
-    runtime.paused && !matches!(runtime.pause_reason.as_deref(), Some("idle" | "suspend"))
+/// Whether regular blocking rules apply, through the rule shared with desktop close authorization.
+pub(super) fn should_enforce(config: &DistractionsConfig, status: &RuntimeStatus) -> bool {
+    config.enabled && status.authority.enforces_blocking(config.blocking)
 }
 
 pub(super) fn is_valid_local_date(value: &str) -> bool {

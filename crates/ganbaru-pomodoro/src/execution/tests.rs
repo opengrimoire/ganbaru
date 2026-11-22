@@ -383,7 +383,7 @@ fn execution_failure_rolls_back_outgoing_phase_events_revision_and_receipt() {
             .await
             .unwrap();
         assert_eq!(current.revision, initial.revision);
-        assert_eq!(current.segment.unwrap().status, "active");
+        assert_eq!(current.segment.unwrap().status, FocusSegmentStatus::Active);
         let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pomodoro_run_events")
             .fetch_one(&pool)
             .await
@@ -545,11 +545,11 @@ fn execution_idle_failure_is_backdated_and_missing_activity_cannot_pause_or_admi
         assert_eq!(idle.elapsed_ms, 20_000);
         let unseen = observe(&pool, FocusObservation::Deadline, &context(START + 140_000)).await;
         assert_eq!(unseen.mode, FocusMode::IdlePause);
-        assert_eq!(unseen.idle_overlay_visible_at_ms, None);
+        assert_eq!(unseen.mode.idle_overlay_visible_at_ms(), None);
         let acknowledgement = FocusObservation::IdleOverlayVisible {
             run_id: idle.run.as_ref().unwrap().id.clone(),
             segment_id: idle.segment.as_ref().unwrap().id.clone(),
-            detected_at_ms: idle.idle_detected_at_ms.unwrap(),
+            detected_at_ms: idle.mode.idle_detected_at_ms().unwrap(),
         };
         let wrong_episode = observe(
             &pool,
@@ -561,7 +561,7 @@ fn execution_idle_failure_is_backdated_and_missing_activity_cannot_pause_or_admi
             &context(START + 144_000),
         )
         .await;
-        assert_eq!(wrong_episode.idle_overlay_visible_at_ms, None);
+        assert_eq!(wrong_episode.mode.idle_overlay_visible_at_ms(), None);
         for (run_id, segment_id) in [
             (
                 "previous-run".to_owned(),
@@ -577,19 +577,25 @@ fn execution_idle_failure_is_backdated_and_missing_activity_cannot_pause_or_admi
                 FocusObservation::IdleOverlayVisible {
                     run_id,
                     segment_id,
-                    detected_at_ms: idle.idle_detected_at_ms.unwrap(),
+                    detected_at_ms: idle.mode.idle_detected_at_ms().unwrap(),
                 },
                 &context(START + 144_000),
             )
             .await;
             assert_eq!(stale.revision, idle.revision);
-            assert_eq!(stale.idle_overlay_visible_at_ms, None);
+            assert_eq!(stale.mode.idle_overlay_visible_at_ms(), None);
         }
         let visible = observe(&pool, acknowledgement.clone(), &context(START + 145_000)).await;
-        assert_eq!(visible.idle_overlay_visible_at_ms, Some(START + 145_000));
+        assert_eq!(
+            visible.mode.idle_overlay_visible_at_ms(),
+            Some(START + 145_000)
+        );
         let retried = observe(&pool, acknowledgement, &context(START + 175_000)).await;
         assert_eq!(retried.revision, visible.revision);
-        assert_eq!(retried.idle_overlay_visible_at_ms, Some(START + 145_000));
+        assert_eq!(
+            retried.mode.idle_overlay_visible_at_ms(),
+            Some(START + 145_000)
+        );
         let wall_jump = observe(&pool, FocusObservation::Deadline, &context(START + 300_000)).await;
         assert_eq!(wall_jump.mode, FocusMode::IdlePause);
         let grace = |elapsed_ms| FocusObservation::IdleGraceElapsed {
@@ -704,7 +710,7 @@ fn execution_idle_visibility_failure_rolls_back_and_retry_keeps_first_accepted_t
         let acknowledgement = FocusObservation::IdleOverlayVisible {
             run_id: idle.run.as_ref().unwrap().id.clone(),
             segment_id: idle.segment.as_ref().unwrap().id.clone(),
-            detected_at_ms: idle.idle_detected_at_ms.unwrap(),
+            detected_at_ms: idle.mode.idle_detected_at_ms().unwrap(),
         };
         sqlx::raw_sql("CREATE TRIGGER reject_visibility BEFORE UPDATE OF state_json ON pomodoro_execution_state BEGIN SELECT RAISE(ABORT, 'injected visibility failure'); END;")
             .execute(&pool).await.unwrap();
@@ -719,7 +725,7 @@ fn execution_idle_visibility_failure_rolls_back_and_retry_keeps_first_accepted_t
             .await
             .unwrap();
         assert_eq!(unchanged.revision, idle.revision);
-        assert_eq!(unchanged.idle_overlay_visible_at_ms, None);
+        assert_eq!(unchanged.mode.idle_overlay_visible_at_ms(), None);
         sqlx::raw_sql("DROP TRIGGER reject_visibility")
             .execute(&pool)
             .await
@@ -728,10 +734,16 @@ fn execution_idle_visibility_failure_rolls_back_and_retry_keeps_first_accepted_t
         let restored = focus_read_execution_snapshot(&pool, START + 110_000)
             .await
             .unwrap();
-        assert_eq!(restored.idle_overlay_visible_at_ms, Some(START + 100_000));
+        assert_eq!(
+            restored.mode.idle_overlay_visible_at_ms(),
+            Some(START + 100_000)
+        );
         let retried = observe(&pool, acknowledgement, &context(START + 120_000)).await;
         assert_eq!(retried.revision, accepted.revision);
-        assert_eq!(retried.idle_overlay_visible_at_ms, Some(START + 100_000));
+        assert_eq!(
+            retried.mode.idle_overlay_visible_at_ms(),
+            Some(START + 100_000)
+        );
     });
 }
 
@@ -748,6 +760,33 @@ fn recovery_does_not_adopt_runs_without_native_execution_state() {
         let recovered = observe(&pool, FocusObservation::Recover, &context(START + MINUTE)).await;
         assert!(recovered.run.is_none());
         assert!(recovered.segment.is_none());
+    });
+}
+
+#[test]
+fn recovery_closes_an_open_run_even_when_the_state_row_names_a_closed_mode() {
+    block_on(async {
+        let pool = pool().await;
+        start(&pool).await;
+        let (_, mut state): (i64, sqlx::types::Json<ExecutionState>) =
+            sqlx::query_as("SELECT revision, state_json FROM pomodoro_execution_state")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        state.mode = FocusModeState::Stopped;
+        sqlx::query("UPDATE pomodoro_execution_state SET state_json = ?")
+            .bind(state)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let recovered = observe(&pool, FocusObservation::Recover, &context(START + MINUTE)).await;
+        assert_eq!(recovered.mode, FocusMode::Stopped);
+        let open_runs: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pomodoro_runs WHERE ended_at IS NULL")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(open_runs, 0);
     });
 }
 
@@ -771,17 +810,20 @@ fn execution_recovery_preserves_idle_pause_without_reusing_a_previous_controller
             FocusObservation::IdleOverlayVisible {
                 run_id: idle.run.as_ref().unwrap().id.clone(),
                 segment_id: idle.segment.as_ref().unwrap().id.clone(),
-                detected_at_ms: idle.idle_detected_at_ms.unwrap(),
+                detected_at_ms: idle.mode.idle_detected_at_ms().unwrap(),
             },
             &context(START + 90_000),
         )
         .await;
-        assert_eq!(visible.idle_overlay_visible_at_ms, Some(START + 90_000));
+        assert_eq!(
+            visible.mode.idle_overlay_visible_at_ms(),
+            Some(START + 90_000)
+        );
         let mut recovery = context(START + 200_000);
         recovery.platform = FocusPlatform::Android;
         let restored = observe(&pool, FocusObservation::Recover, &recovery).await;
         assert_eq!(restored.mode, FocusMode::IdlePause);
-        assert_eq!(restored.idle_overlay_visible_at_ms, None);
+        assert_eq!(restored.mode.idle_overlay_visible_at_ms(), None);
         assert_eq!(restored.elapsed_ms, idle.elapsed_ms);
         assert_eq!(
             restored.segment.as_ref().unwrap().pauses,
@@ -903,5 +945,363 @@ fn execution_competing_starts_accept_only_one_expected_revision() {
             .await
             .unwrap();
         assert_eq!(count, 1);
+    });
+}
+
+const ALL_MODES: [FocusMode; 8] = [
+    FocusMode::Stopped,
+    FocusMode::Running,
+    FocusMode::ManualPause,
+    FocusMode::IdlePause,
+    FocusMode::IdleFailed,
+    FocusMode::Suspended,
+    FocusMode::ReturnWait,
+    FocusMode::Expired,
+];
+
+/// The rule each table entry must follow, stated independently of the table.
+fn expected_focus_move(from: FocusMode, to: FocusMode) -> bool {
+    use FocusMode::*;
+    match (from, to) {
+        (_, Stopped | Expired) => true,
+        (Stopped | Expired, next) => next == Running,
+        (Running, Running | ManualPause | IdlePause | Suspended | ReturnWait) => true,
+        (ManualPause | Suspended, Running | ReturnWait) => true,
+        (IdlePause, Running | IdleFailed | ReturnWait) => true,
+        (IdleFailed | ReturnWait, Running) => true,
+        _ => false,
+    }
+}
+
+#[test]
+fn every_focus_mode_pair_is_legal_only_when_the_lifecycle_allows_it() {
+    for from in ALL_MODES {
+        for to in ALL_MODES {
+            assert_eq!(
+                from.can_transition_to(to),
+                expected_focus_move(from, to),
+                "{from:?} -> {to:?}"
+            );
+        }
+    }
+    assert!(
+        FOCUS_MODE_TRANSITIONS
+            .iter()
+            .filter(|(from, _)| matches!(from, FocusMode::Stopped | FocusMode::Expired))
+            .all(|(_, to)| !matches!(
+                to,
+                FocusMode::ManualPause
+                    | FocusMode::IdlePause
+                    | FocusMode::IdleFailed
+                    | FocusMode::Suspended
+                    | FocusMode::ReturnWait
+            )),
+        "a closed mode only starts a run or closes one SQLite still holds open"
+    );
+}
+
+#[test]
+fn an_illegal_focus_mode_move_is_rejected_without_changing_the_mode() {
+    let mut session = super::mutations::Session {
+        state: ExecutionState {
+            mode: FocusModeState::ReturnWait {
+                return_started_at_ms: 0,
+                paused_prompts_dismissed: false,
+            },
+            ..ExecutionState::default()
+        },
+        run: None,
+        segment: None,
+        changed_segments: Vec::new(),
+        local_time: None,
+        planned_blocks: Vec::new(),
+        adaptive_degraded: None,
+    };
+    for illegal in [
+        FocusModeState::ManualPause {
+            paused_prompts_dismissed: false,
+        },
+        FocusModeState::IdlePause {
+            idle_started_at_ms: 0,
+            idle_detected_at_ms: 0,
+            idle_overlay_visible_at_ms: None,
+            paused_prompts_dismissed: false,
+        },
+        FocusModeState::IdleFailed {
+            idle_started_at_ms: 0,
+            idle_detected_at_ms: 0,
+            focus_failed_at_ms: 0,
+            paused_prompts_dismissed: false,
+        },
+        FocusModeState::Suspended {
+            suspend_started_at_ms: 0,
+            suspend_returned_at_ms: 0,
+            paused_prompts_dismissed: false,
+        },
+        FocusModeState::ReturnWait {
+            return_started_at_ms: 1,
+            paused_prompts_dismissed: false,
+        },
+    ] {
+        let error = session.enter_mode(illegal).unwrap_err();
+        assert_eq!(error.code, FocusErrorCode::InvalidState);
+        assert_eq!(session.state.mode, FocusMode::ReturnWait);
+    }
+    session.enter_mode(FocusModeState::Running).unwrap();
+    session.enter_mode(FocusModeState::Expired).unwrap();
+    assert!(
+        session
+            .enter_mode(FocusModeState::ManualPause {
+                paused_prompts_dismissed: false,
+            })
+            .is_err()
+    );
+    assert_eq!(session.state.mode, FocusMode::Expired);
+}
+
+#[test]
+fn skip_next_break_is_refused_outside_a_running_or_manually_paused_focus_phase() {
+    block_on(async {
+        let pool = pool().await;
+        start(&pool).await;
+        let suspended = observe(
+            &pool,
+            FocusObservation::Suspend {
+                started_at_ms: START + 15_000,
+                returned_at_ms: START + 30_000,
+            },
+            &context(START + 30_000),
+        )
+        .await;
+        assert_eq!(suspended.mode, FocusMode::Suspended);
+        let error = execute(
+            &pool,
+            &command(
+                "skip-while-suspended",
+                suspended.revision,
+                FocusIntent::SetSkipNextBreak { enabled: true },
+            ),
+            &context(START + 31_000),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, FocusErrorCode::InvalidState);
+        let resumed = execute(
+            &pool,
+            &command(
+                "resume-suspend",
+                suspended.revision,
+                FocusIntent::ResolveSuspend { resume: true },
+            ),
+            &context(START + 32_000),
+        )
+        .await
+        .unwrap();
+        let paused = execute(
+            &pool,
+            &command("pause", resumed.revision, FocusIntent::Pause),
+            &context(START + 33_000),
+        )
+        .await
+        .unwrap();
+        let skipped = execute(
+            &pool,
+            &command(
+                "skip-while-paused",
+                paused.revision,
+                FocusIntent::SetSkipNextBreak { enabled: true },
+            ),
+            &context(START + 34_000),
+        )
+        .await
+        .unwrap();
+        assert!(skipped.skip_next_break);
+    });
+}
+
+#[test]
+fn skip_next_break_does_not_carry_into_the_next_run() {
+    block_on(async {
+        let pool = pool().await;
+        let started = start(&pool).await;
+        let skipped = execute(
+            &pool,
+            &command(
+                "skip",
+                started.revision,
+                FocusIntent::SetSkipNextBreak { enabled: true },
+            ),
+            &context(START + 10_000),
+        )
+        .await
+        .unwrap();
+        assert!(skipped.skip_next_break);
+        let stopped = execute(
+            &pool,
+            &command("stop", skipped.revision, FocusIntent::Stop),
+            &context(START + 20_000),
+        )
+        .await
+        .unwrap();
+        let restarted = execute(
+            &pool,
+            &command(
+                "restart",
+                stopped.revision,
+                FocusIntent::StartScheduled {
+                    occurrence_id: None,
+                },
+            ),
+            &context(START + 30_000),
+        )
+        .await
+        .unwrap();
+        assert!(!restarted.skip_next_break);
+        let next = observe(
+            &pool,
+            FocusObservation::Deadline,
+            &context(START + 30_000 + 2 * MINUTE),
+        )
+        .await;
+        assert_eq!(next.segment.unwrap().phase, FocusPhase::ShortBreak);
+    });
+}
+
+#[test]
+fn a_reconfigured_break_that_ends_while_suspended_waits_without_suspend_evidence() {
+    block_on(async {
+        let pool = pool().await;
+        let at = |now_ms: i64, short_break_minutes: i64| {
+            let mut value = context(now_ms);
+            value.commitment.as_mut().unwrap().configuration.rhythm = PomodoroRunRhythm::Count {
+                focus_duration_minutes: 2,
+                short_break_minutes,
+                long_break_minutes: 2,
+                long_break_after_focus_count: 2,
+            };
+            value
+        };
+        execute(
+            &pool,
+            &command(
+                "start",
+                0,
+                FocusIntent::StartScheduled {
+                    occurrence_id: None,
+                },
+            ),
+            &at(START, 2),
+        )
+        .await
+        .unwrap();
+        let on_break = observe(
+            &pool,
+            FocusObservation::Deadline,
+            &at(START + 2 * MINUTE, 2),
+        )
+        .await;
+        assert_eq!(on_break.segment.unwrap().phase, FocusPhase::ShortBreak);
+        let suspended = observe(
+            &pool,
+            FocusObservation::Suspend {
+                started_at_ms: START + 3 * MINUTE + 30_000,
+                returned_at_ms: START + 4 * MINUTE,
+            },
+            &at(START + 4 * MINUTE, 2),
+        )
+        .await;
+        assert_eq!(suspended.mode, FocusMode::Suspended);
+        execute(
+            &pool,
+            &command(
+                "dismiss",
+                suspended.revision,
+                FocusIntent::DismissPausedPrompts,
+            ),
+            &at(START + 4 * MINUTE, 2),
+        )
+        .await
+        .unwrap();
+        let waiting = observe(
+            &pool,
+            FocusObservation::CalendarChanged,
+            &at(START + 4 * MINUTE + 1_000, 1),
+        )
+        .await;
+        assert_eq!(waiting.mode, FocusMode::ReturnWait);
+        assert_eq!(
+            waiting.mode,
+            FocusModeState::ReturnWait {
+                return_started_at_ms: START + 4 * MINUTE + 1_000,
+                paused_prompts_dismissed: false,
+            }
+        );
+    });
+}
+
+#[test]
+fn stored_execution_state_nests_each_mode_with_only_its_own_facts() {
+    let state = ExecutionState {
+        run_id: Some("run".into()),
+        mode: FocusModeState::Suspended {
+            suspend_started_at_ms: 10,
+            suspend_returned_at_ms: 20,
+            paused_prompts_dismissed: true,
+        },
+        ..ExecutionState::default()
+    };
+    let value = serde_json::to_value(&state).unwrap();
+    assert_eq!(value["runId"], "run");
+    assert_eq!(
+        value["mode"],
+        serde_json::json!({
+            "mode": "suspended",
+            "suspendStartedAtMs": 10,
+            "suspendReturnedAtMs": 20,
+            "pausedPromptsDismissed": true,
+        })
+    );
+    let restored: ExecutionState = serde_json::from_value(value).unwrap();
+    assert_eq!(restored.mode, state.mode);
+}
+
+#[test]
+fn an_empty_stored_execution_state_is_stopped() {
+    let state: ExecutionState = serde_json::from_str("{}").unwrap();
+    assert_eq!(state.mode, FocusModeState::Stopped);
+    assert_eq!(state.run_id, None);
+}
+
+#[test]
+fn stored_execution_state_rejects_mode_facts_outside_their_mode() {
+    let missing = serde_json::json!({ "mode": { "mode": "return_wait" } });
+    assert!(serde_json::from_value::<ExecutionState>(missing).is_err());
+    let flat = serde_json::json!({ "mode": "running", "returnStartedAtMs": 5 });
+    assert!(serde_json::from_value::<ExecutionState>(flat).is_err());
+}
+
+#[test]
+fn snapshot_carries_the_mode_name_and_its_facts_at_the_top_level() {
+    block_on(async {
+        let pool = pool().await;
+        start(&pool).await;
+        let mut snapshot = observe(
+            &pool,
+            FocusObservation::Suspend {
+                started_at_ms: START + MINUTE,
+                returned_at_ms: START + 2 * MINUTE,
+            },
+            &context(START + 2 * MINUTE),
+        )
+        .await;
+        let value = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(value["mode"], "suspended");
+        assert_eq!(value["suspendStartedAtMs"], START + MINUTE);
+        assert_eq!(value["suspendReturnedAtMs"], START + 2 * MINUTE);
+        assert_eq!(value["pausedPromptsDismissed"], false);
+        assert!(value.get("returnStartedAtMs").is_none());
+        let restored: FocusExecutionSnapshot = serde_json::from_value(value).unwrap();
+        snapshot.adaptive_degraded = None;
+        assert_eq!(restored, snapshot);
     });
 }

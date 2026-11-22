@@ -881,7 +881,7 @@
       </div>
       {#if player.parseError || player.playerError}
         <div class="relative z-10 ml-auto flex min-w-0 items-center gap-2">
-          <div class="hidden min-w-0 max-w-56 items-center gap-1.5 text-[0.733333rem] text-foreground min-[720px]:flex" role="alert">
+          <div class="flex min-w-0 max-w-28 items-center gap-1.5 text-[0.733333rem] text-foreground min-[720px]:max-w-56" role="alert" title={player.parseError ?? player.playerError ?? undefined}>
             <AlertCircle class="shrink-0 text-muted-foreground" size={musicIconSize} strokeWidth={musicIconStrokeWidth} />
             <span class="truncate">{player.parseError ?? player.playerError}</span>
           </div>
@@ -1042,7 +1042,7 @@
               >
                 <div class="flex flex-col">
                   <div class="shrink-0" aria-hidden="true" style={`height: ${renderedPlaylistWindow.topSpacerHeight}px;`}></div>
-                  {#each renderedPlaylistItems as item, offset}
+                  {#each renderedPlaylistItems as item, offset (renderedPlaylistWindow.startIndex + offset)}
                     {@const index = renderedPlaylistWindow.startIndex + offset}
                     {@const queueEntry = player.savedQueueEntries[index]}
                     {@const snoozed = queueEntry

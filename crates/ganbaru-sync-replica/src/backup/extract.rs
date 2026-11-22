@@ -12,7 +12,7 @@ use zip::ZipArchive;
 /// The app name a vault folder marker carries.
 pub const VAULT_APP_MARKER: &str = "ganbaru";
 /// The folder marker schema this build reads and writes.
-pub const VAULT_SCHEMA_VERSION: u32 = 1;
+pub const VAULT_SCHEMA_VERSION: u32 = 2;
 /// Largest folder marker any reader accepts.
 pub const MAX_VAULT_MANIFEST_BYTES: u64 = 64 * 1024;
 /// Most skipped bundle entries named in one log line.
@@ -29,6 +29,9 @@ pub struct VaultManifest {
     pub vault_id: String,
     pub display_name: String,
     pub created_at: String,
+    /// Whether the vault has opened a database, so a missing or empty database is a loss rather
+    /// than a new vault. Reset local data clears it.
+    pub has_data: bool,
 }
 
 /// Parses and checks a folder marker. The identity names key store accounts and key files, so

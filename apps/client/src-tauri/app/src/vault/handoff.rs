@@ -232,30 +232,16 @@ fn initialize_linking<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Strin
         .app_config_dir()
         .map_err(|error| format!("find app config directory: {error}"))?;
     let device_id = super::ensure_device_id(app)?;
-    let pairing = app.state::<PairingManager>();
-    #[cfg(desktop)]
-    pairing.set_identity_key_store(std::sync::Arc::new(key_store::KeyringIdentityKeyStore))?;
     // On mobile the managed manager is the process one, which a headless sync pass may have
     // loaded first.
     #[cfg(mobile)]
-    super::process_managers::process_managers().load_pairing(&config_dir, device_id)?;
+    return super::process_managers::process_managers().load_pairing(&config_dir, device_id);
     #[cfg(desktop)]
-    pairing.initialize(config_dir, device_id)?;
-    discard_unusable_outgoing_copy(&pairing)
-}
-
-/// Forgets a prepared vault copy whose archive did not survive a restart, so the coordinator does
-/// not offer it again.
-fn discard_unusable_outgoing_copy(pairing: &PairingManager) -> Result<(), String> {
-    let Some(transfer) = pairing.outgoing_transfer()? else {
-        return Ok(());
-    };
-    let (_, archive_path) = pairing.outgoing_snapshot_paths(&transfer.metadata.transfer_id)?;
-    if protocol::validate_staging_file(&archive_path, &transfer.metadata).is_err() {
-        pairing.clear_outgoing_transfer(&transfer.metadata.transfer_id)?;
-        let _ = std::fs::remove_file(archive_path);
+    {
+        let pairing = app.state::<PairingManager>();
+        pairing.set_identity_key_store(std::sync::Arc::new(key_store::KeyringIdentityKeyStore))?;
+        pairing.initialize(config_dir, device_id)
     }
-    Ok(())
 }
 
 #[cfg(desktop)]

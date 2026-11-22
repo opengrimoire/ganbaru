@@ -150,9 +150,14 @@ async function seedPomodoroHistory(payload: BenchmarkPomodoroHistoryPayload): Pr
   await invoke("benchmark_seed_pomodoro_history", { payload });
 }
 
+/**
+ * Seeds one dense Calendar dataset into the benchmark database in chunks, stopping between chunks with an
+ * `AbortError` once `signal` aborts.
+ */
 export async function seedCalendarDataset(
   dataset: BenchmarkDatasetProfile,
   context: BenchmarkScenarioContext,
+  signal: AbortSignal,
 ): Promise<BenchmarkSeedHandle> {
   const denseDataset = requireDenseCalendarDataset(dataset);
   const calendarsStore = getCalendars();
@@ -161,6 +166,7 @@ export async function seedCalendarDataset(
   const totalEvents = countDenseCalendarEvents(denseDataset, anchor);
 
   for (let offset = 0; offset < totalEvents; offset += DENSE_SEED_CHUNK_SIZE) {
+    signal.throwIfAborted();
     const drafts = generateDenseCalendarEvents({
       dataset: denseDataset,
       anchor,

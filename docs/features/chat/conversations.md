@@ -24,7 +24,7 @@ One channel dialog, opened from the sidebar, edits the name, topic, personal sec
 
 The channel header shows the members as an avatar stack with a count. It opens a details panel with the topic and the member list, where members can be added or removed by someone who may manage members and the channel dialog can be opened. A channel never shows an in-feed prompt to add agents.
 
-Archive hides a conversation from normal navigation without destroying its messages, links, drafts, or review history. Restore returns it to its project. Permanent deletion is explicit and includes a cleanup plan for owned execution resources.
+Archive hides a conversation from normal navigation without destroying its messages, links, drafts, or review history, and stops its provider session, interrupting a running turn. Restore returns it to its project. Permanent deletion is explicit and includes a cleanup plan for owned execution resources.
 
 Search uses bounded, paginated reads over active or archived conversations according to the selected filter. Opening a result restores the conversation and position without loading its complete history.
 

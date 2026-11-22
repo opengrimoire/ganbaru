@@ -1,7 +1,8 @@
 use super::interactions::{answer_with_attachment_lines, expose_attachments_to_thread};
 use super::persistence::{
     AttachmentFolderScope, PersistUserTurnContext, ThreadRuntimeData, TurnPersistenceTarget,
-    attachment_folder_in_scope, persist_user_turn, read_thread_runtime_data,
+    attachment_folder_in_scope, mark_turn_dispatch_failed, persist_user_turn,
+    read_thread_runtime_data,
 };
 use super::session::{
     SessionOpenRequest, SessionOpenRequestInput, merge_checkpoint_changed_files,
@@ -677,4 +678,122 @@ async fn organizational_runs_accept_attachments_from_any_folder_of_the_run_proje
             .await
             .unwrap()
     );
+}
+
+#[test]
+fn dispatch_failure_fails_a_running_turn_but_never_overwrites_a_settled_one() {
+    use crate::chat::tests::repository::canonical_request;
+    use ganbaru_chat::repository::events::append_canonical_event;
+    use ganbaru_chat_contracts::events::{TurnCompletedEvent, TurnStartedEvent};
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let thread_id = ChatThreadId::new("thread-1").unwrap();
+        let now = UtcTimestamp::new("2026-05-31T12:00:00Z").unwrap();
+        let error = ChatError::new(ChatErrorCode::DriverUnavailable, "Provider failed", true);
+        for turn in ["turn-running", "turn-settled"] {
+            append_canonical_event(
+                &pool,
+                canonical_request(
+                    &format!("start-{turn}"),
+                    Some(turn),
+                    CanonicalEvent::TurnStarted(TurnStartedEvent {
+                        provider_turn_id: None,
+                        state: ChatTurnState::Active,
+                        modes: TurnModeSnapshot {
+                            safety_mode: SafetyMode::AskForApproval,
+                            interaction_mode: InteractionMode::Build,
+                        },
+                        model_id: None,
+                        model_options: Vec::new(),
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        }
+        append_canonical_event(
+            &pool,
+            canonical_request(
+                "complete-turn-settled",
+                Some("turn-settled"),
+                CanonicalEvent::TurnCompleted(TurnCompletedEvent {
+                    state: ChatTurnState::Completed,
+                    stop_reason: None,
+                    usage: None,
+                    changed_files: Vec::new(),
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        let read = |turn: &'static str| {
+            let pool = pool.clone();
+            async move {
+                let turn: String = sqlx::query_scalar("SELECT state FROM chat_turns WHERE id = ?")
+                    .bind(turn)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                let thread: (String, String) = sqlx::query_as(
+                    "SELECT state, latest_turn_state FROM chat_threads WHERE id = 'thread-1'",
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                (turn, thread)
+            }
+        };
+
+        let settled = ChatTurnId::new("turn-settled").unwrap();
+        mark_turn_dispatch_failed(&pool, &thread_id, &settled, &error, &now)
+            .await
+            .unwrap();
+        assert_eq!(
+            read("turn-settled").await,
+            (
+                "completed".to_string(),
+                ("idle".to_string(), "completed".to_string())
+            )
+        );
+
+        let running = ChatTurnId::new("turn-running").unwrap();
+        mark_turn_dispatch_failed(&pool, &thread_id, &running, &error, &now)
+            .await
+            .unwrap();
+        assert_eq!(
+            read("turn-running").await,
+            (
+                "failed".to_string(),
+                ("error".to_string(), "failed".to_string())
+            )
+        );
+
+        sqlx::query(
+            "INSERT INTO chat_turns
+                (id, thread_id, ordinal, state, safety_mode, interaction_mode,
+                 created_at, updated_at)
+             VALUES ('turn-pending', 'thread-1', 10, 'pending', 'ask_for_approval', 'build',
+                     ?, ?)",
+        )
+        .bind(now.as_str())
+        .bind(now.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE chat_threads SET state = 'active' WHERE id = 'thread-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let pending = ChatTurnId::new("turn-pending").unwrap();
+        mark_turn_dispatch_failed(&pool, &thread_id, &pending, &error, &now)
+            .await
+            .unwrap();
+        assert_eq!(
+            read("turn-pending").await,
+            (
+                "failed".to_string(),
+                ("error".to_string(), "failed".to_string())
+            )
+        );
+    });
 }

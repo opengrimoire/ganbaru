@@ -26,8 +26,13 @@
       "type": "turn_aborted",
       "turn": "turn-1",
       "state": "interrupted",
-      "reason": "Cursor ACP transport closed",
+      "reason": "ACP provider returned an invalid JSON-RPC message: message is not valid JSON",
       "recoverable": true
+    },
+    {
+      "type": "session_state_changed",
+      "state": "failed",
+      "reason": "ACP provider returned an invalid JSON-RPC message: message is not valid JSON"
     }
   ]
 }

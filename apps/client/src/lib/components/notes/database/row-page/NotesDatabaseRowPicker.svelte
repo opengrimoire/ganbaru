@@ -1,7 +1,7 @@
 <script lang="ts">
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
-  import { tick } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { listNotesDataSourceRowPages } from "$lib/api/notes";
   import { floatPanel } from "$lib/components/contacts/float-panel";
@@ -58,16 +58,30 @@
   let searchInput: HTMLInputElement | undefined = $state();
   let listbox: HTMLElement | undefined = $state();
   let query = $state("");
-  let rows = $state<NotesPage[]>([]);
-  let loading = $state(true);
-  let loadError = $state<NotesFailure | null>(null);
+  /**
+   * Rows of one source. A load names its source and token, so a late response never lands on a newer load and rows of
+   * a previous source are never offered for this one.
+   */
+  type RowsLoad =
+    | { readonly phase: "loading"; readonly sourceId: string; readonly token: symbol; readonly rows: readonly NotesPage[] | null }
+    | { readonly phase: "loaded"; readonly sourceId: string; readonly rows: readonly NotesPage[] }
+    | { readonly phase: "failed"; readonly sourceId: string; readonly rows: readonly NotesPage[] | null; readonly error: NotesFailure };
+
+  let rowsLoad = $state.raw<RowsLoad | null>(null);
   let error = $state<NotesFailure | null>(null);
   let pending = $state(false);
+  /** Cleared once the picker closes, so a pick finishing afterwards does not close a picker opened since. */
+  let mounted = true;
+  onDestroy(() => { mounted = false; });
   let activeIndex = $state(0);
-  let loadRequest = 0;
   /** Rows picked here, hidden before the caller's exclusions catch up. */
   const pickedIds = new SvelteSet<string>();
 
+  const currentLoad = $derived(rowsLoad?.sourceId === dataSourceId ? rowsLoad : null);
+  const rows = $derived(currentLoad?.rows ?? []);
+  /** Only the first load of a source shows the loading state; a reload keeps its rows visible. */
+  const loading = $derived(currentLoad?.phase !== "failed" && !currentLoad?.rows);
+  const loadError = $derived(currentLoad?.phase === "failed" ? currentLoad.error : null);
   const excluded = $derived(new Set([...exclude, ...pickedIds]));
   const matches = $derived(notesDatabaseRowSearch(rows.filter((row) => !excluded.has(row.id)), query, titleOf));
   const options = $derived<PickerOption[]>([
@@ -79,7 +93,7 @@
 
   $effect(() => {
     void dataSourceId;
-    void load();
+    untrack(() => { void load(); });
   });
 
   $effect(() => {
@@ -101,16 +115,16 @@
   }
 
   async function load(): Promise<void> {
-    const request = ++loadRequest;
-    loadError = null;
+    const sourceId = dataSourceId;
+    const token = Symbol("row picker rows");
+    rowsLoad = { phase: "loading", sourceId, token, rows: currentLoad?.rows ?? null };
+    const isCurrent = () => rowsLoad?.phase === "loading" && rowsLoad.token === token;
     try {
-      const loaded = await listNotesDataSourceRowPages(dataSourceId);
-      if (request !== loadRequest) return;
-      rows = loaded;
+      const loaded = await listNotesDataSourceRowPages(sourceId);
+      if (isCurrent()) rowsLoad = { phase: "loaded", sourceId, rows: loaded };
     } catch (caught) {
-      if (request === loadRequest) loadError = notesFailure(caught, t("notes.databaseRowPickerLoadFailed"));
-    } finally {
-      if (request === loadRequest) loading = false;
+      if (!isCurrent()) return;
+      rowsLoad = { phase: "failed", sourceId, rows: currentLoad?.rows ?? null, error: notesFailure(caught, t("notes.databaseRowPickerLoadFailed")) };
     }
   }
 
@@ -134,8 +148,10 @@
         await load();
       }
       if (closeOnPick) {
-        onClose();
-        anchor.focus({ preventScroll: true });
+        if (mounted) {
+          onClose();
+          anchor.focus({ preventScroll: true });
+        }
         return;
       }
     } catch (caught) {

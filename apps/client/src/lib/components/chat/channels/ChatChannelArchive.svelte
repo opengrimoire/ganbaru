@@ -16,7 +16,8 @@
   const { t } = localization;
   const chat = useChat();
   let query = $state("");
-  let restoringId = $state<string | null>(null);
+  /** Channels whose restore is in flight; each restore removes only its own entry. */
+  let restoringIds = $state.raw<ReadonlySet<string>>(new Set());
   let error = $state<string | null>(null);
   const filteredChannels = $derived(chat.archivedChannels.filter((channel) => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -25,15 +26,23 @@
       || channel.topic.toLocaleLowerCase().includes(normalized);
   }));
 
+  /**
+   * Restores one archived channel, keeping its button busy until that restore settles.
+   *
+   * @param channel The archived channel to restore.
+   */
   async function restore(channel: ChatChannelRead): Promise<void> {
-    restoringId = channel.id;
+    if (restoringIds.has(channel.id)) return;
+    restoringIds = new Set([...restoringIds, channel.id]);
     error = null;
     try {
       await chat.restoreChannel(channel);
     } catch (cause: unknown) {
       error = chatErrorMessage(cause, t("chatErrors.actions.channelAction"));
     } finally {
-      restoringId = null;
+      const remaining = new Set(restoringIds);
+      remaining.delete(channel.id);
+      restoringIds = remaining;
     }
   }
 </script>
@@ -61,7 +70,7 @@
           <div class="flex min-w-0 flex-wrap items-start gap-3 rounded-md px-2 py-2 hover:bg-accent/70">
             <Hash size={16} class="mt-0.5 shrink-0 text-muted-foreground" />
             <div class="min-w-32 flex-1"><div class="truncate text-sm font-medium">{channel.name}</div><div class="mt-0.5 truncate text-xs text-muted-foreground">{channel.topic || t("chat.channels.noTopic")} · {formatDateTime(localization.locale, Date.parse(channel.archivedAt ?? channel.updatedAt), { dateStyle: "medium", timeStyle: "short" })}</div></div>
-            <button type="button" class="flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-xs hover:bg-accent disabled:opacity-60" disabled={restoringId === channel.id} onclick={() => void restore(channel)}><ArchiveRestore size={15} />{t("chat.restore")}</button>
+            <button type="button" class="flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-xs hover:bg-accent disabled:opacity-60" disabled={restoringIds.has(channel.id)} onclick={() => void restore(channel)}><ArchiveRestore size={15} />{t("chat.restore")}</button>
           </div>
         {/each}
       </div>

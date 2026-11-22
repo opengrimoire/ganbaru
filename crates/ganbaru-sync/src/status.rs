@@ -8,6 +8,7 @@ use sqlx::{Connection, Row, SqliteConnection};
 
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::log::{self, WriterState, clamp_ms, seq_i64, stored_u64};
+use crate::op_state::{self, OpMove, OpState};
 use crate::store::{self, Classified, HoldReason};
 use crate::{ClockWarning, Engine, OPEN_CONFLICT_MASK_SQL, SpaceContext};
 
@@ -18,14 +19,12 @@ pub struct WriterSummary {
     pub writer: WriterId,
     /// Device the writer belongs to.
     pub device_id: String,
-    /// Lifecycle state.
+    /// Lifecycle state, with the last operation that stays when revoked or forked.
     pub state: WriterState,
     /// Highest stored sequence.
     pub stored: Seq,
     /// Highest applied sequence.
     pub applied: Seq,
-    /// Last operation that stays, when revoked, forked, or re-sealed.
-    pub cutoff: Option<Seq>,
 }
 
 /// Held operations by reason.
@@ -134,7 +133,6 @@ impl Engine {
                 state: writer.state,
                 stored: writer.stored,
                 applied: writer.applied,
-                cutoff: writer.cutoff,
             })
             .collect();
         let mut status = SyncStatus {
@@ -321,6 +319,7 @@ impl Engine {
             let writer = log::writer_id(&writer)?;
             let seq = stored_u64(row.try_get(1)?, "sequence")?;
             let previous: Option<String> = row.try_get(2)?;
+            let from = OpState::from_columns("held", previous.as_deref(), None)?;
             let envelope: Vec<u8> = row.try_get(3)?;
             let device: String = row.try_get(4)?;
             let classified = match Envelope::decode(&envelope) {
@@ -337,11 +336,16 @@ impl Engine {
                     let context =
                         store::derive_context(&mut tx, ctx, writer, seq, Some(dependencies))
                             .await?;
-                    sqlx::query(
-                        "UPDATE sync_ops SET state = 'waiting', hold_reason = NULL, context = ?,
+                    let attempted = OpMove::Reclassify(None);
+                    let (state, hold_reason) = op_state::target(from, attempted)?.columns();
+                    let affected = sqlx::query(sqlx::AssertSqlSafe(format!(
+                        "UPDATE sync_ops SET state = ?, hold_reason = ?, context = ?,
                             authorization_revision = ?, group_continues = ?
-                         WHERE space_id = ? AND writer_id = ? AND seq = ?",
-                    )
+                         WHERE space_id = ? AND writer_id = ? AND seq = ? AND {}",
+                        attempted.source()
+                    )))
+                    .bind(state)
+                    .bind(hold_reason)
                     .bind(log::encode_context(context.as_ref()))
                     .bind(seq_i64(*revision)?)
                     .bind(*continues)
@@ -349,7 +353,9 @@ impl Engine {
                     .bind(writer.as_bytes().as_slice())
                     .bind(seq_i64(seq)?)
                     .execute(&mut *tx)
-                    .await?;
+                    .await?
+                    .rows_affected();
+                    op_state::expect_one(affected, attempted)?;
                     released += 1;
                     continue;
                 }
@@ -357,16 +363,21 @@ impl Engine {
                 Classified::Malformed => HoldReason::Invalid,
             };
             if previous.as_deref() != Some(reason.as_str()) {
-                sqlx::query(
+                let attempted = OpMove::Reclassify(Some(reason));
+                let (_, hold_reason) = op_state::target(from, attempted)?.columns();
+                let affected = sqlx::query(sqlx::AssertSqlSafe(format!(
                     "UPDATE sync_ops SET hold_reason = ?
-                     WHERE space_id = ? AND writer_id = ? AND seq = ?",
-                )
-                .bind(reason.as_str())
+                     WHERE space_id = ? AND writer_id = ? AND seq = ? AND {}",
+                    attempted.source()
+                )))
+                .bind(hold_reason)
                 .bind(ctx.space.as_bytes().as_slice())
                 .bind(writer.as_bytes().as_slice())
                 .bind(seq_i64(seq)?)
                 .execute(&mut *tx)
-                .await?;
+                .await?
+                .rows_affected();
+                op_state::expect_one(affected, attempted)?;
             }
         }
         failpoint!("reevaluate.before_commit");

@@ -4,7 +4,7 @@ use super::cli::*;
 use super::config::*;
 use super::event_stream::OpenCodeEventStream;
 use super::http_client::*;
-use super::local_server::OwnedOpenCodeServer;
+use super::local_server::{OwnedOpenCodeServer, OwnedServerStop};
 use super::normalizer::{OpenCodeEventNormalizer, OpenCodeRouteState};
 use super::permissions::{
     OpenCodeOrganizationalPolicy, OpenCodePermissionRule, organizational_permission_error,
@@ -13,17 +13,17 @@ use super::permissions::{
 use super::protocol::{OpenCodeCommand, parse_resume_cursor, resume_cursor};
 use super::support::*;
 use crate::events::*;
+use crate::live_session::LiveSessionLifecycle;
 use crate::models::*;
 use crate::{DriverOperationContext, ProviderEventSink};
 use serde_json::{Value, json};
 use std::path::Path;
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
+/// How long a failed session waits for OpenCode to accept the abort of its run.
+const FAILED_SESSION_ABORT_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_RECONNECT_ATTEMPTS: usize = 6;
 /// Longest wait for any event, heartbeats included, while a turn runs and no request waits for
 /// the user before the stream counts as silent and is reconnected. OpenCode heartbeat timing is
@@ -52,8 +52,7 @@ pub(super) struct OpenCodeLiveSession {
     pub route: Arc<Mutex<OpenCodeRouteState>>,
     pub normalizer: Arc<OpenCodeEventNormalizer>,
     pub sink: Arc<dyn ProviderEventSink>,
-    pub expected_shutdown: Arc<AtomicBool>,
-    pub terminal_error: Arc<Mutex<Option<ChatError>>>,
+    pub lifecycle: LiveSessionLifecycle,
     pub session_id: ProviderSessionId,
     pub provider_thread_id: String,
     pub command_task: Option<JoinHandle<()>>,
@@ -64,7 +63,7 @@ pub(super) struct OpenCodeLiveSession {
 
 impl Drop for OpenCodeLiveSession {
     fn drop(&mut self) {
-        self.expected_shutdown.store(true, Ordering::Release);
+        self.lifecycle.begin_stop();
         self.event_task.abort();
         if let Some(task) = self.command_task.as_ref() {
             task.abort();
@@ -440,8 +439,7 @@ impl OpenCodeProviderDriver {
             input.thread_id().clone(),
             local_session_id.clone(),
         ));
-        let expected_shutdown = Arc::new(AtomicBool::new(false));
-        let terminal_error = Arc::new(Mutex::new(None));
+        let lifecycle = LiveSessionLifecycle::default();
         let state = route.lock().map_err(|_| driver_state_error())?.clone();
         let cursor = resume_cursor(&provider_thread_id)?;
         let capabilities = capabilities();
@@ -480,8 +478,8 @@ impl OpenCodeProviderDriver {
             route: Arc::clone(&route),
             normalizer: Arc::clone(&normalizer),
             sink: Arc::clone(&sink),
-            expected_shutdown: Arc::clone(&expected_shutdown),
-            terminal_error: Arc::clone(&terminal_error),
+            lifecycle: lifecycle.clone(),
+            server: owned_server.as_ref().map(OwnedOpenCodeServer::stop_handle),
             session_id: provider_thread_id.clone(),
             busy_stream_timeout: self.busy_stream_timeout,
             shell: owned_server
@@ -495,8 +493,7 @@ impl OpenCodeProviderDriver {
             route,
             normalizer,
             sink,
-            expected_shutdown,
-            terminal_error,
+            lifecycle,
             session_id: local_session_id.clone(),
             provider_thread_id,
             command_task: None,
@@ -572,12 +569,7 @@ impl OpenCodeProviderDriver {
                 false,
             ));
         }
-        if let Some(error) = live
-            .terminal_error
-            .lock()
-            .map_err(|_| driver_state_error())?
-            .clone()
-        {
+        if let Some(error) = live.lifecycle.failure() {
             return Err(error);
         }
         Ok(live)
@@ -684,8 +676,9 @@ struct EventPumpResources {
     route: Arc<Mutex<OpenCodeRouteState>>,
     normalizer: Arc<OpenCodeEventNormalizer>,
     sink: Arc<dyn ProviderEventSink>,
-    expected_shutdown: Arc<AtomicBool>,
-    terminal_error: Arc<Mutex<Option<ChatError>>>,
+    lifecycle: LiveSessionLifecycle,
+    /// Stops the owned server when the session fails; none for an external server.
+    server: Option<OwnedServerStop>,
     session_id: String,
     busy_stream_timeout: Duration,
     /// The confined shell whose Git metadata guard is checked after each command and turn.
@@ -794,7 +787,7 @@ fn spawn_event_pump(mut resources: EventPumpResources) -> JoinHandle<()> {
                 }
                 StreamPoll::IdleWait => {}
                 StreamPoll::Interrupted(interruption) => {
-                    if resources.expected_shutdown.load(Ordering::Acquire) {
+                    if !resources.lifecycle.is_running() {
                         return;
                     }
                     reconnect_attempt += 1;
@@ -1000,32 +993,60 @@ async fn emit_events(
     Ok(())
 }
 
-/// Ends the session after the event stream failed for good, reporting `code`.
+/// Ends the session after the event stream failed for good, reporting `code`. The error is not
+/// recoverable for the runtime, so the turn the stream carried fails instead of staying open.
 async fn settle_event_failure(resources: &EventPumpResources, code: &str, message: &str) {
     let error = ChatError::new(ChatErrorCode::TransportUnavailable, message, true);
-    if let Ok(mut terminal) = resources.terminal_error.lock() {
-        *terminal = Some(error);
+    fail_session(resources, error, |state| {
+        Ok(vec![resources.normalizer.external_event(
+            state,
+            "transport/error",
+            CanonicalEvent::RuntimeError(RuntimeErrorEvent {
+                code: code.to_string(),
+                message: message.to_string(),
+                recoverable: false,
+                safe_details: None,
+            }),
+        )?])
+    })
+    .await;
+}
+
+/// The one fail transition of a live OpenCode session.
+///
+/// Only the first failure of a running session acts; a failure while the driver stops the
+/// session is the stop's own consequence. The winner aborts the run at OpenCode, so it does
+/// not keep working for a session that ended, reports `events`, and stops an owned server. An
+/// external server is never stopped.
+async fn fail_session(
+    resources: &EventPumpResources,
+    error: ChatError,
+    events: impl FnOnce(&OpenCodeRouteState) -> ChatResult<Vec<CanonicalRuntimeEvent>>,
+) {
+    if !resources.lifecycle.fail(error) {
+        return;
     }
-    let event = resources
+    let _ = tokio::time::timeout(
+        FAILED_SESSION_ABORT_TIMEOUT,
+        resources.client.abort(&resources.session_id),
+    )
+    .await;
+    let events = resources
         .route
         .lock()
         .map_err(|_| driver_state_error())
         .and_then(|mut state| {
-            state.session_state = ProviderSessionState::Failed;
-            resources.normalizer.external_event(
-                &state,
-                "transport/error",
-                CanonicalEvent::RuntimeError(RuntimeErrorEvent {
-                    code: code.to_string(),
-                    message: message.to_string(),
-                    recoverable: true,
-                    safe_details: None,
-                }),
-            )
+            state.busy = false;
+            events(&state)
         });
-    if let Ok(event) = event {
-        let _ = resources.sink.emit(event).await;
+    if let Ok(events) = events {
+        for event in events {
+            let _ = resources.sink.emit(event).await;
+        }
         let _ = resources.sink.flush().await;
+    }
+    if let Some(server) = resources.server.as_ref() {
+        let _ = server.stop().await;
     }
 }
 
@@ -1049,44 +1070,30 @@ async fn end_after_git_metadata_change(resources: &EventPumpResources) -> bool {
     let Err(error) = shell.guard().verify() else {
         return false;
     };
-    resources.expected_shutdown.store(true, Ordering::Release);
-    if let Ok(mut terminal) = resources.terminal_error.lock() {
-        *terminal = Some(error.clone());
-    }
-    let _ = resources.client.abort(&resources.session_id).await;
-    let events = resources
-        .route
-        .lock()
-        .map_err(|_| driver_state_error())
-        .and_then(|mut state| {
-            state.session_state = ProviderSessionState::Failed;
-            let warning = resources.normalizer.external_event(
-                &state,
-                "session/git_metadata_changed",
-                CanonicalEvent::RuntimeWarning(NotificationEvent {
-                    code: crate::confinement::GIT_METADATA_CHANGED_CODE.to_string(),
-                    title: "An agent changed this folder's Git configuration".to_string(),
-                    detail: Some(error.message.clone()),
-                }),
-            )?;
-            let failure = resources.normalizer.external_event(
-                &state,
-                "session/git_metadata_changed",
-                CanonicalEvent::RuntimeError(RuntimeErrorEvent {
-                    code: crate::confinement::GIT_METADATA_CHANGED_CODE.to_string(),
-                    message: error.message.clone(),
-                    recoverable: false,
-                    safe_details: None,
-                }),
-            )?;
-            Ok(vec![warning, failure])
-        });
-    if let Ok(events) = events {
-        for event in events {
-            let _ = resources.sink.emit(event).await;
-        }
-        let _ = resources.sink.flush().await;
-    }
+    let message = error.message.clone();
+    fail_session(resources, error, |state| {
+        let warning = resources.normalizer.external_event(
+            state,
+            "session/git_metadata_changed",
+            CanonicalEvent::RuntimeWarning(NotificationEvent {
+                code: crate::confinement::GIT_METADATA_CHANGED_CODE.to_string(),
+                title: "An agent changed this folder's Git configuration".to_string(),
+                detail: Some(message.clone()),
+            }),
+        )?;
+        let failure = resources.normalizer.external_event(
+            state,
+            "session/git_metadata_changed",
+            CanonicalEvent::RuntimeError(RuntimeErrorEvent {
+                code: crate::confinement::GIT_METADATA_CHANGED_CODE.to_string(),
+                message: message.clone(),
+                recoverable: false,
+                safe_details: None,
+            }),
+        )?;
+        Ok(vec![warning, failure])
+    })
+    .await;
     true
 }
 

@@ -1,4 +1,5 @@
 use super::models::{ProjectTaskRow, ProjectTaskUpdate};
+use super::task_completion::completion_change;
 
 pub(crate) async fn status_is_terminal(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -152,13 +153,7 @@ pub(crate) async fn insert_task_update_change_events(
     if previous.status_id != next.status_id {
         let previous_terminal = status_is_terminal(tx, &previous.status_id).await?;
         let next_terminal = status_is_terminal(tx, &next.status_id).await?;
-        let event_type = if !previous_terminal && next_terminal {
-            "completed"
-        } else if previous_terminal && !next_terminal {
-            "reopened"
-        } else {
-            "status_changed"
-        };
+        let event_type = completion_change(previous_terminal, next_terminal).status_event_type();
         let old_status = label_for_project_status(tx, &previous.status_id).await?;
         let new_status = label_for_project_status(tx, &next.status_id).await?;
         insert_task_field_change_event(
@@ -292,23 +287,6 @@ pub(crate) async fn insert_task_update_change_events(
             "target_date",
             previous.target_end_date.clone(),
             next.target_end_date.clone(),
-            change_reason.as_deref(),
-        )
-        .await?;
-    }
-    if previous.archived_at != next.archived_at {
-        let event_type = if previous.archived_at.is_none() && next.archived_at.is_some() {
-            "archived"
-        } else {
-            "updated"
-        };
-        insert_task_field_change_event(
-            tx,
-            task_id,
-            event_type,
-            "archived_at",
-            previous.archived_at.clone(),
-            next.archived_at.clone(),
             change_reason.as_deref(),
         )
         .await?;

@@ -32,8 +32,15 @@
   type InstallStep = "open" | "requirement" | "requirement-reopen" | "install" | "reopen" | "sign-in" | "finish";
 
   const { t } = getLocalization();
-  let linkError = $state<string | null>(null);
-  let refreshing = $state(false);
+  /**
+   * The parent keeps this component mounted across provider families, so the refresh in flight and the guide link
+   * error name the family they belong to and only show while that family is shown. A late result for a family the
+   * parent left behind never reaches the next one.
+   */
+  let refreshInFlight = $state.raw<{ readonly familyId: string } | null>(null);
+  let guideLinkError = $state.raw<{ readonly familyId: string; readonly message: string } | null>(null);
+  const refreshing = $derived(refreshInFlight?.familyId === family.familyId);
+  const linkError = $derived(guideLinkError?.familyId === family.familyId ? guideLinkError.message : null);
 
   const cliName = $derived(family.defaultExecutableCandidates[0] || family.familyId);
   const powerShell = $derived(guide.shell === "powershell");
@@ -58,22 +65,24 @@
 
   async function refresh(): Promise<void> {
     if (!onRefresh || refreshing) return;
-    refreshing = true;
+    const request = { familyId: family.familyId };
+    refreshInFlight = request;
     try {
       await onRefresh();
     } finally {
-      refreshing = false;
+      if (refreshInFlight === request) refreshInFlight = null;
     }
   }
 
   /** Opens the provider's guide, which validation already holds to `https`. */
   async function openGuide(): Promise<void> {
-    linkError = null;
+    const familyId = family.familyId;
+    guideLinkError = null;
     try {
       await openUrl(guide.docsUrl);
     } catch (cause: unknown) {
       console.warn("the provider install guide could not be opened", cause);
-      linkError = t("settings.agents.providers.install.guideFailed");
+      guideLinkError = { familyId, message: t("settings.agents.providers.install.guideFailed") };
     }
   }
 </script>
@@ -168,6 +177,6 @@
     </button>
   </p>
   {#if linkError}
-    <Notice message={linkError} onDismiss={() => (linkError = null)} />
+    <Notice message={linkError} onDismiss={() => (guideLinkError = null)} />
   {/if}
 </div>

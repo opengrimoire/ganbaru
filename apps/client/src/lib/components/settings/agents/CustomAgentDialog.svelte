@@ -47,6 +47,8 @@
   let error = $state<string | null>(null);
   let chosenModelId = $state<string | null>(null);
   let chosenOptions = $state<ModelOptionSelection[] | null>(null);
+  /** Set when the dialog unmounts, so a create that settles afterwards cannot close a reopened dialog. */
+  let disposed = false;
 
   const familyId = $derived(provider.configuration.familyId);
   const choices = $derived(customAgentModelChoices(
@@ -129,6 +131,10 @@
     );
   }
 
+  /**
+   * Creates the agent, then rereads the roster and closes. Only a failed create shows an error, since a failed reread
+   * still leaves the agent created; a dialog dismissed while creating applies nothing when the create settles.
+   */
   async function create(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     nameTouched = true;
@@ -147,13 +153,18 @@
           interactionMode: "build",
         },
       });
-      await chat.refreshAgents();
-      onClose();
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("settings.agents.roster.createFailed"));
-    } finally {
       creating = false;
+      if (!disposed) error = chatErrorMessage(cause, t("settings.agents.roster.createFailed"));
+      return;
     }
+    try {
+      await chat.refreshAgents();
+    } catch (cause: unknown) {
+      console.warn("Chat could not reread agents after creating one:", cause);
+    }
+    creating = false;
+    if (!disposed) onClose();
   }
 
   function handleKeydown(event: KeyboardEvent): void {
@@ -176,6 +187,7 @@
       if (dialog) deactivateFocus = activateModalFocus(dialog, nameInput);
     });
     return () => {
+      disposed = true;
       deactivateMobileBack();
       deactivateKeyboard();
       deactivateFocus();

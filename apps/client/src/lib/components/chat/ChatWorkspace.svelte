@@ -211,6 +211,10 @@
   const threadFullSurface = $derived(layout.replyThreadPresentation === "main");
   const threadColumnOpen = $derived(layout.replyThreadPresentation === "column");
   let loadError = $state<string | null>(null);
+  /** The failure of the latest project selection sync; a newer selection replaces it. */
+  let projectSyncError = $state<string | null>(null);
+  let projectSyncRequest = 0;
+  const workspaceLoadError = $derived(loadError ?? projectSyncError);
   let initialLoadingVisible = $state(false);
   let layoutError = $state<string | null>(null);
   let politeAnnouncement = $state("");
@@ -316,9 +320,11 @@
     const projectId = projects.selectedProjectId;
     if (chat.loading) return;
     untrack(() => {
+      const request = ++projectSyncRequest;
+      projectSyncError = null;
       void chat.syncProjectSelection(projectId).catch((error: unknown) => {
-        if (projects.selectedProjectId === projectId) {
-          loadError = chatErrorMessage(error, t("chatErrors.actions.loadChat"));
+        if (request === projectSyncRequest && projects.selectedProjectId === projectId) {
+          projectSyncError = chatErrorMessage(error, t("chatErrors.actions.loadChat"));
         }
       });
     });
@@ -535,7 +541,7 @@
   });
 
   $effect(() => {
-    const pending = chat.interaction?.pendingRequest ?? null;
+    const pending = chat.interaction?.pendingRequests.at(-1) ?? null;
     if (!pending) {
       announcedRequestId = null;
       assertiveAnnouncement = "";
@@ -1073,6 +1079,7 @@
     try {
       await chat.reload();
       loadError = null;
+      projectSyncError = null;
     } catch (error: unknown) {
       loadError = chatErrorMessage(error, t("chatErrors.actions.loadChat"));
       throw error;
@@ -1088,6 +1095,8 @@
   }
 
   let restoreDialog = $state<RestoreDialogState | null>(null);
+  /** Counts checkpoint restore requests so only the newest one may open the confirmation. */
+  let restoreRequest = 0;
 
   function confirmRestorePreview(threadId: string, checkpointId: string, preview: ChatRestorePreviewRead): Promise<boolean> {
     restoreDialog?.resolve(false);
@@ -1111,12 +1120,16 @@
   async function restoreMessageCheckpoint(threadId: string, checkpointId: string): Promise<void> {
     const thread = chat.selectedThread;
     if (!thread || thread.id !== threadId) return;
+    const request = ++restoreRequest;
     layoutError = null;
     try {
       await restoreChatCheckpoint({
         thread,
         checkpointId,
-        confirm: (preview) => confirmRestorePreview(threadId, checkpointId, preview),
+        // A preview for a superseded request or a thread no longer shown is declined instead of replacing the dialog.
+        confirm: (preview) => request === restoreRequest && chat.selectedThreadId === threadId
+          ? confirmRestorePreview(threadId, checkpointId, preview)
+          : Promise.resolve(false),
         onRestored: (restoredThreadId) => chat.handleNativeChange(restoredThreadId),
       });
     } catch (error: unknown) {
@@ -1173,8 +1186,8 @@
     </div>
   {/if}
   <main class="main-shell relative flex min-w-0 flex-col">
-        {#if loadError}
-          <div class="min-h-0 flex-1 text-sm"><Notice layout="fill" message={loadError} onRetry={retryWorkspaceLoad} /></div>
+        {#if workspaceLoadError}
+          <div class="min-h-0 flex-1 text-sm"><Notice layout="fill" message={workspaceLoadError} onRetry={retryWorkspaceLoad} /></div>
         {:else if chat.channelArchiveOpen}
           <ChatChannelArchive />
         {:else if chat.selectedChannel}

@@ -499,6 +499,26 @@ describe("MusicSourcesController", () => {
     expect(controller.defaultFolderPreparationError).toBe("Your music folder could not be prepared, so try again or choose another folder.");
   });
 
+  it("drops a detection failure from before a vault round trip so the newer detection stays in progress", async () => {
+    const detections: Array<{ reject: (error: Error) => void }> = [];
+    const detectDefaultFolder = vi.fn(() => new Promise<null>((_resolve, reject) => { detections.push({ reject }); }));
+    const controller = createMusicSourcesController(api({ detectDefaultFolder }), () => 10, () => "id", refreshStub());
+    controller.setVault("vault-1");
+    void controller.load();
+    await vi.waitFor(() => expect(detections).toHaveLength(1));
+
+    controller.setVault("vault-2");
+    controller.setVault("vault-1");
+    void controller.load();
+    await vi.waitFor(() => expect(detections).toHaveLength(2));
+    detections[0]?.reject(new Error("late"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(controller.preparingDefaultFolder).toBe(true);
+    expect(controller.defaultFolderPreparationError).toBeNull();
+  });
+
   it("distinguishes videos from playlists and saves a resolved video", async () => {
     const saveYouTubeVideo = vi.fn(async (request: Parameters<MusicSourcesControllerApi["saveYouTubeVideo"]>[0]) => ({ id: request.videoId, version: 1 }));
     const controller = createMusicSourcesController(api({ saveYouTubeVideo }), () => 20, () => "id", refreshStub());
@@ -565,6 +585,64 @@ describe("MusicSourcesController", () => {
     expect(controller.youtubePreview).toBeNull();
   });
 
+  it("reports resolving until the newest YouTube resolution settles and exposes only its result", async () => {
+    const releases: Array<() => void> = [];
+    const resolveYouTube = vi.fn(async (source: Parameters<MusicSourcesControllerApi["resolveYouTube"]>[0]) => {
+      await new Promise<void>((resolve) => { releases.push(resolve); });
+      return {
+        kind: source.kind, videoId: null, playlistId: null, title: `Title ${releases.length}`, channel: "",
+        durationMs: null, videoIds: [], videos: [], metadataTruncated: false, duplicateCount: 0,
+      };
+    });
+    const controller = createMusicSourcesController(api({ resolveYouTube }), () => 20, () => "id", refreshStub());
+    const parsed = controller.parseYouTubeInput("https://youtu.be/abcDEF_1234");
+
+    const first = controller.resolveYouTube(parsed.source!);
+    expect(controller.resolving).toBe(true);
+    const second = controller.resolveYouTube(parsed.source!);
+    releases[0]!();
+    expect(await first).toBeNull();
+    expect(controller.resolving).toBe(true);
+    expect(controller.youtubePreview).toBeNull();
+
+    releases[1]!();
+    const preview = await second;
+    expect(preview?.title).toBe("Title 2");
+    expect(controller.youtubePreview).toEqual(preview);
+    expect(controller.resolving).toBe(false);
+  });
+
+  it("surfaces a failed YouTube resolution and clears it when the next one starts", async () => {
+    const resolveYouTube = vi.fn<MusicSourcesControllerApi["resolveYouTube"]>()
+      .mockRejectedValueOnce(new Error("offline"));
+    const controller = createMusicSourcesController(api({ resolveYouTube }), () => 20, () => "id", refreshStub());
+    const parsed = controller.parseYouTubeInput("https://youtu.be/abcDEF_1234");
+
+    expect(await controller.resolveYouTube(parsed.source!)).toBeNull();
+    expect(controller.resolving).toBe(false);
+    expect(controller.resolutionError).not.toBeNull();
+    expect(controller.youtubePreview).toBeNull();
+
+    const pending = controller.resolveYouTube(parsed.source!);
+    expect(controller.resolutionError).toBeNull();
+    controller.cancelResolution();
+    expect(controller.resolving).toBe(false);
+    await pending;
+    expect(controller.resolutionError).toBeNull();
+  });
+
+  it("keeps a resolved preview when a later cancel finds nothing running", async () => {
+    const controller = createMusicSourcesController(api(), () => 20, () => "id", refreshStub());
+    const parsed = controller.parseYouTubeInput("https://youtu.be/abcDEF_1234");
+    const preview = await controller.resolveYouTube(parsed.source!);
+
+    controller.cancelResolution();
+
+    expect(preview).not.toBeNull();
+    expect(controller.youtubePreview).toEqual(preview);
+    expect(controller.resolving).toBe(false);
+  });
+
   it("applies a confirmed item repair as another location and can undo it", async () => {
     const applyItemRepair = vi.fn(async (request: Parameters<MusicSourcesControllerApi["applyItemRepair"]>[0]) => ({ id: "repair-location", version: 1 }));
     const bindRoot = vi.fn(async (_vaultId: string, rootId: string, folderPath: string) => ({ rootId, folderPath, status: "available" as const }));
@@ -589,5 +667,43 @@ describe("MusicSourcesController", () => {
     await controller.undoItemRepair();
     expect(undoItemRepair).toHaveBeenCalledWith("repair-location", "repair-root");
     expect(clearBinding).toHaveBeenCalledWith("vault-1", "repair-root");
+  });
+
+  it("ends a source load that a vault switch supersedes", async () => {
+    let resolveRoots!: (roots: []) => void;
+    const controller = createMusicSourcesController(api({
+      roots: vi.fn(() => new Promise<[]>((resolve) => { resolveRoots = resolve; })),
+    }), () => 10, () => "id", refreshStub());
+    controller.setVault("vault-1");
+    const loading = controller.load();
+    expect(controller.busy).toBe(true);
+
+    controller.setVault("vault-2");
+    expect(controller.busy).toBe(false);
+    resolveRoots([]);
+    expect(await loading).toBe(false);
+    expect(controller.busy).toBe(false);
+    expect(controller.loaded).toBe(false);
+  });
+
+  it("keeps a refresh failure from the previous vault off the next vault", async () => {
+    const refresh = refreshStub();
+    let resolveRun!: (statuses: Awaited<ReturnType<MusicSourceRefreshController["run"]>>) => void;
+    refresh.run = vi.fn(() => new Promise<Awaited<ReturnType<MusicSourceRefreshController["run"]>>>((resolve) => { resolveRun = resolve; }));
+    const controller = createMusicSourcesController(api(), () => 20, () => "id", refresh);
+    controller.setVault("vault-1");
+    const running = controller.runRefresh(refresh.prepare([]), true);
+
+    controller.setVault("vault-2");
+    resolveRun([{
+      collectionId: "collection-1",
+      kind: "local-root",
+      name: "Music",
+      state: "failed",
+      progress: null,
+      error: "The refresh failed.",
+    }]);
+    await running;
+    expect(controller.error).toBeNull();
   });
 });

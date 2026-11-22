@@ -7,6 +7,7 @@ import type { CalendarEditDraft, NativeCalendarEditController } from "./native-e
 import type { getCalendar } from "$lib/stores/calendar.svelte";
 import type { createCalendarViewToastController } from "./toasts.svelte";
 import type { computeViewWindow } from "$lib/calendar/utils";
+import type { CommitDisplayHold } from "./commit-display";
 
 export interface CalendarViewDeleteControllerOptions {
   calendarStore: Pick<ReturnType<typeof getCalendar>, "acceptNativeEdit" | "refreshWindow">;
@@ -18,7 +19,8 @@ export interface CalendarViewDeleteControllerOptions {
   getEvents: () => CalendarEvent[];
   canPresent: (review?: CalendarEditPreview) => boolean;
   isCurrent: (input: CalendarEditDraft) => boolean;
-  setCommitState: (state: { hidden: boolean; suppressPreview: boolean; frozenEvents: CalendarEvent[] | null }) => void;
+  /** Holds the deletion's projection on screen and hides the panel, or releases both with `null`. */
+  setDeleteHold: (hold: CommitDisplayHold | null) => void;
   closeSession: () => void;
   pendingLabel: (outcome: CalendarDeleteOutcome) => string;
   outcomeLabel: (outcome: CalendarDeleteOutcome) => string;
@@ -41,7 +43,7 @@ export class CalendarViewDeleteController {
     this.busy = true;
     this.undo = null;
     const outcome = review.deletion.outcome;
-    this.options.setCommitState({ hidden: true, suppressPreview: true,
+    this.options.setDeleteHold({
       frozenEvents: [...this.options.getEvents().filter((event) =>
         (event.recurringParentId ?? event.id) !== review.sourceId), ...review.window.windowEvents] });
     const toastId = this.options.toasts.showDeletePendingToast(this.options.pendingLabel(outcome));
@@ -53,7 +55,7 @@ export class CalendarViewDeleteController {
     } finally {
       this.busy = false;
       this.options.toasts.dismissDeleteToastIfPending(toastId);
-      this.options.setCommitState({ hidden: false, suppressPreview: false, frozenEvents: null });
+      this.options.setDeleteHold(null);
     }
   }
 

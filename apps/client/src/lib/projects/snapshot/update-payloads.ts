@@ -66,7 +66,6 @@ export function taskUpdatePayload(task: ProjectTask, patch: ProjectTaskUpdatePat
     startTime: merged.startDate ? merged.startTime ?? null : null,
     startReminderMinutes: taskDateReminderMinutes(merged.startDate, merged.startTime, merged.startReminderMinutes),
     targetEndDate: merged.targetEndDate ?? null,
-    archivedAt: merged.archivedAt ?? null,
     blockerReason: merged.blockerReason ?? null,
     milestone: merged.milestone,
     changeReason: patch.changeReason ?? null,
@@ -149,7 +148,6 @@ export function projectUpdatePayload(project: Project, patch: Partial<Project> &
     icon: merged.icon,
     color: merged.color ?? null,
     ...placementField(patch.placement),
-    status: merged.status,
     defaultEventName: merged.defaultEventName,
     defaultEventTimeMode: merged.defaultEventTimeMode,
     defaultEventDurationMinutes: merged.defaultEventDurationMinutes,
@@ -171,7 +169,7 @@ export function projectUpdatePayload(project: Project, patch: Partial<Project> &
 
 export function sectionUpdatePayload(
   section: ProjectSection,
-  patch: Partial<Pick<ProjectSection, "name" | "collapsed" | "hiddenAt" | "archivedAt">> & PlacementPatch,
+  patch: Partial<Pick<ProjectSection, "name" | "collapsed">> & PlacementPatch,
 ): ProjectSectionUpdate {
   const merged = { ...section, ...patch };
   return {
@@ -179,7 +177,5 @@ export function sectionUpdatePayload(
     name: merged.name,
     ...placementField(patch.placement),
     collapsed: merged.collapsed,
-    hiddenAt: merged.hiddenAt ?? null,
-    archivedAt: merged.archivedAt ?? null,
   };
 }

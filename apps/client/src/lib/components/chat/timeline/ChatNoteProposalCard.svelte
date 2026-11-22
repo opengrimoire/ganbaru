@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import StickyNote from "@lucide/svelte/icons/sticky-note";
   import {
     acceptChatNoteProposal,
@@ -16,6 +17,14 @@
   import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
+  import {
+    asyncResourceError,
+    failAsyncRequest,
+    idleAsyncResource,
+    resolveAsyncRequest,
+    startAsyncRequest,
+    type AsyncResource,
+  } from "$lib/utils/async-resource";
 
   /**
    * An agent's suggested channel note. Only a person saves it, as suggested or reworded, or dismisses it;
@@ -32,9 +41,13 @@
 
   const { t } = getLocalization();
   const chat = useChat();
-  let proposalState = $state<ChatNoteProposalState | null>(null);
+  /** The proposal state as last read; a settling command replaces it, which also supersedes a read in flight. */
+  let stateRead = $state.raw<AsyncResource<ChatNoteProposalState | null>>(idleAsyncResource(null));
   let pending = $state(false);
-  let error = $state<string | null>(null);
+  /** The failure of the last settling command, which a later read of the state does not clear. */
+  let actionError = $state<string | null>(null);
+  const proposalState = $derived(stateRead.data);
+  const error = $derived(actionError ?? asyncResourceError(stateRead));
   let editing = $state(false);
   let draft = $state("");
 
@@ -42,15 +55,24 @@
 
   $effect(() => {
     const _version = chat.channelNotesVersion;
-    void loadState(proposalItemId);
+    const itemId = proposalItemId;
+    untrack(() => { void loadState(itemId); });
   });
 
+  /**
+   * Reads the proposal state. Only the newest read settles it, so an older read that finishes later, or one that a
+   * settling command overtook, cannot bring back the actions.
+   *
+   * @param itemId - The proposal message to read.
+   */
   async function loadState(itemId: ChatConversationItemId): Promise<void> {
+    const started = startAsyncRequest(stateRead);
+    stateRead = started.resource;
     try {
       const [read] = await readChatNoteProposalStates([itemId]);
-      if (itemId === proposalItemId) proposalState = read?.state ?? "pending";
+      stateRead = resolveAsyncRequest(stateRead, started.token, read?.state ?? "pending");
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
+      stateRead = failAsyncRequest(stateRead, started.token, chatErrorMessage(cause, t("chatErrors.actions.proposalAction")));
     }
   }
 
@@ -58,15 +80,18 @@
   async function settle(command: () => Promise<unknown>, outcome: ChatNoteProposalState): Promise<void> {
     if (pending) return;
     pending = true;
-    error = null;
+    actionError = null;
     const channelId = chat.selectedChannelId;
+    const itemId = proposalItemId;
     try {
       await command();
-      proposalState = outcome;
-      editing = false;
+      if (itemId === proposalItemId) {
+        stateRead = idleAsyncResource(outcome);
+        editing = false;
+      }
       if (channelId) chat.channelNotesChanged(channelId);
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
+      if (itemId === proposalItemId) actionError = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
       if (channelId) chat.channelNotesChanged(channelId);
     } finally {
       pending = false;
@@ -80,7 +105,7 @@
   function startEdit(): void {
     draft = [...body.trim()].slice(0, CHAT_MAX_CHANNEL_NOTE_CHARS).join("");
     editing = true;
-    error = null;
+    actionError = null;
   }
 
   function saveEdited(): Promise<void> {

@@ -79,17 +79,24 @@
   let historyRetentionDraft = $state<NotesProjectHistoryRetention>("global");
   let sidebarOrderDraft = $state<NotesProjectSidebarOrder>("global");
   let sidebarOrderDraftBase = $state<NotesProjectSidebarOrder>("global");
-  let saving = $state(false);
+  /** A save names the project it saves, so a project switch mid-save never applies or prunes another project. */
+  type SaveState =
+    | { readonly phase: "idle" }
+    | { readonly phase: "saving"; readonly projectId: string }
+    | { readonly phase: "confirmingPrune"; readonly projectId: string; readonly versionCount: number; readonly storedBytes: number };
+
+  let saveState = $state.raw<SaveState>({ phase: "idle" });
   let error = $state<string | null>(null);
-  let pruneConfirmationOpen = $state(false);
-  let pruneVersionCount = $state(0);
-  let pruneStoredBytes = $state(0);
 
   const selectedProject = $derived(projects.projectById(projectId));
   const projectSettingsTitle = $derived(
     selectedProject ? t("notes.projectSettingsTitle", selectedProject.name) : "",
   );
   const draftReady = $derived(Boolean(selectedProject && draftProjectId === selectedProject.id));
+  const saving = $derived(saveState.phase === "saving");
+  const pruneConfirmation = $derived(
+    saveState.phase === "confirmingPrune" && saveState.projectId === selectedProject?.id ? saveState : null,
+  );
   const persistedDefaultOpenMode = $derived<NotesProjectDefaultOpenMode>(
     selectedProject?.notesDefaultOpenMode ?? "default",
   );
@@ -144,6 +151,7 @@
     historyRetentionDraft = selectedProject.notesHistoryRetentionDays ?? "global";
     sidebarOrderDraft = persistedSidebarOrder;
     sidebarOrderDraftBase = persistedSidebarOrder;
+    if (saveState.phase === "confirmingPrune") saveState = { phase: "idle" };
     error = null;
   }
 
@@ -214,9 +222,15 @@
     return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(size)} ${units[unitIndex]}`;
   }
 
+  /** Whether the panel still shows the drafts of `projectId`, so its save may proceed. */
+  function showsProject(projectId: string): boolean {
+    return selectedProject?.id === projectId && draftProjectId === projectId;
+  }
+
   async function save(): Promise<void> {
-    if (!selectedProject || !dirty || saving) return;
-    saving = true;
+    if (!selectedProject || !dirty || saveState.phase !== "idle") return;
+    const projectId = selectedProject.id;
+    saveState = { phase: "saving", projectId };
     error = null;
     try {
       const currentEffective = effectiveNotesHistoryRetentionDays(
@@ -228,26 +242,45 @@
         historyRetentionDraft === "global" ? null : historyRetentionDraft,
       );
       if (nextEffective < currentEffective) {
-        const impact = await getNotesHistoryRetentionImpact(nextEffective, selectedProject.id);
+        const impact = await getNotesHistoryRetentionImpact(nextEffective, projectId);
+        if (!showsProject(projectId)) return;
         if (impact.versionCount > 0) {
-          pruneVersionCount = impact.versionCount;
-          pruneStoredBytes = impact.storedBytes;
-          pruneConfirmationOpen = true;
+          saveState = {
+            phase: "confirmingPrune",
+            projectId,
+            versionCount: impact.versionCount,
+            storedBytes: impact.storedBytes,
+          };
           return;
         }
       }
-      await saveConfirmed(nextEffective < currentEffective);
+      await saveConfirmed(projectId, nextEffective < currentEffective);
     } catch (cause) {
-      error = userErrorMessage(cause, t("notes.projectSettingsSaveFailed"));
+      if (showsProject(projectId)) error = userErrorMessage(cause, t("notes.projectSettingsSaveFailed"));
     } finally {
-      saving = false;
+      if (saveState.phase === "saving" && saveState.projectId === projectId) saveState = { phase: "idle" };
     }
   }
 
-  async function saveConfirmed(pruneAfterSave: boolean): Promise<void> {
-    if (!selectedProject) return;
+  /** Saves the drafts after the user confirmed pruning, unless the panel moved to another project meanwhile. */
+  async function confirmPrune(): Promise<void> {
+    const confirmation = pruneConfirmation;
+    if (!confirmation) return;
+    const { projectId } = confirmation;
+    saveState = { phase: "saving", projectId };
+    try {
+      await saveConfirmed(projectId, true);
+    } catch (cause) {
+      if (showsProject(projectId)) error = userErrorMessage(cause, t("notes.projectSettingsSaveFailed"));
+    } finally {
+      if (saveState.phase === "saving" && saveState.projectId === projectId) saveState = { phase: "idle" };
+    }
+  }
+
+  async function saveConfirmed(projectId: string, pruneAfterSave: boolean): Promise<void> {
+    if (!selectedProject || !showsProject(projectId)) return;
     if (sidebarOrderDraft !== persistedSidebarOrder) {
-      notes.setProjectSidebarOrder(selectedProject.id, sidebarOrderDraft === "global" ? null : sidebarOrderDraft);
+      notes.setProjectSidebarOrder(projectId, sidebarOrderDraft === "global" ? null : sidebarOrderDraft);
     }
     if (
       defaultOpenModeDraft !== persistedDefaultOpenMode
@@ -255,9 +288,9 @@
     ) {
       const openMode = defaultOpenModeDraft === "default" ? null : defaultOpenModeDraft;
       const retention = historyRetentionDraft === "global" ? null : historyRetentionDraft;
-      await projects.setNotesSettings(selectedProject.id, openMode, retention);
+      await projects.setNotesSettings(projectId, openMode, retention);
     }
-    if (pruneAfterSave) await pruneNotesProjectHistory(selectedProject.id);
+    if (pruneAfterSave) await pruneNotesProjectHistory(projectId);
   }
 
   function handleWindowPointerDown(event: PointerEvent): void {
@@ -425,28 +458,17 @@
   </div>
 {/if}
 
-{#if pruneConfirmationOpen}
+{#if pruneConfirmation}
   <ConfirmDialog
     title={t("notes.projectSettingsPruneTitle")}
     message={t(
       "notes.projectSettingsPruneMessage",
-      pruneVersionCount,
-      formatStoredBytes(pruneStoredBytes),
+      pruneConfirmation.versionCount,
+      formatStoredBytes(pruneConfirmation.storedBytes),
     )}
     confirmLabel={t("projects.settings.save")}
     cancelLabel={t("common.cancel")}
-    onConfirm={() => {
-      pruneConfirmationOpen = false;
-      saving = true;
-      void saveConfirmed(true).catch((cause) => {
-        error = userErrorMessage(cause, t("notes.projectSettingsSaveFailed"));
-      }).finally(() => {
-        saving = false;
-      });
-    }}
-    onCancel={() => {
-      pruneConfirmationOpen = false;
-      saving = false;
-    }}
+    onConfirm={() => { void confirmPrune(); }}
+    onCancel={() => { saveState = { phase: "idle" }; }}
   />
 {/if}

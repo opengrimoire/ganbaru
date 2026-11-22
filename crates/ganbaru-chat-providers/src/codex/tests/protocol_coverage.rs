@@ -135,7 +135,12 @@ fn new_and_unknown_item_types_render_as_generic_items() {
         modes(SafetyMode::AskForApproval, InteractionMode::Build),
         Some(identifier("gpt-5.4", ModelId::new)),
     );
-    state.active_chat_turn_id = Some(identifier("chat-turn-1", ChatTurnId::new));
+    state
+        .transition_turn(TurnRouteEvent::Begin {
+            chat_turn: identifier("chat-turn-1", ChatTurnId::new),
+            retry: None,
+        })
+        .unwrap();
     for (item_type, kind) in [
         ("imageGeneration", CanonicalItemKind::ImageView),
         ("functionCallOutput", CanonicalItemKind::Unknown),

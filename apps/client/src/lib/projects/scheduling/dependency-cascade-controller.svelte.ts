@@ -31,6 +31,16 @@ export class ProjectDependencyCascadeController {
     this.preview = null;
   }
 
+  /**
+   * Reports that opening a task from the preview failed, while that preview's project is still selected.
+   *
+   * @param projectId - The project whose preview offered the task.
+   * @param error - The failure to show.
+   */
+  reportOpenFailure(projectId: string, error: unknown): void {
+    if (this.readProjectId() === projectId) this.error = { action: "open", detail: technicalErrorDetail(error) };
+  }
+
   async review(): Promise<void> {
     const projectId = this.readProjectId();
     if (!projectId || this.applying) return;

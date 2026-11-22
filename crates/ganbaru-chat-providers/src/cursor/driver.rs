@@ -9,6 +9,7 @@ use super::protocol::*;
 use super::session::*;
 use super::transport::AcpRpcConnection;
 use crate::events::*;
+use crate::live_session::LiveSessionLifecycle;
 use crate::models::*;
 use crate::{DriverOperationContext, ProviderEventSink};
 use ganbaru_chat_contracts::model_recommendation::{NativeCompany, recommended_model_id};
@@ -16,7 +17,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
 };
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -138,8 +139,7 @@ pub(super) struct CursorLiveSession {
     pub normalizer: Arc<CursorEventNormalizer>,
     pub capabilities: ProviderCapabilities,
     pub sink: Arc<dyn ProviderEventSink>,
-    pub expected_shutdown: Arc<AtomicBool>,
-    pub terminal_error: Arc<Mutex<Option<ChatError>>>,
+    pub lifecycle: LiveSessionLifecycle,
     /// Starts the terminal commands the person approves after the router held them.
     pub terminal_callbacks: AcpTerminalCallbacks,
     pub session_id: ProviderSessionId,
@@ -151,7 +151,7 @@ pub(super) struct CursorLiveSession {
 
 impl Drop for CursorLiveSession {
     fn drop(&mut self) {
-        self.expected_shutdown.store(true, Ordering::Release);
+        self.lifecycle.begin_stop();
         self.router_task.abort();
         if let Some(task) = self.prompt_task.as_ref() {
             task.abort();
@@ -585,8 +585,7 @@ impl CursorProviderDriver {
             self.flavor.family_id(),
             self.flavor.display_name(),
         ));
-        let expected_shutdown = Arc::new(AtomicBool::new(false));
-        let terminal_error = Arc::new(Mutex::new(None));
+        let lifecycle = LiveSessionLifecycle::default();
         let terminal_callbacks =
             AcpTerminalCallbacks::new(workspace.clone(), started.session_id.clone())
                 .with_confinement(confinement);
@@ -597,8 +596,8 @@ impl CursorProviderDriver {
             route: Arc::clone(&route),
             pending: Arc::clone(&pending),
             sink: Arc::clone(&sink),
-            expected_shutdown: Arc::clone(&expected_shutdown),
-            terminal_error: Arc::clone(&terminal_error),
+            lifecycle: lifecycle.clone(),
+            kill: connection.kill_handle(),
             flavor: self.flavor,
             prompt_completions: Arc::clone(&prompt_completions),
             terminal_callbacks: terminal_callbacks.clone(),
@@ -675,8 +674,7 @@ impl CursorProviderDriver {
             normalizer,
             capabilities: capabilities.clone(),
             sink,
-            expected_shutdown,
-            terminal_error,
+            lifecycle,
             terminal_callbacks,
             session_id: local_session_id.clone(),
             delivered_instructions: Arc::new(Mutex::new(input.held_instructions())),
@@ -749,12 +747,7 @@ impl CursorProviderDriver {
                 false,
             ));
         }
-        if let Some(error) = live
-            .terminal_error
-            .lock()
-            .map_err(|_| driver_state_error())?
-            .clone()
-        {
+        if let Some(error) = live.lifecycle.failure() {
             return Err(error);
         }
         Ok(live)

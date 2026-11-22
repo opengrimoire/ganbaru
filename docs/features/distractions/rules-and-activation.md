@@ -52,9 +52,9 @@ Matching canonicalizes scheme and host, removes default ports, normalizes intern
 
 ## Pomodoro lifecycle
 
-Entering a configured phase publishes fresh enforcement state. Moving to a disallowed phase clears or changes the applicable rule snapshot. Manual focus pause can suspend enforcement when configured. Resume requires fresh state rather than reviving an expired snapshot.
+Entering a configured phase publishes fresh enforcement state. Moving to a disallowed phase clears or changes the applicable rule snapshot. Manual focus pause can suspend enforcement when configured; idle and suspend pauses keep enforcing because the user did not choose them. Resume requires fresh state rather than reviving an expired snapshot.
 
-Stopping a run, ending an event, switching vaults, clean app exit, and factory reset clear current phase enforcement. Abrupt process death is handled by short expiration so stale rules fail open. A failed usage read or a usage limit configuration that fails to parse never suspends phase enforcement.
+Stopping a run, ending an event, switching vaults, clean app exit, and factory reset clear current phase enforcement. Abrupt process death is handled by short expiration so stale rules fail open. A malformed phase snapshot authorizes nothing: it enforces no phase rules and allows no desktop closes. A failed usage read or a usage limit configuration that fails to parse never suspends phase enforcement.
 
 ## Content-aware rules
 

@@ -48,8 +48,11 @@
   const scheduling = getProjectSchedulingController();
   const { t } = getLocalization();
 
+  /** A bulk action error belongs to the project whose tasks the action targeted. */
+  type ProjectBulkTaskError = { projectId: string; message: string };
+
   let bulkTaskActionPending = $state(false);
-  let bulkTaskError = $state<string | null>(null);
+  let bulkTaskFailure = $state<ProjectBulkTaskError | null>(null);
   let bulkScheduleOpen = $state(false);
   let bulkScheduleDate = $state("");
   let bulkScheduleStartTime = $state("");
@@ -57,6 +60,9 @@
   let scheduleRecovery = $state(scheduling.recoverable);
 
   const selectedSchedulableTasks = $derived(selectedTasks.filter((task) => !task.archivedAt));
+  const bulkTaskError = $derived(
+    bulkTaskFailure?.projectId === selectedProject.id ? bulkTaskFailure.message : null,
+  );
   const sharedStatusId = $derived(sharedTaskValue((task) => task.statusId));
   const sharedPriority = $derived(sharedTaskValue((task) => task.priority));
 
@@ -76,21 +82,36 @@
     selectedTaskIds = Array.from(nextIds);
   }
 
+  /** Record an error for the project an action targeted, so it never shows in another project. */
+  function setBulkTaskError(projectId: string, message: string): void {
+    bulkTaskFailure = { projectId, message };
+  }
+
+  function clearBulkTaskError(): void {
+    bulkTaskFailure = null;
+  }
+
   function clearTaskSelection(): void {
     selectedTaskIds = [];
-    bulkTaskError = null;
+    clearBulkTaskError();
     bulkScheduleOpen = false;
+  }
+
+  /** Whether the user still shows the project an action started in. */
+  function stillShowingProject(projectId: string): boolean {
+    return selectedProject.id === projectId;
   }
 
   async function runBulkTaskAction(action: () => Promise<void>): Promise<void> {
     if (selectedTasks.length === 0) return;
+    const projectId = selectedProject.id;
     bulkTaskActionPending = true;
-    bulkTaskError = null;
+    clearBulkTaskError();
     try {
       await action();
-      selectedTaskIds = [];
+      if (stillShowingProject(projectId)) selectedTaskIds = [];
     } catch (error) {
-      bulkTaskError = userErrorMessage(error, t("projects.bulk.actionFailed"));
+      setBulkTaskError(projectId, userErrorMessage(error, t("projects.bulk.actionFailed")));
     } finally {
       bulkTaskActionPending = false;
     }
@@ -119,16 +140,19 @@
     bulkScheduleDate = start.date;
     bulkScheduleStartTime = start.time;
     bulkScheduleDurationMinutes = projectEffectiveDurationMinutes(selectedProject.defaultEventDurationMinutes);
-    bulkTaskError = null;
+    clearBulkTaskError();
   }
 
   function closeBulkScheduleForm(): void {
     bulkScheduleOpen = false;
-    bulkTaskError = null;
+    clearBulkTaskError();
   }
 
-  /** Reconcile both projections before acknowledging an accepted scheduling receipt. */
-  async function refreshScheduledTasks(vaultId: string, commandId: string): Promise<void> {
+  /**
+   * Reconcile both projections before acknowledging an accepted scheduling receipt. The selection and the Calendar
+   * view change only when the user still shows the project the batch started in.
+   */
+  async function refreshScheduledTasks(vaultId: string, commandId: string, projectId: string): Promise<void> {
     if (requireActiveVaultIdentity() !== vaultId) throw new Error("Scheduling vault changed before refresh");
     calendar.acceptNativeEdit();
     await projects.load();
@@ -138,6 +162,7 @@
     if (requireActiveVaultIdentity() !== vaultId) throw new Error("Scheduling vault changed during refresh");
     scheduling.acknowledge(commandId);
     scheduleRecovery = false;
+    if (!stillShowingProject(projectId)) return;
     clearTaskSelection();
     projects.activeView = "calendar";
   }
@@ -145,14 +170,15 @@
   /** Resolve the retained batch even after its original selection or view disappeared. */
   async function retryScheduledTasks(): Promise<void> {
     if (bulkTaskActionPending) return;
+    const projectId = selectedProject.id;
     bulkTaskActionPending = true;
-    bulkTaskError = null;
+    clearBulkTaskError();
     try {
       const vaultId = requireActiveVaultIdentity();
       const receipt = await scheduling.retry();
-      await refreshScheduledTasks(vaultId, receipt.commandId);
+      await refreshScheduledTasks(vaultId, receipt.commandId, projectId);
     } catch (error) {
-      bulkTaskError = userErrorMessage(error, t("projects.bulk.actionFailed"));
+      setBulkTaskError(projectId, userErrorMessage(error, t("projects.bulk.actionFailed")));
       throw error;
     } finally {
       scheduleRecovery = scheduling.recoverable;
@@ -165,7 +191,7 @@
     const duration = Math.round(Number(bulkScheduleDurationMinutes));
     if (selectedSchedulableTasks.length === 0 || !Number.isSafeInteger(duration) || duration <= 0
       || duration > PROJECT_MAX_DURATION_MINUTES || !bulkScheduleDate || !bulkScheduleStartTime) {
-      bulkTaskError = t("projects.schedule.invalid");
+      setBulkTaskError(selectedProject.id, t("projects.schedule.invalid"));
       return;
     }
     if (bulkTaskActionPending || scheduling.recoverable) return;
@@ -173,17 +199,18 @@
     try {
       start = Temporal.PlainDateTime.from(`${bulkScheduleDate}T${bulkScheduleStartTime}`);
     } catch {
-      bulkTaskError = t("projects.schedule.invalid");
+      setBulkTaskError(selectedProject.id, t("projects.schedule.invalid"));
       return;
     }
 
+    const projectId = selectedProject.id;
     bulkTaskActionPending = true;
-    bulkTaskError = null;
+    clearBulkTaskError();
     try {
       const vaultId = requireActiveVaultIdentity();
       const timezone = localTimezone();
       const receipt = await scheduling.schedule({
-        kind: "schedule_tasks", projectId: selectedProject.id,
+        kind: "schedule_tasks", projectId,
         tasks: selectedSchedulableTasks.map((task) => {
           if (task.revision === undefined) throw new LocalizedError(t("projects.bulk.refreshSelection"));
           return { id: task.id, revision: task.revision };
@@ -191,9 +218,9 @@
         startTime: start.toString(), timezone, durationMinutes: duration,
         globalIdleTimeoutMinutes: preferences.focusIdlePauseOnEventCreate ? preferences.focusIdleThresholdMinutes : null,
       }, { windowStartDate: bulkScheduleDate, windowEndDate: bulkScheduleDate, renderZone: timezone, includeTotalEventCount: false });
-      await refreshScheduledTasks(vaultId, receipt.commandId);
+      await refreshScheduledTasks(vaultId, receipt.commandId, projectId);
     } catch (error) {
-      bulkTaskError = userErrorMessage(error, t("projects.bulk.actionFailed"));
+      setBulkTaskError(projectId, userErrorMessage(error, t("projects.bulk.actionFailed")));
     } finally {
       bulkTaskActionPending = false;
       scheduleRecovery = scheduling.recoverable;

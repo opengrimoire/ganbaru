@@ -156,10 +156,12 @@ fn authorization_log_constrains_entries_envelopes_and_devices() {
             [(1, 0), (2, 0)],
             "operations start before any authorization revision"
         );
-        sqlx::query("UPDATE sync_writers SET state = 'revoked', cutoff_seq = 0")
-            .execute(&pool)
-            .await
-            .expect("a removed writer the anchor never stored keeps nothing");
+        sqlx::query(
+            "UPDATE sync_writers SET state = 'revoked', cutoff_seq = 0, removal_cutoff_seq = 0",
+        )
+        .execute(&pool)
+        .await
+        .expect("a removed writer the anchor never stored keeps nothing");
 
         let selected = "INSERT INTO sync_auth_selected
                 (space_id, revision, epoch, entry_hash, proposal_hash, envelope_hash)
@@ -303,6 +305,26 @@ fn spaces_start_unreached_and_late_change_resolutions_are_constrained() {
                 .unwrap();
         assert_eq!(resolution, None, "a late change starts unresolved");
 
+        sqlx::query("UPDATE sync_late_changes SET resolution = 'discard'")
+            .execute(&pool)
+            .await
+            .expect_err("a resolution names the revision that decided it");
+        sqlx::query("UPDATE sync_late_changes SET resolved_revision = 3")
+            .execute(&pool)
+            .await
+            .expect_err("a resolving revision names its resolution");
+        sqlx::query("UPDATE sync_late_changes SET resolution = 'discard', resolved_revision = 3")
+            .execute(&pool)
+            .await
+            .expect("a discard resolves a late change");
+        sqlx::query("UPDATE sync_late_changes SET resolved_revision = NULL")
+            .execute(&pool)
+            .await
+            .expect_err("a resolved late change keeps its revision");
+        sqlx::query("UPDATE sync_late_changes SET resolution = NULL, resolved_revision = NULL")
+            .execute(&pool)
+            .await
+            .expect("both cleared together leave the change unresolved");
         sqlx::query("UPDATE sync_late_changes SET resolution = 'discard', resolved_revision = 3")
             .execute(&pool)
             .await
@@ -582,5 +604,58 @@ fn space_keys_keep_one_bounded_row_per_epoch_and_go_with_their_space() {
             .await
             .unwrap();
         assert_eq!(left, 0, "space keys go with their space");
+    });
+}
+
+#[test]
+fn only_operations_held_as_invalid_name_an_exclusion() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms)
+             VALUES (zeroblob(16), 'vault-a', 1);
+             INSERT INTO sync_writers
+                 (space_id, writer_id, public_key, device_id, certificate, state, stored_seq,
+                  applied_seq, head_hash, head_clock, created_at_ms)
+             VALUES (zeroblob(16), zeroblob(16), zeroblob(32), 'device-a', x'00', 'active', 9,
+                     0, zeroblob(32), 9, 1);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let insert = |seq: i64, state: &'static str, reason: Option<&'static str>| {
+            sqlx::query(
+                "INSERT INTO sync_ops
+                     (space_id, writer_id, seq, kind, hash, clock, context, envelope, state,
+                      hold_reason, stored_at_ms, excluded_revision)
+                 VALUES (zeroblob(16), zeroblob(16), ?, 1, zeroblob(32), 1, x'', x'01', ?, ?,
+                         1, 3)",
+            )
+            .bind(seq)
+            .bind(state)
+            .bind(reason)
+        };
+        insert(1, "held", Some("invalid"))
+            .execute(&pool)
+            .await
+            .expect("an excluded operation is held as invalid");
+        for (seq, state, reason) in [
+            (2, "waiting", None),
+            (3, "applied", None),
+            (4, "held", Some("newer_format")),
+            (5, "held", Some("newer_manifest")),
+        ] {
+            assert!(
+                insert(seq, state, reason).execute(&pool).await.is_err(),
+                "{state} {reason:?} cannot name an exclusion"
+            );
+        }
+        assert!(
+            sqlx::query("UPDATE sync_ops SET state = 'waiting', hold_reason = NULL")
+                .execute(&pool)
+                .await
+                .is_err(),
+            "releasing an operation clears its exclusion"
+        );
     });
 }

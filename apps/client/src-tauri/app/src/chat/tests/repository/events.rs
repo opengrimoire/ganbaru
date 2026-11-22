@@ -645,3 +645,290 @@ fn projections_skip_user_echoes_resolve_requests_and_reject_duplicate_events() {
         assert_eq!(last_sequence, 5);
     });
 }
+
+fn turn_started(event_id: &str, turn_id: &str) -> AppendCanonicalEventRequest {
+    canonical_request(
+        event_id,
+        Some(turn_id),
+        CanonicalEvent::TurnStarted(TurnStartedEvent {
+            provider_turn_id: None,
+            state: ChatTurnState::Active,
+            modes: TurnModeSnapshot {
+                safety_mode: SafetyMode::AskForApproval,
+                interaction_mode: InteractionMode::Build,
+            },
+            model_id: None,
+            model_options: Vec::new(),
+        }),
+    )
+}
+
+fn turn_completed(event_id: &str, turn_id: &str, stop_reason: &str) -> AppendCanonicalEventRequest {
+    canonical_request(
+        event_id,
+        Some(turn_id),
+        CanonicalEvent::TurnCompleted(TurnCompletedEvent {
+            state: ChatTurnState::Completed,
+            stop_reason: Some(stop_reason.to_string()),
+            usage: None,
+            changed_files: Vec::new(),
+        }),
+    )
+}
+
+async fn turn_row(pool: &sqlx::SqlitePool, turn_id: &str) -> (String, Option<String>) {
+    sqlx::query_as("SELECT state, stop_reason FROM chat_turns WHERE id = ?")
+        .bind(turn_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn thread_states(pool: &sqlx::SqlitePool) -> (String, Option<String>) {
+    sqlx::query_as("SELECT state, latest_turn_state FROM chat_threads WHERE id = 'thread-1'")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn turn_started_replay_never_revives_a_settled_turn() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        append_canonical_event(&pool, turn_started("start-1", "turn-1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            thread_states(&pool).await,
+            ("active".to_string(), Some("active".to_string()))
+        );
+        append_canonical_event(&pool, turn_completed("complete-1", "turn-1", "done"))
+            .await
+            .unwrap();
+        append_canonical_event(&pool, turn_started("start-again", "turn-1"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            turn_row(&pool, "turn-1").await,
+            ("completed".to_string(), Some("done".to_string()))
+        );
+        assert_eq!(
+            thread_states(&pool).await,
+            ("idle".to_string(), Some("completed".to_string()))
+        );
+    });
+}
+
+#[test]
+fn duplicate_turn_settlement_keeps_the_first_outcome() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        append_canonical_event(&pool, turn_started("start-1", "turn-1"))
+            .await
+            .unwrap();
+        append_canonical_event(&pool, turn_completed("complete-1", "turn-1", "first"))
+            .await
+            .unwrap();
+        append_canonical_event(&pool, turn_completed("complete-2", "turn-1", "second"))
+            .await
+            .unwrap();
+        append_canonical_event(
+            &pool,
+            canonical_request(
+                "abort-late",
+                Some("turn-1"),
+                CanonicalEvent::TurnAborted(TurnAbortedEvent {
+                    state: ChatTurnState::Interrupted,
+                    reason: "late".to_string(),
+                    recoverable: true,
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            turn_row(&pool, "turn-1").await,
+            ("completed".to_string(), Some("first".to_string()))
+        );
+        assert_eq!(
+            thread_states(&pool).await,
+            ("idle".to_string(), Some("completed".to_string()))
+        );
+    });
+}
+
+#[test]
+fn late_settlement_of_an_older_turn_keeps_the_newer_turn_state() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        append_canonical_event(&pool, turn_started("start-1", "turn-1"))
+            .await
+            .unwrap();
+        append_canonical_event(&pool, turn_completed("complete-1", "turn-1", "done"))
+            .await
+            .unwrap();
+        append_canonical_event(&pool, turn_started("start-2", "turn-2"))
+            .await
+            .unwrap();
+        append_canonical_event(&pool, turn_completed("complete-1-again", "turn-1", "done"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            thread_states(&pool).await,
+            ("active".to_string(), Some("active".to_string()))
+        );
+    });
+}
+
+#[test]
+fn turn_events_never_reopen_a_closed_thread() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        append_canonical_event(&pool, turn_started("start-1", "turn-1"))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE chat_threads SET state = 'closed' WHERE id = 'thread-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        append_canonical_event(&pool, turn_completed("complete-1", "turn-1", "done"))
+            .await
+            .unwrap();
+        assert_eq!(
+            thread_states(&pool).await,
+            ("closed".to_string(), Some("completed".to_string()))
+        );
+        append_canonical_event(&pool, turn_started("start-2", "turn-2"))
+            .await
+            .unwrap();
+        assert_eq!(
+            thread_states(&pool).await,
+            ("closed".to_string(), Some("active".to_string()))
+        );
+    });
+}
+
+#[test]
+fn stored_thread_state_rejects_archived() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let error = sqlx::query("UPDATE chat_threads SET state = 'archived' WHERE id = 'thread-1'")
+            .execute(&pool)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("archived_at"), "{error}");
+    });
+}
+
+#[test]
+fn persisted_turn_writer_applies_only_declared_transitions() {
+    use ganbaru_chat::repository::state_writes::{
+        StateWrite, StateWriteColumns, persist_turn_transition,
+    };
+    use ganbaru_chat::state::can_transition_turn;
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let mut connection = pool.acquire().await.unwrap();
+        let mut ordinal = 0_i64;
+        for from in ChatTurnState::ALL {
+            for to in ChatTurnState::ALL {
+                let turn_id = format!("turn-{}-{}", from.as_str(), to.as_str());
+                sqlx::query(
+                    "INSERT INTO chat_turns
+                        (id, thread_id, ordinal, state, safety_mode, interaction_mode,
+                         created_at, updated_at)
+                     VALUES (?, 'thread-1', ?, ?, 'ask_for_approval', 'build', ?, ?)",
+                )
+                .bind(&turn_id)
+                .bind(ordinal)
+                .bind(from.as_str())
+                .bind(NOW)
+                .bind(NOW)
+                .execute(&mut *connection)
+                .await
+                .unwrap();
+                ordinal += 1;
+                let outcome = persist_turn_transition(
+                    &mut connection,
+                    "thread-1",
+                    &turn_id,
+                    to,
+                    StateWriteColumns::default(),
+                )
+                .await
+                .unwrap();
+                let expected = if can_transition_turn(from, to) {
+                    StateWrite::Applied
+                } else if from == to {
+                    StateWrite::AlreadyInState
+                } else {
+                    StateWrite::Rejected { from }
+                };
+                assert_eq!(outcome, expected, "turn write {from:?} to {to:?}");
+                let stored: String =
+                    sqlx::query_scalar("SELECT state FROM chat_turns WHERE id = ?")
+                        .bind(&turn_id)
+                        .fetch_one(&mut *connection)
+                        .await
+                        .unwrap();
+                let landed = if outcome.is_applied() { to } else { from };
+                assert_eq!(stored, landed.as_str(), "stored {from:?} to {to:?}");
+            }
+        }
+        assert_eq!(
+            persist_turn_transition(
+                &mut connection,
+                "thread-other",
+                "turn-pending-active",
+                ChatTurnState::Active,
+                StateWriteColumns::default(),
+            )
+            .await
+            .unwrap(),
+            StateWrite::Missing
+        );
+    });
+}
+
+#[test]
+fn persisted_thread_writer_applies_only_declared_transitions() {
+    use ganbaru_chat::repository::state_writes::{StateWrite, persist_thread_state};
+    use ganbaru_chat::state::can_transition_thread;
+    use ganbaru_chat_contracts::models::ChatThreadState;
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let mut connection = pool.acquire().await.unwrap();
+        for from in ChatThreadState::ALL
+            .into_iter()
+            .filter(|state| state.is_persisted())
+        {
+            for to in ChatThreadState::ALL {
+                sqlx::query("UPDATE chat_threads SET state = ? WHERE id = 'thread-1'")
+                    .bind(from.as_str())
+                    .execute(&mut *connection)
+                    .await
+                    .unwrap();
+                let outcome = persist_thread_state(&mut connection, "thread-1", to)
+                    .await
+                    .unwrap();
+                let expected = if can_transition_thread(from, to) {
+                    StateWrite::Applied
+                } else if from == to {
+                    StateWrite::AlreadyInState
+                } else {
+                    StateWrite::Rejected { from }
+                };
+                assert_eq!(outcome, expected, "thread write {from:?} to {to:?}");
+            }
+        }
+        assert_eq!(
+            persist_thread_state(&mut connection, "thread-missing", ChatThreadState::Idle)
+                .await
+                .unwrap(),
+            StateWrite::Missing
+        );
+    });
+}

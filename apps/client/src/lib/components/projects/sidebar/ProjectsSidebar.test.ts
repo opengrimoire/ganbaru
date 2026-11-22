@@ -2,7 +2,7 @@
 
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Project, ProjectGroup } from "$lib/projects/types";
+import type { Project, ProjectGroup, ProjectView } from "$lib/projects/types";
 import type { SidebarSortOrder } from "$lib/utils/sidebar-order";
 import ProjectsSidebar from "./ProjectsSidebar.svelte";
 
@@ -11,6 +11,11 @@ const store = vi.hoisted(() => ({
   projects: [] as Project[],
   starredProjectIds: [] as string[],
   reorderProjectsInGroup: vi.fn(() => Promise.resolve()),
+  selectedProjectId: "project-a",
+  views: [] as ProjectView[],
+  sidebarExpanded: false,
+  selectProject: vi.fn((_projectId: string) => Promise.resolve()),
+  selectView: vi.fn(),
 }));
 
 const group: ProjectGroup = {
@@ -31,19 +36,21 @@ vi.mock("$lib/stores/projects.svelte", () => {
   const getProjects = () => ({
     sidebarCollapsed: false,
     showInactiveProjects: false,
-    selectedProjectId: "project-a",
+    get selectedProjectId() { return store.selectedProjectId; },
     activeViewId: null,
-    views: [],
+    get views() { return store.views; },
     hostableViewTypes: [],
     visibleGroups: () => [group],
     projectById: (projectId: string | null) => store.projects.find((entry) => entry.id === projectId),
     projectLists: () => [{ key: `group:${group.id}`, group, projects: store.projects }],
-    viewsForProject: () => [],
-    isSidebarProjectCollapsed: () => true,
+    viewsForProject: (projectId: string | null) => store.views.filter((entry) => entry.projectId === projectId),
+    isSidebarProjectCollapsed: () => !store.sidebarExpanded,
     setSidebarProjectCollapsed: vi.fn(),
     isProjectStarred: (projectId: string) => store.starredProjectIds.includes(projectId),
     isViewStarred: () => false,
     reorderProjectsInGroup: store.reorderProjectsInGroup,
+    selectProject: store.selectProject,
+    selectView: store.selectView,
   });
   return { getProjects, useProjects: getProjects };
 });
@@ -74,10 +81,17 @@ const SECTION_HEIGHT = 30;
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | undefined;
 
-function render(panelProps: { presentation: "panel"; onClose: () => void } | null = null): void {
+function render(
+  panelProps: { presentation: "panel"; onClose: () => void } | null = null,
+  callbacks: { onSelectView?: (view: ProjectView) => void; onProjectSelected?: () => void } = {},
+): void {
   component = mount(ProjectsSidebar, {
     target,
-    props: { onSelectView: () => undefined, onProjectSelected: () => undefined, ...panelProps },
+    props: {
+      onSelectView: callbacks.onSelectView ?? (() => undefined),
+      onProjectSelected: callbacks.onProjectSelected ?? (() => undefined),
+      ...panelProps,
+    },
   });
   flushSync();
 }
@@ -113,6 +127,11 @@ beforeEach(() => {
   store.starredProjectIds = [];
   store.projects = [project("project-a", "Alpha", "0"), project("project-b", "Beta", "1"), project("project-c", "Gamma", "2")];
   store.reorderProjectsInGroup.mockClear();
+  store.selectedProjectId = "project-a";
+  store.views = [];
+  store.sidebarExpanded = false;
+  store.selectProject.mockReset().mockResolvedValue(undefined);
+  store.selectView.mockReset();
   target = document.createElement("div");
   document.body.append(target);
 });
@@ -189,5 +208,41 @@ describe("ProjectsSidebar", () => {
     const names = [...(panel?.querySelectorAll<HTMLElement>("[data-project-list] section[aria-label]") ?? [])]
       .map((section) => section.getAttribute("aria-label"));
     expect(names).toEqual(["Gamma"]);
+  });
+
+  it("ignores opening a view of a project whose selection a later selection superseded", async () => {
+    store.sidebarExpanded = true;
+    store.views = [
+      { id: "view-b", projectId: "project-b", viewType: "list", orderKey: "0", name: "Board B", createdAt: "", updatedAt: "" },
+      { id: "view-c", projectId: "project-c", viewType: "list", orderKey: "0", name: "Board C", createdAt: "", updatedAt: "" },
+    ];
+    let finishSlowSelection: () => void = () => undefined;
+    store.selectProject.mockImplementation((projectId: string) => {
+      if (projectId === "project-b") return new Promise<void>((resolve) => { finishSlowSelection = resolve; });
+      store.selectedProjectId = projectId;
+      return Promise.resolve();
+    });
+    const onSelectView = vi.fn<(view: ProjectView) => void>();
+    const onProjectSelected = vi.fn<() => void>();
+    render(null, { onSelectView, onProjectSelected });
+
+    function openRow(label: string): void {
+      const row = target.querySelector<HTMLElement>(`[data-project-view-id][aria-label="${label}"]`);
+      const labelButton = row?.querySelector<HTMLButtonElement>("button.explorer-row-label");
+      if (!labelButton) throw new Error(`No view row labeled ${label}`);
+      labelButton.click();
+    }
+
+    openRow("Board B");
+    openRow("Board C");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onSelectView.mock.calls.map(([view]) => view.id)).toEqual(["view-c"]);
+
+    finishSlowSelection();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onProjectSelected).toHaveBeenCalledOnce();
+    expect(onSelectView.mock.calls.map(([view]) => view.id)).toEqual(["view-c"]);
   });
 });

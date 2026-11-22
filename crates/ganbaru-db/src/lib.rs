@@ -157,6 +157,7 @@ impl DatabasePoolRegistry {
 
     async fn open(&self, path: &Path, access: DatabaseAccessMode) -> Result<SqlitePool, String> {
         if access == DatabaseAccessMode::ReadWrite {
+            refuse_orphaned_journal(path)?;
             restrict_database_files(path);
         }
         let mut options = hardened_options(
@@ -499,6 +500,36 @@ async fn remember_reference_catalog(conn: &mut SqliteConnection) -> Result<(), S
 /// Suffixes of the files SQLite keeps beside a database, which it creates with the
 /// database file's permissions.
 const DATABASE_FILE_SUFFIXES: [&str; 4] = ["", "-wal", "-shm", "-journal"];
+
+/// Suffixes of the journal files that can hold committed pages the database file lacks.
+const COMMITTED_JOURNAL_SUFFIXES: [&str; 2] = ["-wal", "-journal"];
+
+/// Refuses a writable open that would create a database beside a journal it does not own.
+///
+/// A database moved away without its write-ahead log or rollback journal leaves committed pages
+/// behind, and creating an empty database there would hide them behind a blank vault. Only the
+/// shared-memory file, which SQLite rebuilds from the log, may remain beside a missing database.
+fn refuse_orphaned_journal(path: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("inspect database file: {error}")),
+    }
+    for suffix in COMMITTED_JOURNAL_SUFFIXES {
+        let mut journal = path.as_os_str().to_owned();
+        journal.push(suffix);
+        match std::fs::symlink_metadata(PathBuf::from(journal)) {
+            Ok(_) => {
+                return Err(format!(
+                    "database file is missing beside its {suffix} journal; it was not recreated so its committed pages stay recoverable"
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspect database {suffix} journal: {error}")),
+        }
+    }
+    Ok(())
+}
 
 /// Keeps a writable vault database and its journal files private to the current user.
 ///

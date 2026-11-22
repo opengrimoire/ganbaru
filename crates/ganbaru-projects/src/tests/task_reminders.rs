@@ -152,8 +152,9 @@ fn upcoming_reminders_skip_completed_archived_and_archived_project_tasks() {
         for id in ["task-a", "task-b", "task-c"] {
             set_reminders(&pool, id, None, Some(("2026-10-20", None, 0))).await;
         }
+        complete_fixture_task(&pool, "task-a", "2026-10-11T00:00:00Z").await;
         sqlx::query(
-            "UPDATE project_tasks SET completed_at = '2026-10-11T00:00:00Z' WHERE id = 'task-a'",
+            "UPDATE project_tasks SET completed_at = '2026-10-11T00:00:00Z' WHERE id = 'task-c'",
         )
         .execute(&pool)
         .await

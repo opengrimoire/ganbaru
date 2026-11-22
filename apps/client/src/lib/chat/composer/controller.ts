@@ -14,6 +14,15 @@ import type {
 } from "$lib/chat/contracts";
 import { chatErrorCode, chatErrorMessage } from "$lib/chat/error-presentation";
 import { translate } from "$lib/i18n/translator.svelte";
+import {
+  CLEAN_DRAFT,
+  draftHasUnsavedEdits,
+  draftLifecycleFlags,
+  nextDraftLifecycle,
+  type ChatDraftLifecycle,
+  type ChatDraftLifecycleEvent,
+  type ChatDraftLifecycleFlags,
+} from "./draft-state";
 import { chatDraftWindowSync, type ChatDraftWindowSync } from "./window-sync";
 
 export interface ChatDraftApi {
@@ -57,6 +66,9 @@ const NO_BASE: ChatDraftBase = { kind: "none" };
 
 type DraftContent = Omit<SaveChatDraftRequest, "base">;
 
+/** The bound draft's content and selections, apart from the lifecycle flags derived from its state. */
+type DraftFields = Omit<ChatComposerSnapshot, keyof ChatDraftLifecycleFlags>;
+
 const nativeApi: ChatDraftApi = {
   read: chatApi.readChatDraft,
   save: chatApi.saveChatDraft,
@@ -64,15 +76,19 @@ const nativeApi: ChatDraftApi = {
 };
 
 export class ChatComposerController {
-  private state: ChatComposerSnapshot = emptySnapshot();
+  private state: DraftFields = emptyFields();
+  private lifecycle: ChatDraftLifecycle = CLEAN_DRAFT;
   private revision = 0;
   private generation = 0;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private saveChain: Promise<void> = Promise.resolve();
   /** The stored version of the bound draft that the next save expects to replace. */
   private base: { draftId: string; base: ChatDraftBase } | null = null;
-  /** Set by a send or its rollback, whose content must be stored whatever another window saved. */
-  private overwrite = false;
+  /**
+   * The revision of the latest send or rollback, whose content must be stored whatever another window saved. It
+   * clears once a save of that revision or a later one lands.
+   */
+  private overwriteRevision: number | null = null;
   /** Counts replacements of the bound draft by its stored version, which supersede saves queued before them. */
   private adoptions = 0;
   private listening: Promise<void> | null = null;
@@ -88,6 +104,7 @@ export class ChatComposerController {
   public snapshot(): ChatComposerSnapshot {
     return {
       ...this.state,
+      ...draftLifecycleFlags(this.lifecycle),
       attachmentIds: [...this.state.attachmentIds],
       mentions: this.state.mentions.map((mention) => ({ ...mention })),
     };
@@ -110,7 +127,7 @@ export class ChatComposerController {
     const generation = ++this.generation;
     const draftId = draftScopeId ?? chatDraftId(workingFolderId, threadId);
     this.state = {
-      ...emptySnapshot(),
+      ...emptyFields(),
       draftId,
       workingFolderId,
       threadId,
@@ -118,8 +135,8 @@ export class ChatComposerController {
       modelSelection: seed?.modelSelection ?? null,
       safetyMode: seed?.safetyMode ?? null,
       interactionMode: seed?.interactionMode ?? null,
-      loading: true,
     };
+    this.move({ kind: "bindStarted" });
     this.notify();
     try {
       await pendingFlush;
@@ -127,11 +144,10 @@ export class ChatComposerController {
       const stored = await this.api.read(draftId);
       if (generation !== this.generation) return;
       this.base = { draftId, base: draftBase(stored) };
-      this.overwrite = false;
-      if (stored === null) {
-        this.state = { ...this.state, loading: false };
-      } else {
-        const restored = snapshotFromDraft(stored);
+      this.overwriteRevision = null;
+      let dirty = false;
+      if (stored !== null) {
+        const restored = fieldsFromDraft(stored);
         const folderChanged = draftScopeId !== null && restored.workingFolderId !== workingFolderId;
         const threadChanged = draftScopeId !== null && restored.threadId !== threadId;
         this.state = draftScopeId === null
@@ -143,14 +159,15 @@ export class ChatComposerController {
               threadId,
               attachmentIds: folderChanged ? [] : restored.attachmentIds,
               mentions: folderChanged ? [] : restored.mentions,
-              dirty: folderChanged || threadChanged,
             };
+        dirty = folderChanged || threadChanged;
       }
+      this.move({ kind: "loaded", dirty });
       this.revision = 0;
       this.notify();
     } catch (error: unknown) {
       if (generation !== this.generation) return;
-      this.state = { ...this.state, loading: false, error: chatErrorMessage(error, translate("chatErrors.actions.loadDraft")) };
+      this.move({ kind: "loadFailed", error: chatErrorMessage(error, translate("chatErrors.actions.loadDraft")) });
       this.notify();
       throw error;
     }
@@ -192,14 +209,15 @@ export class ChatComposerController {
     await this.api.delete(draftId);
     this.windowSync.publish(draftId);
     this.base = { draftId, base: NO_BASE };
-    this.overwrite = false;
+    this.overwriteRevision = null;
     this.revision += 1;
     this.state = {
-      ...emptySnapshot(),
+      ...emptyFields(),
       draftId,
       workingFolderId: this.state.workingFolderId,
       threadId: this.state.threadId,
     };
+    this.move({ kind: "emptied" });
     this.notify();
   }
 
@@ -209,15 +227,16 @@ export class ChatComposerController {
     this.generation += 1;
     this.revision = 0;
     this.base = null;
-    this.overwrite = false;
-    this.state = emptySnapshot();
+    this.overwriteRevision = null;
+    this.state = emptyFields();
+    this.move({ kind: "emptied" });
     this.notify();
   }
 
   /** Hides the notice that another window's version replaced local edits. */
   public dismissChangedElsewhere(): void {
-    if (!this.state.changedElsewhere) return;
-    this.state = { ...this.state, changedElsewhere: false };
+    if (!draftLifecycleFlags(this.lifecycle).changedElsewhere) return;
+    this.move({ kind: "noticeDismissed" });
     this.notify();
   }
 
@@ -234,7 +253,7 @@ export class ChatComposerController {
         mentions: this.state.mentions.map((mention) => ({ ...mention })),
       },
     };
-    if (this.change({ text: "", richContent: null, attachmentIds: [], mentions: [], sentSnapshot })) this.overwrite = true;
+    if (this.change({ text: "", richContent: null, attachmentIds: [], mentions: [], sentSnapshot })) this.overwriteRevision = this.revision;
   }
 
   public restoreSentSnapshot(): boolean {
@@ -246,21 +265,21 @@ export class ChatComposerController {
       attachmentIds: sent.attachmentIds,
       mentions: sent.mentions,
     });
-    if (changed) this.overwrite = true;
+    if (changed) this.overwriteRevision = this.revision;
     return true;
   }
 
   public async flush(): Promise<void> {
     this.cancelTimer();
-    if (!this.state.dirty) {
+    if (!draftHasUnsavedEdits(this.lifecycle)) {
       await this.saveChain;
       return;
     }
     const payload = this.payload();
     if (payload === null) return;
     const revision = this.revision;
-    const overwrite = this.overwrite;
-    this.state = { ...this.state, saving: true, error: null };
+    const overwrite = this.overwriteRevision !== null;
+    this.move({ kind: "saveStarted" });
     this.notify();
     const adoptions = this.adoptions;
     this.saveChain = this.saveChain.catch(() => undefined).then(async () => {
@@ -271,9 +290,11 @@ export class ChatComposerController {
         const saved = await this.api.save({ ...payload, base: overwrite ? ANY_BASE : this.baseFor(payload.id) });
         if (this.base === null || this.base.draftId === saved.id) this.base = { draftId: saved.id, base: draftBase(saved) };
         this.windowSync.publish(saved.id);
+        if (this.state.draftId === payload.id && this.overwriteRevision !== null && revision >= this.overwriteRevision) {
+          this.overwriteRevision = null;
+        }
         if (this.state.draftId === payload.id && this.revision === revision) {
-          this.overwrite = false;
-          this.state = { ...this.state, dirty: false, saving: false };
+          this.move({ kind: "saveLanded" });
           this.notify();
         }
       } catch (error: unknown) {
@@ -282,7 +303,7 @@ export class ChatComposerController {
           return;
         }
         if (this.state.draftId === payload.id) {
-          this.state = { ...this.state, saving: false, error: chatErrorMessage(error, translate("chatErrors.actions.saveDraft")) };
+          this.move({ kind: "failed", error: chatErrorMessage(error, translate("chatErrors.actions.saveDraft")) });
           this.notify();
         }
         throw error;
@@ -298,10 +319,11 @@ export class ChatComposerController {
     return this.flush();
   }
 
-  private change(patch: Partial<ChatComposerSnapshot>): boolean {
-    if (this.state.draftId === null || this.state.loading) return false;
+  private change(patch: Partial<DraftFields>): boolean {
+    if (this.state.draftId === null || this.lifecycle.kind === "loading") return false;
     this.revision += 1;
-    this.state = { ...this.state, ...patch, dirty: true, changedElsewhere: false, error: null };
+    this.state = { ...this.state, ...patch };
+    this.move({ kind: "changed" });
     this.notify();
     this.cancelTimer();
     this.saveTimer = setTimeout(() => {
@@ -311,7 +333,8 @@ export class ChatComposerController {
   }
 
   private baseFor(draftId: string): ChatDraftBase {
-    return this.base?.draftId === draftId ? this.base.base : ANY_BASE;
+    // A draft this window never read must not replace a stored one, so its first save expects none.
+    return this.base?.draftId === draftId ? this.base.base : NO_BASE;
   }
 
   private listenForOtherWindows(): void {
@@ -328,7 +351,7 @@ export class ChatComposerController {
   /** Shows a draft another window saved, unless this window has edits of its own to save first. */
   private refreshFromOtherWindow(draftIds: ReadonlySet<string>): void {
     const draftId = this.state.draftId;
-    if (draftId === null || !draftIds.has(draftId) || this.state.dirty || this.state.loading) return;
+    if (draftId === null || !draftIds.has(draftId) || this.lifecycle.kind !== "clean") return;
     this.saveChain = this.saveChain.catch(() => undefined).then(() => this.adoptStoredDraft(draftId, "refresh"));
   }
 
@@ -343,27 +366,31 @@ export class ChatComposerController {
       stored = await this.api.read(draftId);
     } catch (error: unknown) {
       if (generation !== this.generation || this.state.draftId !== draftId) return;
-      this.state = { ...this.state, saving: false, error: chatErrorMessage(error, translate("chatErrors.actions.loadDraft")) };
+      this.move({ kind: "failed", error: chatErrorMessage(error, translate("chatErrors.actions.loadDraft")) });
       this.notify();
       return;
     }
     if (generation !== this.generation || this.state.draftId !== draftId) return;
-    if (reason === "refresh" && this.state.dirty) return;
+    if (reason === "refresh" && draftHasUnsavedEdits(this.lifecycle)) return;
+    if (this.overwriteRevision !== null) {
+      // A send or its rollback is queued to replace whatever is stored, so the stored version only becomes its base.
+      this.base = { draftId, base: draftBase(stored) };
+      return;
+    }
     this.cancelTimer();
     this.revision += 1;
-    this.overwrite = false;
+    this.overwriteRevision = null;
     this.base = { draftId, base: draftBase(stored) };
     this.adoptions += 1;
     const { workingFolderId, threadId, providerInstanceId, modelSelection, safetyMode, interactionMode } = this.state;
-    const changedElsewhere = reason === "conflict" || this.state.changedElsewhere;
+    const changedElsewhere = reason === "conflict" || draftLifecycleFlags(this.lifecycle).changedElsewhere;
     if (stored === null) {
       this.state = {
-        ...emptySnapshot(),
+        ...emptyFields(),
         draftId, workingFolderId, threadId, providerInstanceId, modelSelection, safetyMode, interactionMode,
-        changedElsewhere,
       };
     } else {
-      const restored = snapshotFromDraft(stored);
+      const restored = fieldsFromDraft(stored);
       const folderChanged = restored.workingFolderId !== workingFolderId;
       this.state = {
         ...restored,
@@ -371,9 +398,9 @@ export class ChatComposerController {
         threadId,
         attachmentIds: folderChanged ? [] : restored.attachmentIds,
         mentions: folderChanged ? [] : restored.mentions,
-        changedElsewhere,
       };
     }
+    this.move({ kind: "adopted", changedElsewhere });
     this.notify();
   }
 
@@ -408,6 +435,10 @@ export class ChatComposerController {
     this.saveTimer = null;
   }
 
+  private move(event: ChatDraftLifecycleEvent): void {
+    this.lifecycle = nextDraftLifecycle(this.lifecycle, event);
+  }
+
   private notify(): void {
     const snapshot = this.snapshot();
     for (const listener of this.listeners) listener(snapshot);
@@ -418,7 +449,7 @@ export function chatDraftId(workingFolderId: ProjectWorkingFolderId, threadId: C
   return `workspace:${workingFolderId}:thread:${threadId ?? "new"}`;
 }
 
-function emptySnapshot(): ChatComposerSnapshot {
+function emptyFields(): DraftFields {
   return {
     draftId: null,
     workingFolderId: null,
@@ -432,11 +463,6 @@ function emptySnapshot(): ChatComposerSnapshot {
     safetyMode: null,
     interactionMode: null,
     sentSnapshot: null,
-    loading: false,
-    saving: false,
-    dirty: false,
-    changedElsewhere: false,
-    error: null,
   };
 }
 
@@ -444,7 +470,7 @@ function draftBase(stored: ChatDraftRead | null): ChatDraftBase {
   return stored === null ? NO_BASE : { kind: "saved", updatedAt: stored.updatedAt };
 }
 
-function snapshotFromDraft(draft: ChatDraftRead): ChatComposerSnapshot {
+function fieldsFromDraft(draft: ChatDraftRead): DraftFields {
   return {
     draftId: draft.id,
     workingFolderId: draft.workingFolderId,
@@ -458,11 +484,6 @@ function snapshotFromDraft(draft: ChatDraftRead): ChatComposerSnapshot {
     safetyMode: draft.safetyMode,
     interactionMode: draft.interactionMode,
     sentSnapshot: draft.sentSnapshot,
-    loading: false,
-    saving: false,
-    dirty: false,
-    changedElsewhere: false,
-    error: null,
   };
 }
 

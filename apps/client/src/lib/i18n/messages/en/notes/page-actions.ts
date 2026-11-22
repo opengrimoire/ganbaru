@@ -26,6 +26,7 @@ export const pageActions = {
   deleteFolderConfirm: "Delete folder",
   folderActionFailed: "The folder could not be updated.",
   pageCreationFailed: "This new note could not be saved.",
+  pageCreationShowFailed: "This new note was saved but could not be shown.",
   archivePage: "Archive",
   archiveConfirmTitle: (title: string) => `Archive ${title}?`,
   archiveConfirmMessage:

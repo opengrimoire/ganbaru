@@ -362,11 +362,14 @@ impl Routes for CoordinatorRoutes {
                 .await
             }
             ControlMessage::CancelTransfer { transfer_id } => {
-                manager.authenticated_peer(peer_certificate)?;
+                let peer = manager.authenticated_peer(peer_certificate)?;
                 send_coordinator_response(
                     stream,
                     coordinator.as_ref(),
-                    coordinator::CoordinatorOperation::Cancel { transfer_id },
+                    coordinator::CoordinatorOperation::Cancel {
+                        transfer_id,
+                        device_id: peer.device_id,
+                    },
                 )
                 .await
             }

@@ -13,6 +13,22 @@ function controller() {
 }
 
 describe("notes page session", () => {
+  it("keeps a title draft that changed or moved to another page while its saved title landed", () => {
+    const session = controller();
+    session.setTitleDraft(pageA, " Plan ");
+    session.setTitleDraft(pageA, "Plan for May");
+    session.clearSavedTitleDraft(pageA, "Plan");
+    expect(session.titleDraftForPage(pageA)).toBe("Plan for May");
+
+    session.setTitleDraft(pageB, "Other");
+    session.clearSavedTitleDraft(pageA, "Plan for May");
+    expect(session.titleDraftForPage(pageB)).toBe("Other");
+
+    session.setTitleDraft(pageA, " Plan ");
+    session.clearSavedTitleDraft(pageA, "Plan");
+    expect(session.titleDraftForPage(pageA)).toBeNull();
+  });
+
   it("rejects stale overlapping page results and recent-page writes", () => {
     const session = controller();
     const requestA = session.open(pageA, "full");

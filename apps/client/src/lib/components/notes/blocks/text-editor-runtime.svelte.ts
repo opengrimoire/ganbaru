@@ -364,6 +364,11 @@ export class NotesTextEditorController {
   #linkAnchorElement: HTMLElement | null = null;
   #linkAnchorRange: Range | null = null;
   #linkSourceText = "";
+  /**
+   * Counts link panel opens and closes, so opening or copying a link that finishes after its panel closed or another
+   * link panel opened neither closes the newer panel nor shows its error there.
+   */
+  #linkSession = 0;
   #linkHoverCloseTimer: ReturnType<typeof setTimeout> | null = null;
   linkError = $state<string | null>(null);
   contextMenuOpen = $state(false);
@@ -595,6 +600,7 @@ export class NotesTextEditorController {
 
   cancelLinkEditor = (restoreFocus = false): void => {
     this.keepLinkPreviewOpen();
+    this.#linkSession += 1;
     this.linkEditorOpen = false;
     this.#linkAnchorElement = null;
     this.#linkAnchorRange = null;
@@ -1145,6 +1151,7 @@ export class NotesTextEditorController {
     const range = blockTextLinkRangeForSelection(this.block, selection.start, selection.end);
     if (range.start === range.end && !range.url) return false;
     this.keepLinkPreviewOpen();
+    this.#linkSession += 1;
     this.linkRange = range;
     this.linkUrlInput = range.url ?? "";
     this.linkTitleInput = this.text.slice(range.start, range.end);
@@ -1174,6 +1181,7 @@ export class NotesTextEditorController {
     const offset = notesEditableOffsetFromDomPoint(editor, link, 0);
     if (offset === null) return false;
     this.keepLinkPreviewOpen();
+    this.#linkSession += 1;
     this.linkRange = blockTextLinkRangeForSelection(this.block, offset + 1, offset + 1);
     this.linkUrlInput = url;
     this.linkTitleInput = this.text.slice(this.linkRange.start, this.linkRange.end) || link.textContent || "";
@@ -1230,26 +1238,31 @@ export class NotesTextEditorController {
 
   editLinkDestination = (): void => { this.keepLinkPreviewOpen(); this.linkMode = "edit"; };
 
+  /** Opens the shown link, keeping a failure on that link's panel only while it is still the open one. */
   openLinkDestination = async (): Promise<void> => {
     if (this.linkBusy) return;
     this.linkBusy = true;
+    const session = this.#linkSession;
     try {
       await openNotesTextLink(this.linkUrlInput, this.source.notes);
-      this.cancelLinkEditor();
+      if (session === this.#linkSession) this.cancelLinkEditor();
     } catch (error: unknown) {
       console.warn("Notes link navigation failed", error);
+      if (session !== this.#linkSession) return;
       this.linkError = this.source.translate("notes.linkOpenFailed");
       this.linkEditorOpen = true;
     } finally { this.linkBusy = false; }
   };
 
+  /** Copies the shown link destination and closes its panel, unless another panel replaced it meanwhile. */
   copyLinkDestination = async (): Promise<void> => {
+    const session = this.#linkSession;
     try {
       await writeTextToClipboard(this.linkUrlInput);
-      this.cancelLinkEditor(true);
+      if (session === this.#linkSession) this.cancelLinkEditor(true);
     } catch (error: unknown) {
       console.warn("Notes link copy failed", error);
-      this.linkError = this.source.translate("notes.linkCopyFailed");
+      if (session === this.#linkSession) this.linkError = this.source.translate("notes.linkCopyFailed");
     }
   };
 

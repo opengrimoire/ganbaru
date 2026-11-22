@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import GitBranch from "@lucide/svelte/icons/git-branch";
   import { chatPushRequestsAvailable, readChatPushRequestStates } from "$lib/api/chat";
   import {
@@ -11,6 +12,14 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
+  import {
+    asyncResourceError,
+    failAsyncRequest,
+    idleAsyncResource,
+    resolveAsyncRequest,
+    startAsyncRequest,
+    type AsyncResource,
+  } from "$lib/utils/async-resource";
 
   /**
    * An agent's request to push a commit. The push runs when a person confirms it here on a desktop device,
@@ -30,9 +39,13 @@
 
   const { t } = getLocalization();
   const chat = useChat();
-  let requestState = $state<ChatPushRequestState | null>(null);
+  /** The request state as last read; a confirmed push replaces it, which also supersedes a read in flight. */
+  let stateRead = $state.raw<AsyncResource<ChatPushRequestState | null>>(idleAsyncResource(null));
   let pending = $state(false);
-  let error = $state<string | null>(null);
+  /** The failure of the last confirm, which the reread after it does not clear. */
+  let actionError = $state<string | null>(null);
+  const requestState = $derived(stateRead.data);
+  const error = $derived(actionError ?? asyncResourceError(stateRead));
 
   const shortCommit = $derived(push.objectId.slice(0, SHORT_COMMIT_LENGTH));
   const unlistedPaths = $derived(push.commit ? push.commit.changedPathCount - push.commit.changedPaths.length : 0);
@@ -40,16 +53,25 @@
 
   $effect(() => {
     const _version = chat.pushRequestsVersion;
-    void loadState(requestItemId);
+    const itemId = requestItemId;
+    untrack(() => { void loadState(itemId); });
   });
 
+  /**
+   * Reads the request state. Only the newest read settles it, so an older read that finishes later, or one that a
+   * confirmed push overtook, cannot bring back the confirm actions.
+   *
+   * @param itemId - The push request message to read.
+   */
   async function loadState(itemId: ChatConversationItemId): Promise<void> {
     if (!chatPushRequestsAvailable) return;
+    const started = startAsyncRequest(stateRead);
+    stateRead = started.resource;
     try {
       const [read] = await readChatPushRequestStates([itemId]);
-      if (itemId === requestItemId) requestState = read?.state ?? "closed";
+      stateRead = resolveAsyncRequest(stateRead, started.token, read?.state ?? "closed");
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      stateRead = failAsyncRequest(stateRead, started.token, chatErrorMessage(cause));
     }
   }
 
@@ -62,19 +84,21 @@
   async function confirm(rememberApproval: boolean): Promise<void> {
     if (pending) return;
     pending = true;
-    error = null;
+    actionError = null;
+    const itemId = requestItemId;
     try {
       await chat.confirmPushRequest({
-        requestItemId,
+        requestItemId: itemId,
         normalizedMarkdown: push.commit
           ? t("chat.organization.push.replyCommitted", push.remote, push.destinationBranch)
           : t("chat.organization.push.reply", shortCommit, push.remote, push.destinationBranch),
         rememberApproval,
       }, push.workingFolderId);
-      requestState = "pushed";
+      if (itemId === requestItemId) stateRead = idleAsyncResource("pushed");
     } catch (cause: unknown) {
-      error = errorText(cause);
-      await loadState(requestItemId);
+      if (itemId !== requestItemId) return;
+      actionError = errorText(cause);
+      await loadState(itemId);
     } finally {
       pending = false;
     }

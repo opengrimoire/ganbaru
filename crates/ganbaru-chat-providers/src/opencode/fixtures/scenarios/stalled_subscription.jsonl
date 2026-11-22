@@ -42,3 +42,5 @@
 {"type":"expect_outbound","label":"resubscribe-6","frame":{"method":"GET","path":"/event","query":{"directory":"<workspace>"}}}
 {"type":"emit_inbound","frame":{"status":200,"stream":true}}
 {"type":"emit_inbound","frame":{"event":{"type":"server.connected","properties":{}}}}
+{"type":"expect_outbound","label":"abort","frame":{"method":"POST","path":"/session/ses_replay/abort","query":{"directory":"<workspace>"}}}
+{"type":"emit_inbound","frame":{"status":200,"body":true}}

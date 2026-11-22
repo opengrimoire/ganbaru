@@ -166,6 +166,8 @@
   let actionFailure = $state<LauncherFailure | null>(null);
   let archivedChannelsError = $state<string | null>(null);
   let busy = false;
+  /** Counts level changes and create form openings and closings, so a late action result stays out of a place the user left. */
+  let placeVisit = 0;
   const requestedChildPageIds = new SvelteSet<string>();
   const loadingChildPageIds = new SvelteSet<string>();
 
@@ -222,20 +224,34 @@
     return () => { cancelled = true; };
   });
 
+  /** Whether the shown level lists projects, which every level below the kinds does. */
+  function levelListsProjects(): boolean {
+    return level.type !== "kinds";
+  }
+
   $effect(() => {
     if (level.type === "kinds") return;
-    if (!projects.loaded) loadFor(() => projects.ensureLoaded(), "projects", t("titleBar.tab.projects"));
+    if (!projects.loaded) loadFor(() => projects.ensureLoaded(), "projects", t("titleBar.tab.projects"), levelListsProjects);
     if (level.type === "channels" && !chat.loaded) {
-      loadFor(() => chat.prewarmForProject(null), "Chat channels", t("titleBar.tab.chat"));
+      loadFor(() => chat.prewarmForProject(null), "Chat channels", t("titleBar.tab.chat"), () => level.type === "channels");
     }
-    if (level.type === "pages" && !notes.loaded) loadFor(() => notes.ensureLoaded(), "Notes pages", t("titleBar.tab.notes"));
+    if (level.type === "pages" && !notes.loaded) {
+      loadFor(() => notes.ensureLoaded(), "Notes pages", t("titleBar.tab.notes"), () => level.type === "pages");
+    }
   });
 
-  /** Start loading data a level lists; a failure is logged and replaces the level's rows with a notice. */
-  function loadFor(load: () => Promise<void>, context: string, label: string): void {
+  /**
+   * Start loading data a level lists; a failure is logged and replaces the rows with a notice while the shown level still lists that data.
+   *
+   * @param load - Loads the data.
+   * @param context - Names the data in the log.
+   * @param label - Names the data in the notice.
+   * @param listsIt - Whether the level shown now lists that data.
+   */
+  function loadFor(load: () => Promise<void>, context: string, label: string, listsIt: () => boolean): void {
     load().catch((error: unknown) => {
       console.error(`load ${context} for the tab launcher failed`, error);
-      loadFailure = t("common.viewLoadFailed", label);
+      if (listsIt()) loadFailure = t("common.viewLoadFailed", label);
     });
   }
 
@@ -414,6 +430,7 @@
   }
 
   function resetLevelState(): void {
+    placeVisit += 1;
     query = "";
     highlightKey = null;
     loadFailure = null;
@@ -498,16 +515,23 @@
     void enter({ type: "page", pageId: value.page.id, label: value.title });
   }
 
-  /** Run one launcher action at a time, showing its failure above the rows. */
-  async function runAction(action: () => Promise<void>, fallback: (error: unknown) => LauncherFailure): Promise<void> {
+  /**
+   * Run one launcher action at a time, showing its failure above the rows while the user stays where it started.
+   *
+   * @param action - The work; it receives whether the level and create form it started from are still shown.
+   * @param fallback - Builds the failure to show.
+   */
+  async function runAction(action: (isCurrent: () => boolean) => Promise<void>, fallback: (error: unknown) => LauncherFailure): Promise<void> {
     if (busy) return;
     busy = true;
     actionFailure = null;
+    const visit = placeVisit;
+    const isCurrent = (): boolean => visit === placeVisit;
     try {
-      await action();
+      await action(isCurrent);
     } catch (error: unknown) {
       console.error("tab launcher action failed", error);
-      actionFailure = fallback(error);
+      if (isCurrent()) actionFailure = fallback(error);
     } finally {
       busy = false;
     }
@@ -531,6 +555,7 @@
   }
 
   function openCreator(next: LauncherCreator): void {
+    placeVisit += 1;
     creator = next;
     actionFailure = null;
     refusedProjectName = null;
@@ -550,6 +575,7 @@
   }
 
   function closeCreator(): void {
+    placeVisit += 1;
     creator = null;
     actionFailure = null;
     void focusLevel();
@@ -575,8 +601,9 @@
     const name = folderDraft.trim();
     if (!name) return;
     const { projectId, parent } = level;
-    await runAction(async () => {
+    await runAction(async (isCurrent) => {
       const folder = await notes.createFolder(projectId, name, parent.kind === "folder" ? parent.id : null);
+      if (!isCurrent()) return;
       creator = null;
       await highlightCreated(`folder:${folder.id}`);
     }, (error) => notesFailure(error, t("notes.folderActionFailed")));
@@ -608,8 +635,9 @@
   async function submitGroup(): Promise<void> {
     const name = groupDraft.trim();
     if (!name) return;
-    await runAction(async () => {
+    await runAction(async (isCurrent) => {
       const groupId = await projects.addGroup(name, groupIcon);
+      if (!isCurrent()) return;
       creator = null;
       if (groupId) await highlightCreated(`group:${groupId}`);
     }, (error) => notesFailure(error, t("projects.navigator.groupSaveFailed")));
@@ -621,15 +649,16 @@
     const { groupId } = creator;
     const name = projectDraft.trim();
     if (!name || projectDraftError) return;
-    await runAction(async () => {
+    await runAction(async (isCurrent) => {
       let projectId: string | undefined;
       try {
         projectId = await projects.addProjectWithoutSelecting(groupId, name, projectIcon);
       } catch (error: unknown) {
         if (!isProjectNameTakenError(error)) throw error;
-        refusedProjectName = projectNameKey(name);
+        if (isCurrent()) refusedProjectName = projectNameKey(name);
         return;
       }
+      if (!isCurrent()) return;
       creator = null;
       if (projectId) await highlightCreated(`project:${projectId}`);
     }, (error) => notesFailure(error, t("projects.navigator.projectCreateFailed")));
@@ -673,7 +702,7 @@
       .catch((error: unknown) => {
         requestedChildPageIds.delete(pageId);
         console.error("load Notes page children for the tab launcher failed", error);
-        loadFailure = t("common.viewLoadFailed", t("titleBar.tab.notes"));
+        if (level.type === "pages" && level.parent.kind === "page" && level.parent.id === pageId) loadFailure = t("common.viewLoadFailed", t("titleBar.tab.notes"));
       })
       .finally(() => loadingChildPageIds.delete(pageId));
   }

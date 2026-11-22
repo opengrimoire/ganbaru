@@ -703,8 +703,9 @@
       notes.clearPageTitleDraft(page.id);
       return;
     }
-    await notes.renamePage(page.id, title);
-    notes.clearPageTitleDraft(page.id);
+    const pageId = page.id;
+    await notes.renamePage(pageId, title);
+    notes.clearSavedPageTitleDraft(pageId, title);
   }
 
   function handleTitleInput(event: Event): void {
@@ -1166,20 +1167,20 @@
     class="notes-editor-root relative flex h-full w-full min-w-0 flex-1 flex-col overflow-hidden"
     data-mobile={mobileLayout || undefined}
   >
-    {#if notes.editorSaveError}
+    {#if notes.editorBanner.kind === "save-failed" || notes.editorBanner.kind === "reload-failed"}
       <Notice
         class="shrink-0 border-b border-border px-4 py-2 text-sm"
-        message={t("notes.editorSaveFailed")}
-        copy={notes.editorSaveError}
+        message={t(notes.editorBanner.kind === "save-failed" ? "notes.editorSaveFailed" : "notes.editorReloadFailed")}
+        copy={notes.editorBanner.error}
         onRetry={() => notes.retryEditorMutations()}
       />
-    {:else if notes.editorConflict}
+    {:else if notes.editorBanner.kind === "changed-elsewhere"}
       <Notice
         class="shrink-0 border-b border-border px-4 py-2 text-sm"
         role="status"
         message={t("notes.editorChangedElsewhere")}
         copy={false}
-        onDismiss={() => notes.dismissEditorConflict()}
+        onDismiss={() => notes.dismissEditorBanner()}
       />
     {/if}
     {#if page && (notes.blockConflicts.length > 0 || fieldConflictCount > 0)}
@@ -1613,7 +1614,7 @@
     {#if notes.pageCreationError}
       <Notice
         class="shrink-0 border-b border-border px-3 py-2 text-[0.8rem]"
-        message={t("notes.pageCreationFailed")}
+        message={t(notes.pageCreationSaved ? "notes.pageCreationShowFailed" : "notes.pageCreationFailed")}
         copy={notes.pageCreationError}
         onRetry={notes.retryPageCreation}
       />

@@ -17,13 +17,16 @@ fn theme_seed_cannot_change_outside_sync_apply() {
         for sql in [
             "UPDATE themes SET seed_blend_canvas = '#202020'",
             "UPDATE themes SET seed_icon_label = 'light'",
+            "UPDATE themes SET seed_derivation_engine_version = 2",
             "UPDATE themes SET created_at_ms = 2",
             "UPDATE themes SET upgrade_dismissed_engine_version = -1",
             "UPDATE themes SET display_name = '   '",
         ] {
             assert!(sqlx::query(sql).execute(&pool).await.is_err(), "{sql}");
         }
-        sqlx::query("UPDATE themes SET display_name = 'Grove', blend_canvas = '#202020'")
+        sqlx::query(
+            "UPDATE themes SET display_name = 'Grove', blend_canvas = '#202020', derivation_engine_version = 2",
+        )
             .execute(&pool)
             .await
             .unwrap();

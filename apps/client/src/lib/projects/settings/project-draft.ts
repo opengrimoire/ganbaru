@@ -13,6 +13,7 @@ import {
 import {
   DEFAULT_PROJECT_ICON,
   type Project,
+  type ProjectLifecycleChange,
   type ProjectLifecycleStatus,
   type ProjectUpdate,
 } from "$lib/projects/types";
@@ -39,6 +40,8 @@ export interface ProjectDraft {
   name: string;
   icon: string;
   status: ProjectLifecycleStatus;
+  /** The status the draft was opened with, which a status change expects the project still has. */
+  openedStatus: ProjectLifecycleStatus;
   color: EventColor | undefined;
   defaultEventName: string;
   defaultEventTimeMode: ProjectDefaultEventTimeMode;
@@ -68,6 +71,7 @@ export function emptyProjectDraft(): ProjectDraft {
     name: "",
     icon: DEFAULT_PROJECT_ICON,
     status: "active",
+    openedStatus: "active",
     color: undefined,
     defaultEventName: "",
     defaultEventTimeMode: "timed",
@@ -93,6 +97,7 @@ export function projectDraftFromProject(project: Project): ProjectDraft {
     name: project.name,
     icon: project.icon,
     status: project.status,
+    openedStatus: project.status,
     color: project.color,
     defaultEventName: project.defaultEventName ?? "",
     defaultEventTimeMode: project.defaultEventTimeMode,
@@ -119,7 +124,7 @@ export function projectDraftDirty(
     && (draft.name !== project.name || draft.groupId !== project.groupId);
   return identityDirty
     || draft.icon !== project.icon
-    || draft.status !== project.status
+    || draft.status !== draft.openedStatus
     || draft.color !== project.color
     || draft.defaultEventName !== (project.defaultEventName ?? "")
     || draft.defaultEventTimeMode !== project.defaultEventTimeMode
@@ -128,6 +133,16 @@ export function projectDraftDirty(
     || projectSettingsProjectIdleDraftDirty(project, draft)
     || draft.focusPlaylistId !== (project.focusPlaylistId ?? "")
     || draft.breakPlaylistId !== (project.breakPlaylistId ?? "");
+}
+
+/**
+ * The lifecycle move a saved draft asks for, or `null` when its status is the one it was opened
+ * with. The move expects the opened status, so a status another window changed meanwhile is
+ * refused instead of overwritten.
+ */
+export function projectLifecycleChangeFromDraft(projectId: string, draft: ProjectDraft): ProjectLifecycleChange | null {
+  if (draft.status === draft.openedStatus) return null;
+  return { projectId, expected: draft.openedStatus, next: draft.status };
 }
 
 export function projectUpdateFromDraft(
@@ -150,7 +165,6 @@ export function projectUpdateFromDraft(
       icon: input.draft.icon,
       color: input.draft.color ?? null,
       placement: groupId === input.project.groupId ? undefined : { kind: "end" },
-      status: input.draft.status,
       defaultEventName: normalizeOptionalText(input.draft.defaultEventName),
       defaultEventTimeMode: input.draft.defaultEventTimeMode,
       defaultEventDurationMinutes: duration.value,

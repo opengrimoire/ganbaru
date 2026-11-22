@@ -1,6 +1,7 @@
 use super::custom_fields::SELECTED_OPTIONS_SQL;
 use super::models::*;
 use super::mutations::ensure_project_exists_in_pool;
+use super::task_completion::task_completed_at_sql;
 use super::validation::{require_non_empty, sql_like_contains_pattern, validate_enum};
 
 const LIST_PAGE_SIZE_MAX: i64 = 100;
@@ -8,13 +9,16 @@ const KANBAN_COLUMN_PAGE_SIZE_MAX: i64 = 50;
 const DASHBOARD_SAMPLE_SIZE: i64 = 30;
 const GANTT_LAYOUT_TASK_LIMIT: i64 = 10_000;
 
-const SUMMARY_SELECT: &str =
+const SUMMARY_SELECT: &str = concat!(
     "t.id, t.project_id, t.section_id, t.status_id, t.parent_task_id, t.title,
      t.priority, t.task_type, t.section_order_key, t.status_order_key,
      t.estimate_minutes, t.due_date, t.due_time, t.start_date, t.start_time,
-     t.target_end_date, t.completed_at, t.archived_at,
+     t.target_end_date, ",
+    task_completed_at_sql!(),
+    " AS completed_at, t.archived_at,
      CASE WHEN TRIM(COALESCE(t.blocker_reason, '')) <> '' THEN 1 ELSE 0 END AS blocker_reason_present,
-     t.milestone, t.created_at, t.updated_at, t.revision";
+     t.milestone, t.created_at, t.updated_at, t.revision"
+);
 /// Prefix of a subquery that finds a scalar value of task `t`; the caller binds the field id.
 const SCALAR_VALUE_EXISTS: &str = "SELECT 1 FROM project_custom_field_values fv
      WHERE (fv.text_value IS NOT NULL OR fv.number_value IS NOT NULL

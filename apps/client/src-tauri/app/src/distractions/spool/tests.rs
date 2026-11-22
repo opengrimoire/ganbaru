@@ -49,7 +49,9 @@ async fn vault_pool() -> SqlitePool {
 async fn pending(path: &Path) -> Vec<DistractionsUsageSampleRow> {
     let pool = open_spool(path).await.unwrap();
     let mut connection = pool.acquire().await.unwrap();
-    let rows = read_pending(&mut connection, VAULT, DEVICE).await.unwrap();
+    let rows = read_pending(&mut connection, VAULT, DEVICE, false)
+        .await
+        .unwrap();
     drop(connection);
     pool.close().await;
     rows
@@ -109,6 +111,47 @@ async fn a_fresh_spool_holds_only_pending_samples_block_events_and_batch_receipt
 }
 
 #[tokio::test]
+async fn a_spool_from_an_older_schema_is_replaced_and_drains_new_samples() {
+    let path = temporary_spool("older-schema");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let older = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "CREATE TABLE pending_usage_samples (
+            sample_id TEXT PRIMARY KEY, vault_id TEXT NOT NULL, device_id TEXT NOT NULL,
+            source_type TEXT NOT NULL, source_key TEXT NOT NULL, display_name TEXT,
+            started_at_ms INTEGER NOT NULL, elapsed_seconds INTEGER NOT NULL,
+            local_date TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+         INSERT INTO pending_usage_samples VALUES
+            ('stale', 'vault', 'laptop', 'desktop-app', 'steam', NULL, 1, 9, '2026-09-13', 1);",
+    )
+    .execute(&older)
+    .await
+    .unwrap();
+    older.close().await;
+
+    let vault = vault_pool().await;
+    enqueue_native_samples_at(&path, VAULT, DEVICE, &[sample("fresh", 12)])
+        .await
+        .unwrap();
+    assert_eq!(
+        drain_at(&path, &vault, VAULT, DEVICE, &window())
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(journal(&vault).await, [("fresh".to_string(), 12)]);
+    vault.close().await;
+    remove(&path);
+}
+#[tokio::test]
 async fn drained_samples_join_the_journal_once_and_leave_the_spool() {
     let path = temporary_spool("drain");
     let vault = vault_pool().await;
@@ -158,9 +201,10 @@ async fn drained_samples_join_the_journal_once_and_leave_the_spool() {
 async fn a_failed_journal_import_keeps_the_batch_in_the_spool() {
     let path = temporary_spool("failed-drain");
     let vault = vault_pool().await;
+    // The trigger body names a missing table, which fails with a plain SQLite error.
     sqlx::raw_sql(
-        "CREATE TRIGGER reject_usage BEFORE INSERT ON distractions_usage_samples
-         WHEN NEW.id = 'two' BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
+        "CREATE TRIGGER fail_usage BEFORE INSERT ON distractions_usage_samples
+         WHEN NEW.id = 'two' BEGIN SELECT * FROM missing_table; END",
     )
     .execute(&vault)
     .await
@@ -509,6 +553,117 @@ async fn a_block_event_ingested_during_an_open_run_publishes_when_the_run_closes
         ["block-1"],
         "closing the run publishes its block events"
     );
+    vault.close().await;
+    remove(&path);
+}
+
+/// Commits a drain to the journal while its spool cleanup fails, as a crash or a concurrent
+/// host write between the two commits would leave it.
+async fn drain_without_cleanup(path: &Path, vault: &SqlitePool) {
+    let spool = open_spool(path).await.unwrap();
+    sqlx::raw_sql(
+        "CREATE TRIGGER reject_cleanup BEFORE DELETE ON pending_usage_samples
+         BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END",
+    )
+    .execute(&spool)
+    .await
+    .unwrap();
+    spool.close().await;
+    assert!(
+        drain_at(path, vault, VAULT, DEVICE, &window())
+            .await
+            .is_err()
+    );
+    let spool = open_spool(path).await.unwrap();
+    sqlx::query("DROP TRIGGER reject_cleanup")
+        .execute(&spool)
+        .await
+        .unwrap();
+    spool.close().await;
+}
+
+async fn journal_total(pool: &SqlitePool) -> i64 {
+    journal(pool).await.iter().map(|(_, seconds)| seconds).sum()
+}
+
+#[tokio::test]
+async fn compaction_after_a_committed_drain_does_not_count_its_samples_twice() {
+    let path = temporary_spool("compaction-after-drain");
+    let vault = vault_pool().await;
+    enqueue_native_samples_at(
+        &path,
+        VAULT,
+        DEVICE,
+        &[sample("one", 12), sample("two", 18)],
+    )
+    .await
+    .unwrap();
+    drain_without_cleanup(&path, &vault).await;
+    let spool = open_spool(&path).await.unwrap();
+    let mut transaction = spool.begin().await.unwrap();
+    compact_pending(&mut transaction, VAULT, DEVICE)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    spool.close().await;
+    drain_at(&path, &vault, VAULT, DEVICE, &window())
+        .await
+        .unwrap();
+    assert_eq!(journal_total(&vault).await, 30);
+    vault.close().await;
+    remove(&path);
+}
+
+#[tokio::test]
+async fn samples_the_journal_refuses_leave_the_spool_and_the_rest_drain() {
+    let path = temporary_spool("refused-samples");
+    let vault = vault_pool().await;
+    // A trigger refusal stands for any permanent vault rule beyond the column checks.
+    sqlx::raw_sql(
+        "CREATE TRIGGER refuse_usage BEFORE INSERT ON distractions_usage_samples
+         WHEN NEW.id = 'refused' BEGIN SELECT RAISE(ABORT, 'injected refusal'); END",
+    )
+    .execute(&vault)
+    .await
+    .unwrap();
+    let mut unknown_source = sample("unknown-source", 7);
+    unknown_source.source_type = "tablet-app".to_string();
+    enqueue_native_samples_at(
+        &path,
+        VAULT,
+        DEVICE,
+        &[
+            sample("one", 12),
+            sample("empty", 0),
+            unknown_source,
+            sample("refused", 3),
+            sample("two", 18),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        drain_at(&path, &vault, VAULT, DEVICE, &window())
+            .await
+            .unwrap(),
+        5
+    );
+    assert!(pending(&path).await.is_empty());
+    assert_eq!(
+        journal(&vault).await,
+        [("one".to_string(), 12), ("two".to_string(), 18)]
+    );
+    // A later batch is not held back by the refused rows.
+    enqueue_native_samples_at(&path, VAULT, DEVICE, &[sample("three", 5)])
+        .await
+        .unwrap();
+    assert_eq!(
+        drain_at(&path, &vault, VAULT, DEVICE, &window())
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(journal_total(&vault).await, 35);
     vault.close().await;
     remove(&path);
 }

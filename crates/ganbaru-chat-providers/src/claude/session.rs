@@ -13,6 +13,7 @@ use super::protocol::{
 use super::transport::{ClaudeInboundMessage, ClaudeJsonlClient};
 use crate::confinement::ShellSandbox;
 use crate::events::*;
+use crate::live_session::ConnectionKill;
 use crate::models::*;
 use crate::process::systemd_scope::{memory_limit_warning, reached_memory_limit};
 use serde_json::{Map, Value, json};
@@ -60,6 +61,8 @@ pub struct RoutedClaudeRequest {
 
 pub struct ClaudeRouterResources {
     pub client: ClaudeJsonlClient,
+    /// Stops the process when routing fails, so a session the router left cannot keep running.
+    pub kill: ConnectionKill,
     pub inbound: mpsc::Receiver<ClaudeInboundMessage>,
     pub normalizer: Arc<ClaudeEventNormalizer>,
     pub route: Arc<Mutex<ClaudeRouteState>>,
@@ -113,22 +116,28 @@ async fn run_claude_router(mut resources: ClaudeRouterResources) {
         let result = match message {
             ClaudeInboundMessage::Message(value) => match gate.as_mut() {
                 Some(gate) => route_gated(&resources, gate, value).await,
-                None => route_message(&resources, value).await,
+                None => route_message(&resources, value)
+                    .await
+                    .map(|()| Routed::Next),
             },
             ClaudeInboundMessage::Malformed {
                 reason,
                 byte_length,
-            } => route_malformed(&resources, &reason, byte_length).await,
+            } => route_malformed(&resources, &reason, byte_length)
+                .await
+                .map(|()| Routed::Next),
             ClaudeInboundMessage::Closed => {
                 route_closed(&resources).await;
                 return;
             }
         };
-        if let Err(error) = result {
-            if let Ok(mut terminal) = resources.terminal_error.lock() {
-                *terminal = Some(error);
+        match result {
+            Ok(Routed::Next) => {}
+            Ok(Routed::Failed) => return,
+            Err(error) => {
+                fail_session(&resources, gate.as_mut(), &error, "transport/route", None).await;
+                return;
             }
-            return;
         }
     }
     route_closed(&resources).await;
@@ -139,19 +148,27 @@ enum RouterInput {
     VerificationExpired,
 }
 
+/// What routing one frame left the session in.
+enum Routed {
+    /// The router reads the next frame.
+    Next,
+    /// The session already failed and its process was stopped, so the router returns.
+    Failed,
+}
+
 /// Routes one frame of an organizational session through its verification gate.
 async fn route_gated(
     resources: &ClaudeRouterResources,
     gate: &mut ClaudeOrganizationalGate,
     value: Value,
-) -> ChatResult<()> {
+) -> ChatResult<Routed> {
     match gate.admit(value)? {
         ClaudeGateAction::Route(frames) => {
             for frame in frames {
                 if let Err(error) = verify_confined_work(resources, &frame) {
                     fail_session(
                         resources,
-                        gate,
+                        Some(gate),
                         &error,
                         "organizational/git_metadata_changed",
                         Some(NotificationEvent {
@@ -161,21 +178,22 @@ async fn route_gated(
                         }),
                     )
                     .await;
-                    return Err(error);
+                    return Ok(Routed::Failed);
                 }
                 route_message(resources, frame).await?;
             }
-            Ok(())
+            Ok(Routed::Next)
         }
-        ClaudeGateAction::Hold => Ok(()),
+        ClaudeGateAction::Hold => Ok(Routed::Next),
         ClaudeGateAction::Reply(response) => resources
             .client
             .send(response)
             .await
+            .map(|()| Routed::Next)
             .map_err(|error| error.to_chat_error("control response")),
         ClaudeGateAction::Fail => {
             fail_organizational(resources, gate).await;
-            Err(organizational_permission_error())
+            Ok(Routed::Failed)
         }
     }
 }
@@ -201,7 +219,7 @@ async fn fail_organizational(
 ) {
     fail_session(
         resources,
-        gate,
+        Some(gate),
         &organizational_permission_error(),
         "organizational/unverified",
         None,
@@ -209,17 +227,19 @@ async fn fail_organizational(
     .await;
 }
 
-/// Fails an organizational session with `error`: held frames are dropped, the active turn
-/// fails without retry, and the process is killed. The router returns afterwards, so the
-/// closed stream never replaces the error. A `warning` is raised before the failure.
+/// Fails the session with `error`: an organizational session's held frames are dropped, the
+/// active turn fails without retry, and the process is killed. The router returns afterwards,
+/// so the closed stream never replaces the error. A `warning` is raised before the failure.
 async fn fail_session(
     resources: &ClaudeRouterResources,
-    gate: &mut ClaudeOrganizationalGate,
+    gate: Option<&mut ClaudeOrganizationalGate>,
     error: &ChatError,
     source: &str,
     warning: Option<NotificationEvent>,
 ) {
-    gate.discard();
+    if let Some(gate) = gate {
+        gate.discard();
+    }
     if let Ok(mut terminal) = resources.terminal_error.lock() {
         *terminal = Some(error.clone());
     }
@@ -241,12 +261,11 @@ async fn fail_session(
             let failed = resources
                 .normalizer
                 .failed_event(&mut state, source, &error.message)?;
-            let previous_state = if failed.is_some() {
+            let previous_state = if failed.is_some() || state.active_chat_turn_id.is_some() {
                 ProviderSessionState::Active
             } else {
-                state.session_state
+                ProviderSessionState::Ready
             };
-            state.session_state = ProviderSessionState::Failed;
             let changed = resources.normalizer.external_event(
                 &state,
                 source,
@@ -267,7 +286,7 @@ async fn fail_session(
     if let Ok(events) = events {
         let _ = emit_events(&resources.sink, events).await;
     }
-    let _ = gate.kill_handle().kill(SESSION_FORCE_STOP).await;
+    let _ = resources.kill.kill(SESSION_FORCE_STOP).await;
 }
 
 async fn route_message(resources: &ClaudeRouterResources, value: Value) -> ChatResult<()> {
@@ -329,14 +348,6 @@ async fn route_provider_request(
         if !claims_routed_plan(&mut state, &routed.event, control_request_id) {
             return Ok(());
         }
-        if provider_request_id.is_some() {
-            state.session_state = if matches!(&routed.event, CanonicalEvent::UserInputRequested(_))
-            {
-                ProviderSessionState::WaitingForUserInput
-            } else {
-                ProviderSessionState::WaitingForApproval
-            };
-        }
         resources.normalizer.external_event(
             &state,
             "control/can_use_tool",
@@ -384,10 +395,7 @@ async fn route_withdrawn_request(
         }
     };
     let event = {
-        let mut state = resources.route.lock().map_err(|_| state_error())?;
-        if state.active_chat_turn_id.is_some() {
-            state.session_state = ProviderSessionState::Active;
-        }
+        let state = resources.route.lock().map_err(|_| state_error())?;
         resources.normalizer.external_event(
             &state,
             "control/cancel_request",
@@ -446,7 +454,7 @@ async fn route_closed(resources: &ClaudeRouterResources) {
             let interrupted = resources
                 .normalizer
                 .interrupted_event(&mut state, "Claude stream closed")?;
-            state.session_state = if expected {
+            let closed_state = if expected {
                 ProviderSessionState::Stopped
             } else {
                 ProviderSessionState::Failed
@@ -462,7 +470,7 @@ async fn route_closed(resources: &ClaudeRouterResources) {
                     } else {
                         ProviderSessionState::Ready
                     },
-                    state: state.session_state,
+                    state: closed_state,
                     reason: Some(if expected {
                         "Claude session stopped".to_string()
                     } else {

@@ -82,6 +82,18 @@
     return chat.agents.find((agent) => agent.participant.id === pending.agentId)?.participant ?? null;
   });
 
+  /**
+   * Closes the dialog unless a save is running. A save reports back to the parent when it finishes, and that report
+   * would otherwise land on whatever dialog the parent opened after this one closed.
+   *
+   * @returns Whether the dialog closed.
+   */
+  function dismiss(): boolean {
+    if (saving) return false;
+    onCancel();
+    return true;
+  }
+
   function addMembers(agentIds: string[]): void {
     selectedAgentIds = new Set([...selectedAgentIds, ...agentIds]);
   }
@@ -92,7 +104,7 @@
    */
   function setUpProvider(): void {
     const channelId = currentChannel?.id;
-    onCancel();
+    if (!dismiss()) return;
     settingsLauncher.open("agents", {
       agentsSubsection: "providers",
       onClosed: () => {
@@ -136,7 +148,7 @@
 
   function configureMember(): void {
     const channelId = currentChannel?.id;
-    onCancel();
+    if (!dismiss()) return;
     if (channelId) openAgentSettings(channelId);
   }
 
@@ -177,7 +189,7 @@
     }
     if (event.key !== "Escape" || dialog?.querySelector("[data-app-floating-surface]")) return;
     event.preventDefault();
-    onCancel();
+    dismiss();
   }
 
   onMount(() => {
@@ -195,7 +207,7 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="fixed inset-0 z-90 flex items-center justify-center p-4" onclick={onCancel}>
+<div class="fixed inset-0 z-90 flex items-center justify-center p-4" onclick={dismiss}>
   <div class="surface-backdrop absolute inset-0"></div>
   <div
     bind:this={dialog}
@@ -211,7 +223,7 @@
   <form class="contents" onsubmit={(event) => { event.preventDefault(); void save(); }}>
     <header class="flex items-center justify-between gap-3 px-5 pt-4 pb-1">
       <h2 id="channel-dialog-title" class="truncate text-[1rem] font-semibold">{currentChannel ? `#${currentChannel.name}` : t("chat.channels.createTitle")}</h2>
-      <button type="button" class="dialog-icon-button" aria-label={t("common.close")} onclick={onCancel}><X size={16} /></button>
+      <button type="button" class="dialog-icon-button" aria-label={t("common.close")} disabled={saving} onclick={dismiss}><X size={16} /></button>
     </header>
 
     <div class="dialog-body flex min-h-0 flex-col gap-4 overflow-y-auto px-5 py-3 text-panel">
@@ -271,7 +283,7 @@
     </div>
 
     <footer class="flex justify-end gap-2 px-5 pt-2 pb-4">
-      <button type="button" class="chat-secondary-button" onclick={onCancel}>{t("common.cancel")}</button>
+      <button type="button" class="chat-secondary-button" disabled={saving} onclick={dismiss}>{t("common.cancel")}</button>
       <button type="submit" class="chat-primary-button" disabled={saving || !name.trim()}>{#if saving}<LoaderCircle size={14} class="animate-spin" />{/if}{currentChannel ? t("common.save") : t("chat.channels.create")}</button>
     </footer>
   </form>

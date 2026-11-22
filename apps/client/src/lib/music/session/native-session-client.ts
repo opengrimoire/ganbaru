@@ -6,6 +6,12 @@ import {
   type NativeMusicSnapshot, type NativeMusicStart,
 } from "./native-session";
 
+/** The native subscription lifecycle. Notices are accepted once subscribing starts. */
+type NativeMusicConnection =
+  | { phase: "idle" }
+  | { phase: "connecting"; id: string; task: Promise<void> }
+  | { phase: "connected"; id: string };
+
 interface NativeMusicClientContext {
   snapshot(value: NativeMusicSnapshot): void;
   effect(value: NativeMusicEffect): Promise<void>;
@@ -15,14 +21,12 @@ interface NativeMusicClientContext {
 
 /** Connects presentation to native state and preserves action identity across uncertain replies. */
 export class NativeMusicSessionClient {
-  private subscriptionId: string | null = null;
   private stream: Promise<void> = Promise.resolve();
   private sequence = 0;
   private pendingAcknowledgement: number | null = null;
   private pendingNotice: number | null = null;
   private acknowledging: Promise<void> | null = null;
-  private connected = false;
-  private connecting: Promise<void> | null = null;
+  private connection: NativeMusicConnection = { phase: "idle" };
   private sessionId: string | null = null;
   private revision = -1;
   private generation = -1;
@@ -34,54 +38,63 @@ export class NativeMusicSessionClient {
 
   /** The native subscription includes an initial canonical snapshot before later transitions. */
   connect(available = true): Promise<void> {
-    if (this.connecting) return this.connecting;
-    if (this.connected) return Promise.resolve();
-    const epoch = this.epoch;
+    if (this.connection.phase === "connecting") return this.connection.task;
+    if (this.connection.phase === "connected") return Promise.resolve();
     const id = crypto.randomUUID();
-    this.subscriptionId = id;
-    const task = (async () => {
-      this.connected = true;
-      try {
-        const channel = new Channel<unknown>((value) => {
-          if (epoch !== this.epoch || !this.connected || id !== this.subscriptionId) return;
-          try {
-            const notice = parseNativeMusicNotice(value);
-            if (notice.subscriptionId !== id) throw new Error("Music notice belongs to another subscription");
-            if (notice.kind === "invalidate") {
-              const generation = this.generation;
-              this.reset();
-              void this.context.effect({ kind: "stop", generation: Math.max(0, generation) }).catch((error: unknown) => this.context.error(error));
-              return;
-            }
-          } catch (error) { this.context.error(error); this.disconnect(); return; }
-          this.stream = this.stream.then(async () => {
-            if (epoch !== this.epoch || !this.connected || id !== this.subscriptionId) return;
-            await this.consume(value, id, epoch);
-          }).catch((error: unknown) => {
-            if (epoch !== this.epoch) return;
-            this.context.error(error);
-            this.disconnect();
-          });
+    // Notices may arrive while subscribing, so the connecting phase starts before the request.
+    const connecting: NativeMusicConnection & { phase: "connecting" } = { phase: "connecting", id, task: Promise.resolve() };
+    this.connection = connecting;
+    connecting.task = this.open(id, this.epoch, available);
+    void connecting.task.catch(() => undefined);
+    return connecting.task;
+  }
+
+  private async open(id: string, epoch: number, available: boolean): Promise<void> {
+    try {
+      const channel = new Channel<unknown>((value) => {
+        if (epoch !== this.epoch || !this.isOpen(id)) return;
+        try {
+          const notice = parseNativeMusicNotice(value);
+          if (notice.subscriptionId !== id) throw new Error("Music notice belongs to another subscription");
+          if (notice.kind === "invalidate") {
+            const generation = this.generation;
+            this.reset();
+            void this.context.effect({ kind: "stop", generation: Math.max(0, generation) }).catch((error: unknown) => this.context.error(error));
+            return;
+          }
+        } catch (error) { this.context.error(error); this.disconnect(); return; }
+        this.stream = this.stream.then(async () => {
+          if (epoch !== this.epoch || !this.isOpen(id)) return;
+          await this.consume(value, id, epoch);
+        }).catch((error: unknown) => {
+          if (epoch !== this.epoch) return;
+          this.context.error(error);
+          this.disconnect();
         });
-        await musicSessionSubscribe(id, channel);
-        if (epoch !== this.epoch || !this.connected) {
-          await musicSessionUnsubscribe(id);
-          return;
-        }
-        await musicSessionHost(id, available);
-      } catch (error) { if (epoch === this.epoch) this.disconnect(); throw error; }
-    })();
-    this.connecting = task;
-    void task.finally(() => { if (this.connecting === task) this.connecting = null; }).catch(() => undefined);
-    return task;
+      });
+      await musicSessionSubscribe(id, channel);
+      if (epoch !== this.epoch || !this.isOpen(id)) {
+        await musicSessionUnsubscribe(id);
+        return;
+      }
+      await musicSessionHost(id, available);
+      if (epoch === this.epoch && this.isOpen(id)) this.connection = { phase: "connected", id };
+    } catch (error) { if (epoch === this.epoch) this.disconnect(); throw error; }
+  }
+
+  /** The subscription that accepts notices, while connecting or connected. */
+  private get subscriptionId(): string | null {
+    return this.connection.phase === "idle" ? null : this.connection.id;
+  }
+
+  private isOpen(id: string): boolean {
+    return this.subscriptionId === id;
   }
 
   disconnect(): void {
     const id = this.subscriptionId;
     this.epoch += 1;
-    this.connected = false;
-    this.connecting = null;
-    this.subscriptionId = null;
+    this.connection = { phase: "idle" };
     this.sequence = 0;
     this.pendingAcknowledgement = null;
     this.pendingNotice = null;
@@ -115,7 +128,7 @@ export class NativeMusicSessionClient {
       if (epoch === this.epoch) this.context.error(error);
       return;
     }
-    if (epoch !== this.epoch || !this.connected) return;
+    if (epoch !== this.epoch || !this.isOpen(id)) return;
     const frame = parseNativeMusicFrame(valueFromNative);
     if (frame.subscriptionId !== id || frame.sequence !== notice.sequence) throw new Error("Music frame does not match its notice");
     this.pendingNotice = null;
@@ -125,7 +138,7 @@ export class NativeMusicSessionClient {
         await this.context.effect({ kind: "stop", generation: this.generation });
       } else {
         for (const effect of frame.effects) {
-          if (epoch !== this.epoch || !this.connected) return;
+          if (epoch !== this.epoch || !this.isOpen(id)) return;
           if (effect.generation < this.generation) continue;
           this.generation = effect.generation;
           await this.context.effect(effect);
@@ -136,7 +149,7 @@ export class NativeMusicSessionClient {
       await this.context.effect({ kind: "stop", generation: this.generation });
       await musicSessionHost(id, false);
     }
-    if (epoch !== this.epoch || !this.connected) return;
+    if (epoch !== this.epoch || !this.isOpen(id)) return;
     this.sequence = frame.sequence;
     this.pendingAcknowledgement = frame.sequence;
     await this.acknowledge();

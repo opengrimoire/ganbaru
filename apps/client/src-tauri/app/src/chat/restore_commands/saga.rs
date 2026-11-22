@@ -75,7 +75,7 @@ pub(super) async fn execute_restore(
         .owner(request.thread_id.clone())?;
     let snapshot = owner.snapshot()?;
     if let (Some(session_id), Some(turn_id)) =
-        (snapshot.session_id.clone(), snapshot.active_turn_id.clone())
+        (snapshot.session_id.clone(), snapshot.active_turn_id().cloned())
     {
         owner
             .interrupt_turn(
@@ -265,11 +265,11 @@ pub(super) async fn align_provider_history(
         Some(turn_id) => stored_provider_rollback_cursor(pool, &request.thread_id, turn_id).await?,
         None => None,
     };
-    let rollback_session = refreshed.session_id.filter(|_| {
+    let rollback_session = refreshed.session_id.clone().filter(|_| {
         refreshed
             .capabilities
             .supports(ProviderCapability::NativeRollback)
-            && refreshed.session_state == ProviderSessionState::Ready
+            && refreshed.session_state() == ProviderSessionState::Ready
             && provider_cursor.is_some()
     });
     let Some(session_id) = rollback_session else {

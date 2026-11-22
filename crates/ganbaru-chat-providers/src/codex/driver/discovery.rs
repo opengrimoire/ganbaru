@@ -340,11 +340,7 @@ impl CodexProviderDriver {
         };
         if live.organizational.is_some()
             || working_directory.is_some_and(|directory| directory != live.workspace)
-            || live
-                .terminal_error
-                .lock()
-                .map_err(|_| driver_state_error())?
-                .is_some()
+            || !live.lifecycle.is_running()
         {
             return Ok(None);
         }

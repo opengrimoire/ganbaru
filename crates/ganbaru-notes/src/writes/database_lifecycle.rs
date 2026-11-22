@@ -1,5 +1,6 @@
 //! Ownership-aware trash journaling for Notes page and block graphs.
 
+use crate::page_lifecycle::{self, PageMove};
 use crate::{data_sources, page_history, project_history};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -8,6 +9,13 @@ use std::collections::{HashSet, VecDeque};
 
 const JOURNAL_KEY: &str = "__ganbaru_trash";
 const MAX_TRASH_OBJECTS: usize = super::database_copy::MAX_COPY_OBJECTS;
+
+/// A restored `child_page` block shows only a live page nested through it, so restoring an older
+/// block deletion never shows the block of a page that was trashed or archived since.
+const CHILD_PAGE_BLOCK_RESTORABLE_SQL: &str = "(notes_blocks.type <> 'child_page' OR EXISTS (
+    SELECT 1 FROM notes_pages WHERE notes_pages.id = notes_blocks.id
+      AND notes_pages.child_block_id = notes_blocks.id
+      AND notes_pages.in_trash = 0 AND notes_pages.archived = 0))";
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 enum TrashObject {
@@ -68,14 +76,19 @@ async fn set_graph_trash(
         }
         let mut journal = collect_graph(tx, root.clone(), None).await?;
         journal.token = super::ids::new_note_id(tx, &mut HashSet::new()).await?;
+        let since = page_lifecycle::lifecycle_now_tx(tx).await?;
         for page in &journal.pages {
             page_history::record_page_snapshot_tx(tx, page, "trash_page").await?;
             project_history::mark_page_dirty_tx(tx, page, "Trash Notes content", true).await?;
-            sqlx::query("UPDATE notes_pages SET in_trash = 1, trashed_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                trash_owner = ?,
-                last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND in_trash = 0")
-                .bind(&journal.token).bind(page).execute(&mut **tx).await
-                .map_err(|e| format!("trash owned Notes page: {e}"))?;
+            // A trashed root page forgets its archive, while a nested page keeps its own
+            // archive choice and returns to Archive when the deletion is restored.
+            let keep_archive = !matches!(&root, TrashObject::Page(root_id) if root_id == page);
+            let request = PageMove::Trash {
+                owner: Some(journal.token.clone()),
+                since: since.clone(),
+                keep_archive,
+            };
+            page_lifecycle::move_page_lifecycle_tx(tx, page, &request).await?;
             data_sources::rollups::invalidate_rollup_cache_for_page_tx(tx, page).await?;
         }
         for block in &journal.blocks {
@@ -124,20 +137,23 @@ async fn set_graph_trash(
         } else {
             // History restoration and page moves can trash individual records without a graph journal.
             // Restore only that record, preserving independently trashed descendants.
-            sqlx::query(AssertSqlSafe(format!(
-                "UPDATE {table} SET in_trash = 0,
-                last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?"
-            )))
-            .bind(id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| format!("restore individual Notes trash root: {e}"))?;
             if table == "notes_pages" {
-                sqlx::query("UPDATE notes_pages SET trashed_time = NULL WHERE id = ?")
-                    .bind(id)
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(|e| format!("clear restored Notes trash time: {e}"))?;
+                let request = PageMove::Restore { owner: None };
+                page_lifecycle::move_page_lifecycle_tx(tx, id, &request).await?;
+            } else {
+                let child_page_guard = if table == "notes_blocks" {
+                    format!(" AND {CHILD_PAGE_BLOCK_RESTORABLE_SQL}")
+                } else {
+                    String::new()
+                };
+                sqlx::query(AssertSqlSafe(format!(
+                    "UPDATE {table} SET in_trash = 0,
+                    last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?{child_page_guard}"
+                )))
+                .bind(id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| format!("restore individual Notes trash root: {e}"))?;
             }
         }
     }
@@ -362,16 +378,17 @@ async fn restore_journal(
             SELECT 1 FROM notes_blocks WHERE id = notes_data_sources.database_id AND trash_owner = ?)")
             .bind(id).bind(&journal.token).execute(&mut **tx).await.map_err(|e| format!("restore owned Notes data source: {e}"))?;
     }
+    let restore = PageMove::Restore {
+        owner: Some(journal.token.clone()),
+    };
     for id in &journal.pages {
-        sqlx::query("UPDATE notes_pages SET in_trash = 0, trashed_time = NULL,
-            trash_owner = NULL,
-            last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND trash_owner = ?")
-            .bind(id).bind(&journal.token).execute(&mut **tx).await.map_err(|e| format!("restore owned Notes page: {e}"))?;
+        page_lifecycle::move_page_lifecycle_tx(tx, id, &restore).await?;
         data_sources::rollups::invalidate_rollup_cache_for_page_tx(tx, id).await?;
     }
     for id in &journal.blocks {
-        sqlx::query("UPDATE notes_blocks SET in_trash = 0, trash_owner = NULL,
-            last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND trash_owner = ?")
+        sqlx::query(AssertSqlSafe(format!("UPDATE notes_blocks SET in_trash = 0, trash_owner = NULL,
+            last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND trash_owner = ?
+            AND {CHILD_PAGE_BLOCK_RESTORABLE_SQL}")))
             .bind(id).bind(&journal.token).execute(&mut **tx).await.map_err(|e| format!("restore owned Notes block: {e}"))?;
     }
     Ok(())

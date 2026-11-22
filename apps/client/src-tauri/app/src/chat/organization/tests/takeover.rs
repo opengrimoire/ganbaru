@@ -1,6 +1,7 @@
 //! Which device executes work: routing new assignments, takeover of stranded work, and dispatch claims.
 
 use super::*;
+use ganbaru_sync::WriterState;
 
 /// Routes the review reply `item:review-reply-1` to the review agent as `device` posts it.
 async fn route_review_reply(
@@ -362,8 +363,8 @@ fn takeover_ends_the_local_dispatch_jobs_of_the_work_it_settles() {
             seed_assignment_on_old_owner(&pool, seeded).await;
             sqlx::query(
                 "INSERT INTO chat_assignment_dispatch_jobs
-                    (id, assignment_id, state, available_at, created_at, updated_at)
-                 VALUES ('dispatch:old', 'assignment:old', 'claimed', ?1, ?1, ?1)",
+                    (id, assignment_id, state, claim_token, available_at, created_at, updated_at)
+                 VALUES ('dispatch:old', 'assignment:old', 'claimed', 'claim:old', ?1, ?1, ?1)",
             )
             .bind(now.as_str())
             .execute(&pool)
@@ -389,9 +390,13 @@ pub(super) async fn insert_sync_writer(
     pool: &SqlitePool,
     index: u8,
     device_id: &str,
-    state: &str,
-    removed: bool,
+    state: ganbaru_sync::WriterState,
 ) {
+    let seq = |cutoff: u64| i64::try_from(cutoff).unwrap();
+    let removal_cutoff = match state {
+        ganbaru_sync::WriterState::Revoked { cutoff } => Some(seq(cutoff)),
+        _ => None,
+    };
     sqlx::query(
         "INSERT OR IGNORE INTO sync_spaces (space_id, vault_id, created_at_ms)
          VALUES (zeroblob(16), 'vault', 0)",
@@ -401,15 +406,16 @@ pub(super) async fn insert_sync_writer(
     .unwrap();
     sqlx::query(
         "INSERT INTO sync_writers
-            (space_id, writer_id, public_key, device_id, certificate, state, stored_seq,
-             applied_seq, head_hash, head_clock, created_at_ms, removal_cutoff_seq)
-         VALUES (zeroblob(16), ?1, ?2, ?3, x'00', ?4, 1, 0, zeroblob(32), 0, 0, ?5)",
+            (space_id, writer_id, public_key, device_id, certificate, state, cutoff_seq,
+             stored_seq, applied_seq, head_hash, head_clock, created_at_ms, removal_cutoff_seq)
+         VALUES (zeroblob(16), ?1, ?2, ?3, x'00', ?4, ?5, 1, 0, zeroblob(32), 0, 0, ?6)",
     )
     .bind(vec![index; 16])
     .bind(vec![index; 32])
     .bind(device_id)
-    .bind(state)
-    .bind(removed.then_some(0_i64))
+    .bind(state.as_str())
+    .bind(state.cutoff().map(seq))
+    .bind(removal_cutoff)
     .execute(pool)
     .await
     .unwrap();
@@ -419,11 +425,22 @@ pub(super) async fn insert_sync_writer(
 fn chat_writers_list_linked_devices_with_an_active_writer_that_was_not_removed() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
-        insert_sync_writer(&pool, 1, "device:replica", "active", false).await;
-        insert_sync_writer(&pool, 2, "device:replica", "retired", false).await;
-        insert_sync_writer(&pool, 3, "device:unlinked", "revoked", false).await;
-        insert_sync_writer(&pool, 4, "device:removed", "active", true).await;
-        insert_sync_writer(&pool, 5, "device:forked", "forked", false).await;
+        insert_sync_writer(&pool, 1, "device:replica", WriterState::Active).await;
+        insert_sync_writer(
+            &pool,
+            2,
+            "device:replica",
+            WriterState::Forked { cutoff: 0 },
+        )
+        .await;
+        insert_sync_writer(
+            &pool,
+            3,
+            "device:removed",
+            WriterState::Revoked { cutoff: 0 },
+        )
+        .await;
+        insert_sync_writer(&pool, 4, "device:forked", WriterState::Forked { cutoff: 0 }).await;
         assert_eq!(
             super::common::active_writer_devices(&pool).await.unwrap(),
             vec!["device:replica".to_string()]
@@ -439,8 +456,8 @@ fn a_device_whose_start_merged_onto_another_executor_ends_only_its_own_dispatch(
         seed_assignment_on_old_owner(&pool, "working").await;
         sqlx::query(
             "INSERT INTO chat_assignment_dispatch_jobs
-                (id, assignment_id, state, available_at, created_at, updated_at)
-             VALUES ('dispatch:old', 'assignment:old', 'claimed', ?1, ?1, ?1)",
+                (id, assignment_id, state, claim_token, available_at, created_at, updated_at)
+             VALUES ('dispatch:old', 'assignment:old', 'claimed', 'claim:old', ?1, ?1, ?1)",
         )
         .bind(now.as_str())
         .execute(&pool)

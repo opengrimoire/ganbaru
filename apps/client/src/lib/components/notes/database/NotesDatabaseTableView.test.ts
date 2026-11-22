@@ -967,3 +967,75 @@ describe("Notes table property drafts", () => {
     expect(onAddProperty).not.toHaveBeenCalled();
   });
 });
+
+describe("Notes table load more", () => {
+  /** Replaces the missing jsdom observer with one the test fires, returning the trigger. */
+  function stubIntersection(): () => void {
+    const callbacks: IntersectionObserverCallback[] = [];
+    class TestObserver {
+      constructor(callback: IntersectionObserverCallback) { callbacks.push(callback); }
+      observe(): void {}
+      disconnect(): void {}
+    }
+    vi.stubGlobal("IntersectionObserver", TestObserver);
+    return () => {
+      for (const callback of callbacks) {
+        callback([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+      }
+    };
+  }
+
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  async function openWithMore() {
+    const reveal = stubIntersection();
+    await open(undefined, { ...table(240), has_more: true, next_cursor: "cursor-1" });
+    let failMore: (error: Error) => void = () => {};
+    let finishReload: (view: NotesDataSourceTableView) => void = () => {};
+    vi.mocked(getNotesDataSourceTableView).mockImplementation((_id, _scope, page) => new Promise((resolve, reject) => {
+      if (page?.start_cursor) failMore = reject;
+      else finishReload = resolve;
+    }));
+    return { reveal, failMore: (error: Error) => failMore(error), finishReload: (view: NotesDataSourceTableView) => finishReload(view) };
+  }
+
+  it("shows a load more failure while the window it extended is still shown", async () => {
+    const { reveal, failMore } = await openWithMore();
+    reveal();
+    await vi.waitFor(() => expect(getNotesDataSourceTableView).toHaveBeenCalledTimes(2));
+    failMore(new Error("offline"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("The table could not be loaded."));
+  });
+
+  it("clears a load more failure once a reload that was already running replaces the window", async () => {
+    const { reveal, failMore, finishReload } = await openWithMore();
+    notesDatabaseSession.invalidate();
+    await vi.waitFor(() => expect(getNotesDataSourceTableView).toHaveBeenCalledTimes(2));
+    reveal();
+    await vi.waitFor(() => expect(getNotesDataSourceTableView).toHaveBeenCalledTimes(3));
+    failMore(new Error("offline"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("The table could not be loaded."));
+    finishReload(table(320));
+    await vi.waitFor(() => expect(document.body.textContent).not.toContain("The table could not be loaded."));
+  });
+
+  it("keeps a change failure once a reload that was already running replaces the window", async () => {
+    const onPropertyAction = vi.fn<(request: NotesDatabasePropertyActionRequest) => Promise<void>>().mockRejectedValueOnce(new Error("Disk full"));
+    vi.mocked(getNotesDataSourceTableView).mockResolvedValue(configuredTable());
+    vi.mocked(listNotesDataSourceTemplates).mockResolvedValue([]);
+    component = mount(NotesDatabaseTableView, { target: document.body, props: {
+      dataSourceId: "source", onSelectPage: vi.fn(), onAddProperty: vi.fn(), onPropertyAction, onEditProperties: vi.fn(), onCloseSettings: vi.fn(),
+    } });
+    await vi.waitFor(() => expect(document.querySelector('[role="columnheader"] button[aria-label="Name"]')).not.toBeNull());
+    let finishReload: (view: NotesDataSourceTableView) => void = () => {};
+    vi.mocked(getNotesDataSourceTableView).mockImplementation(() => new Promise((resolve) => { finishReload = resolve; }));
+    notesDatabaseSession.invalidate();
+    await vi.waitFor(() => expect(getNotesDataSourceTableView).toHaveBeenCalledTimes(2));
+    action(await propertyMenu("Status"), "Delete property").click();
+    await vi.waitFor(() => expect(document.body.textContent).toContain("The change could not be saved."));
+    finishReload(configuredTable());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await tick();
+    expect(document.body.textContent).toContain("The change could not be saved.");
+  });
+});

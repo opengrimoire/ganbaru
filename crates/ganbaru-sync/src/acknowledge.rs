@@ -11,7 +11,7 @@ use ganbaru_sync_contracts::{VersionVector, WriterId};
 use sqlx::{Connection, SqliteConnection};
 
 use crate::error::{SyncResult, corrupt, failpoint};
-use crate::log::{self, WriterRow, WriterState, seq_i64, stored_u64};
+use crate::log::{self, WriterRow, seq_i64, stored_u64};
 use crate::merge::Batch;
 use crate::seal::{Advance, SealReport, SealSlot};
 use crate::{Engine, LocalWriter, SpaceContext, SyncError, sql};
@@ -46,7 +46,7 @@ impl Engine {
         let id = writer.id();
         let row = log::writer(&mut tx, ctx.space, id).await?;
         if let Some(row) = &row
-            && row.state != WriterState::Active
+            && !row.state.is_active()
         {
             return Err(SyncError::WriterInactive(id));
         }

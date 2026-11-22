@@ -222,7 +222,6 @@ pub async fn update_project(
              icon_byte_size = ?,
              color = ?,
              order_key = ?,
-             status = ?,
              default_event_name = ?,
              default_event_time_mode = ?,
              default_event_duration_minutes = ?,
@@ -248,7 +247,6 @@ pub async fn update_project(
     .bind(icon_byte_size)
     .bind(project.color)
     .bind(order_key)
-    .bind(&project.status)
     .bind(normalized_optional_text(
         project.default_event_name.as_deref(),
     ))

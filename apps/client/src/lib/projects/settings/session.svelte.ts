@@ -3,6 +3,7 @@ import {
   emptyProjectDraft,
   projectDraftDirty,
   projectDraftFromProject,
+  projectLifecycleChangeFromDraft,
   projectUpdateFromDraft,
   type ProjectDraft,
   type ProjectDraftError,
@@ -331,6 +332,7 @@ export function createProjectSettingsSession(options: ProjectSettingsSessionOpti
       return false;
     }
 
+    const lifecycleChange = projectLifecycleChangeFromDraft(project.id, state.projectDraft);
     const shouldRevealInactive = shouldUpdateProject && state.projectDraft.status !== "active";
     state.projectSettingsSaving = true;
     state.projectSettingsError = null;
@@ -344,6 +346,10 @@ export function createProjectSettingsSession(options: ProjectSettingsSessionOpti
             musicAssignmentsUpdatedAt: musicUpdate.updatedAt,
           } : {}),
         });
+        if (lifecycleChange) {
+          await projects.setProjectStatus(project, lifecycleChange.next, lifecycleChange.expected);
+          state.projectDraft.openedStatus = lifecycleChange.next;
+        }
         onProjectSaved?.();
       }
       for (const draft of statusResult.drafts) {

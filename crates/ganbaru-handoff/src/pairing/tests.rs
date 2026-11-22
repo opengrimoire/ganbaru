@@ -951,19 +951,6 @@ fn expired_invitation_is_rejected() {
     );
 }
 
-fn transfer_metadata(transfer_id: &str) -> BundleMetadata {
-    BundleMetadata {
-        protocol_version: PROTOCOL_VERSION,
-        compatibility: crate::protocol::test_compatibility(),
-        vault_id: "vault-1".to_string(),
-        device_id: "device-phone".to_string(),
-        transfer_id: transfer_id.to_string(),
-        archive_bytes: 42,
-        archive_sha256: "a".repeat(64),
-        derived_state_stale: false,
-    }
-}
-
 #[test]
 fn unlink_clears_the_peer_but_refuses_active_transfer_state() {
     let temporary = TestDirectory::new("unlink");
@@ -983,35 +970,43 @@ fn unlink_clears_the_peer_but_refuses_active_transfer_state() {
     manager
         .enroll_peer(enrollment(&invitation, &phone), 101)
         .expect("enroll");
+    let metadata = stage_outgoing_copy(&manager, "transfer-unlink");
     manager
-        .store_outgoing_transfer(StoredOutgoingTransfer {
-            metadata: transfer_metadata("transfer-unlink"),
-        })
-        .expect("store outgoing transfer");
+        .begin_outgoing_transfer(metadata, crate::protocol::unix_time_ms())
+        .expect("offer outgoing copy");
 
     assert!(manager.unlink().is_err());
     manager
-        .clear_outgoing_transfer("transfer-unlink")
-        .expect("clear outgoing transfer");
+        .release_outgoing_transfer("transfer-unlink")
+        .expect("release outgoing copy");
     manager.unlink().expect("unlink stable pairing");
     assert!(manager.linked_peers().expect("peer status").is_empty());
 }
 
+/// Activates a coordinator copy described by `acknowledgement` on `manager`.
+fn activate_coordinator_copy(
+    manager: &PairingManager,
+    acknowledgement: PendingAcknowledgement,
+) -> Result<(), String> {
+    let transfer_id = acknowledgement.transfer_id.clone();
+    manager.begin_activation(PendingActivation {
+        acknowledgement,
+        target: PathBuf::from("/vaults/Ganbaru"),
+        staging: PathBuf::from("/vaults/.ganbaru.handoff-transfer.staging"),
+        from_coordinator: true,
+    })?;
+    manager.record_activation(&transfer_id)
+}
+
 #[test]
 fn activation_acknowledgement_survives_restart() {
-    let temporary = TestDirectory::new("pending-ack");
-    let manager = PairingManager::default();
-    manager
-        .initialize(temporary.path().to_path_buf(), "device-phone".to_string())
-        .expect("initialize");
+    let (temporary, manager, _, _) = linked_phone("pending-ack");
     let pending = PendingAcknowledgement {
         vault_id: "vault-1".to_string(),
         device_id: "device-phone".to_string(),
         transfer_id: "transfer-1".to_string(),
     };
-    manager
-        .record_activation(pending.clone())
-        .expect("record activation");
+    activate_coordinator_copy(&manager, pending.clone()).expect("record activation");
     drop(manager);
 
     let restarted = PairingManager::default();
@@ -1039,26 +1034,27 @@ fn activation_acknowledgement_survives_restart() {
 #[test]
 fn outgoing_transfer_and_its_completion_survive_restart() {
     let temporary = TestDirectory::new("outgoing-restart");
-    let manager = PairingManager::default();
-    manager
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("initialize");
-    let metadata = transfer_metadata("transfer-copy");
-    let outgoing = StoredOutgoingTransfer {
-        metadata: metadata.clone(),
-    };
-    manager
-        .store_outgoing_transfer(outgoing.clone())
-        .expect("store outgoing transfer");
+    let manager = desktop_with_phone(temporary.path());
+    let metadata = stage_outgoing_copy(&manager, "transfer-copy");
+    let outgoing = manager
+        .begin_outgoing_transfer(metadata.clone(), crate::protocol::unix_time_ms())
+        .expect("offer outgoing copy");
     drop(manager);
 
-    let restarted = PairingManager::default();
-    restarted
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("restart");
+    let restarted = desktop_manager(temporary.path());
+    let now_ms = crate::protocol::unix_time_ms();
     assert_eq!(
-        restarted.outgoing_transfer().expect("outgoing transfer"),
+        restarted
+            .active_outgoing_transfer(now_ms)
+            .expect("outgoing transfer"),
         Some(outgoing)
+    );
+    assert_eq!(
+        restarted
+            .outgoing_bundle("transfer-copy")
+            .expect("served after restart")
+            .metadata,
+        metadata
     );
     let completed = PendingAcknowledgement {
         vault_id: metadata.vault_id,
@@ -1068,14 +1064,15 @@ fn outgoing_transfer_and_its_completion_survive_restart() {
     restarted
         .complete_outgoing_activation(completed.clone())
         .expect("complete outgoing activation");
+    assert!(restarted.outgoing_bundle("transfer-copy").is_err());
+    assert!(!outgoing_archive(&restarted, "transfer-copy").exists());
     drop(restarted);
 
-    let acknowledged = PairingManager::default();
-    acknowledged
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("restart completed transfer");
+    let acknowledged = desktop_manager(temporary.path());
     assert_eq!(
-        acknowledged.outgoing_transfer().expect("cleared outgoing"),
+        acknowledged
+            .active_outgoing_transfer(now_ms)
+            .expect("cleared outgoing"),
         None
     );
     assert_eq!(
@@ -1826,4 +1823,565 @@ fn device_certificates_name_no_device() {
     assert!(!contains(device_id.as_bytes()));
     assert!(contains(DEVICE_CERTIFICATE_NAME.as_bytes()));
     assert_eq!(identity.device_id, device_id);
+}
+
+#[test]
+fn a_revoked_member_needs_a_new_copy_when_it_links_again() {
+    let (phone_root, phone, invitation, certificate) = linked_phone("revoked-copy");
+    let pending = PendingAcknowledgement {
+        vault_id: "vault-1".to_string(),
+        device_id: "device-phone".to_string(),
+        transfer_id: "transfer-1".to_string(),
+    };
+    activate_coordinator_copy(&phone, pending).expect("activate copy");
+    phone
+        .clear_pending_acknowledgement("transfer-1")
+        .expect("acknowledge copy");
+    assert!(phone.replica_ready().expect("ready"));
+
+    phone
+        .accept_coordinator_revocation(&pin_of(&phone))
+        .expect("revocation");
+    assert!(phone.revoked_by_coordinator().expect("revoked"));
+    assert!(!phone.replica_ready().expect("copy readiness"));
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("restart");
+    assert!(!restarted.replica_ready().expect("copy readiness"));
+    restarted
+        .record_coordinator(&invitation, &certificate, None)
+        .expect("link again");
+    assert!(!restarted.revoked_by_coordinator().expect("revoked"));
+    assert!(!restarted.replica_ready().expect("copy readiness"));
+}
+
+#[test]
+fn linking_a_device_ends_an_earlier_unlink_or_revocation() {
+    let (phone_root, phone, _, _) = linked_phone("coordinator-after-revocation");
+    phone
+        .accept_coordinator_revocation(&pin_of(&phone))
+        .expect("revocation");
+    enroll_device(&phone, "device-tablet", "Tablet", 500);
+    assert!(!phone.revoked_by_coordinator().expect("revoked"));
+    assert!(phone.is_linked_for("vault-1").expect("linked"));
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("restart");
+    assert!(!restarted.revoked_by_coordinator().expect("revoked"));
+
+    let temporary = TestDirectory::new("coordinator-after-unlink");
+    let desktop = PairingManager::default();
+    desktop
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    desktop
+        .unlink_for(UnlinkReason::KeyProtectionLost)
+        .expect("unlink");
+    enroll_device(&desktop, "device-tablet", "Tablet", 500);
+    assert_eq!(desktop.unlink_reason().expect("reason"), None);
+}
+
+#[test]
+fn a_device_linked_to_a_coordinator_cannot_link_devices_of_its_own() {
+    let (phone_root, phone, _, _) = linked_phone("member-enrolls");
+    let tablet = create_identity("device-tablet".to_string()).expect("tablet identity");
+    let refused = enroll_identity(&phone, "vault-1", &tablet, "Tablet", 500).unwrap_err();
+    assert!(refused.contains("linked to a coordinator"), "{refused}");
+    assert!(phone.linked_peers().expect("peers").is_empty());
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("restart keeps a loadable state");
+}
+
+/// Rewrites the stored state of `root` with `edit`, then expects loading it to fail on
+/// `expected` and leave the file unchanged.
+fn assert_stored_state_refused(
+    root: &Path,
+    device_id: &str,
+    edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+    expected: &str,
+) {
+    let state_path = root.join(PAIRING_STATE_FILE);
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read pairing state"))
+            .expect("decode pairing state");
+    edit(value.as_object_mut().expect("pairing state object"));
+    let written = serde_json::to_vec_pretty(&value).expect("encode state");
+    fs::write(&state_path, &written).expect("write contradictory state");
+    let error = PairingManager::default()
+        .initialize(root.to_path_buf(), device_id.to_string())
+        .expect_err("refuse contradictory state");
+    assert!(error.contains(expected), "{error}");
+    assert_eq!(fs::read(&state_path).expect("unchanged state"), written);
+}
+
+/// A test label, an edit of the stored state, and the refusal it must cause.
+type StateCase = (
+    &'static str,
+    fn(&mut serde_json::Map<String, serde_json::Value>),
+    &'static str,
+);
+
+fn acknowledgement_json(transfer_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "vaultId": "vault-1",
+        "deviceId": "device-phone",
+        "transferId": transfer_id,
+    })
+}
+
+fn activation_json(target: &str) -> serde_json::Value {
+    serde_json::json!({
+        "activation": {
+            "acknowledgement": acknowledgement_json("transfer-2"),
+            "target": target,
+            "staging": "/vaults/.ganbaru.handoff-transfer-2.staging",
+            "fromCoordinator": true,
+        },
+        "wasReady": false,
+    })
+}
+
+#[test]
+fn an_interrupted_activation_survives_restart_and_returns_to_its_readiness() {
+    let (phone_root, phone, _, _) = linked_phone("activating");
+    let activation = PendingActivation {
+        acknowledgement: PendingAcknowledgement {
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            transfer_id: "transfer-2".to_string(),
+        },
+        target: PathBuf::from("/vaults/Ganbaru"),
+        staging: PathBuf::from("/vaults/.ganbaru.handoff-transfer-2.staging"),
+        from_coordinator: false,
+    };
+    phone.begin_activation(activation.clone()).expect("begin");
+    assert!(phone.begin_activation(activation.clone()).is_err());
+    drop(phone);
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("restart");
+    assert_eq!(
+        restarted.pending_activation().expect("activation"),
+        Some(activation.clone())
+    );
+    assert!(!restarted.replica_ready().expect("ready"));
+    assert!(restarted.abandon_activation("transfer-9").is_err());
+    restarted.abandon_activation("transfer-2").expect("abandon");
+    assert!(!restarted.replica_ready().expect("ready"));
+    assert_eq!(restarted.pending_activation().expect("activation"), None);
+
+    restarted.begin_activation(activation).expect("begin again");
+    restarted.record_activation("transfer-2").expect("activate");
+    assert!(restarted.replica_ready().expect("ready"));
+    assert_eq!(
+        restarted.pending_acknowledgement().expect("pending"),
+        None,
+        "a member copy is settled without a retried acknowledgement"
+    );
+}
+
+#[test]
+fn stored_member_states_that_no_role_holds_are_refused() {
+    let cases: [StateCase; 10] = [
+        (
+            "revoked-pin",
+            |state| {
+                state.insert("revokedByCoordinator".to_string(), true.into());
+            },
+            "also recorded as revoked",
+        ),
+        (
+            "reason-pin",
+            |state| {
+                state.insert("unlinkReason".to_string(), "keyProtectionLost".into());
+            },
+            "unlink reason",
+        ),
+        (
+            "ack-without-copy",
+            |state| {
+                state.insert(
+                    "pendingAcknowledgement".to_string(),
+                    acknowledgement_json("transfer-1"),
+                );
+            },
+            "without a vault copy",
+        ),
+        (
+            "member-serves",
+            |state| {
+                state.insert(
+                    "completedActivation".to_string(),
+                    acknowledgement_json("transfer-1"),
+                );
+            },
+            "member serves",
+        ),
+        (
+            "copy-without-pin",
+            |state| {
+                state.insert("coordinator".to_string(), serde_json::Value::Null);
+                state.insert("replicaReady".to_string(), true.into());
+            },
+            "without a coordinator",
+        ),
+        (
+            "activating-while-ready",
+            |state| {
+                state.insert("replicaReady".to_string(), true.into());
+                state.insert("activation".to_string(), activation_json("/vaults/Ganbaru"));
+            },
+            "ready while it is being activated",
+        ),
+        (
+            "activating-with-ack",
+            |state| {
+                state.insert(
+                    "pendingAcknowledgement".to_string(),
+                    acknowledgement_json("transfer-1"),
+                );
+                state.insert("activation".to_string(), activation_json("/vaults/Ganbaru"));
+            },
+            "while another copy is being activated",
+        ),
+        (
+            "activating-without-pin",
+            |state| {
+                state.insert("coordinator".to_string(), serde_json::Value::Null);
+                state.insert("activation".to_string(), activation_json("/vaults/Ganbaru"));
+            },
+            "without a coordinator",
+        ),
+        (
+            "activating-relative",
+            |state| {
+                state.insert("activation".to_string(), activation_json("Ganbaru"));
+            },
+            "folders are inconsistent",
+        ),
+        (
+            "activating-unknown",
+            |state| {
+                let mut activation = activation_json("/vaults/Ganbaru");
+                activation["extra"] = true.into();
+                state.insert("activation".to_string(), activation);
+            },
+            "unknown field",
+        ),
+    ];
+    for (label, edit, expected) in cases {
+        let (root, _, _, _) = linked_phone(label);
+        assert_stored_state_refused(root.path(), "device-phone", edit, expected);
+    }
+}
+
+#[test]
+fn stored_coordinator_states_that_no_role_holds_are_refused() {
+    let cases: [StateCase; 3] = [
+        (
+            "revoked-with-peers",
+            |state| {
+                state.insert("revokedByCoordinator".to_string(), true.into());
+            },
+            "revoked device stores linked devices",
+        ),
+        (
+            "reason-with-peers",
+            |state| {
+                state.insert("unlinkReason".to_string(), "keyProtectionLost".into());
+            },
+            "unlink reason",
+        ),
+        (
+            "served-without-peers",
+            |state| {
+                state.insert("linkedPeers".to_string(), serde_json::json!({}));
+                state.insert(
+                    "completedActivation".to_string(),
+                    acknowledgement_json("transfer-1"),
+                );
+            },
+            "without linked devices",
+        ),
+    ];
+    for (label, edit, expected) in cases {
+        let temporary = TestDirectory::new(label);
+        let manager = PairingManager::default();
+        manager
+            .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+            .expect("initialize");
+        enroll_device(&manager, "device-phone", "Phone", 100);
+        assert_stored_state_refused(temporary.path(), "device-desktop", edit, expected);
+    }
+}
+
+#[test]
+fn every_role_round_trips_through_the_stored_state() {
+    let (phone_root, phone, _, _) = linked_phone("round-trip");
+    let restart = |root: &Path, device_id: &str| {
+        let manager = PairingManager::default();
+        manager
+            .initialize(root.to_path_buf(), device_id.to_string())
+            .expect("restart");
+        manager
+    };
+    activate_coordinator_copy(
+        &phone,
+        PendingAcknowledgement {
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            transfer_id: "transfer-1".to_string(),
+        },
+    )
+    .expect("activate");
+    let restarted = restart(phone_root.path(), "device-phone");
+    assert!(restarted.replica_ready().expect("ready"));
+    assert!(restarted.has_pending_transfer().expect("pending"));
+    restarted
+        .clear_pending_acknowledgement("transfer-1")
+        .expect("acknowledge");
+    restarted
+        .accept_coordinator_revocation(&pin_of(&restarted))
+        .expect("revoke");
+    let revoked = restart(phone_root.path(), "device-phone");
+    assert!(revoked.revoked_by_coordinator().expect("revoked"));
+    assert!(!revoked.has_links().expect("links"));
+    revoked
+        .unlink_for(UnlinkReason::KeyProtectionLost)
+        .expect("unlink");
+    let unlinked = restart(phone_root.path(), "device-phone");
+    assert!(!unlinked.revoked_by_coordinator().expect("revoked"));
+    assert_eq!(
+        unlinked.unlink_reason().expect("reason"),
+        Some(UnlinkReason::KeyProtectionLost)
+    );
+}
+
+#[test]
+fn unlinking_the_last_device_ends_the_coordinator_role() {
+    let temporary = TestDirectory::new("last-device");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    enroll_device(&manager, "device-phone", "Phone", 100);
+    manager
+        .complete_outgoing_activation(PendingAcknowledgement {
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            transfer_id: "transfer-1".to_string(),
+        })
+        .expect("complete");
+    manager.unlink_device("device-phone").expect("unlink");
+    assert_eq!(manager.completed_activation().expect("completed"), None);
+    assert!(!manager.has_links().expect("links"));
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("restart");
+    assert_eq!(
+        restarted
+            .revoked_device_ids("vault-1")
+            .expect("revoked")
+            .len(),
+        1
+    );
+}
+
+fn desktop_manager(root: &Path) -> PairingManager {
+    let manager = PairingManager::default();
+    manager
+        .initialize(root.to_path_buf(), "device-desktop".to_string())
+        .expect("initialize desktop");
+    manager
+}
+
+fn desktop_with_phone(root: &Path) -> PairingManager {
+    let manager = desktop_manager(root);
+    enroll_device(&manager, "device-phone", "Phone", 100);
+    manager
+}
+
+fn outgoing_archive(manager: &PairingManager, transfer_id: &str) -> PathBuf {
+    manager
+        .outgoing_snapshot_paths(transfer_id)
+        .expect("outgoing paths")
+        .1
+}
+
+/// Writes an archive into staging for `transfer_id` and returns the metadata that describes it,
+/// as the coordinator does before it offers a copy to the phone.
+fn stage_outgoing_copy(manager: &PairingManager, transfer_id: &str) -> BundleMetadata {
+    let archive = outgoing_archive(manager, transfer_id);
+    fs::write(&archive, format!("archive {transfer_id}")).expect("write archive");
+    BundleMetadata {
+        protocol_version: PROTOCOL_VERSION,
+        compatibility: crate::protocol::test_compatibility(),
+        vault_id: "vault-1".to_string(),
+        device_id: "device-phone".to_string(),
+        transfer_id: transfer_id.to_string(),
+        archive_bytes: archive.metadata().expect("archive size").len(),
+        archive_sha256: crate::protocol::sha256_file(&archive).expect("archive digest"),
+        derived_state_stale: false,
+    }
+}
+
+#[test]
+fn an_outgoing_copy_is_released_when_its_lifetime_passes_or_the_clock_moves_back() {
+    for (label, offset_ms) in [
+        ("lifetime-passed", OUTGOING_TRANSFER_LIFETIME_MS),
+        ("clock-moved-back", -1),
+    ] {
+        let temporary = TestDirectory::new(label);
+        let manager = desktop_with_phone(temporary.path());
+        let metadata = stage_outgoing_copy(&manager, "transfer-expiring");
+        let prepared_at_ms = crate::protocol::unix_time_ms();
+        manager
+            .begin_outgoing_transfer(metadata, prepared_at_ms)
+            .expect("offer outgoing copy");
+        assert!(
+            manager
+                .active_outgoing_transfer(prepared_at_ms + OUTGOING_TRANSFER_LIFETIME_MS - 1)
+                .expect("still offered")
+                .is_some()
+        );
+
+        assert_eq!(
+            manager
+                .active_outgoing_transfer(prepared_at_ms + offset_ms)
+                .expect("released"),
+            None
+        );
+        assert!(manager.outgoing_bundle("transfer-expiring").is_err());
+        assert!(!outgoing_archive(&manager, "transfer-expiring").exists());
+        let restarted = desktop_manager(temporary.path());
+        assert!(!restarted.has_pending_transfer().expect("pending"));
+    }
+}
+
+#[test]
+fn an_expired_outgoing_copy_does_not_hold_the_coordinator_busy() {
+    let temporary = TestDirectory::new("expired-busy");
+    let manager = desktop_with_phone(temporary.path());
+    enroll_device(&manager, "device-laptop", "Laptop", 200);
+    let stale = stage_outgoing_copy(&manager, "transfer-stale");
+    let long_ago_ms = crate::protocol::unix_time_ms() - OUTGOING_TRANSFER_LIFETIME_MS - 1;
+    manager
+        .begin_outgoing_transfer(stale, long_ago_ms)
+        .expect("offer stale copy");
+
+    assert!(!manager.has_pending_transfer().expect("pending"));
+    assert!(!outgoing_archive(&manager, "transfer-stale").exists());
+    manager
+        .unlink_device("device-laptop")
+        .expect("unlink after the copy expired");
+    let fresh = stage_outgoing_copy(&manager, "transfer-fresh");
+    manager
+        .begin_outgoing_transfer(fresh, crate::protocol::unix_time_ms())
+        .expect("offer a new copy");
+}
+
+/// A test label and a change made to the state folder and the archive while the app is stopped.
+type RestartDamage = (&'static str, fn(&Path, &Path));
+
+#[test]
+fn a_restart_serves_the_stored_copy_only_while_it_is_usable() {
+    let cases: [RestartDamage; 3] = [
+        ("archive-missing", |_, archive| {
+            fs::remove_file(archive).expect("remove archive");
+        }),
+        ("archive-changed", |_, archive| {
+            fs::write(archive, b"tampered").expect("change archive");
+        }),
+        ("expired-while-stopped", |root, _| {
+            let path = root.join(PAIRING_STATE_FILE);
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).expect("read state")).expect("decode");
+            value["outgoingTransfer"]["expiresAtMs"] = serde_json::json!(1);
+            fs::write(&path, serde_json::to_vec(&value).expect("encode")).expect("write");
+        }),
+    ];
+    for (label, damage) in cases {
+        let temporary = TestDirectory::new(label);
+        let manager = desktop_with_phone(temporary.path());
+        let metadata = stage_outgoing_copy(&manager, "transfer-restart");
+        manager
+            .begin_outgoing_transfer(metadata, crate::protocol::unix_time_ms())
+            .expect("offer outgoing copy");
+        let archive = outgoing_archive(&manager, "transfer-restart");
+        drop(manager);
+        damage(temporary.path(), &archive);
+
+        let restarted = desktop_manager(temporary.path());
+        assert!(
+            !restarted.has_pending_transfer().expect("pending"),
+            "{label}"
+        );
+        assert!(restarted.outgoing_bundle("transfer-restart").is_err());
+        assert!(!archive.exists(), "{label}");
+        assert!(!state_text(temporary.path()).contains("transfer-restart"));
+    }
+}
+
+#[test]
+fn an_outgoing_copy_is_offered_only_to_a_device_linked_for_its_vault_and_only_one_at_a_time() {
+    let temporary = TestDirectory::new("offer-rules");
+    let manager = desktop_with_phone(temporary.path());
+    let now_ms = crate::protocol::unix_time_ms();
+
+    let mut unknown = stage_outgoing_copy(&manager, "transfer-unknown");
+    unknown.device_id = "device-unknown".to_string();
+    assert!(manager.begin_outgoing_transfer(unknown, now_ms).is_err());
+    assert!(!outgoing_archive(&manager, "transfer-unknown").exists());
+
+    let mut other_vault = stage_outgoing_copy(&manager, "transfer-other-vault");
+    other_vault.vault_id = "vault-2".to_string();
+    assert!(
+        manager
+            .begin_outgoing_transfer(other_vault, now_ms)
+            .is_err()
+    );
+    assert!(!outgoing_archive(&manager, "transfer-other-vault").exists());
+
+    let first = stage_outgoing_copy(&manager, "transfer-first");
+    manager
+        .begin_outgoing_transfer(first, now_ms)
+        .expect("offer first copy");
+    let second = stage_outgoing_copy(&manager, "transfer-second");
+    let busy = manager
+        .begin_outgoing_transfer(second, now_ms)
+        .expect_err("refuse a second copy");
+    assert!(busy.contains("already serving"), "{busy}");
+    assert!(!outgoing_archive(&manager, "transfer-second").exists());
+    assert!(outgoing_archive(&manager, "transfer-first").exists());
+    assert!(manager.outgoing_bundle("transfer-first").is_ok());
+}
+
+#[test]
+fn a_stored_copy_without_an_expiry_is_refused() {
+    let temporary = TestDirectory::new("no-expiry");
+    let manager = desktop_with_phone(temporary.path());
+    let metadata = stage_outgoing_copy(&manager, "transfer-no-expiry");
+    manager
+        .begin_outgoing_transfer(metadata, crate::protocol::unix_time_ms())
+        .expect("offer outgoing copy");
+    drop(manager);
+    assert_stored_state_refused(
+        temporary.path(),
+        "device-desktop",
+        |state| {
+            state["outgoingTransfer"]
+                .as_object_mut()
+                .expect("outgoing transfer")
+                .remove("expiresAtMs");
+        },
+        "expiresAtMs",
+    );
 }

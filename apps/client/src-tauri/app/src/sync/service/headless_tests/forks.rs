@@ -61,7 +61,7 @@ async fn linked_phone(label: &str) -> LinkedPhone {
     hub_space.enroll_phone(&hub_pool, phone_key).await;
     for label in ["the priming pass", "the linked pass"] {
         let pass = run_pass(&config_dir, label).await;
-        assert_eq!(pass.status.state, SyncState::Idle, "{:?}", pass.status);
+        assert_eq!(pass.status.state(), SyncState::Idle, "{:?}", pass.status);
     }
     LinkedPhone {
         _hub_directory: hub_directory,
@@ -199,13 +199,13 @@ async fn unproven_fork_claim_keeps_the_writer_and_reports_it() {
         let pass = run_pass(&linked.config_dir, label).await;
         assert_eq!(recorded_writer(&linked.config_dir), writer, "{label}");
         assert_eq!(
-            pass.status.state,
+            pass.status.state(),
             SyncState::Error,
             "{label}: {:?}",
             pass.status
         );
         assert_eq!(
-            pass.status.last_error_code,
+            pass.status.last_error_code(),
             Some(SyncErrorCode::ForkClaimUnproven),
             "{label}: {:?}",
             pass.status

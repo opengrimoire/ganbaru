@@ -796,21 +796,13 @@ async fn require_updated(
 }
 
 fn parse_work_state(value: &str) -> ChatResult<ChatWorkAssignmentState> {
-    match value {
-        "queued" => Ok(ChatWorkAssignmentState::Queued),
-        "working" => Ok(ChatWorkAssignmentState::Working),
-        "waiting_for_answer" => Ok(ChatWorkAssignmentState::WaitingForAnswer),
-        "waiting_for_approval" => Ok(ChatWorkAssignmentState::WaitingForApproval),
-        "ready_for_review" => Ok(ChatWorkAssignmentState::ReadyForReview),
-        "completed" => Ok(ChatWorkAssignmentState::Completed),
-        "failed" => Ok(ChatWorkAssignmentState::Failed),
-        "cancelled" => Ok(ChatWorkAssignmentState::Cancelled),
-        _ => Err(ChatError::new(
+    ChatWorkAssignmentState::parse(value).ok_or_else(|| {
+        ChatError::new(
             ChatErrorCode::Persistence,
             "Stored assignment state is invalid",
             false,
-        )),
-    }
+        )
+    })
 }
 
 pub(crate) async fn chat_pool(app: tauri::AppHandle, db_url: String) -> ChatResult<SqlitePool> {

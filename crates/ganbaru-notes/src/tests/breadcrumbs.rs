@@ -277,7 +277,7 @@ fn page_breadcrumb_marks_unavailable_ancestors() {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("UPDATE notes_pages SET in_trash = 1 WHERE id = ?")
+        sqlx::query("UPDATE notes_pages SET in_trash = 1, trashed_time = '2026-01-01T00:00:00.000Z' WHERE id = ?")
             .bind(PAGE_B)
             .execute(&pool)
             .await
@@ -396,7 +396,7 @@ fn page_location_follows_project_folder_and_page_ancestry_through_the_page_itsel
             reads::page_location(&pool, PAGE_A).await.unwrap(),
             ["Project", "Folder", "Root"]
         );
-        sqlx::query("UPDATE notes_pages SET in_trash = 1 WHERE id = ?")
+        sqlx::query("UPDATE notes_pages SET in_trash = 1, trashed_time = '2026-01-01T00:00:00.000Z' WHERE id = ?")
             .bind(PAGE_C)
             .execute(&pool)
             .await

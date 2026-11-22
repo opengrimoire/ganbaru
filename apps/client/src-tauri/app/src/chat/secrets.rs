@@ -18,6 +18,10 @@ use ganbaru_atomic_files::{FileAccess, remove_file_within, write_file_atomically
 use ganbaru_chat::agent_runs::{SETTLED_RUN_STATES, unsettled_run_state_sql};
 use ganbaru_chat::credentials::SecretValue;
 use ganbaru_chat::ingestion::{RegisteredSecret, SecretRedactor, longest_first, redact_json};
+use ganbaru_chat::repository::state_writes::{
+    GuardedRow, StateWriteColumns, StateWriteValue, persist_guarded_transition, sources_sql,
+};
+use ganbaru_chat::state::ChatSecretRequestState;
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatProjectionKey, ChatReplyThreadId, ChatResult, ChatThreadId,
 };
@@ -371,15 +375,13 @@ pub(crate) async fn provide_secret(
     );
     let path = secret_file_path(root, &request.run_id, request_id);
     write_private_file(root, &path, value.expose().as_bytes())?;
-    let updated = sqlx::query(
-        "UPDATE chat_secret_requests SET state = 'provided', resolved_at = ?
-         WHERE id = ? AND state = 'pending'",
+    let updated = resolve_request(
+        &mut transaction,
+        request_id,
+        ChatSecretRequestState::Provided,
+        &now_text,
     )
-    .bind(&now_text)
-    .bind(request_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error);
+    .await;
     let committed = match updated {
         Ok(_) => transaction.commit().await.map_err(persistence_error),
         Err(error) => Err(error),
@@ -411,15 +413,13 @@ pub(crate) async fn decline_secret(
     if request.state != "pending" {
         return Err(SecretRefusal::NotPending.into_error());
     }
-    sqlx::query(
-        "UPDATE chat_secret_requests SET state = 'declined', resolved_at = ?
-         WHERE id = ? AND state = 'pending'",
+    resolve_request(
+        &mut transaction,
+        request_id,
+        ChatSecretRequestState::Declined,
+        &now_text,
     )
-    .bind(&now_text)
-    .bind(request_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
+    .await?;
     transaction.commit().await.map_err(persistence_error)
 }
 
@@ -727,6 +727,35 @@ async fn answerable_request(
     })
 }
 
+/// Moves the pending request `request_id` to `to`, refusing it as no longer pending when the
+/// transition table forbids the move from its current state.
+async fn resolve_request(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    request_id: &str,
+    to: ChatSecretRequestState,
+    now: &str,
+) -> ChatResult<()> {
+    let write = persist_guarded_transition(
+        transaction,
+        GuardedRow {
+            table: "chat_secret_requests",
+            key: "id = ?",
+            key_values: &[StateWriteValue::Text(request_id)],
+        },
+        to,
+        StateWriteColumns {
+            assignments: "resolved_at = ?",
+            values: &[StateWriteValue::Text(now)],
+        },
+    )
+    .await?;
+    if write.is_applied() {
+        Ok(())
+    } else {
+        Err(SecretRefusal::NotPending.into_error())
+    }
+}
+
 /// Closes pending requests that are past their expiry or whose run settled.
 async fn expire_due_requests(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -739,9 +768,10 @@ async fn expire_due_requests(
         .join(", ");
     let sql = format!(
         "UPDATE chat_secret_requests SET state = 'expired', resolved_at = ?1
-         WHERE state = 'pending'
+         WHERE state IN ({})
            AND (expires_at <= ?1
-                OR run_id IN (SELECT id FROM chat_agent_runs WHERE state IN ({settled})))"
+                OR run_id IN (SELECT id FROM chat_agent_runs WHERE state IN ({settled})))",
+        sources_sql(ChatSecretRequestState::Expired)
     );
     sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(now)

@@ -27,6 +27,8 @@ pub(super) use adoption::{
 use ganbaru_chat::coordination::contracts::PostChatMessageCommand;
 use ganbaru_chat::coordination::delegation::{outcome_item_id, post_delegation_outcome};
 use ganbaru_chat::coordination::reports::requeue_answered_assignment;
+use ganbaru_chat::repository::state_writes::{narrowed_sources_sql, sources_sql};
+use ganbaru_chat::state::ChatDispatchJobState;
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeSet;
@@ -317,21 +319,22 @@ async fn settle_stranded_assignment(
     reason: &str,
     now: &UtcTimestamp,
 ) -> ChatResult<bool> {
-    let settled = sqlx::query(
+    let settle = format!(
         "UPDATE chat_work_assignments
          SET state = ?, state_reason = ?, settled_at = ?, revision = revision + 1, updated_at = ?
-         WHERE id = ? AND revision = ? AND state IN
-                 ('queued', 'working', 'waiting_for_answer', 'waiting_for_approval')",
-    )
-    .bind(wire_work_state(state))
-    .bind(reason)
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(assignment.id.as_str())
-    .bind(i64_value(assignment.revision)?)
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
+         WHERE id = ? AND revision = ? AND state IN ({})",
+        narrowed_sources_sql(state, ChatWorkAssignmentState::accepts_continuation)
+    );
+    let settled = sqlx::query(sqlx::AssertSqlSafe(settle.as_str()))
+        .bind(wire_work_state(state))
+        .bind(reason)
+        .bind(now.as_str())
+        .bind(now.as_str())
+        .bind(assignment.id.as_str())
+        .bind(i64_value(assignment.revision)?)
+        .execute(&mut **transaction)
+        .await
+        .map_err(persistence_error)?;
     if settled.rows_affected() != 1 {
         return Ok(false);
     }
@@ -840,18 +843,20 @@ pub(super) async fn persist_retry(
     }
     require_executing_device(pool, assignment_id, device.id).await?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    let updated = sqlx::query(
+    let retry = format!(
         "UPDATE chat_work_assignments
          SET state = 'queued', state_reason = NULL, settled_at = NULL,
              revision = revision + 1, updated_at = ?
-         WHERE id = ? AND revision = ?",
-    )
-    .bind(now.as_str())
-    .bind(assignment_id.as_str())
-    .bind(i64_value(expected_revision)?)
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
+         WHERE id = ? AND revision = ? AND state IN ({})",
+        sources_sql(ChatWorkAssignmentState::Queued)
+    );
+    let updated = sqlx::query(sqlx::AssertSqlSafe(retry.as_str()))
+        .bind(now.as_str())
+        .bind(assignment_id.as_str())
+        .bind(i64_value(expected_revision)?)
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
     if updated.rows_affected() != 1 {
         return Err(ChatError::new(
             ChatErrorCode::StaleRevision,
@@ -1262,16 +1267,18 @@ pub(super) async fn release_moved_assignment(
         transaction.rollback().await.map_err(persistence_error)?;
         return Ok(false);
     }
-    let ended_jobs = sqlx::query(
+    let end_jobs = format!(
         "UPDATE chat_assignment_dispatch_jobs SET state = 'cancelled', updated_at = ?
-         WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
-    )
-    .bind(now.as_str())
-    .bind(assignment_id.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?
-    .rows_affected();
+         WHERE assignment_id = ? AND state IN ({})",
+        sources_sql(ChatDispatchJobState::Cancelled)
+    );
+    let ended_jobs = sqlx::query(sqlx::AssertSqlSafe(end_jobs.as_str()))
+        .bind(now.as_str())
+        .bind(assignment_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?
+        .rows_affected();
     let revoked = ganbaru_chat::coordination::revocation::revoke_assignment_authorizations(
         &mut transaction,
         assignment_id.as_str(),

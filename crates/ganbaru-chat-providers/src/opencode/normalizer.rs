@@ -36,7 +36,9 @@ pub struct OpenCodeRouteState {
     /// The turn the user interrupted or stopped; when OpenCode reports idle for it before the abort
     /// returns, the turn settles as interrupted rather than completed.
     interrupt_requested: Option<ChatTurnId>,
-    pub session_state: ProviderSessionState,
+    /// Whether OpenCode last reported the session busy or the driver dispatched a turn, so a
+    /// repeated status report emits no state change.
+    pub(super) busy: bool,
     pub modes: TurnModeSnapshot,
     message_roles: HashMap<String, String>,
     rollback_message_id: Option<String>,
@@ -85,7 +87,7 @@ impl OpenCodeRouteState {
             provider_thread_id,
             active_turn_id: None,
             interrupt_requested: None,
-            session_state: ProviderSessionState::Ready,
+            busy: false,
             modes,
             message_roles: HashMap::new(),
             rollback_message_id: None,
@@ -152,6 +154,14 @@ impl OpenCodeRouteState {
         }
         self.interrupt_requested = None;
         self.active_turn_id.take()
+    }
+
+    /// Takes the active turn after its dispatch failed and reports whether the user interrupted
+    /// it first, since aborting a running command makes the command request fail too.
+    pub fn take_failed_dispatch(&mut self) -> Option<(ChatTurnId, bool)> {
+        let turn_id = self.active_turn_id.take()?;
+        let interrupted = self.interrupt_requested.take().as_ref() == Some(&turn_id);
+        Some((turn_id, interrupted))
     }
 
     /// Questions asked outside a turn during the last normalization, in arrival order, which the
@@ -444,6 +454,30 @@ impl OpenCodeEventNormalizer {
         event: CanonicalEvent,
     ) -> ChatResult<CanonicalRuntimeEvent> {
         self.event(state, source, None, None, event)
+    }
+
+    /// Settles a turn that failed outside the event stream, such as a rejected prompt or command
+    /// dispatch. The turn is named explicitly because the caller has already cleared it from the
+    /// route state.
+    pub fn failed_turn(
+        &self,
+        state: &OpenCodeRouteState,
+        source: &str,
+        turn_id: ChatTurnId,
+        reason: String,
+        recoverable: bool,
+    ) -> ChatResult<CanonicalRuntimeEvent> {
+        self.event(
+            state,
+            source,
+            None,
+            Some(turn_id),
+            CanonicalEvent::TurnAborted(TurnAbortedEvent {
+                state: ChatTurnState::Failed,
+                reason,
+                recoverable,
+            }),
+        )
     }
 
     /// Settles a turn the user interrupted.

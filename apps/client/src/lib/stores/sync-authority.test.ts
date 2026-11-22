@@ -134,4 +134,41 @@ describe("sync authority state", () => {
     });
     expect(calls("sync_authority")).toBe(1);
   });
+
+  it("keeps the latest load when an earlier one finishes after it", async () => {
+    const releases: ((value: unknown) => void)[] = [];
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "sync_authority") return new Promise((resolve) => { releases.push(resolve); });
+      if (command === "sync_late_changes") return Promise.resolve(NO_LATE_CHANGES);
+      if (command === "sync_contests") return Promise.resolve(NO_CONTESTS);
+      return Promise.resolve([]);
+    });
+    const state = await load();
+    const earlier = state.refresh();
+    const later = state.refresh();
+    releases[1]?.(authority(false));
+    await later;
+    releases[0]?.({ ...authority(false), revision: 2 });
+    await earlier;
+    expect(state.authority?.revision).toBe(3);
+  });
+
+  it("reports a failure only for the latest load", async () => {
+    const settles: { resolve: (value: unknown) => void; reject: (cause: unknown) => void }[] = [];
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "sync_authority") return new Promise((resolve, reject) => { settles.push({ resolve, reject }); });
+      if (command === "sync_late_changes") return Promise.resolve(NO_LATE_CHANGES);
+      if (command === "sync_contests") return Promise.resolve(NO_CONTESTS);
+      return Promise.resolve([]);
+    });
+    const state = await load();
+    const earlier = state.refresh();
+    const later = state.refresh();
+    settles[1]?.resolve(authority(false));
+    await later;
+    settles[0]?.reject(new Error("offline"));
+    await earlier;
+    expect(state.loadFailed).toBe(false);
+    expect(state.authority?.revision).toBe(3);
+  });
 });

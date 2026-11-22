@@ -242,7 +242,7 @@ mod continuation_candidate {
                  SET model_selection_sha256 = '{MODEL_SHA}',
                      instructions_sha256 = '{INSTRUCTIONS_SHA}', state = 'completed'
                  WHERE id = 'run:working';
-                 UPDATE chat_work_assignments SET state = 'completed'
+                 UPDATE chat_work_assignments SET state = 'completed', settled_at = updated_at
                  WHERE id = 'assignment:folders';"
         )))
         .execute(&pool)
@@ -328,7 +328,7 @@ mod continuation_candidate {
         sqlx::raw_sql(
             "DELETE FROM chat_agent_runs WHERE id = 'run:queued';
                  UPDATE chat_agent_runs SET state = 'completed' WHERE id = 'run:working';
-                 UPDATE chat_work_assignments SET state = 'completed'
+                 UPDATE chat_work_assignments SET state = 'completed', settled_at = updated_at
                  WHERE id = 'assignment:folders';",
         )
         .execute(&pool)
@@ -343,7 +343,7 @@ mod continuation_candidate {
     #[tokio::test]
     async fn an_open_assignment_or_a_closed_thread_is_no_candidate() {
         for update in [
-            "UPDATE chat_work_assignments SET state = 'working'
+            "UPDATE chat_work_assignments SET state = 'working', settled_at = NULL
                  WHERE id = 'assignment:folders'",
             "UPDATE chat_threads SET state = 'closed' WHERE id = 'thread-1'",
         ] {
@@ -1306,7 +1306,7 @@ mod launch {
         assert_eq!(gone.order_key, "a3", "a cancelled reply never moves");
 
         sqlx::query(
-            "UPDATE chat_work_assignments SET state = 'failed'
+            "UPDATE chat_work_assignments SET state = 'failed', settled_at = updated_at
                  WHERE id = 'assignment:folders'",
         )
         .execute(&pool)

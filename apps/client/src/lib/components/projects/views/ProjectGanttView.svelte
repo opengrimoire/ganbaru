@@ -6,7 +6,6 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { technicalErrorDetail } from "$lib/i18n/user-errors";
   import {
     buildProjectGanttDatePatch,
     buildProjectGanttTimeline,
@@ -224,7 +223,7 @@
       const task = projects.taskById(taskId);
       if (task) onOpenTask(task);
     } catch (error) {
-      if (projects.selectedProjectId === projectId) cascade.error = { action: "open", detail: technicalErrorDetail(error) };
+      cascade.reportOpenFailure(projectId, error);
     }
   }
 

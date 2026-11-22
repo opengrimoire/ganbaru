@@ -6,19 +6,20 @@ use super::transport::{
     CodexInboundMessage, CodexRpcClient, CodexRpcFailure, OVERSIZED_MESSAGE_ERROR,
 };
 use crate::events::*;
+use crate::live_session::{ConnectionKill, LiveSessionLifecycle};
 use crate::models::*;
 use crate::process::systemd_scope::{memory_limit_warning, reached_memory_limit};
 use crate::{DriverOperationContext, ProviderEventSink};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
+/// How long a failed session waits for the app-server to exit after it is force stopped.
+const SESSION_FAILURE_FORCE_STOP: Duration = Duration::from_secs(2);
 const MAX_REQUEST_TEXT_BYTES: usize = 64 * 1024;
 const MAX_QUESTIONS: usize = 16;
 const MAX_OPTIONS_PER_QUESTION: usize = 32;
@@ -75,8 +76,9 @@ pub struct CodexRouterResources {
     pub pending_requests: PendingCodexRequests,
     pub sink: Arc<dyn ProviderEventSink>,
     pub provider_thread_sender: watch::Sender<Option<String>>,
-    pub expected_shutdown: Arc<AtomicBool>,
-    pub terminal_error: Arc<Mutex<Option<ChatError>>>,
+    pub lifecycle: LiveSessionLifecycle,
+    /// Stops the provider process when the session fails.
+    pub kill: ConnectionKill,
     pub organizational: bool,
     /// Tells whether the resource scope's memory ceiling stopped the provider; `None` when unscoped.
     pub memory_limit: Option<crate::process::systemd_scope::MemoryLimitWatch>,
@@ -89,7 +91,7 @@ impl CodexRouterResources {
             route: Arc::clone(&self.route),
             normalizer: Arc::clone(&self.normalizer),
             sink: Arc::clone(&self.sink),
-            expected_shutdown: Arc::clone(&self.expected_shutdown),
+            lifecycle: self.lifecycle.clone(),
         }
     }
 }
@@ -98,9 +100,7 @@ impl CodexRouterResources {
 /// connection.
 fn cancel_capacity_retry(resources: &CodexRouterResources) {
     if let Ok(mut state) = resources.route.lock() {
-        if let Some(retry) = state.capacity_retry.take() {
-            retry.cancel();
-        }
+        state.cancel_capacity_retry();
     }
 }
 
@@ -142,9 +142,7 @@ async fn run_codex_router(mut resources: CodexRouterResources) {
             }
         };
         if let Err(error) = result {
-            if let Ok(mut terminal) = resources.terminal_error.lock() {
-                *terminal = Some(error);
-            }
+            route_failed(&resources, error).await;
             return;
         }
     }
@@ -193,7 +191,7 @@ async fn route_server_request(
         .map_err(|_| router_state_error())?
         .clone();
     let provenance = CodexRequestProvenance {
-        chat_turn_id: route.active_chat_turn_id.clone(),
+        chat_turn_id: route.turn().chat_turn().cloned(),
         provider_turn_id: text(object, "turnId")
             .and_then(|value| ProviderTurnId::new(value.to_string()).ok()),
         provider_item_id: text(object, "itemId")
@@ -325,12 +323,6 @@ async fn route_server_request(
             requests.remove(&provider_request_id);
         }
         return Err(error);
-    }
-    if let Ok(mut state) = resources.route.lock() {
-        state.session_state = match method {
-            "item/tool/requestUserInput" => ProviderSessionState::WaitingForUserInput,
-            _ => ProviderSessionState::WaitingForApproval,
-        };
     }
     Ok(())
 }
@@ -678,21 +670,8 @@ pub async fn resolve_codex_approval(
         restore_pending(pending_requests, pending)?;
         return Err(error.to_chat_error("approval response"));
     }
-    if request.decision.kind == ApprovalDecisionKind::Cancel {
-        let state = route.lock().map_err(|_| router_state_error())?.clone();
-        if let (Some(thread_id), Some(turn_id)) =
-            (state.provider_thread_id, state.active_provider_turn_id)
-        {
-            client
-                .request(
-                    "turn/interrupt",
-                    json!({ "threadId": thread_id, "turnId": turn_id }),
-                    context,
-                )
-                .await
-                .map_err(|error| error.to_chat_error("approval cancel"))?;
-        }
-    }
+    // Codex holds the decision once the response is sent, so the request is resolved whatever
+    // the interrupt below does.
     let state = route.lock().map_err(|_| router_state_error())?.clone();
     let event = normalizer.request_event(
         &state,
@@ -707,8 +686,21 @@ pub async fn resolve_codex_approval(
         }),
     )?;
     sink.emit(event).await?;
-    if let Ok(mut state) = route.lock() {
-        state.session_state = ProviderSessionState::Active;
+    if request.decision.kind == ApprovalDecisionKind::Cancel
+        && let (Some(thread_id), Some(turn_id)) = (
+            state.provider_thread_id.clone(),
+            state.turn().provider_turn().map(str::to_string),
+        )
+    {
+        // Best effort: a refused interrupt leaves the turn running, and the person can still
+        // interrupt it from the turn itself.
+        let _ = client
+            .request(
+                "turn/interrupt",
+                json!({ "threadId": thread_id, "turnId": turn_id }),
+                context,
+            )
+            .await;
     }
     Ok(())
 }
@@ -760,9 +752,6 @@ pub async fn resolve_codex_user_input(
         }),
     )?;
     sink.emit(event).await?;
-    if let Ok(mut state) = route.lock() {
-        state.session_state = ProviderSessionState::Active;
-    }
     Ok(())
 }
 
@@ -818,10 +807,27 @@ async fn resolve_provider_cleared_request(
     resources.sink.emit(event).await
 }
 
+/// Ends the session when the app-server stream closes: a stop the driver began reports the
+/// session stopped, and any other close fails it.
 async fn route_closed(resources: &CodexRouterResources) {
     cancel_capacity_retry(resources);
-    let expected = resources.expected_shutdown.load(Ordering::Acquire);
-    if !expected && reached_memory_limit(resources.memory_limit.as_ref()).await {
+    if resources.lifecycle.is_stopping() {
+        let event = resources
+            .route
+            .lock()
+            .map_err(|_| router_state_error())
+            .and_then(|state| {
+                session_state_event(
+                    resources,
+                    &state,
+                    ProviderSessionState::Stopped,
+                    "Codex session stopped",
+                )
+            });
+        let _ = emit_events(&resources.sink, event.map(|event| vec![event])).await;
+        return;
+    }
+    if reached_memory_limit(resources.memory_limit.as_ref()).await {
         let warning = resources
             .route
             .lock()
@@ -838,83 +844,103 @@ async fn route_closed(resources: &CodexRouterResources) {
             });
         let _ = emit_events(&resources.sink, warning.map(|event| vec![event])).await;
     }
-    let event = resources
-        .route
-        .lock()
-        .map_err(|_| router_state_error())
-        .and_then(|mut state| {
-            let previous = state.session_state;
-            state.session_state = if expected {
-                ProviderSessionState::Stopped
-            } else {
-                ProviderSessionState::Failed
-            };
-            resources.normalizer.event(
-                &state,
-                "transport/closed",
-                None,
-                None,
-                None,
-                CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
-                    session_id: resources.normalizer.session_id(),
-                    previous_state: previous,
-                    state: state.session_state,
-                    reason: Some(if expected {
-                        "Codex session stopped".to_string()
-                    } else {
-                        "Codex app-server stream closed".to_string()
-                    }),
-                }),
-            )
-        });
-    let result = emit_events(&resources.sink, event.map(|event| vec![event])).await;
-    if !expected {
-        let error = result.err().unwrap_or_else(|| {
-            ChatError::new(
-                ChatErrorCode::TransportUnavailable,
-                "Codex app-server stream closed unexpectedly",
-                true,
-            )
-        });
-        if let Ok(mut terminal) = resources.terminal_error.lock() {
-            *terminal = Some(error);
-        }
-    }
+    let error = ChatError::new(
+        ChatErrorCode::TransportUnavailable,
+        "Codex app-server stream closed unexpectedly",
+        true,
+    );
+    fail_session(resources, error, "Codex app-server stream closed", |_| {
+        Ok(None)
+    })
+    .await;
+}
+
+fn session_state_event(
+    resources: &CodexRouterResources,
+    state: &CodexRouteState,
+    next: ProviderSessionState,
+    reason: &str,
+) -> ChatResult<CanonicalRuntimeEvent> {
+    resources.normalizer.event(
+        state,
+        "transport/closed",
+        None,
+        None,
+        None,
+        CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
+            session_id: resources.normalizer.session_id(),
+            previous_state: state.running_session_state(),
+            state: next,
+            reason: Some(reason.to_string()),
+        }),
+    )
 }
 
 /// Ends the session after Codex sent a line over the byte bound: records the protocol error,
 /// marks the session failed, and keeps that error as the terminal error so later commands
 /// report it instead of a generic transport loss.
 async fn route_oversized(resources: &CodexRouterResources, byte_length: usize) {
-    cancel_capacity_retry(resources);
     let error = CodexRpcFailure::Oversized.to_chat_error("message");
+    fail_session(
+        resources,
+        error,
+        OVERSIZED_MESSAGE_ERROR,
+        |state: &CodexRouteState| {
+            resources
+                .normalizer
+                .oversized_event(state, byte_length)
+                .map(Some)
+        },
+    )
+    .await;
+}
+
+/// Ends the session after a message could not be routed: reports an unrecoverable error, which
+/// settles the turn and its work assignment, marks the session failed, and keeps the error as
+/// the terminal error so later commands report why.
+async fn route_failed(resources: &CodexRouterResources, error: ChatError) {
+    let reason = error.message.clone();
+    let lead_error = error.clone();
+    fail_session(resources, error, &reason, |state: &CodexRouteState| {
+        resources
+            .normalizer
+            .route_failed_event(state, &lead_error)
+            .map(Some)
+    })
+    .await;
+}
+
+/// The one fail transition of a live Codex session.
+///
+/// Only the first failure of a running session acts; a failure while the driver stops the
+/// session is the stop's own consequence. The winner cancels the armed capacity retry, emits
+/// `lead` when there is one and then the failed session state with `reason`, and stops the
+/// app-server so it does not outlive the session. `error` stays the session's failure, unless
+/// the emit fails, since the timeline then never learned of the failure.
+async fn fail_session(
+    resources: &CodexRouterResources,
+    error: ChatError,
+    reason: &str,
+    lead: impl FnOnce(&CodexRouteState) -> ChatResult<Option<CanonicalRuntimeEvent>>,
+) {
+    if !resources.lifecycle.fail(error) {
+        return;
+    }
+    cancel_capacity_retry(resources);
     let events = resources
         .route
         .lock()
         .map_err(|_| router_state_error())
-        .and_then(|mut state| {
-            let malformed = resources.normalizer.oversized_event(&state, byte_length)?;
-            let previous = state.session_state;
-            state.session_state = ProviderSessionState::Failed;
-            let closed = resources.normalizer.event(
-                &state,
-                "transport/closed",
-                None,
-                None,
-                None,
-                CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
-                    session_id: resources.normalizer.session_id(),
-                    previous_state: previous,
-                    state: ProviderSessionState::Failed,
-                    reason: Some(OVERSIZED_MESSAGE_ERROR.to_string()),
-                }),
-            )?;
-            Ok(vec![malformed, closed])
+        .and_then(|state| {
+            let lead = lead(&state)?;
+            let failed =
+                session_state_event(resources, &state, ProviderSessionState::Failed, reason)?;
+            Ok(lead.into_iter().chain([failed]).collect())
         });
-    let result = emit_events(&resources.sink, events).await;
-    if let Ok(mut terminal) = resources.terminal_error.lock() {
-        *terminal = Some(result.err().unwrap_or(error));
+    if let Err(emit_error) = emit_events(&resources.sink, events).await {
+        resources.lifecycle.replace_failure(emit_error);
     }
+    let _ = resources.kill.kill(SESSION_FAILURE_FORCE_STOP).await;
 }
 
 fn take_pending(

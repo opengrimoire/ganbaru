@@ -1,5 +1,15 @@
 import { notesErrorDetail } from "$lib/notes/failure";
 import {
+  abandonAsyncRequest,
+  asyncResourceError,
+  failAsyncRequest,
+  idleAsyncResource,
+  isAsyncResourceLoading,
+  resolveAsyncRequest,
+  startAsyncRequest,
+  type AsyncResource,
+} from "$lib/utils/async-resource";
+import {
   addNotesPageAlias,
   deleteNotesPageAlias,
   listNotesBacklinks,
@@ -26,22 +36,22 @@ interface NotesLinksControllerContext {
 
 /** Own backlink, alias, unresolved-link, and destination request identities. */
 export function createNotesLinksController(context: NotesLinksControllerContext) {
-  let backlinks = $state<NotesBacklink[]>([]);
-  let aliases = $state<NotesPageAlias[]>([]);
-  let unresolved = $state<NotesUnresolvedLink[]>([]);
+  const backlinks = createPageLinkResource<NotesBacklink>(
+    (pageId) => listNotesBacklinks(pageId),
+    context.readSelectedPageId,
+  );
+  const aliases = createPageLinkResource<NotesPageAlias>(
+    (pageId) => listNotesPageAliases(pageId),
+    context.readSelectedPageId,
+  );
+  const unresolved = createPageLinkResource<NotesUnresolvedLink>(
+    (pageId) => listNotesUnresolvedLinks(pageId),
+    context.readSelectedPageId,
+  );
   let destinations = $state<NotesPage[]>([]);
   const removedDestinationPageIds = new Set<string>();
   let destinationNextCursor = $state<string | null>(null);
   let destinationQuery = "";
-  let backlinksLoading = $state(false);
-  let backlinksError = $state<string | null>(null);
-  let aliasesLoading = $state(false);
-  let aliasesError = $state<string | null>(null);
-  let unresolvedLoading = $state(false);
-  let unresolvedError = $state<string | null>(null);
-  let backlinksRequestId = 0;
-  let aliasesRequestId = 0;
-  let unresolvedRequestId = 0;
   let destinationsRequestId = 0;
 
   function currentDestinationPages(candidates: readonly NotesPage[]): NotesPage[] {
@@ -97,112 +107,46 @@ export function createNotesLinksController(context: NotesLinksControllerContext)
     destinationNextCursor = result.next_page_cursor;
   }
 
-  async function reloadBacklinks(pageId = context.readSelectedPageId()): Promise<void> {
-    const requestId = ++backlinksRequestId;
-    if (!pageId) {
-      backlinks = [];
-      backlinksError = null;
-      backlinksLoading = false;
-      return;
-    }
-    backlinksLoading = true;
-    backlinksError = null;
-    try {
-      const next = await listNotesBacklinks(pageId);
-      if (requestId !== backlinksRequestId || pageId !== context.readSelectedPageId()) return;
-      backlinks = [...next];
-    } catch (error) {
-      if (requestId !== backlinksRequestId || pageId !== context.readSelectedPageId()) return;
-      backlinks = [];
-      backlinksError = notesErrorDetail(error);
-    } finally {
-      if (requestId === backlinksRequestId) backlinksLoading = false;
-    }
-  }
-
-  async function reloadAliases(pageId = context.readSelectedPageId()): Promise<void> {
-    const requestId = ++aliasesRequestId;
-    if (!pageId) {
-      aliases = [];
-      aliasesError = null;
-      aliasesLoading = false;
-      return;
-    }
-    aliasesLoading = true;
-    aliasesError = null;
-    try {
-      const next = await listNotesPageAliases(pageId);
-      if (requestId !== aliasesRequestId || pageId !== context.readSelectedPageId()) return;
-      aliases = [...next];
-    } catch (error) {
-      if (requestId !== aliasesRequestId || pageId !== context.readSelectedPageId()) return;
-      aliases = [];
-      aliasesError = notesErrorDetail(error);
-    } finally {
-      if (requestId === aliasesRequestId) aliasesLoading = false;
-    }
-  }
-
-  async function reloadUnresolved(pageId = context.readSelectedPageId()): Promise<void> {
-    const requestId = ++unresolvedRequestId;
-    if (!pageId) {
-      unresolved = [];
-      unresolvedError = null;
-      unresolvedLoading = false;
-      return;
-    }
-    unresolvedLoading = true;
-    unresolvedError = null;
-    try {
-      const next = await listNotesUnresolvedLinks(pageId);
-      if (requestId !== unresolvedRequestId || pageId !== context.readSelectedPageId()) return;
-      unresolved = [...next];
-    } catch (error) {
-      if (requestId !== unresolvedRequestId || pageId !== context.readSelectedPageId()) return;
-      unresolved = [];
-      unresolvedError = notesErrorDetail(error);
-    } finally {
-      if (requestId === unresolvedRequestId) unresolvedLoading = false;
-    }
-  }
-
   async function addAlias(alias: string): Promise<void> {
     const pageId = context.readSelectedPageId();
     const content = alias.trim();
     if (!pageId || !content) return;
-    aliases = await addNotesPageAlias(pageId, { id: crypto.randomUUID(), alias: content });
-    aliasesError = null;
-    await Promise.all([reloadUnresolved(pageId), reloadBacklinks(pageId)]);
+    const next = await addNotesPageAlias(pageId, { id: crypto.randomUUID(), alias: content });
+    await showAliasWrite(pageId, next);
   }
 
   async function deleteAlias(aliasId: string): Promise<void> {
     const pageId = context.readSelectedPageId();
     if (!pageId) return;
-    aliases = await deleteNotesPageAlias(pageId, aliasId);
-    aliasesError = null;
-    await Promise.all([reloadUnresolved(pageId), reloadBacklinks(pageId)]);
+    const next = await deleteNotesPageAlias(pageId, aliasId);
+    await showAliasWrite(pageId, next);
+  }
+
+  /** Shows an alias write and the links it changes, unless another page was selected while it ran. */
+  async function showAliasWrite(pageId: string, next: readonly NotesPageAlias[]): Promise<void> {
+    if (pageId !== context.readSelectedPageId()) return;
+    aliases.replace(next);
+    await Promise.all([unresolved.reload(pageId), backlinks.reload(pageId)]);
   }
 
   async function resolveUnresolvedLink(linkId: string, targetPageId: string): Promise<void> {
     const targetId = targetPageId.trim();
     if (!targetId) return;
-    unresolved = await resolveNotesUnresolvedLink(linkId, { target_page_id: targetId });
-    unresolvedError = null;
     const sourcePageId = context.readSelectedPageId();
+    const next = await resolveNotesUnresolvedLink(linkId, { target_page_id: targetId });
+    const sourceStillShown = sourcePageId !== null && sourcePageId === context.readSelectedPageId();
+    if (sourceStillShown) unresolved.replace(next);
     await Promise.all([
       reloadDestinations(),
-      sourcePageId ? context.reloadSelectedPage(sourcePageId) : Promise.resolve(),
+      sourceStillShown ? context.reloadSelectedPage(sourcePageId) : Promise.resolve(),
     ]);
     context.scheduleVisibleMetadataRefresh();
   }
 
   function resetPageState(): void {
-    backlinksRequestId += 1;
-    aliasesRequestId += 1;
-    unresolvedRequestId += 1;
-    backlinks = [];
-    aliases = [];
-    unresolved = [];
+    backlinks.reset();
+    aliases.reset();
+    unresolved.reset();
   }
 
   function resetAll(): void {
@@ -215,20 +159,20 @@ export function createNotesLinksController(context: NotesLinksControllerContext)
   }
 
   return {
-    get backlinks(): NotesBacklink[] { return backlinks; },
-    get backlinksLoading(): boolean { return backlinksLoading; },
-    get backlinksError(): string | null { return backlinksError; },
-    get aliases(): NotesPageAlias[] { return aliases; },
-    get aliasesLoading(): boolean { return aliasesLoading; },
-    get aliasesError(): string | null { return aliasesError; },
-    get unresolvedLinks(): NotesUnresolvedLink[] { return unresolved; },
-    get unresolvedLoading(): boolean { return unresolvedLoading; },
-    get unresolvedError(): string | null { return unresolvedError; },
+    get backlinks(): NotesBacklink[] { return backlinks.items; },
+    get backlinksLoading(): boolean { return backlinks.loading; },
+    get backlinksError(): string | null { return backlinks.error; },
+    get aliases(): NotesPageAlias[] { return aliases.items; },
+    get aliasesLoading(): boolean { return aliases.loading; },
+    get aliasesError(): string | null { return aliases.error; },
+    get unresolvedLinks(): NotesUnresolvedLink[] { return unresolved.items; },
+    get unresolvedLoading(): boolean { return unresolved.loading; },
+    get unresolvedError(): string | null { return unresolved.error; },
     get destinations(): NotesPage[] { return destinations; },
     get destinationHasMore(): boolean { return destinationNextCursor !== null; },
-    reloadBacklinks,
-    reloadPageAliases: reloadAliases,
-    reloadUnresolvedLinks: reloadUnresolved,
+    reloadBacklinks: (pageId = context.readSelectedPageId()) => backlinks.reload(pageId),
+    reloadPageAliases: (pageId = context.readSelectedPageId()) => aliases.reload(pageId),
+    reloadUnresolvedLinks: (pageId = context.readSelectedPageId()) => unresolved.reload(pageId),
     reloadLinkResolutionPages: reloadDestinations,
     loadMoreDestinationCandidates: loadMoreDestinations,
     reconcileDestinationPages,
@@ -237,5 +181,58 @@ export function createNotesLinksController(context: NotesLinksControllerContext)
     resolveUnresolvedLink,
     resetPageState,
     resetAll,
+  };
+}
+
+/**
+ * One list that belongs to the selected page. A response settles it only while its request is current and its page
+ * is still selected; a failed read empties the list and shows the error.
+ *
+ * @param load - Reads the list for a page.
+ * @param readSelectedPageId - The page shown now.
+ */
+function createPageLinkResource<T>(
+  load: (pageId: string) => Promise<readonly T[]>,
+  readSelectedPageId: () => string | null,
+) {
+  let resource = $state<AsyncResource<T[]>>(idleAsyncResource([]));
+  const loading = $derived(isAsyncResourceLoading(resource));
+  const error = $derived(asyncResourceError(resource));
+
+  async function reload(pageId: string | null): Promise<void> {
+    if (!pageId) {
+      reset();
+      return;
+    }
+    const started = startAsyncRequest(resource);
+    resource = started.resource;
+    try {
+      const next = await load(pageId);
+      resource = pageId === readSelectedPageId()
+        ? resolveAsyncRequest(resource, started.token, [...next])
+        : abandonAsyncRequest(resource, started.token);
+    } catch (failure) {
+      resource = pageId === readSelectedPageId()
+        ? failAsyncRequest(resource, started.token, notesErrorDetail(failure), [])
+        : abandonAsyncRequest(resource, started.token);
+    }
+  }
+
+  /** Shows `items` from a local write; this supersedes any read in flight. */
+  function replace(items: readonly T[]): void {
+    resource = idleAsyncResource([...items]);
+  }
+
+  function reset(): void {
+    resource = idleAsyncResource([]);
+  }
+
+  return {
+    get items(): T[] { return resource.data; },
+    get loading(): boolean { return loading; },
+    get error(): string | null { return error; },
+    reload,
+    replace,
+    reset,
   };
 }

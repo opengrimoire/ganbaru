@@ -35,10 +35,15 @@
   const preferences = getPreferences();
   const canScan = BUILD_PLATFORM_PROFILE.shell === "mobile";
   let codeInput = $state<HTMLTextAreaElement | null>(null);
+  /** What reading a code found, kept with the code so it never describes a code typed since. */
+  type ParseOutcome =
+    | { code: string; status: "parsed"; card: ParsedContactCard }
+    | { code: string; status: "invalid"; error: ContactsErrorCode };
+
   let code = $state("");
-  let parsed = $state<ParsedContactCard | null>(null);
-  let parseError = $state<ContactsErrorCode | null>(null);
-  let sendError = $state<ContactsErrorCode | null>(null);
+  let parseOutcome = $state.raw<ParseOutcome | null>(null);
+  /** The failed send, with the code it sent, so a failure for an edited code never shows. */
+  let sendFailure = $state.raw<{ code: string; error: ContactsErrorCode } | null>(null);
   let sending = $state(false);
   let scanning = $state(false);
   let scanFailed = $state(false);
@@ -46,6 +51,10 @@
   let parseSequence = 0;
 
   const trimmedCode = $derived(code.trim());
+  const currentParse = $derived(parseOutcome?.code === trimmedCode ? parseOutcome : null);
+  const parsed = $derived(currentParse?.status === "parsed" ? currentParse.card : null);
+  const parseError = $derived(currentParse?.status === "invalid" ? currentParse.error : null);
+  const sendError = $derived(sendFailure?.code === trimmedCode ? sendFailure.error : null);
   /** Why the parsed card cannot be sent to, independent of delivery. */
   const blocker = $derived.by(() => {
     if (!parsed) return null;
@@ -68,25 +77,18 @@
     const text = trimmedCode;
     if (parseTimer) clearTimeout(parseTimer);
     parseTimer = null;
-    sendError = null;
+    sendFailure = null;
+    scanFailed = false;
     const sequence = ++parseSequence;
-    if (!text) {
-      parsed = null;
-      parseError = null;
-      return;
-    }
+    if (!text) return;
     parseTimer = setTimeout(() => {
       parseTimer = null;
       void parseContactCard(text)
-        .then((view) => {
-          if (sequence !== parseSequence) return;
-          parsed = view;
-          parseError = null;
+        .then((card) => {
+          if (sequence === parseSequence) parseOutcome = { code: text, status: "parsed", card };
         })
         .catch((cause: unknown) => {
-          if (sequence !== parseSequence) return;
-          parsed = null;
-          parseError = normalizeContactsError(cause).code;
+          if (sequence === parseSequence) parseOutcome = { code: text, status: "invalid", error: normalizeContactsError(cause).code };
         });
     }, PARSE_DEBOUNCE_MS);
     return () => {
@@ -116,17 +118,18 @@
 
   async function send(): Promise<void> {
     if (!canSend) return;
+    const sentCode = trimmedCode;
     sending = true;
-    sendError = null;
+    sendFailure = null;
     try {
-      await contacts.sendRequest(trimmedCode, {
+      await contacts.sendRequest(sentCode, {
         inviteTrust: trustKindForDuration(preferences.contactsInviteTrustDefault),
         messageTrust: trustKindForDuration(preferences.contactsMessageTrustDefault),
       });
       onSent?.();
       onClose();
     } catch (cause: unknown) {
-      sendError = normalizeContactsError(cause).code;
+      sendFailure = { code: sentCode, error: normalizeContactsError(cause).code };
     } finally {
       sending = false;
     }

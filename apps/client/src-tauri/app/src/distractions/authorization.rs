@@ -1,5 +1,6 @@
 use super::catalog::{DesktopCatalogIndex, desktop_catalog_index};
 use super::*;
+use ganbaru_distractions::contracts::PhaseBlockingSettings;
 
 #[derive(Clone, Debug)]
 pub(super) struct DesktopCloseAuthorization {
@@ -58,31 +59,11 @@ fn configured_desktop_process_names(
         .ok_or_else(|| "configured desktop rule is not closeable".to_string())
 }
 
+/// Desktop closes follow the shared phase blocking rule over the `distractions.desktop` settings.
 fn desktop_runtime_authorizes_close(desktop: &Value, runtime: &DistractionsRuntimeState) -> bool {
-    if !runtime.active {
-        return false;
-    }
-    let strict_pause =
-        runtime.paused && matches!(runtime.pause_reason.as_deref(), Some("idle" | "suspend"));
-    if runtime.paused
-        && !strict_pause
-        && desktop
-            .get("pauseDuringFocusPause")
-            .and_then(Value::as_bool)
-            .unwrap_or(true)
-    {
-        return false;
-    }
-    let setting = match runtime.phase.as_str() {
-        "focus" => "blockDuringFocus",
-        "short_break" => "blockDuringShortBreaks",
-        "long_break" => "blockDuringLongBreaks",
-        _ => return false,
-    };
-    desktop
-        .get(setting)
-        .and_then(Value::as_bool)
-        .unwrap_or(true)
+    runtime
+        .authority
+        .enforces_blocking(PhaseBlockingSettings::from_rules(desktop))
 }
 
 pub(super) fn configured_close_authorization(

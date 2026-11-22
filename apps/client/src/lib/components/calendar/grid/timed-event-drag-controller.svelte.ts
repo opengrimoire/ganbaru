@@ -13,6 +13,15 @@ import {
 import { useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
 import { isPendingCreateEventId, PENDING_CREATE_ID } from "$lib/components/calendar/display-events";
 import { TouchHoldArbiter } from "$lib/utils/touch-hold";
+import {
+  IDLE_GRID_GESTURE,
+  gestureDrag,
+  gestureDragPreview,
+  transitionGridGesture,
+  type CreateGestureOrigin,
+  type GridGesture,
+  type GridGestureEvent,
+} from "./grid-gesture";
 
 let cursorStyle: HTMLStyleElement | null = null;
 
@@ -67,34 +76,31 @@ export interface TimedEventDragControllerConfig {
 
 export function createTimedEventDragController(config: TimedEventDragControllerConfig) {
   const calendarZoom = useCalendarZoom();
-  let dragState = $state<DragState | null>(null);
-  let dragPreviewDate = $state<string | null>(null);
-  let dragPreview = $state<PositionedEvent | null>(null);
-  let grabbingId = $state<string | null>(null); // Set immediately on pointerdown for visual feedback
+  let gesture = $state.raw<GridGesture>(IDLE_GRID_GESTURE);
+  const dragPreview = $derived(gestureDragPreview(gesture));
+  // The grabbed event shows its contour from pointer down until its update settles.
+  const grabbingId = $derived(gestureDrag(gesture)?.eventId ?? null);
   let _didDrag = $state(false); // Suppress click after drag
-
-  let createState = $state<{
-    dateStr: string;
-    anchorMinute: number;
-    clickStartMinute: number;
-    columnEl: HTMLElement;
-    pointerStartX: number;
-    pointerStartY: number;
-    mode: "pending" | "selecting";
-  } | null>(null);
-  let createPreviewDate = $state<string | null>(null);
-  let createPreview = $state<PositionedEvent | null>(null);
   let createHoldTimer = 0;
 
   // Track latest pointer position for scroll-triggered updates and auto-scroll
   let lastPointerEvent: PointerEvent | null = null;
-  let dragInteractionActive = false;
   let autoScrollRaf = 0;
   let scrollUpdateRaf = 0;
   let scrollUpdateContainer: HTMLElement | null = null;
   const touchHold = new TouchHoldArbiter();
   // Whether the parent was told a touch edit started, so a still tap never collapses the sheet.
   let touchEditNotified = false;
+
+  function dispatch(event: GridGestureEvent): void {
+    gesture = transitionGridGesture(gesture, event);
+  }
+
+  /** Recompute whichever preview the running gesture draws. */
+  function updateGesturePreview(): void {
+    if (gesture.phase === "eventDragging") updateDragPreview();
+    else if (gesture.phase === "createSelecting") updateCreatePreview();
+  }
 
   // Auto-scroll
 
@@ -125,14 +131,13 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
   function autoScrollLoop() {
     autoScrollRaf = 0;
     const container = config.getScrollContainer();
-    if (!container || (!dragState && !createState) || !lastPointerEvent) return;
+    if (!container || gesture.phase === "idle" || !lastPointerEvent) return;
 
     const speed = getScrollEdgeSpeed(container, lastPointerEvent.clientY);
     if (speed !== 0) {
       container.scrollTop += speed;
       // Re-run the move handler so the preview tracks the new scroll position
-      if (dragState && dragInteractionActive) updateDragPreview();
-      if (createState) updateCreatePreview();
+      updateGesturePreview();
     }
     autoScrollRaf = requestAnimationFrame(autoScrollLoop);
   }
@@ -152,8 +157,7 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
     if (scrollUpdateRaf) return;
     scrollUpdateRaf = requestAnimationFrame(() => {
       scrollUpdateRaf = 0;
-      if (dragState && dragInteractionActive) updateDragPreview();
-      if (createState) updateCreatePreview();
+      updateGesturePreview();
     });
   }
 
@@ -185,8 +189,7 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
 
   // Scroll-aware delta
 
-  function scrollAwareDeltaY(clientY: number): number {
-    if (!dragState) return 0;
+  function scrollAwareDeltaY(dragState: DragState, clientY: number): number {
     const container = config.getScrollContainer();
     const scrollDelta = container ? container.scrollTop - dragState.scrollTopAtStart : 0;
     return (clientY - dragState.pointerStartY) + scrollDelta;
@@ -231,6 +234,7 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
     e: PointerEvent,
     forceEdge?: "resize-top" | "resize-bottom",
   ): boolean {
+    if (gesture.phase !== "idle") return false;
     const event = config.events().find((ev) => ev.id === eventId);
     if (!event || event.allDay) return false;
 
@@ -239,7 +243,7 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
     const lengthMinutes = durationMinutes(event.start, event.end);
     const container = config.getScrollContainer();
 
-    dragState = {
+    const dragState: DragState = {
       eventId,
       type: "move",
       originDate: dateStr,
@@ -249,8 +253,6 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
       pointerStartY: e.clientY,
       pointerStartX: e.clientX,
       scrollTopAtStart: container ? container.scrollTop : 0,
-      columnWidth: 0,
-      startColumnIndex: 0,
     };
 
     if (forceEdge) {
@@ -276,42 +278,35 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
     // Active events can only change their end time from the bottom edge.
     // Moving or top-resizing would rewrite a start time that already has
     // pomodoro history.
-    if (config.isActiveEvent?.(event) && dragState.type !== "resize-bottom") {
-      dragState = null;
-      return false;
-    }
+    if (config.isActiveEvent?.(event) && dragState.type !== "resize-bottom") return false;
 
     // Locked saved events (past with completed progress): no drag/resize at all.
     // Unsaved create previews stay editable until the user commits them.
-    if (!isPendingCreateEventId(eventId) && config.isEventLocked?.(eventId)) {
-      dragState = null;
-      return false;
-    }
+    if (!isPendingCreateEventId(eventId) && config.isEventLocked?.(eventId)) return false;
 
     if (dragState.type === "resize-top" || dragState.type === "resize-bottom") {
       lockCursor("ns-resize");
     }
 
-    dragInteractionActive = false;
-    grabbingId = eventId; // Show contour immediately on pointer down
+    dispatch({ type: "eventPressed", drag: dragState });
     lastPointerEvent = e;
     window.addEventListener("pointermove", handleDragMove);
     window.addEventListener("pointerup", handleDragEnd);
     window.addEventListener("pointercancel", handleDragCancel);
     startScrollDrivenUpdates();
-    if (dragInteractionActive) startAutoScroll();
     return true;
   }
 
   function updateDragPreview() {
-    if (!dragState || !lastPointerEvent) return;
+    if (gesture.phase !== "eventDragging" || !lastPointerEvent) return;
+    const dragState = gesture.drag;
 
-    const event = config.events().find((ev) => ev.id === dragState!.eventId);
+    const event = config.events().find((ev) => ev.id === dragState.eventId);
     if (!event) return;
 
     const pointerEvent = lastPointerEvent;
     const hourHeight = config.hourHeight();
-    const deltaY = scrollAwareDeltaY(pointerEvent.clientY);
+    const deltaY = scrollAwareDeltaY(dragState, pointerEvent.clientY);
     const deltaMinutes = snapToGrid((deltaY / hourHeight) * 60, calendarZoom.gridMinutes);
 
     let newStart: number;
@@ -420,81 +415,73 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
       column: 0,
       totalColumns: 1,
     };
-    dragPreviewDate = targetDate;
-    dragPreview = nextPreview;
+    dispatch({ type: "dragPreviewed", preview: nextPreview });
+  }
 
+  /** Whether the pointer moved far enough from the press to start dragging. */
+  function passedDragThreshold(dragState: DragState, e: PointerEvent): boolean {
+    const dx = e.clientX - dragState.pointerStartX;
+    const dy = e.clientY - dragState.pointerStartY;
+    return Math.hypot(dx, dy) >= EVENT_DRAG_THRESHOLD_PX;
   }
 
   function handleDragMove(e: PointerEvent) {
-    if (!dragState) return;
+    if (gesture.phase !== "eventPressed" && gesture.phase !== "eventDragging") return;
     lastPointerEvent = e;
-    if (!dragInteractionActive) {
-      const dx = e.clientX - dragState.pointerStartX;
-      const dy = e.clientY - dragState.pointerStartY;
-      const movedEnough = Math.hypot(dx, dy) >= EVENT_DRAG_THRESHOLD_PX;
-      if (!movedEnough) return;
-      dragInteractionActive = true;
+    if (gesture.phase === "eventPressed") {
+      if (!passedDragThreshold(gesture.drag, e)) return;
+      dispatch({ type: "dragThresholdPassed" });
       if (touchHold.editingActive) notifyTouchEditStart();
-      if (dragState.type === "move") lockCursor("grabbing");
+      if (gestureDrag(gesture)?.type === "move") lockCursor("grabbing");
       startAutoScroll();
     }
     updateDragPreview();
   }
 
-  async function handleDragEnd(e: PointerEvent) {
+  function removeDragListeners(): void {
     window.removeEventListener("pointermove", handleDragMove);
     window.removeEventListener("pointerup", handleDragEnd);
     window.removeEventListener("pointercancel", handleDragCancel);
     stopAutoScroll();
     stopScrollDrivenUpdates();
     unlockCursor();
+  }
 
-    if (dragState) {
+  async function handleDragEnd(e: PointerEvent) {
+    removeDragListeners();
+
+    if (gesture.phase === "eventPressed" || gesture.phase === "eventDragging") {
       lastPointerEvent = e;
-      if (!dragInteractionActive) {
-        const dx = e.clientX - dragState.pointerStartX;
-        const dy = e.clientY - dragState.pointerStartY;
-        dragInteractionActive = Math.hypot(dx, dy) >= EVENT_DRAG_THRESHOLD_PX;
+      if (gesture.phase === "eventPressed" && passedDragThreshold(gesture.drag, e)) {
+        dispatch({ type: "dragThresholdPassed" });
       }
-      if (dragInteractionActive) updateDragPreview();
+      updateDragPreview();
     }
 
-    const state = dragState;
-    const wasDragging = !!dragPreview;
-
-    if (wasDragging || touchHold.editingActive) {
+    if (gestureDragPreview(gesture) || touchHold.editingActive) {
       _didDrag = true;
       setTimeout(() => { _didDrag = false; }, 0);
     }
     finishTouchEditing();
+    lastPointerEvent = null;
 
-    if (dragPreview && state) {
+    dispatch({ type: "dragReleased" });
+    const committing = gesture;
+    if (committing.phase !== "eventCommitting") return;
+    try {
       // Always notify the parent so it records lastDragEndTime and keeps the panel open.
       // The parent decides whether the position changed enough to persist.
-      await config.onEventUpdate(dragPreview.event);
+      await config.onEventUpdate(committing.preview.event);
+    } finally {
+      // A cancel while the update ran already ended this gesture, and any later one is not this one to settle.
+      if (gesture === committing) dispatch({ type: "dragSettled" });
     }
-
-    dragState = null;
-    dragPreview = null;
-    dragPreviewDate = null;
-    grabbingId = null;
-    lastPointerEvent = null;
-    dragInteractionActive = false;
   }
 
   function handleDragCancel(): void {
-    window.removeEventListener("pointermove", handleDragMove);
-    window.removeEventListener("pointerup", handleDragEnd);
-    window.removeEventListener("pointercancel", handleDragCancel);
-    stopAutoScroll();
-    stopScrollDrivenUpdates();
-    unlockCursor();
-    dragState = null;
-    dragPreview = null;
-    dragPreviewDate = null;
-    grabbingId = null;
+    removeDragListeners();
     lastPointerEvent = null;
-    dragInteractionActive = false;
+    if (gestureDrag(gesture)) dispatch({ type: "ended" });
     finishTouchEditing();
   }
 
@@ -525,22 +512,22 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
     e: PointerEvent,
     selectImmediately: boolean,
   ): boolean {
-    if (dragState) return false; // don't start create while an event drag is active
+    if (gesture.phase !== "idle") return false; // don't start create while another gesture runs
 
     const columnEl = (e.target as HTMLElement).closest("[data-day-column-shell]") as HTMLElement | null;
     if (!columnEl) return false;
 
-    const roundedSelectionMinute = Math.round(timing.selectionMinute);
-    const roundedClickMinute = Math.round(timing.clickMinute);
-    createState = {
-      dateStr,
-      anchorMinute: roundedSelectionMinute,
-      clickStartMinute: roundedClickMinute,
-      columnEl,
-      pointerStartX: e.clientX,
-      pointerStartY: e.clientY,
-      mode: "pending",
-    };
+    dispatch({
+      type: "createPressed",
+      create: {
+        dateStr,
+        anchorMinute: Math.round(timing.selectionMinute),
+        clickStartMinute: Math.round(timing.clickMinute),
+        columnEl,
+        pointerStartX: e.clientX,
+        pointerStartY: e.clientY,
+      },
+    });
 
     lastPointerEvent = e;
     lockCursor("ns-resize");
@@ -557,41 +544,38 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
   }
 
   function enterCreateSelection() {
-    const state = createState;
-    if (!state || state.mode === "selecting") return;
+    if (gesture.phase !== "createPending") return;
+    const { create } = gesture;
 
     clearCreateHoldTimer();
-    createState = { ...state, mode: "selecting" };
     const snap = calendarZoom.gridMinutes;
-    createPreviewDate = state.dateStr;
-    createPreview = buildPreview(
-      state.dateStr,
-      state.anchorMinute,
-      Math.min(state.anchorMinute + snap, 1440),
-    );
+    dispatch({
+      type: "createPreviewed",
+      preview: buildPreview(create.dateStr, create.anchorMinute, Math.min(create.anchorMinute + snap, 1440)),
+    });
     startScrollDrivenUpdates();
     startAutoScroll();
   }
 
   function updateCreatePreview() {
-    if (!createState || createState.mode !== "selecting" || !lastPointerEvent) return;
+    if (gesture.phase !== "createSelecting" || !lastPointerEvent) return;
+    const { create } = gesture;
 
     const hourHeight = config.hourHeight();
-    const rect = createState.columnEl.getBoundingClientRect();
+    const rect = create.columnEl.getBoundingClientRect();
     const offsetY = lastPointerEvent.clientY - rect.top;
     const cursorMinute = clampMinute(snapToGrid((offsetY / hourHeight) * 60, calendarZoom.gridMinutes));
 
-    const anchor = createState.anchorMinute;
+    const anchor = create.anchorMinute;
     let startMinute = Math.min(anchor, cursorMinute);
     let endMinute = Math.max(anchor, cursorMinute);
     const snap = calendarZoom.gridMinutes;
     if (endMinute - startMinute < snap) endMinute = startMinute + snap;
 
-    createPreview = buildPreview(
-      createState.dateStr,
-      startMinute,
-      clampMinute(endMinute),
-    );
+    dispatch({
+      type: "createPreviewed",
+      preview: buildPreview(create.dateStr, startMinute, clampMinute(endMinute)),
+    });
   }
 
   function getCreatePreviewAnchor(preview: PositionedEvent, columnEl: HTMLElement): PanelAnchor {
@@ -605,23 +589,26 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
     };
   }
 
+  /** Whether the pointer moved far enough from the press to select a range. */
+  function passedCreateThreshold(create: CreateGestureOrigin, e: PointerEvent): boolean {
+    const dx = e.clientX - create.pointerStartX;
+    const dy = e.clientY - create.pointerStartY;
+    return Math.hypot(dx, dy) >= CREATE_DRAG_THRESHOLD_PX;
+  }
+
   function handleCreateMove(e: PointerEvent) {
-    const state = createState;
-    if (!state) return;
+    if (gesture.phase !== "createPending" && gesture.phase !== "createSelecting") return;
     lastPointerEvent = e;
 
-    if (state.mode === "pending") {
-      const dx = e.clientX - state.pointerStartX;
-      const dy = e.clientY - state.pointerStartY;
-      const movedEnough = Math.hypot(dx, dy) >= CREATE_DRAG_THRESHOLD_PX;
-      if (!movedEnough) return;
+    if (gesture.phase === "createPending") {
+      if (!passedCreateThreshold(gesture.create, e)) return;
       enterCreateSelection();
     }
 
     updateCreatePreview();
   }
 
-  async function handleCreateEnd(e: PointerEvent) {
+  function removeCreateListeners(): void {
     window.removeEventListener("pointermove", handleCreateMove);
     window.removeEventListener("pointerup", handleCreateEnd);
     window.removeEventListener("pointercancel", handleCreateCancel);
@@ -629,89 +616,68 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
     stopAutoScroll();
     stopScrollDrivenUpdates();
     unlockCursor();
+  }
 
-    if (createState) {
+  async function handleCreateEnd(e: PointerEvent) {
+    removeCreateListeners();
+
+    if (gesture.phase === "createPending" || gesture.phase === "createSelecting") {
       lastPointerEvent = e;
-      if (createState.mode === "pending") {
-        const dx = e.clientX - createState.pointerStartX;
-        const dy = e.clientY - createState.pointerStartY;
-        if (Math.hypot(dx, dy) >= CREATE_DRAG_THRESHOLD_PX) {
-          enterCreateSelection();
-        }
+      if (gesture.phase === "createPending" && passedCreateThreshold(gesture.create, e)) {
+        enterCreateSelection();
       }
       updateCreatePreview();
     }
 
-    const state = createState;
+    const state = gesture;
     finishTouchEditing();
+    lastPointerEvent = null;
 
-    const movedDraftMinutes = state?.mode === "pending" ? tapMovedDraftMinutes() : undefined;
-    if (state && movedDraftMinutes !== undefined) {
-      createState = null;
-      createPreview = null;
-      createPreviewDate = null;
-      lastPointerEvent = null;
-      config.onEventCreate(
-        minuteOffsetToDateStr(state.dateStr, state.clickStartMinute),
-        minuteOffsetToDateStr(state.dateStr, state.clickStartMinute + movedDraftMinutes),
-      );
-      return;
-    }
+    if (state.phase === "createPending") {
+      const { create } = state;
+      const movedDraftMinutes = tapMovedDraftMinutes();
+      if (movedDraftMinutes !== undefined) {
+        dispatch({ type: "ended" });
+        config.onEventCreate(
+          minuteOffsetToDateStr(create.dateStr, create.clickStartMinute),
+          minuteOffsetToDateStr(create.dateStr, create.clickStartMinute + movedDraftMinutes),
+        );
+        return;
+      }
 
-    if (state?.mode === "pending") {
+      // A click draws a default-length range for one frame, then opens the editor anchored to it.
       const endMinute = clampMinute(
-        Math.min(state.clickStartMinute + DEFAULT_CLICK_EVENT_MINUTES, 1440),
+        Math.min(create.clickStartMinute + DEFAULT_CLICK_EVENT_MINUTES, 1440),
       );
-      const preview = buildPreview(state.dateStr, state.clickStartMinute, endMinute);
-      createPreviewDate = state.dateStr;
-      createPreview = preview;
+      dispatch({ type: "createPreviewed", preview: buildPreview(create.dateStr, create.clickStartMinute, endMinute) });
+      const clicked = gesture;
       await tick();
-
-      const start = preview.event.start;
-      const end = preview.event.end;
-      const anchor = getCreatePreviewAnchor(preview, state.columnEl);
-      createState = null;
-      createPreview = null;
-      createPreviewDate = null;
-      config.onEventCreate(start, end, anchor);
-      lastPointerEvent = null;
+      // A cancel during the frame already ended this gesture.
+      if (gesture !== clicked || clicked.phase !== "createSelecting") return;
+      finishCreateSelection(clicked.create, clicked.preview);
       return;
     }
 
-    if (createPreview && state) {
-      // Save values and clear preview state before calling onEventCreate.
-      // This prevents both __create__ and PENDING_CREATE_ID from existing simultaneously,
-      // which would cause the layout to see them as overlapping and animate width changes.
-      const start = createPreview.event.start;
-      const end = createPreview.event.end;
-      const anchor = getCreatePreviewAnchor(createPreview, state.columnEl);
-      createState = null;
-      createPreview = null;
-      createPreviewDate = null;
-      config.onEventCreate(start, end, anchor);
-      lastPointerEvent = null;
-    } else {
-      createState = null;
-      createPreview = null;
-      createPreviewDate = null;
-      lastPointerEvent = null;
-    }
+    if (state.phase === "createSelecting") finishCreateSelection(state.create, state.preview);
+  }
+
+  /**
+   * End the create gesture before reporting its range, so the `__create__` preview and the pending draft never
+   * coexist; the layout would see them as overlapping and animate width changes.
+   */
+  function finishCreateSelection(create: CreateGestureOrigin, preview: PositionedEvent): void {
+    const anchor = getCreatePreviewAnchor(preview, create.columnEl);
+    dispatch({ type: "ended" });
+    config.onEventCreate(preview.event.start, preview.event.end, anchor);
   }
 
   function handleCreateCancel(): void {
-    window.removeEventListener("pointermove", handleCreateMove);
-    window.removeEventListener("pointerup", handleCreateEnd);
-    window.removeEventListener("pointercancel", handleCreateCancel);
-    clearCreateHoldTimer();
-    stopAutoScroll();
-    stopScrollDrivenUpdates();
-    unlockCursor();
-    createState = null;
-    createPreview = null;
-    createPreviewDate = null;
+    removeCreateListeners();
     lastPointerEvent = null;
+    if (gesture.phase === "createPending" || gesture.phase === "createSelecting") dispatch({ type: "ended" });
     finishTouchEditing();
   }
+
 
   /**
    * Return the length in minutes of the open timed draft that a tap on a touch layout moves to the tapped slot, keeping
@@ -816,16 +782,12 @@ export function createTimedEventDragController(config: TimedEventDragControllerC
   }
 
   function getCreatePreviewForDate(dateStr: string): PositionedEvent | null {
-    if (createPreviewDate === dateStr) return createPreview;
-    return null;
+    return gesture.phase === "createSelecting" && gesture.create.dateStr === dateStr ? gesture.preview : null;
   }
 
   return {
-    get dragState() { return dragState; },
-    get dragPreview() { return dragPreview; },
-    get dragPreviewDate() { return dragPreviewDate; },
-    get createPreview() { return createPreview; },
-    get createPreviewDate() { return createPreviewDate; },
+    /** The event whose drag preview is on screen. */
+    get draggingEventId() { return dragPreview ? gestureDrag(gesture)?.eventId : undefined; },
     get grabbingId() { return grabbingId; },
     get didDrag() { return _didDrag; },
     handleDragStart,

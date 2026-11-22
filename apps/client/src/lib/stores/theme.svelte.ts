@@ -38,6 +38,8 @@ import {
   importedTheme,
   toUserThemeSnapshot,
   withSeedOf,
+  differsFromSeed,
+  resetToSeed,
 } from "$lib/themes/operations";
 import {
   planThemeSave,
@@ -600,6 +602,14 @@ async function saveThemeAsCopy(
   return { kind: "savedAsCopy", id: copy.id, displayName: copy.displayName, reason };
 }
 
+/** Record the dismissal queued for a theme before its row existed, keeping it queued if the write fails. */
+async function recordPendingDismissal(id: ThemeId): Promise<void> {
+  const pending = pendingDismissals.get(id);
+  if (pending === undefined) return;
+  await recordDismissal(id, pending);
+  pendingDismissals.delete(id);
+}
+
 /**
  * Flush the in-memory state of a theme to SQLite. Called by the editor's
  * Save path. Fresh themes go through `dbInsertTheme`, and pending dismissals
@@ -618,14 +628,12 @@ async function persistThemeToDb(id: ThemeId, choice?: ThemeSaveChoice): Promise<
     await dbInsertTheme(edited);
     freshThemes.delete(id);
     storedThemeWrites.set(id, edited);
-    const pending = pendingDismissals.get(id);
-    if (pending !== undefined) {
-      await recordDismissal(id, pending);
-      pendingDismissals.delete(id);
-    }
+    await recordPendingDismissal(id);
     return { kind: "saved" };
   }
   const stored = await loadStoredTheme(id);
+  // A dismissal whose write failed after the insert stays queued and is recorded by the next save.
+  if (stored) await recordPendingDismissal(id);
   if (choice === "copy") return saveThemeAsCopy(id, stored, "copy");
   const plan = planThemeSave({
     base: id === editingThemeId ? editingBase : undefined,
@@ -965,70 +973,20 @@ function resetPaletteSlot(id: ThemeId, slot: number): boolean {
   return true;
 }
 
-function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
-  if (a.size !== b.size) return false;
-  for (const v of a) if (!b.has(v)) return false;
-  return true;
-}
-
 function canResetThemeToSeed(id: ThemeId): boolean {
   const current = customThemes[id];
-  if (!current) return false;
-  for (const key of Object.keys(current.seedSources) as Array<keyof ThemeSources>) {
-    if (current.sources[key] !== current.seedSources[key]) return true;
-  }
-  for (const key of Object.keys(current.seedAppTokens)) {
-    if (current.appTokens[key] !== current.seedAppTokens[key]) return true;
-  }
-  for (const key of Object.keys(current.seedCalendarTokens)) {
-    if (current.calendarTokens[key] !== current.seedCalendarTokens[key]) {
-      return true;
-    }
-  }
-  if (
-    !setsEqual(current.appIsolated, current.seedAppIsolated) ||
-    !setsEqual(current.calendarIsolated, current.seedCalendarIsolated)
-  ) {
-    return true;
-  }
-  if (current.eventPalette.length !== current.seedEventPalette.length) {
-    return true;
-  }
-  for (let i = 0; i < current.eventPalette.length; i++) {
-    if (current.eventPalette[i] !== current.seedEventPalette[i]) return true;
-  }
-  if (current.blendCanvas !== current.seedBlendCanvas) return true;
-  if (current.calendarDefaultMode !== current.seedCalendarDefaultMode) return true;
-  if (current.calendarDefaultCustom !== current.seedCalendarDefaultCustom) {
-    return true;
-  }
-  if (current.iconLabel !== current.seedIconLabel) return true;
-  return false;
+  return current !== undefined && differsFromSeed(current);
 }
 
 /**
- * Restore every token, palette slot, and blend canvas to their seed
- * values.
+ * Restore a theme to its seed, engine stamp included, through the pure
+ * {@link resetToSeed}. The editor buffer owns the reset; the next commit
+ * saves it as ordinary content.
  */
 function resetThemeToSeed(id: ThemeId): boolean {
   const current = customThemes[id];
   if (!current) return false;
-  customThemes[id] = {
-    ...current,
-    sources: { ...current.seedSources },
-    appTokens: syncSemanticSignalAppTokens(
-      current.seedSources,
-      current.seedAppTokens,
-    ),
-    calendarTokens: { ...current.seedCalendarTokens },
-    appIsolated: normalizeSemanticSignalAppIsolated(current.seedAppIsolated),
-    calendarIsolated: new Set(current.seedCalendarIsolated),
-    eventPalette: [...current.seedEventPalette],
-    blendCanvas: current.seedBlendCanvas,
-    calendarDefaultMode: current.seedCalendarDefaultMode,
-    calendarDefaultCustom: current.seedCalendarDefaultCustom,
-    iconLabel: current.seedIconLabel,
-  };
+  customThemes[id] = resetToSeed(current);
   if (id === activeId) applyThemeToDom();
   return true;
 }

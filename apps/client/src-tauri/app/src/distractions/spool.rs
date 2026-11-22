@@ -7,6 +7,7 @@
 //! them into the replicated `distractions_block_events`.
 
 use crate::distractions::DistractionsUsageSampleRow;
+use ganbaru_distractions::contracts::spool::{SPOOL_RESET_SQL, SPOOL_SCHEMA_VERSION};
 use ganbaru_distractions::usage::totals::insert_own_samples;
 use ganbaru_distractions::usage::{
     SpooledBlockEvent, SpooledBlockEventError, UsageDateWindow, record_spooled_block_event,
@@ -34,6 +35,21 @@ fn spool_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> 
         .map_err(|error| format!("find Distractions spool directory: {error}"))
 }
 
+/// Replaces the spool tables when their schema version is not the current one, inside one
+/// immediate transaction so the browser host and the app never reset the same spool twice.
+async fn prepare_spool(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&mut *transaction)
+        .await?;
+    if version != SPOOL_SCHEMA_VERSION {
+        sqlx::raw_sql(SPOOL_RESET_SQL)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    transaction.commit().await
+}
+
 async fn open_spool(path: &Path) -> Result<SqlitePool, String> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -49,45 +65,9 @@ async fn open_spool(path: &Path) -> Result<SqlitePool, String> {
         .connect_with(options)
         .await
         .map_err(|error| format!("open Distractions spool: {error}"))?;
-    sqlx::raw_sql(
-        "CREATE TABLE IF NOT EXISTS pending_usage_samples (
-            sample_id TEXT PRIMARY KEY,
-            vault_id TEXT NOT NULL,
-            device_id TEXT NOT NULL,
-            source_type TEXT NOT NULL,
-            source_key TEXT NOT NULL,
-            display_name TEXT,
-            started_at_ms INTEGER NOT NULL,
-            elapsed_seconds INTEGER NOT NULL,
-            local_date TEXT NOT NULL,
-            created_at_ms INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS native_usage_batch_receipts (
-            vault_id TEXT NOT NULL,
-            device_id TEXT NOT NULL,
-            batch_id TEXT NOT NULL,
-            digest TEXT NOT NULL,
-            PRIMARY KEY (vault_id, device_id)
-        );
-        CREATE TABLE IF NOT EXISTS pending_block_events (
-            event_id TEXT PRIMARY KEY,
-            vault_id TEXT NOT NULL,
-            device_id TEXT NOT NULL,
-            run_id TEXT,
-            occurred_at TEXT NOT NULL,
-            source_type TEXT NOT NULL,
-            source_key TEXT NOT NULL,
-            display_name TEXT,
-            phase TEXT,
-            decision TEXT NOT NULL,
-            rule_kind TEXT,
-            rule_label TEXT,
-            blocker_mode TEXT
-        );",
-    )
-    .execute(&pool)
-    .await
-    .map_err(|error| format!("initialize Distractions spool: {error}"))?;
+    prepare_spool(&pool)
+        .await
+        .map_err(|error| format!("initialize Distractions spool: {error}"))?;
     Ok(pool)
 }
 
@@ -220,8 +200,9 @@ async fn pending_count(
     .map_err(|error| format!("count pending Distractions samples: {error}"))
 }
 
-/// Replaces the pending samples of one device with one sample per source and day, keeping their
-/// exact elapsed total.
+/// Replaces the unclaimed pending samples of one device with one sample per source and day,
+/// keeping their exact elapsed total. Rows claimed by a drain may already be in the vault
+/// journal under their own ids, so they stay untouched until that drain removes them.
 async fn compact_pending(
     connection: &mut SqliteConnection,
     vault_id: &str,
@@ -233,7 +214,7 @@ async fn compact_pending(
                 local_date, MAX(created_at_ms) AS created_at_ms,
                 GROUP_CONCAT(hex(CAST(sample_id AS BLOB)), '|' ORDER BY sample_id) AS members
          FROM pending_usage_samples
-         WHERE vault_id = ? AND device_id = ?
+         WHERE vault_id = ? AND device_id = ? AND claimed = 0
          GROUP BY source_type, source_key, local_date",
     )
     .bind(vault_id)
@@ -274,12 +255,14 @@ async fn compact_pending(
     if compacted.len() as i64 >= MAX_PENDING_SAMPLES {
         return Err("the Distractions usage spool cannot be compacted safely".to_string());
     }
-    sqlx::query("DELETE FROM pending_usage_samples WHERE vault_id = ? AND device_id = ?")
-        .bind(vault_id)
-        .bind(device_id)
-        .execute(&mut *connection)
-        .await
-        .map_err(|error| format!("replace compacted Distractions spool: {error}"))?;
+    sqlx::query(
+        "DELETE FROM pending_usage_samples WHERE vault_id = ? AND device_id = ? AND claimed = 0",
+    )
+    .bind(vault_id)
+    .bind(device_id)
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| format!("replace compacted Distractions spool: {error}"))?;
     for sample in &compacted {
         insert_pending(&mut *connection, vault_id, device_id, sample).await?;
     }
@@ -314,20 +297,58 @@ async fn insert_pending(
     Ok(())
 }
 
+/// Returns the claimed drain batch of one device, first claiming the oldest pending samples in
+/// a committed spool transaction when no earlier drain left a claimed batch behind.
+async fn claim_batch(
+    connection: &mut SqliteConnection,
+    vault_id: &str,
+    device_id: &str,
+) -> Result<Vec<DistractionsUsageSampleRow>, String> {
+    let mut transaction = sqlx::Connection::begin(&mut *connection)
+        .await
+        .map_err(|error| format!("begin Distractions spool claim: {error}"))?;
+    sqlx::query(
+        "UPDATE pending_usage_samples SET claimed = 1
+         WHERE sample_id IN (
+             SELECT sample_id FROM pending_usage_samples
+             WHERE vault_id = ? AND device_id = ? AND claimed = 0
+             ORDER BY created_at_ms ASC, sample_id ASC LIMIT ?)
+           AND NOT EXISTS (
+             SELECT 1 FROM pending_usage_samples
+             WHERE vault_id = ? AND device_id = ? AND claimed = 1)",
+    )
+    .bind(vault_id)
+    .bind(device_id)
+    .bind(DRAIN_BATCH_SAMPLES)
+    .bind(vault_id)
+    .bind(device_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| format!("claim pending Distractions samples: {error}"))?;
+    let batch = read_pending(&mut transaction, vault_id, device_id, true).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| format!("commit Distractions spool claim: {error}"))?;
+    Ok(batch)
+}
+
 async fn read_pending(
     connection: &mut SqliteConnection,
     vault_id: &str,
     device_id: &str,
+    claimed_only: bool,
 ) -> Result<Vec<DistractionsUsageSampleRow>, String> {
     let rows = sqlx::query(
         "SELECT sample_id, source_type, source_key, display_name, started_at_ms,
                 elapsed_seconds, local_date, created_at_ms
          FROM pending_usage_samples
-         WHERE vault_id = ? AND device_id = ?
+         WHERE vault_id = ? AND device_id = ? AND (claimed = 1 OR NOT ?)
          ORDER BY created_at_ms ASC, sample_id ASC LIMIT ?",
     )
     .bind(vault_id)
     .bind(device_id)
+    .bind(claimed_only)
     .bind(DRAIN_BATCH_SAMPLES)
     .fetch_all(connection)
     .await
@@ -361,8 +382,12 @@ pub(crate) async fn drain<R: Runtime>(
     drain_at(&spool_path(app)?, pool, vault_id, device_id, window).await
 }
 
-/// Each batch commits to the vault before it leaves the spool; the journal ignores samples it
-/// already holds, so a batch that committed but stayed in the spool drains again harmlessly.
+/// Each batch is claimed in the spool, commits to the vault, and only then leaves the spool. The
+/// journal ignores samples it already holds, so a claimed batch that committed but stayed in the
+/// spool drains again harmlessly, and compaction never merges claimed rows into new ids. A sample
+/// the journal refuses by a constraint or trigger leaves the spool with its batch and a log line,
+/// so it never holds the claim; any other vault error keeps the whole batch claimed for the next
+/// attempt.
 async fn drain_at(
     path: &Path,
     pool: &SqlitePool,
@@ -384,7 +409,7 @@ async fn drain_at(
                 .acquire()
                 .await
                 .map_err(|error| format!("open Distractions spool batch: {error}"))?;
-            let batch = read_pending(&mut connection, vault_id, device_id).await?;
+            let batch = claim_batch(&mut connection, vault_id, device_id).await?;
             // The spool pool holds one connection, which the cleanup transaction needs.
             drop(connection);
             if batch.is_empty() {
@@ -394,16 +419,19 @@ async fn drain_at(
                 .begin()
                 .await
                 .map_err(|error| format!("begin usage journal import: {error}"))?;
-            let skipped = insert_own_samples(&mut transaction, &batch, window).await?;
+            let import = insert_own_samples(&mut transaction, &batch, window).await?;
             transaction
                 .commit()
                 .await
                 .map_err(|error| format!("commit usage journal import: {error}"))?;
-            if skipped > 0 {
+            if import.skipped > 0 {
                 eprintln!(
-                    "skipped {skipped} Distractions usage samples dated outside {}..={}",
-                    window.earliest, window.latest
+                    "skipped {} Distractions usage samples dated outside {}..={}",
+                    import.skipped, window.earliest, window.latest
                 );
+            }
+            for reason in &import.refused {
+                eprintln!("dropped spooled Distractions {reason}");
             }
             let mut transaction = spool
                 .begin()
@@ -412,7 +440,7 @@ async fn drain_at(
             for sample in &batch {
                 sqlx::query(
                     "DELETE FROM pending_usage_samples
-                     WHERE vault_id = ? AND device_id = ? AND sample_id = ?",
+                     WHERE vault_id = ? AND device_id = ? AND sample_id = ? AND claimed = 1",
                 )
                 .bind(vault_id)
                 .bind(device_id)

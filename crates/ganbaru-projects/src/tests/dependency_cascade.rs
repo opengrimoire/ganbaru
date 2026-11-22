@@ -182,11 +182,11 @@ fn dependency_cascade_protects_archived_completed_and_scheduled_work() {
                 "archived",
             ),
             (
-                "UPDATE project_tasks SET completed_at = '2026-10-02T00:00:00.000Z' WHERE id = 'task-b'",
+                "INSERT INTO project_statuses (id, project_id, name, category, order_key, terminal) VALUES ('status-done', 'project-a', 'Done', 'done', 'a9', 1); UPDATE project_tasks SET status_id = 'status-done', completed_at = '2026-10-02T00:00:00.000Z' WHERE id = 'task-b'",
                 "completed",
             ),
             (
-                "UPDATE project_statuses SET terminal = 1 WHERE id = 'status-a'",
+                "UPDATE project_statuses SET category = 'done', terminal = 1 WHERE id = 'status-a'",
                 "completed",
             ),
             (

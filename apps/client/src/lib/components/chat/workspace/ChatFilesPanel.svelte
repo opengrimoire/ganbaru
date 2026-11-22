@@ -92,12 +92,22 @@
   let query = $state("");
   let searchResults = $state<ProjectWorkingFolderPathRead[]>([]);
   let includeIgnored = $state(false);
-  let loadingRoot = $state(false);
-  let loadingRootVisible = $state(false);
+  /**
+   * The root listing read. A tree refresh during the read takes it over, so the read it superseded cannot leave the
+   * root loading, and it carries the directory the read was opened to reveal.
+   */
+  type RootLoad =
+    | { phase: "idle" }
+    | { phase: "loading"; requestId: number; visible: boolean; reveal: string };
+  let rootLoad = $state.raw<RootLoad>({ phase: "idle" });
+  const loadingRoot = $derived(rootLoad.phase === "loading");
+  const loadingRootVisible = $derived(rootLoad.phase === "loading" && rootLoad.visible);
   let refreshingTree = $state(false);
   let observerStatus = $state<ChatWorkspaceObserverStatusRead | null>(null);
   let error = $state<string | null>(null);
   let loadedScope = "";
+  /** Bumped on every scope change, so a read from an earlier visit to the same scope is told apart. */
+  let scopeRevision = 0;
   let selectedPathSyncKey = "";
   let treeRequestId = 0;
   let visibleTreeRefreshRequestId = 0;
@@ -193,6 +203,7 @@
     const scope = `${workspace ?? ""}:${chat.selectedThreadId ?? ""}:${executionEnvironmentId ?? ""}`;
     if (scope === loadedScope) return;
     loadedScope = scope;
+    scopeRevision += 1;
     selectedPathSyncKey = "";
     treeRequestId += 1;
     pendingWorkspaceChange = null;
@@ -200,8 +211,7 @@
     childrenByDirectory = {};
     expandedPaths = [];
     loadingPaths = [];
-    loadingRoot = false;
-    loadingRootVisible = false;
+    rootLoad = { phase: "idle" };
     if (rootLoadingTimer !== null) window.clearTimeout(rootLoadingTimer);
     rootLoadingTimer = null;
     refreshingTree = false;
@@ -274,7 +284,7 @@
     executionEnvironmentId = folderEnvironmentId,
   ): Promise<void> {
     const requestId = ++treeRequestId;
-    beginRootLoading();
+    beginRootLoading(requestId, pathToReveal);
     error = null;
     try {
       const result = await chatApi.listProjectWorkingFolderDirectory(workspace, "", includeIgnored, executionEnvironmentId);
@@ -284,24 +294,36 @@
     } catch (reason: unknown) {
       if (requestId === treeRequestId) error = message(reason);
     } finally {
-      if (requestId === treeRequestId) finishRootLoading();
+      finishRootLoading(requestId);
     }
   }
 
+  /**
+   * Lists a directory being expanded. Only a scope change discards the listing: a tree refresh during the read covers
+   * only directories that were already loaded, so it never replaces this one. A listing read before the ignored files
+   * toggle changed is read again.
+   */
   async function loadDirectory(path: string): Promise<void> {
     const workspace = workingFolderId;
     if (!workspace || childrenByDirectory[path] || loadingPaths.includes(path)) return;
-    const requestId = treeRequestId;
+    const revision = scopeRevision;
+    const showIgnored = includeIgnored;
+    let reread = false;
     loadingPaths = [...loadingPaths, path];
     try {
-      const result = await chatApi.listProjectWorkingFolderDirectory(workspace, path, includeIgnored, folderEnvironmentId);
-      if (requestId !== treeRequestId || workspace !== workingFolderId) return;
+      const result = await chatApi.listProjectWorkingFolderDirectory(workspace, path, showIgnored, folderEnvironmentId);
+      if (revision !== scopeRevision) return;
+      if (showIgnored !== includeIgnored) {
+        reread = true;
+        return;
+      }
       childrenByDirectory = { ...childrenByDirectory, [path]: result.entries };
     } catch (reason: unknown) {
-      if (requestId === treeRequestId) error = message(reason);
+      if (revision === scopeRevision) error = message(reason);
     } finally {
-      loadingPaths = loadingPaths.filter((entry) => entry !== path);
+      if (revision === scopeRevision) loadingPaths = loadingPaths.filter((entry) => entry !== path);
     }
+    if (reread && expandedPaths.includes(path)) await loadDirectory(path);
   }
 
   async function refreshLoadedDirectories(
@@ -313,13 +335,15 @@
     if (!workspace || paths.length === 0) return;
     const requestId = ++treeRequestId;
     const environmentId = folderEnvironmentId;
-    const uniquePaths = [...new Set(paths)];
+    const takenOverRoot = rootLoad.phase === "loading" ? rootLoad : null;
+    const uniquePaths = [...new Set(takenOverRoot ? ["", ...paths] : paths)];
     if (showProgress) {
       visibleTreeRefreshRequestId = requestId;
       refreshingTree = true;
     }
     const loadingEmptyRoot = rootEntries.length === 0 && uniquePaths.includes("");
-    if (loadingEmptyRoot) beginRootLoading();
+    if (takenOverRoot) rootLoad = { ...takenOverRoot, requestId };
+    else if (loadingEmptyRoot) beginRootLoading(requestId, "");
     error = null;
     try {
       for (let index = 0; index < uniquePaths.length; index += 3) {
@@ -358,8 +382,9 @@
         }
         childrenByDirectory = nextChildren;
       }
+      if (takenOverRoot?.reveal) await revealDirectory(takenOverRoot.reveal);
     } finally {
-      if (requestId === treeRequestId && loadingEmptyRoot) finishRootLoading();
+      finishRootLoading(requestId);
       if (showProgress && visibleTreeRefreshRequestId === requestId) refreshingTree = false;
     }
   }
@@ -457,19 +482,19 @@
     return editorSession.select(path, executionEnvironmentId, discardDirty);
   }
 
-  function beginRootLoading(): void {
-    loadingRoot = true;
-    loadingRootVisible = false;
+  function beginRootLoading(requestId: number, reveal: string): void {
+    rootLoad = { phase: "loading", requestId, visible: false, reveal };
     if (rootLoadingTimer !== null) window.clearTimeout(rootLoadingTimer);
     rootLoadingTimer = window.setTimeout(() => {
       rootLoadingTimer = null;
-      if (loadingRoot) loadingRootVisible = true;
+      if (rootLoad.phase === "loading") rootLoad = { ...rootLoad, visible: true };
     }, 140);
   }
 
-  function finishRootLoading(): void {
-    loadingRoot = false;
-    loadingRootVisible = false;
+  /** Ends the root read only when `requestId` still owns it. */
+  function finishRootLoading(requestId: number): void {
+    if (rootLoad.phase !== "loading" || rootLoad.requestId !== requestId) return;
+    rootLoad = { phase: "idle" };
     if (rootLoadingTimer !== null) window.clearTimeout(rootLoadingTimer);
     rootLoadingTimer = null;
   }

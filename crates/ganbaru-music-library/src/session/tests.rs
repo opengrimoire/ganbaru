@@ -451,3 +451,19 @@ fn native_music_refresh_remaps_history_and_advances_newly_snoozed_current_item()
     );
     assert_eq!(transition.listening[0].item_id, "item-1");
 }
+
+#[test]
+fn stopping_after_a_backend_interruption_projects_no_stale_issue_or_error() {
+    let mut state = session(3);
+    state.initial(Some("item-0"), None, true, 100);
+    state.apply(observe(&state, 1, SessionStatus::Playing, 12_000), 200);
+    state.interrupt_backend();
+    assert!(state.projection(false, 250).issue.is_some());
+    let stopped = state.apply(SessionIntent::Stop, 300);
+    assert!(matches!(&stopped.effects[..], [SessionEffect::Stop { .. }]));
+    let projection = state.projection(false, 300);
+    assert_eq!(projection.status, SessionStatus::Idle);
+    assert!(projection.issue.is_none());
+    assert!(projection.error.is_none());
+    assert!(!state.autoplay_requested);
+}

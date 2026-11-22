@@ -116,31 +116,31 @@ export function getPomodoro() {
       }
     },
     get breakOvertimeSeconds() {
-      const start = projection?.snapshot?.returnStartedAtMs;
-      const observed = projection?.snapshot?.observedAtMs;
-      return start !== null && start !== undefined && observed !== undefined ? Math.floor(Math.max(0, observed - start + visualElapsedMs()) / 1000) : 0;
+      const snapshot = projection?.snapshot;
+      return snapshot?.mode === "return_wait"
+        ? Math.floor(Math.max(0, snapshot.observedAtMs - snapshot.returnStartedAtMs + visualElapsedMs()) / 1000) : 0;
     },
     get idleElapsedSeconds() {
       const snapshot = projection?.snapshot;
-      return snapshot?.idleStartedAtMs === null || snapshot?.idleStartedAtMs === undefined ? 0
+      return snapshot?.mode !== "idle_pause" && snapshot?.mode !== "idle_failed" ? 0
         : Math.floor(Math.max(0, snapshot.observedAtMs - snapshot.idleStartedAtMs + visualElapsedMs()) / 1000);
     },
     get segments() { return segments; },
     get segmentVersion() { return segmentVersion; },
     get suspendedAway() {
       const snapshot = projection?.snapshot;
-      return snapshot?.mode === "suspended" ? { awaySeconds: Math.floor(Math.max(0, (snapshot.suspendReturnedAtMs ?? snapshot.observedAtMs) - (snapshot.suspendStartedAtMs ?? snapshot.observedAtMs)) / 1000) } : null;
+      return snapshot?.mode === "suspended" ? { awaySeconds: Math.floor(Math.max(0, snapshot.suspendReturnedAtMs - snapshot.suspendStartedAtMs) / 1000) } : null;
     },
     async dismissSuspend(resume: boolean) { await command({ kind: "resolve_suspend", resume }); },
     get idlePaused() {
       const snapshot = projection?.snapshot;
       if (!snapshot || (snapshot.mode !== "idle_pause" && snapshot.mode !== "idle_failed")) return null;
       return {
-        idleSeconds: Math.floor(Math.max(0, (snapshot.idleDetectedAtMs ?? snapshot.observedAtMs) - (snapshot.idleStartedAtMs ?? snapshot.observedAtMs)) / 1000),
+        idleSeconds: Math.floor(Math.max(0, snapshot.idleDetectedAtMs - snapshot.idleStartedAtMs) / 1000),
         nativeOverlay: BUILD_PLATFORM_PROFILE.shell === "desktop" && projection?.error === null,
-        idleStartMs: snapshot.idleStartedAtMs ?? snapshot.observedAtMs,
-        overlayStartedAtMs: snapshot.idleDetectedAtMs ?? snapshot.observedAtMs,
-        focusFailed: snapshot.mode === "idle_failed", focusFailedAtMs: snapshot.focusFailedAtMs,
+        idleStartMs: snapshot.idleStartedAtMs,
+        overlayStartedAtMs: snapshot.idleDetectedAtMs,
+        focusFailed: snapshot.mode === "idle_failed", focusFailedAtMs: snapshot.mode === "idle_failed" ? snapshot.focusFailedAtMs : null,
       };
     },
     async dismissIdle(resume: boolean) { await command({ kind: "resolve_idle", resume }); },
@@ -148,8 +148,7 @@ export function getPomodoro() {
     async reportIdleVisibility() {
       const current = projection;
       const snapshot = current?.snapshot;
-      if (!current || !snapshot?.run || !snapshot.segment || snapshot.mode !== "idle_pause"
-        || snapshot.idleDetectedAtMs === null) return;
+      if (!current || !snapshot?.run || !snapshot.segment || snapshot.mode !== "idle_pause") return;
       await reportIdleOverlayVisible({
         vaultGeneration: current.vaultGeneration, runId: snapshot.run.id,
         segmentId: snapshot.segment.id, idleDetectedAtMs: snapshot.idleDetectedAtMs,

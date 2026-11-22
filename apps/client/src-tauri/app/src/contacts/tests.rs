@@ -2,7 +2,7 @@ use super::identity::LocalIdentity;
 use super::requests::{
     self, CARD_REVOKED_CODE, INVALID_REQUEST_CODE, MAX_PENDING_RECEIVED, PeerReply, StatusOutcome,
 };
-use super::store::{self, ContactState, RequestDirection, RequestState, TrustGrant};
+use super::store::{self, ContactState, RequestDirection, TrustGrant};
 use crate::vault::handoff::protocol::{ContactRequestOutcome, ControlMessage};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -121,6 +121,27 @@ async fn peer_ids(pool: &SqlitePool) -> Vec<String> {
 fn received(request_id: &str) -> PeerReply {
     PeerReply::Received {
         request_id: request_id.to_string(),
+    }
+}
+
+#[test]
+fn a_closure_names_its_direction_and_a_final_state() {
+    use requests::RequestClosure::{Cancel, Decline};
+    use store::{ClosedRequestState, RequestState};
+    assert_eq!(Decline.direction(), RequestDirection::Received);
+    assert_eq!(Decline.target(), ClosedRequestState::Declined);
+    assert_eq!(Cancel.direction(), RequestDirection::Sent);
+    assert_eq!(Cancel.target(), ClosedRequestState::Expired);
+    for closed in [
+        ClosedRequestState::Accepted,
+        ClosedRequestState::Declined,
+        ClosedRequestState::Expired,
+    ] {
+        assert_ne!(
+            closed.state(),
+            RequestState::Pending,
+            "a closed request never returns to pending"
+        );
     }
 }
 
@@ -425,9 +446,16 @@ async fn handled_requests_are_capped_with_the_oldest_deleted_first() {
                 .unwrap()
                 .unwrap();
         assert!(
-            store::set_request_state(&pool, &row.id, None, RequestState::Declined, None, now)
-                .await
-                .unwrap()
+            store::set_request_state(
+                &pool,
+                &row.id,
+                None,
+                store::ClosedRequestState::Declined,
+                None,
+                now
+            )
+            .await
+            .unwrap()
         );
     }
     deliver(&pool, &recipient, &Person::new("Last"), "contact-last").await;
@@ -633,8 +661,7 @@ async fn declining_answers_declined_and_cancel_only_touches_sent_rows() {
         &pool,
         &row.id,
         row.revision,
-        RequestDirection::Sent,
-        RequestState::Expired,
+        requests::RequestClosure::Cancel,
     )
     .await;
     assert!(matches!(
@@ -646,8 +673,7 @@ async fn declining_answers_declined_and_cancel_only_touches_sent_rows() {
         &pool,
         &row.id,
         row.revision,
-        RequestDirection::Received,
-        RequestState::Declined,
+        requests::RequestClosure::Decline,
     )
     .await
     .unwrap();
@@ -927,8 +953,7 @@ async fn an_accepted_poll_does_not_reopen_a_request_cancelled_while_in_flight() 
         &pool,
         "contact-one",
         in_flight.revision,
-        RequestDirection::Sent,
-        RequestState::Expired,
+        requests::RequestClosure::Cancel,
     )
     .await
     .unwrap();
@@ -946,6 +971,80 @@ async fn an_accepted_poll_does_not_reopen_a_request_cancelled_while_in_flight() 
     assert_eq!(row.state, "expired");
     let key = recipient.key.public_key().to_text();
     assert!(store::contact_by_key(&pool, &key).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_declined_poll_for_a_cancelled_request_leaves_a_newer_request_pending() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    insert_sent_request(&pool, &recipient, "contact-one").await;
+    let in_flight = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    requests::close_request(
+        &pool,
+        "contact-one",
+        in_flight.revision,
+        requests::RequestClosure::Cancel,
+    )
+    .await
+    .unwrap();
+    insert_sent_request(&pool, &recipient, "contact-two").await;
+    let declined = Ok(ControlMessage::ContactRequestState {
+        state: ContactRequestOutcome::Declined,
+        recipient_card: None,
+    });
+
+    let resolved = requests::apply_status_response(&pool, &in_flight, declined, store::now())
+        .await
+        .unwrap();
+
+    assert!(resolved);
+    let stale = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stale.state, "expired");
+    let newer = store::request_by_id(&pool, "contact-two")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(newer.state, "pending");
+}
+
+#[tokio::test]
+async fn a_late_attempt_leaves_a_closed_request_unchanged() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    insert_sent_request(&pool, &recipient, "contact-one").await;
+    let pending = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    requests::close_request(
+        &pool,
+        "contact-one",
+        pending.revision,
+        requests::RequestClosure::Cancel,
+    )
+    .await
+    .unwrap();
+    let closed = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+
+    store::touch_request_attempt(&pool, "contact-one", store::now(), Some("late-error"))
+        .await
+        .unwrap();
+
+    let row = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.last_attempt_at, closed.last_attempt_at);
+    assert_eq!(row.last_error_code, closed.last_error_code);
 }
 
 #[tokio::test]

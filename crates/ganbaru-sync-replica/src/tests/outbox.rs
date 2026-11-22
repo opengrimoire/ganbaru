@@ -5,10 +5,12 @@ use super::{
     create_vault, device,
 };
 use crate::authority::{self, Enrollment, enroll_entry, propose, remove_entry};
-use crate::outbox::{MAX_OUTBOX_PROPOSALS, Outbox, is_final};
+use crate::outbox::{
+    ChainFacts, IllegalOutboxMove, MAX_OUTBOX_PROPOSALS, Outbox, OutboxEvent, OutboxState, is_final,
+};
 use crate::writer::{
-    MemoryKeyStore, SelectedHead, SequencedCheck, SequencedEntry, SuccessorPlan, WriterCheck,
-    create_writer, read_record, sequenced_check,
+    MemoryKeyStore, RestorePhase, SelectedHead, SequencedCheck, SequencedEntry, SuccessorPlan,
+    WriterCheck, create_writer, read_record, restore_phase, sequenced_check,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -81,7 +83,7 @@ fn the_outbox_keeps_waiting_proposals_and_final_rejections_across_reloads() {
     let reloaded = Outbox::load(&path).expect("reload");
     assert_eq!(reloaded.entries(), outbox.entries());
     assert_eq!(
-        reloaded.entries()[1].rejection,
+        reloaded.entries()[1].rejection(),
         Some(ProposalRejection::AlreadyEnrolled)
     );
     assert!(
@@ -101,6 +103,7 @@ fn the_outbox_refuses_files_it_did_not_write() {
     let mut forged = enroll_proposal("device-phone", 30, NOW_MS).encode();
     let last = forged.len() - 1;
     forged[last] ^= 1;
+    let handover = URL_SAFE_NO_PAD.encode([9_u8; 32]);
     let cases = [
         r#"{"schemaVersion":2,"proposals":[]}"#.to_string(),
         r#"{"schemaVersion":1,"proposals":[],"extra":true}"#.to_string(),
@@ -112,10 +115,42 @@ fn the_outbox_refuses_files_it_did_not_write() {
             r#"{{"schemaVersion":1,"proposals":[{{"proposal":"{}"}}]}}"#,
             URL_SAFE_NO_PAD.encode(forged)
         ),
+        format!(
+            r#"{{"schemaVersion":1,"proposals":[{{"proposal":"{proposal}","rejection":5,"held":1}}]}}"#
+        ),
+        format!(
+            r#"{{"schemaVersion":1,"proposals":[{{"proposal":"{proposal}","after":"{handover}","held":1}}]}}"#
+        ),
+        format!(
+            r#"{{"schemaVersion":1,"proposals":[{{"proposal":"{proposal}","after":"{handover}","rejection":5}}]}}"#
+        ),
+        format!(
+            r#"{{"schemaVersion":1,"proposals":[{{"proposal":"{proposal}","after":"{handover}","releasedFrom":"{handover}"}}]}}"#
+        ),
     ];
     for case in cases {
         std::fs::write(&path, &case).expect("write outbox");
         assert!(Outbox::load(&path).is_err(), "accepted {case}");
+    }
+    // Each state alone, with the handover that released it where it keeps one, loads.
+    assert_eq!(
+        ProposalRejection::from_u8(5).map(is_final),
+        Some(true),
+        "the cases above name a final rejection"
+    );
+    for fields in [
+        String::new(),
+        format!(r#","releasedFrom":"{handover}""#),
+        format!(r#","after":"{handover}""#),
+        r#","held":1"#.to_string(),
+        format!(r#","held":1,"releasedFrom":"{handover}""#),
+        r#","rejection":5"#.to_string(),
+        format!(r#","rejection":5,"releasedFrom":"{handover}""#),
+    ] {
+        let case =
+            format!(r#"{{"schemaVersion":1,"proposals":[{{"proposal":"{proposal}"{fields}}}]}}"#);
+        std::fs::write(&path, &case).expect("write outbox");
+        assert!(Outbox::load(&path).is_ok(), "refused {case}");
     }
 }
 
@@ -219,7 +254,7 @@ fn a_gated_proposal_is_neither_pending_nor_evictable() {
     let reloaded = Outbox::load(&path).expect("reload");
     assert_eq!(reloaded.entries(), before.as_slice());
     assert_eq!(
-        reloaded.get(&gated.hash()).and_then(|entry| entry.after),
+        reloaded.get(&gated.hash()).and_then(|entry| entry.after()),
         Some(handover),
         "the gate survives a reload"
     );
@@ -274,7 +309,7 @@ fn a_gated_proposal_runs_once_the_chain_holds_its_handover() {
         .expect("sequence outbox");
         assert_eq!(sequenced, 0);
         assert_eq!(
-            outbox.get(&gated.hash()).and_then(|entry| entry.after),
+            outbox.get(&gated.hash()).and_then(|entry| entry.after()),
             Some(first.hash())
         );
 
@@ -303,7 +338,7 @@ fn a_gated_proposal_runs_once_the_chain_holds_its_handover() {
         );
         let released = outbox.get(&gated.hash()).expect("held entry");
         assert_eq!(
-            (released.after, released.released_from),
+            (released.after(), released.released_from()),
             (None, Some(first.hash()))
         );
         assert_eq!(outbox.forced_incomplete(&first.hash()), 0);
@@ -391,14 +426,14 @@ fn the_anchor_sequences_its_outbox_reserves_each_entry_and_keeps_final_rejection
         assert_eq!(
             (
                 outbox.entries()[0].proposal.clone(),
-                outbox.entries()[0].held
+                outbox.entries()[0].held()
             ),
             (enroll.clone(), Some(0)),
             "the held proposal stays until a later epoch keeps it"
         );
         assert_eq!(outbox.entries()[1].proposal, remove_anchor);
         assert_eq!(
-            outbox.entries()[1].rejection,
+            outbox.entries()[1].rejection(),
             Some(ProposalRejection::NamesAnchor)
         );
         assert!(outbox.pending().is_empty());
@@ -452,7 +487,7 @@ fn a_record_one_entry_ahead_is_a_rolled_back_seal_and_further_ahead_is_a_restore
         epoch,
         revision,
         entry_hash: URL_SAFE_NO_PAD.encode([2; 32]),
-        restored: false,
+        restored_at_ms: None,
     };
     let head = |epoch: u32, revision: u64| SelectedHead {
         charter: [1; 32],
@@ -477,7 +512,7 @@ fn a_record_one_entry_ahead_is_a_rolled_back_seal_and_further_ahead_is_a_restore
     assert_eq!(
         sequenced_check(
             Some(&SequencedEntry {
-                restored: true,
+                restored_at_ms: Some(1),
                 ..at(0, 8)
             }),
             head(1, 7)
@@ -489,7 +524,7 @@ fn a_record_one_entry_ahead_is_a_rolled_back_seal_and_further_ahead_is_a_restore
         SequencedCheck::RolledBack
     );
     let restored = SequencedEntry {
-        restored: true,
+        restored_at_ms: Some(1),
         ..at(0, 8)
     };
     assert_eq!(
@@ -590,7 +625,7 @@ fn a_restored_anchor_sees_its_lost_entries_and_hands_over_to_itself() {
         let WriterCheck::Successor(plan) = check(&engine, &mut conn, &ctx, &directory).await else {
             panic!("a database behind the high-water keeps no writer");
         };
-        assert!(plan.sequenced().is_some_and(|entry| entry.restored));
+        assert!(plan.sequenced().is_some_and(SequencedEntry::restored));
         let old_writer = read_record(&files.record_path())
             .expect("read record")
             .expect("record")
@@ -598,6 +633,88 @@ fn a_restored_anchor_sees_its_lost_entries_and_hands_over_to_itself() {
         let mut writer = create_writer(&files, &keys, plan, &device(), DEVICE_ID, NOW_MS)
             .expect("create successor");
         assert_ne!(writer.id().to_hex(), old_writer);
+
+        // The start of the catch-up window is persisted with the successor, so a restart
+        // checks the writer again and keeps it instead of restarting the window.
+        let since = writer
+            .record()
+            .sequenced
+            .as_ref()
+            .and_then(|entry| entry.restored_at_ms)
+            .expect("the successor keeps when the restore was found");
+        let persisted = read_record(&files.record_path())
+            .expect("read record")
+            .expect("record");
+        assert_eq!(
+            persisted
+                .sequenced
+                .as_ref()
+                .and_then(|entry| entry.restored_at_ms),
+            Some(since)
+        );
+        let WriterCheck::Ready(after_restart) = check(&engine, &mut conn, &ctx, &directory).await
+        else {
+            panic!("the restore's successor is kept across a restart");
+        };
+        assert_eq!(after_restart.id(), writer.id());
+        assert_eq!(
+            after_restart
+                .record()
+                .sequenced
+                .as_ref()
+                .and_then(|entry| entry.restored_at_ms),
+            Some(since)
+        );
+        drop(after_restart);
+        // Restored again after the successor committed operations, its own chain is gone too,
+        // so it is retired, still counting from the first restore.
+        let mut lost = persisted.clone();
+        lost.last_committed_seq = 3;
+        lost.reserved_through = 3;
+        crate::writer::write_record(&files.record_path(), &lost).expect("write record");
+        let WriterCheck::Successor(after_second) =
+            check(&engine, &mut conn, &ctx, &directory).await
+        else {
+            panic!("a successor that lost its chain is replaced");
+        };
+        assert_eq!(
+            after_second
+                .sequenced()
+                .and_then(|entry| entry.restored_at_ms),
+            Some(since)
+        );
+        crate::writer::write_record(&files.record_path(), &persisted).expect("write record");
+        assert_eq!(
+            SuccessorPlan::after_restore(&writer, since + 10)
+                .sequenced()
+                .and_then(|entry| entry.restored_at_ms),
+            Some(since),
+            "a later rotation keeps the first restore"
+        );
+        let restored_check = SequencedCheck::Restored { recorded: 3 };
+        assert_eq!(
+            restore_phase(
+                restored_check,
+                persisted.sequenced.as_ref(),
+                since + WINDOW - 1,
+                true,
+                WINDOW
+            ),
+            RestorePhase::CatchingUp {
+                recorded: 3,
+                since_ms: since
+            }
+        );
+        assert_eq!(
+            restore_phase(
+                restored_check,
+                persisted.sequenced.as_ref(),
+                since + WINDOW,
+                true,
+                WINDOW
+            ),
+            RestorePhase::HandOver { recorded: 3 }
+        );
         assert_eq!(
             authority::restore_check(&engine, &mut conn, &ctx, writer.record())
                 .await
@@ -910,4 +1027,196 @@ fn reading_the_admin_key_never_creates_one() {
         .expect("read created")
         .expect("created key");
     assert_eq!(read.public_key(), created.public_key());
+}
+
+/// Every outbox state, each with and without the handover that released it where it keeps one.
+fn outbox_states() -> Vec<OutboxState> {
+    let released = [None, Some([7; 32])];
+    let mut states = vec![OutboxState::Gated { after: [9; 32] }];
+    for released_from in released {
+        states.push(OutboxState::Pending { released_from });
+        states.push(OutboxState::Held {
+            epoch: 2,
+            released_from,
+        });
+        states.push(OutboxState::Rejected {
+            rejection: ProposalRejection::AlreadyEnrolled,
+            released_from,
+        });
+    }
+    states
+}
+
+fn released_from(state: OutboxState) -> Option<Digest32> {
+    match state {
+        OutboxState::Gated { .. } => None,
+        OutboxState::Pending { released_from }
+        | OutboxState::Held { released_from, .. }
+        | OutboxState::Rejected { released_from, .. } => released_from,
+    }
+}
+
+#[test]
+fn a_final_rejection_rejects_every_sent_proposal_and_nothing_gated() {
+    for state in outbox_states() {
+        for rejection in ProposalRejection::ALL {
+            let moved = state.transition(OutboxEvent::Rejected(rejection));
+            let expected = if !is_final(rejection) {
+                Err(IllegalOutboxMove::NotFinal(rejection))
+            } else if matches!(state, OutboxState::Gated { .. }) {
+                Err(IllegalOutboxMove::RejectedWhileGated)
+            } else {
+                Ok(Some(OutboxState::Rejected {
+                    rejection,
+                    released_from: released_from(state),
+                }))
+            };
+            assert_eq!(moved, expected, "{state:?} rejected as {rejection}");
+        }
+    }
+}
+
+#[test]
+fn following_the_chain_holds_drops_or_waits_and_keeps_rejections_and_closed_gates() {
+    let epochs = [None, Some(1), Some(2), Some(3)];
+    for state in outbox_states() {
+        for epoch in epochs {
+            for held_at in epochs {
+                for gate_sealed in [false, true] {
+                    let facts = ChainFacts {
+                        epoch,
+                        gate_sealed,
+                        held_at,
+                    };
+                    let moved = state
+                        .transition(OutboxEvent::Followed(facts))
+                        .expect("following never fails");
+                    let gate_closed = matches!(state, OutboxState::Gated { .. }) && !gate_sealed;
+                    let expected = if matches!(state, OutboxState::Rejected { .. }) || gate_closed {
+                        Some(state)
+                    } else {
+                        let released_from = match state {
+                            OutboxState::Gated { after } => Some(after),
+                            _ => released_from(state),
+                        };
+                        match held_at {
+                            Some(at) if epoch.is_some_and(|epoch| epoch > at) => None,
+                            Some(epoch) => Some(OutboxState::Held {
+                                epoch,
+                                released_from,
+                            }),
+                            None => Some(OutboxState::Pending { released_from }),
+                        }
+                    };
+                    assert_eq!(moved, expected, "{state:?} following {facts:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn settling_a_gated_proposal_changes_nothing() {
+    let directory = TestDirectory::new("outbox-settle-states");
+    let path = directory.files().outbox_path();
+    let mut outbox = Outbox::load(&path).expect("load");
+    let gated = enroll_proposal("device-watch", 32, NOW_MS);
+    outbox
+        .add_gated(vec![gated.clone()], [9; 32])
+        .expect("add gated");
+    outbox
+        .settle(&gated.hash(), Err(ProposalRejection::AlreadyEnrolled))
+        .expect("settle gated");
+    assert_eq!(
+        outbox.get(&gated.hash()).map(|entry| entry.state),
+        Some(OutboxState::Gated { after: [9; 32] }),
+        "a gated proposal was never sent, so no answer rejects it"
+    );
+    assert_eq!(
+        Outbox::load(&path).expect("reload").entries(),
+        outbox.entries()
+    );
+}
+
+const WINDOW: u64 = 1_000;
+
+#[test]
+fn a_restored_anchor_rotates_once_then_catches_up_until_the_window_or_no_member_is_left() {
+    let entry = |restored_at_ms: Option<u64>| SequencedEntry {
+        charter: URL_SAFE_NO_PAD.encode([1; 32]),
+        epoch: 0,
+        revision: 8,
+        entry_hash: URL_SAFE_NO_PAD.encode([2; 32]),
+        restored_at_ms,
+    };
+    let since = 5_000;
+    let restored = SequencedCheck::Restored { recorded: 8 };
+    for check in [
+        SequencedCheck::Current,
+        SequencedCheck::RolledBack,
+        restored,
+    ] {
+        for sequenced in [None, Some(entry(None)), Some(entry(Some(since)))] {
+            for now in [
+                0,
+                since - 1,
+                since,
+                since + WINDOW - 1,
+                since + WINDOW,
+                u64::MAX,
+            ] {
+                for reachable in [false, true] {
+                    let expected = match (check, sequenced.as_ref().and_then(|e| e.restored_at_ms))
+                    {
+                        (SequencedCheck::Restored { recorded }, None) => {
+                            RestorePhase::Rotate { recorded }
+                        }
+                        (SequencedCheck::Restored { recorded }, Some(start))
+                            if reachable && now.saturating_sub(start) < WINDOW =>
+                        {
+                            RestorePhase::CatchingUp {
+                                recorded,
+                                since_ms: start,
+                            }
+                        }
+                        (SequencedCheck::Restored { recorded }, Some(_)) => {
+                            RestorePhase::HandOver { recorded }
+                        }
+                        _ => RestorePhase::Ready,
+                    };
+                    assert_eq!(
+                        restore_phase(check, sequenced.as_ref(), now, reachable, WINDOW),
+                        expected,
+                        "{check:?} {sequenced:?} {now} {reachable}"
+                    );
+                }
+            }
+        }
+    }
+    // Spot checks of the rules the table encodes.
+    let started = Some(entry(Some(since)));
+    assert_eq!(
+        restore_phase(restored, started.as_ref(), since - 1, true, WINDOW),
+        RestorePhase::CatchingUp {
+            recorded: 8,
+            since_ms: since
+        },
+        "a clock set back before the start counts as no time passed"
+    );
+    assert_eq!(
+        restore_phase(restored, started.as_ref(), since, false, WINDOW),
+        RestorePhase::HandOver { recorded: 8 },
+        "without members to return the log the anchor hands over at once"
+    );
+    assert_eq!(
+        restore_phase(
+            SequencedCheck::Current,
+            started.as_ref(),
+            since,
+            true,
+            WINDOW
+        ),
+        RestorePhase::Ready,
+        "a log that caught up is ready even while the record keeps the restore"
+    );
 }

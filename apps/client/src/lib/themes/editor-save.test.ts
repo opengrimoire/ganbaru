@@ -8,6 +8,7 @@ function theme(overrides: Partial<UserThemeWrite> = {}): UserThemeWrite {
     displayName: "Forest",
     iconLabel: "dark",
     seedIconLabel: "dark",
+    seedDerivationEngineVersion: 3,
     blendCanvas: "#101010",
     seedBlendCanvas: "#101010",
     derivationEngineVersion: 3,

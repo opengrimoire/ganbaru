@@ -2,8 +2,12 @@
 //! session are computed from that session instead of from names.
 
 use super::foreground::{is_wayland_session, x11_intern_atom, x11_property_u32};
-use super::processes::{current_real_uid, linux_process_parent_id, linux_process_real_uid};
+use super::processes::{
+    current_real_uid, linux_process_lineage, linux_process_parent_id, linux_process_real_uid,
+    linux_process_start_time,
+};
 use super::*;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -24,8 +28,12 @@ static CURRENT_ANCHORS: Mutex<Option<Arc<SessionAnchors>>> = Mutex::new(None);
 /// the children a service starts in its own cgroup.
 ///
 /// Session leaders are not anchors, because launchers call `setsid` for ordinary applications.
+///
+/// Each anchor is the process ID with its start time, so an ID that an anchor freed by exiting and
+/// a later process reused within the TTL is not protected.
 pub(super) struct SessionAnchors {
-    protected_pids: HashSet<u32>,
+    proc_root: PathBuf,
+    protected: HashMap<u32, String>,
     collected_at: Instant,
 }
 
@@ -200,14 +208,18 @@ fn x11_window_manager_process_id(display: &str) -> Option<u32> {
         .filter(|process_id| *process_id > 1)
 }
 
-/// Adds `process_id` and its ancestors below PID 1. Reaching a process already in `visited`
-/// means its ancestors are in too, which also ends a parent cycle.
-fn add_with_ancestors(proc_root: &Path, process_id: u32, visited: &mut HashSet<u32>) {
+/// Adds `process_id` and its ancestors below PID 1 with their start times. Reaching a process
+/// already in `visited` means its ancestors are in too, which also ends a parent cycle. A process
+/// whose `stat` cannot be read has exited and ends the walk.
+fn add_with_ancestors(proc_root: &Path, process_id: u32, visited: &mut HashMap<u32, String>) {
     let mut current = process_id;
-    while current > 1 && visited.insert(current) {
-        let Some(parent) = linux_process_parent_id(&proc_root.join(current.to_string())) else {
+    while current > 1 && !visited.contains_key(&current) {
+        let Some((parent, start_time)) =
+            linux_process_lineage(&proc_root.join(current.to_string()))
+        else {
             break;
         };
+        visited.insert(current, start_time);
         current = parent;
     }
 }
@@ -263,34 +275,48 @@ impl SessionAnchors {
             if !listening.is_empty() && holds_socket(&process, &listening) {
                 listeners.push(process_id);
             }
-            if is_session_service(proc_root, &process) {
-                session_services.push(process_id);
+            if is_session_service(proc_root, &process)
+                && let Some(start_time) = linux_process_start_time(&process)
+            {
+                session_services.push((process_id, start_time));
             }
         }
-        let mut protected_pids = HashSet::new();
+        let mut protected = HashMap::new();
         for process_id in listeners
             .into_iter()
             .chain([own_process_id])
             .chain(window_manager)
         {
-            add_with_ancestors(proc_root, process_id, &mut protected_pids);
+            add_with_ancestors(proc_root, process_id, &mut protected);
         }
-        protected_pids.extend(session_services);
+        protected.extend(session_services);
         Some(Self {
-            protected_pids,
+            proc_root: proc_root.to_path_buf(),
+            protected,
             collected_at: Instant::now(),
         })
     }
 
+    /// Whether `process_id` is still the anchor collected under that ID. A start time that can no
+    /// longer be read keeps the protection, because the guard exists to refuse closing the session
+    /// and a process that exited cannot be blocked anyway.
     pub(super) fn protects(&self, process_id: u32) -> bool {
-        self.protected_pids.contains(&process_id)
+        self.protected.get(&process_id).is_some_and(|start_time| {
+            linux_process_start_time(&self.proc_root.join(process_id.to_string()))
+                .is_none_or(|current| current == *start_time)
+        })
     }
 
-    /// Anchors that protect exactly `process_ids`.
+    /// Anchors that protect exactly `process_ids`, under a `/proc` root that does not exist, so no
+    /// start time can be read and each ID stays protected.
     #[cfg(test)]
     pub(super) fn protecting(process_ids: impl IntoIterator<Item = u32>) -> Self {
         Self {
-            protected_pids: process_ids.into_iter().collect(),
+            proc_root: PathBuf::from("/nonexistent-ganbaru-session-anchors-proc"),
+            protected: process_ids
+                .into_iter()
+                .map(|process_id| (process_id, String::new()))
+                .collect(),
             collected_at: Instant::now(),
         }
     }
@@ -381,13 +407,7 @@ mod tests {
         fn process(&self, process_id: u32, parent_id: u32, uid: u32, cgroup: &str, inodes: &[u64]) {
             let path = self.root.join(process_id.to_string());
             std::fs::create_dir_all(path.join("fd")).unwrap();
-            std::fs::write(
-                path.join("stat"),
-                format!(
-                    "{process_id} (a (name) S {parent_id} {process_id} {process_id} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {FIXTURE_START_TIME}\n"
-                ),
-            )
-            .unwrap();
+            self.stat(process_id, parent_id, FIXTURE_START_TIME);
             std::fs::write(
                 path.join("status"),
                 format!("Name:\tname\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"),
@@ -401,6 +421,17 @@ mod tests {
                 )
                 .unwrap();
             }
+        }
+
+        /// Writes the `stat` of `process_id`, as a process that reuses the id would rewrite it.
+        fn stat(&self, process_id: u32, parent_id: u32, start_time: u64) {
+            std::fs::write(
+                self.root.join(process_id.to_string()).join("stat"),
+                format!(
+                    "{process_id} (a (name) S {parent_id} {process_id} {process_id} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {start_time}\n"
+                ),
+            )
+            .unwrap();
         }
 
         fn command(&self, process_id: u32, name: &str) {
@@ -495,6 +526,39 @@ mod tests {
         );
         assert!(refuse_anchored_close(200, anchors.as_ref()).is_err());
         assert!(refuse_anchored_close(300, anchors.as_ref()).is_ok());
+    }
+
+    /// A protected process that exits leaves its id free, and a blocked application started
+    /// under that id before the anchors expire must stay blockable.
+    #[test]
+    fn a_reused_process_id_is_not_protected() {
+        let fixture = session_fixture("reused");
+        let anchors = fixture.collect(400);
+        fixture.stat(200, 1, FIXTURE_START_TIME + 1);
+        let mut matches = vec![running_match(200), running_match(100)];
+
+        drop_anchored_matches(&mut matches, anchors.as_ref());
+
+        assert_eq!(
+            matches
+                .iter()
+                .map(|found| found.process_id)
+                .collect::<Vec<_>>(),
+            vec![200]
+        );
+        assert!(refuse_anchored_close(200, anchors.as_ref()).is_ok());
+        assert!(refuse_anchored_close(100, anchors.as_ref()).is_err());
+    }
+
+    /// A protected process whose start can no longer be read has exited or hides it, and the
+    /// guard keeps refusing rather than close a session process.
+    #[test]
+    fn an_unreadable_start_time_keeps_protection() {
+        let fixture = session_fixture("unreadable-start");
+        let anchors = fixture.collect(400);
+        std::fs::remove_file(fixture.root.join("200/stat")).unwrap();
+
+        assert!(refuse_anchored_close(200, anchors.as_ref()).is_err());
     }
 
     #[test]

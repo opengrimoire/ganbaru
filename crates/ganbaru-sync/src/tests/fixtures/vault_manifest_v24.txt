@@ -26,7 +26,7 @@ table 16 vault_preferences replicated key key rule any
   group 2 register
 table 17 themes replicated key id rule theme_slug
   group 0 immutable created_at_ms:integer(0..=9223372036854775807)
-  group 1 immutable seed_blend_canvas:text(..=9) seed_icon_label:text(..=5) seed_calendar_default_mode:text(..=10) seed_calendar_default_custom:text(..=9)
+  group 1 immutable seed_blend_canvas:text(..=9) seed_icon_label:text(..=5) seed_calendar_default_mode:text(..=10) seed_calendar_default_custom:text(..=9) seed_derivation_engine_version:integer(0..=9223372036854775807)
     owned theme_seed_tokens parent theme_id key kind,key rows 256 codec custom kind:text(..=8) key:text(..=64) value:text(..=9) isolated:flag
     owned theme_seed_event_palette parent theme_id key slot rows 32 codec custom slot:integer(0..=31) value:text(..=9)
   group 2 register recoverable display_name:trimmed_text(1..=60)
@@ -176,8 +176,7 @@ table 96 project_groups replicated key id rule any
   group 2 register icon:trimmed_text(1..=500) icon_byte_size:optional_integer(1..=3145728)
   group 3 register color:optional_integer(0..=31)
   group 4 position order_key:order_key
-  group 5 coupled hidden_at:optional_timestamp archived_at:optional_timestamp
-  group 6 max updated_at:timestamp
+  group 5 max updated_at:timestamp
   check icon,icon_byte_size within 2
 table 97 projects replicated key id rule any
   group 0 immutable created_at:timestamp
@@ -218,15 +217,16 @@ table 100 project_sections replicated key id rule any
   group 2 position order_key:order_key
   group 3 coupled hidden_at:optional_timestamp archived_at:optional_timestamp
   group 4 max updated_at:timestamp
+  check hidden_at,archived_at within 3
 table 101 project_statuses replicated key id rule any
   group 0 immutable project_id:row_key->97:cascade created_at:timestamp
   group 1 register name:trimmed_text(1..=1000)
-  group 2 register category:text(..=32)
-  group 3 register terminal:flag
-  group 4 register color:integer(0..=31)
-  group 5 position order_key:order_key
-  group 6 register deleted_at:optional_timestamp
-  group 7 max updated_at:timestamp
+  group 2 coupled category:text(..=32) terminal:flag
+  group 3 register color:integer(0..=31)
+  group 4 position order_key:order_key
+  group 5 register deleted_at:optional_timestamp
+  group 6 max updated_at:timestamp
+  check terminal,category within 2
 table 102 project_priorities replicated key sync_key rule any
   group 0 immutable project_id:row_key->97:cascade id:trimmed_text(1..=128)
   group 1 register created_at:timestamp
@@ -522,6 +522,7 @@ table 290 notes_pages replicated key id rule any
   group 9 max last_edited_time:timestamp
   check child_block_id,parent_data_source_id within 3
   check folder_id,child_block_id,parent_data_source_id within 3
+  check in_trash,trashed_time,trash_owner within 7
 table 292 notes_blocks replicated key id rule any
   group 0 register created_time:timestamp source_provider:optional_text(..=262144) source_object_id:optional_text(..=262144) source_last_edited_time:optional_text(..=262144)
   group 1 register parent_page_id:optional_row_key->290:cascade parent_block_id:optional_row_key->292:cascade

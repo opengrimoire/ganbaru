@@ -1,4 +1,5 @@
 use chrono::{DateTime, SecondsFormat, Utc};
+use ganbaru_distractions_authority::ActivePhase;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -13,8 +14,8 @@ use config::{is_protected_app_name, normalize_app_name, normalize_host_rule};
 use events::log_block_event;
 use rules::{decide_url_with_limits, feed_fingerprint, host_from_url, rules_fingerprint};
 use snapshot::{
-    StateSnapshot, config_dir_candidates, is_valid_local_date, load_snapshot, runtime_status,
-    should_enforce,
+    RuntimeStatus, StateSnapshot, config_dir_candidates, is_valid_local_date, load_snapshot,
+    runtime_status, should_enforce,
 };
 use spool::{UsageSample, record_usage_sample};
 
@@ -108,12 +109,13 @@ fn run() -> Result<NativeResponse, String> {
     {
         eprintln!("failed to record extension connection: {err}");
     }
-    let mut response = response_from_snapshot(&snapshot);
+    let status = runtime_status(&snapshot);
+    let mut response = response_from_snapshot(&snapshot, &status);
 
     if request.message_type == "decide_url" {
         if let Some(host) = normalized_request_host(&request) {
             response.host = Some(host.clone());
-            let regular_rules_active = should_enforce(&snapshot, &response);
+            let regular_rules_active = should_enforce(&snapshot.config, &status);
             let decision = decide_url_with_limits(
                 &host,
                 request.url.as_deref(),
@@ -232,31 +234,26 @@ fn write_native_message(response: &NativeResponse) -> Result<(), String> {
     stdout.flush().map_err(|e| e.to_string())
 }
 
-fn response_from_snapshot(snapshot: &StateSnapshot) -> NativeResponse {
-    let (active, phase, remaining_seconds, reason) = runtime_status(snapshot);
-    let paused = snapshot
-        .runtime
-        .as_ref()
-        .is_some_and(|runtime| active && runtime.paused);
-    let pause_reason = snapshot.runtime.as_ref().and_then(|runtime| {
-        (active && runtime.paused)
-            .then(|| runtime.pause_reason.clone())
-            .flatten()
-    });
+fn response_from_snapshot(snapshot: &StateSnapshot, status: &RuntimeStatus) -> NativeResponse {
+    let active = status.active_phase();
     NativeResponse {
         message_type: "decision",
         host_name: native_host_name(),
         connected: snapshot.config_dir.is_some(),
-        active,
-        paused,
-        pause_reason,
-        phase,
-        remaining_seconds,
+        active: active.is_some(),
+        paused: active.is_some_and(ActivePhase::is_paused),
+        pause_reason: active
+            .and_then(|active| active.pause_reason)
+            .map(|reason| reason.as_str().to_string()),
+        phase: active
+            .map_or("inactive", |active| active.phase.as_str())
+            .to_string(),
+        remaining_seconds: status.remaining_seconds,
         rules_fingerprint: rules_fingerprint(&snapshot.config, snapshot.limit_state.as_ref()),
         blocked: false,
         host: None,
         matched_rule_name: None,
-        reason,
+        reason: status.reason.clone(),
         environment_name: "Ganbaru",
     }
 }

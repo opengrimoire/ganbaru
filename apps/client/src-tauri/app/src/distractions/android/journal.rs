@@ -106,7 +106,11 @@ pub(super) async fn import_journal_batch(
         .filter(|event| event.kind == "usage")
         .map(usage_sample)
         .collect::<Vec<_>>();
-    insert_own_samples(&mut transaction, &usage, window).await?;
+    let import = insert_own_samples(&mut transaction, &usage, window).await?;
+    for reason in &import.refused {
+        eprintln!("dropped Guardian Distractions {reason}");
+    }
+    dropped += import.refused.len();
     for event in normalized.iter().filter(|event| event.kind == "block") {
         let recorded = match block_event(event) {
             Ok(block) => record_spooled_block_event(&mut transaction, &block).await,

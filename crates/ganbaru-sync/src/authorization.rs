@@ -1101,39 +1101,9 @@ pub(crate) async fn rederive(
             .get(&writer.device_id)
             .filter(|device| device.removed.is_some())
             .map(|device| device.cutoffs.get(&writer.id).copied().unwrap_or(0));
-        if removal_cutoff != writer.removal_cutoff {
-            sqlx::query(
-                "UPDATE sync_writers SET removal_cutoff_seq = ?
-                 WHERE space_id = ? AND writer_id = ?",
-            )
-            .bind(removal_cutoff.map(seq_i64).transpose()?)
-            .bind(space.as_bytes().as_slice())
-            .bind(writer.id.as_bytes().as_slice())
-            .execute(&mut *conn)
-            .await?;
-        }
-        let Some(device) = selection.state.devices.get(&writer.device_id) else {
-            continue;
-        };
-        let (state, cutoff) = match (device.removed, writer.state) {
-            (Some(_), log::WriterState::Active | log::WriterState::Revoked) => (
-                "revoked",
-                Some(seq_i64(
-                    device.cutoffs.get(&writer.id).copied().unwrap_or(0),
-                )?),
-            ),
-            (None, log::WriterState::Revoked) => ("active", None),
-            _ => continue,
-        };
-        sqlx::query(
-            "UPDATE sync_writers SET state = ?, cutoff_seq = ? WHERE space_id = ? AND writer_id = ?",
-        )
-        .bind(state)
-        .bind(cutoff)
-        .bind(space.as_bytes().as_slice())
-        .bind(writer.id.as_bytes().as_slice())
-        .execute(&mut *conn)
-        .await?;
+        // A device the selected chain does not name has no removal cutoff, so its writer is
+        // active as a replica storing it fresh holds it, and the unnamed-writer bound applies.
+        log::settle_state(conn, space, &writer, removal_cutoff).await?;
     }
     Ok(Some(selection))
 }

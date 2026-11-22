@@ -35,7 +35,7 @@ pub use host::{SYNC_DIRECTORY, SyncHost};
 #[cfg(desktop)]
 pub use hubs::{log_admission_source, quarantined_devices, server_hub, sync_hub};
 pub use hubs::{member_admission_source, member_hub};
-use status::{DegradedReasons, SyncRole, SyncState, SyncStatusView};
+use status::{DegradedReasons, SyncPhase, SyncRole, SyncState, SyncStatusView};
 use transport::PairedTransport;
 
 use crate::assets::{AssetMemory, AssetStore, AssetTransfer};
@@ -51,11 +51,11 @@ use crate::quarantine::{PullSkips, Quarantine};
 use crate::records::{FreeSpace, RecordExchange};
 use crate::recovery::RecoveryChoice;
 use crate::reset;
-#[cfg(desktop)]
-use crate::writer::SequencedCheck;
 use crate::writer::{
     ActiveWriter, SyncFiles, SyncKeyStore, ensure_device_key as ensure_stored_device_key,
 };
+#[cfg(desktop)]
+use crate::writer::{RestorePhase, SequencedCheck, restore_phase};
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::pairing::PairingManager;
 #[cfg(desktop)]
@@ -910,10 +910,6 @@ struct ServiceState {
     /// A link to an anchor that is not the coordinator and answered the last exchange, which
     /// the pass sends waiting proposals to instead of the coordinator.
     anchor_link: Option<transport::MemberTransport>,
-    /// When this anchor first found its database restored behind its own log, in Unix
-    /// milliseconds; it sequences nothing until the log catches up or it hands over to itself.
-    #[cfg(desktop)]
-    restored_since: Option<u64>,
     /// Final rejections this desktop gave proposals an anchor server forwarded, which the next
     /// forward request reports to the server.
     #[cfg(desktop)]
@@ -1004,15 +1000,16 @@ impl ServiceState {
         (expiry > now).then(|| Duration::from_millis(expiry - now))
     }
 
-    /// Whether this installation may sequence for the space. An anchor whose database holds
-    /// less of the log than its writer record says it sealed was restored from a backup or
-    /// copied: it moves to a successor writer at once, so nothing it seals reuses a sequence of
-    /// the lost entries members may hold, and sequences nothing while members push back what it
-    /// lost. Once the catch-up window passes, or at once when `members_reachable` is false, it
-    /// seals a handover to itself so the next epoch supersedes the entries it never got back.
-    /// The coordinator passes whether it has linked devices; a linked desktop that anchors
-    /// always has the coordinator. A device that is not the anchor is always ready, since it
-    /// sequences nothing.
+    /// Whether this installation may sequence for the space, following [`RestorePhase`]. An
+    /// anchor whose database holds less of the log than its writer record says it sealed was
+    /// restored from a backup or copied: it moves to a successor writer at once, so nothing it
+    /// seals reuses a sequence of the lost entries members may hold, and sequences nothing while
+    /// members push back what it lost. Once the catch-up window, counted from the restore the
+    /// writer record keeps, passes, or at once when `members_reachable` is false, it seals a
+    /// handover to itself so the next epoch supersedes the entries it never got back. The
+    /// coordinator passes whether it has linked devices; a linked desktop that anchors always
+    /// has the coordinator. A device that is not the anchor is always ready, since it sequences
+    /// nothing.
     #[cfg(desktop)]
     async fn anchor_ready(
         &mut self,
@@ -1020,46 +1017,54 @@ impl ServiceState {
         manager: &PairingManager,
         members_reachable: bool,
     ) -> Result<bool, String> {
-        let Some(active) = self.writer.as_ref() else {
-            return Ok(true);
-        };
-        if !session.anchors_here(manager).await? {
-            self.restored_since = None;
+        if self.writer.is_none() || !session.anchors_here(manager).await? {
             return Ok(true);
         }
-        let check = {
-            let mut conn = acquire(&session.pool).await?;
-            authority::restore_check(&session.engine, &mut conn, &session.ctx, active.record())
-                .await?
-        };
-        let SequencedCheck::Restored { recorded } = check else {
-            self.restored_since = None;
-            return Ok(true);
-        };
-        // The writer check retires a writer whose database is behind its log; a restore found
-        // while the writer was already active retires it here.
-        if !active
-            .record()
-            .sequenced
-            .as_ref()
-            .is_some_and(|entry| entry.restored)
-            && !session.rotate_restored(&mut self.writer).await?
-        {
-            return Ok(false);
-        }
-        let now = now_ms()?;
-        let since = *self.restored_since.get_or_insert(now);
         let window = u64::try_from(RESTORE_CATCH_UP_WINDOW.as_millis()).unwrap_or(u64::MAX);
-        if now.saturating_sub(since) < window && members_reachable {
-            eprintln!(
-                "sync: the database was restored behind authorization revision {recorded}; \
-                 waiting for linked devices to return the log"
-            );
-            return Ok(false);
-        }
+        let mut rotated = false;
+        let (recorded, now) = loop {
+            let Some(active) = self.writer.as_ref() else {
+                return Ok(false);
+            };
+            let check = {
+                let mut conn = acquire(&session.pool).await?;
+                authority::restore_check(&session.engine, &mut conn, &session.ctx, active.record())
+                    .await?
+            };
+            let now = now_ms()?;
+            let sequenced = active.record().sequenced.as_ref();
+            match restore_phase(check, sequenced, now, members_reachable, window) {
+                RestorePhase::Ready => return Ok(true),
+                // The writer check retires a writer whose database is behind its log; a restore
+                // found while the writer was already active retires it here, once.
+                RestorePhase::Rotate { .. } if !rotated => {
+                    if !session.rotate_restored(&mut self.writer, now).await? {
+                        return Ok(false);
+                    }
+                    rotated = true;
+                }
+                RestorePhase::Rotate { .. } => {
+                    return Err("the restored anchor's successor lost its restore".to_string());
+                }
+                RestorePhase::CatchingUp { recorded, .. } => {
+                    eprintln!(
+                        "sync: the database was restored behind authorization revision \
+                         {recorded}; waiting for linked devices to return the log"
+                    );
+                    return Ok(false);
+                }
+                RestorePhase::HandOver { recorded } => break (recorded, now),
+            }
+        };
         let Some(active) = self.writer.as_mut() else {
             return Ok(false);
         };
+        let since = active
+            .record()
+            .sequenced
+            .as_ref()
+            .and_then(|entry| entry.restored_at_ms)
+            .unwrap_or(now);
         let mut conn = acquire(&session.pool).await?;
         let head = session
             .engine
@@ -1096,16 +1101,19 @@ impl ServiceState {
              the anchor continued the log in a new epoch at revision {revision}"
         );
         // A record of a lost epoch the handover only reached can still name a later revision;
-        // the next pass then seals one more handover, whose epoch passes it.
+        // the next pass then seals one more handover, whose epoch passes it. The handover's
+        // entry replaced the restored one, so the writer is replaced again with the window it
+        // already waited out.
         let mut conn = acquire(&session.pool).await?;
         let check =
             authority::restore_check(&session.engine, &mut conn, &session.ctx, active.record())
                 .await?;
-        let ready = !matches!(check, SequencedCheck::Restored { .. });
-        if ready {
-            self.restored_since = None;
+        drop(conn);
+        if !matches!(check, SequencedCheck::Restored { .. }) {
+            return Ok(true);
         }
-        Ok(ready)
+        session.rotate_restored(&mut self.writer, since).await?;
+        Ok(false)
     }
 
     /// Runs one pass once `gate` lets it, then publishes the status and wakes hub waits.
@@ -1117,13 +1125,11 @@ impl ServiceState {
     ) -> Next {
         let _gate = gate.lock().await;
         let number = runtime.pass_started();
-        let mut view = SyncStatusView {
-            last_exchange_at_ms: self.view.last_exchange_at_ms,
-            anchor_unreachable_since_ms: self.view.anchor_unreachable_since_ms,
-            connection: self.view.connection.clone(),
-            degraded: self.view.degraded.clone(),
-            ..SyncStatusView::default()
-        };
+        let mut view = SyncStatusView::default();
+        view.last_exchange_at_ms = self.view.last_exchange_at_ms;
+        view.anchor_unreachable_since_ms = self.view.anchor_unreachable_since_ms;
+        view.connection = self.view.connection.clone();
+        view.degraded = self.view.degraded.clone();
         let mut recovery = runtime.take_recovery_requests();
         let mut resets = runtime.take_reset_requests();
         let mut succeeded = false;
@@ -1138,8 +1144,7 @@ impl ServiceState {
             Err(error) => {
                 eprintln!("sync: {error}");
                 host.recover_lost_keys().await;
-                view.state = SyncState::Error;
-                view.last_error = Some(error);
+                view.set_phase(SyncPhase::error(error, None));
                 Next::Retry
             }
         };
@@ -1234,7 +1239,7 @@ impl ServiceState {
                 None => None,
             };
         let Some(session) = session else {
-            view.state = SyncState::WaitingForIdentity;
+            view.set_phase(SyncPhase::WaitingForIdentity);
             return Ok(Next::Idle);
         };
         if peer.is_none() {
@@ -1257,9 +1262,9 @@ impl ServiceState {
             .seal_pending(&mut self.writer, &mut self.stalled_captures)
             .await?;
         self.hold_expiry = session.next_hold_expiry().await?;
-        view.state = SyncState::Idle;
+        view.set_phase(SyncPhase::Idle);
         if !session.ensure_writer(&mut self.writer).await? {
-            view.state = SyncState::WaitingForIdentity;
+            view.set_phase(SyncPhase::WaitingForIdentity);
         }
         self.apply_pause_request(runtime)?;
         view.paused = self.paused(runtime)?;
@@ -1270,10 +1275,11 @@ impl ServiceState {
         let mut linked_ids = None;
         match peer {
             None => {}
-            Some(_) if view.paused => view.state = SyncState::Paused,
+            Some(_) if view.paused => view.set_phase(SyncPhase::Paused),
             Some(_) if session.coordinator_quarantined(&manager).await? => {
-                view.state = SyncState::Offline;
-                view.last_error = Some("this device quarantined the coordinator".to_string());
+                view.set_phase(SyncPhase::offline(
+                    "this device quarantined the coordinator",
+                ));
             }
             Some((linked_vault, device_id)) if session.coordinator_removed(&manager).await? => {
                 let ids = PeerIds {
@@ -1286,14 +1292,9 @@ impl ServiceState {
                     .await?;
             }
             Some((linked_vault, device_id)) => {
-                self.publish(
-                    host,
-                    runtime,
-                    SyncStatusView {
-                        state: SyncState::Syncing,
-                        ..view.clone()
-                    },
-                );
+                let mut syncing = view.clone();
+                syncing.set_phase(SyncPhase::Syncing);
+                self.publish(host, runtime, syncing);
                 let assets = AssetPeer {
                     transport: PairedTransport {
                         manager: manager.clone(),
@@ -1338,7 +1339,7 @@ impl ServiceState {
                 asset_peer = Some((assets, transfer));
             }
         }
-        let coordinator_answered = asset_peer.is_some() && view.state != SyncState::Offline;
+        let coordinator_answered = asset_peer.is_some() && view.state() != SyncState::Offline;
         if !view.paused
             && self.relay_pass(&session, view).await
             && matches!(next, Next::Idle | Next::Online(_))
@@ -1352,9 +1353,10 @@ impl ServiceState {
                 .await
         };
         if let Some(link) = &server_link {
-            if view.state == SyncState::Offline {
-                view.state = SyncState::Idle;
-                view.last_error = None;
+            // The anchor server answered, so the device is not offline; a removed coordinator
+            // stays reported.
+            if view.state() == SyncState::Offline {
+                view.set_phase(SyncPhase::Idle);
             }
             if link.more && matches!(next, Next::Idle | Next::Online(_) | Next::Retry) {
                 next = Next::Continue;
@@ -1413,7 +1415,7 @@ impl ServiceState {
             .filter(|link| link.anchors)
             .map(|link| link.stored.clone());
         if let Some((assets, _)) = asset_peer.as_ref()
-            && view.state != SyncState::Offline
+            && view.state() != SyncState::Offline
         {
             let coordinator = manager
                 .coordinator_pin()?
@@ -1422,7 +1424,7 @@ impl ServiceState {
             #[cfg(desktop)]
             {
                 let old_anchor_stored = anchor_server_stored.clone().or_else(|| match &next {
-                    Next::Online(wait) if view.state == SyncState::Idle => Some(wait.hub.clone()),
+                    Next::Online(wait) if view.state() == SyncState::Idle => Some(wait.hub.clone()),
                     _ => None,
                 });
                 for request in take_anchor.drain(..) {
@@ -2181,10 +2183,8 @@ pub async fn stored_admin_key<H: SyncHost>(
 #[cfg(desktop)]
 pub async fn seal_enrollment(runtime: &SyncRuntime) -> Result<Option<PinnedCharter>, String> {
     let status = delegate_pass(runtime, DELEGATED_PASS_TIMEOUT).await?;
-    match status.state {
-        SyncState::Error => Err(status
-            .last_error
-            .unwrap_or_else(|| "the sync pass failed".to_string())),
+    match status.phase() {
+        SyncPhase::Error { error, .. } => Err(error.clone()),
         _ => runtime.pairing_charter(),
     }
 }

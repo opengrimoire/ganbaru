@@ -6,7 +6,7 @@ A page has a stable identity, title, parent, optional project, icon, cover, prop
 
 An empty title is valid and receives a localized fallback in navigation. Renaming a page updates navigation and link presentation without changing stable link identity, and title drafts and committed renames or moves update the header and sidebar immediately.
 
-Opening a page uses one native page-open read for breadcrumbs, the initial block range, and its outline; optional panels and descendant hydration do not delay editing. Descendant reads take at most 2,000 parent blocks each, and larger levels are read in several requests. Pending edits flush before leaving a page, and previous documents are released rather than cached. A brief skeleton appears only for slow loads, and a failed read shows its error with Retry while navigation stays available. New pages appear in navigation and the editor while their creation is still committing.
+Opening a page uses one native page-open read for breadcrumbs, the initial block range, and its outline; optional panels and descendant hydration do not delay editing. Descendant reads take at most 2,000 parent blocks each, and larger levels are read in several requests. Pending edits flush before leaving a page, and previous documents are released rather than cached. A brief skeleton appears only for slow loads, and a failed read shows its error with Retry while navigation stays available. New pages appear in navigation and the editor while their creation is still committing. If saving the new page fails, Retry sends it again; if it was saved but could not be shown, Retry only shows it again, and it is never discarded as an unsaved draft.
 
 ## Folders
 
@@ -46,7 +46,7 @@ When a page is open, its last-edited detail (with an activity panel), favorite c
 
 Archive hides a page from active navigation, favorites, recents, search, and parent selection without deleting anything. The Archive view supports search and restore, and restore validates the stored parent.
 
-Trash applies to the reachable page subtree so active children never remain under an inactive parent. Trashed pages leave navigation and Archive immediately and stay in Trash for the configured recovery period. If the move fails while the page is still active, it returns with an error and keeps pending edits. Restore preserves valid structure and reactivates paired child-page blocks. Permanent deletion requires confirmation or retention expiry and removes the page subtree, paired blocks, and owned content transactionally; asset bytes are collected through the ownership graph and history pins, not because one reference disappeared. See [History and recovery](history-and-recovery.md).
+Trash applies to the reachable page subtree so active children never remain under an inactive parent. Trashed pages leave navigation and Archive immediately and stay in Trash for the configured recovery period. If the move fails while the page is still active, it returns with an error and keeps pending edits. Restore preserves valid structure and reactivates paired child-page blocks. Trashing a page takes it out of Archive, while archived descendants trashed with it return to Archive on restore. Permanent deletion requires confirmation or retention expiry and removes the page subtree, paired blocks, and owned content transactionally; asset bytes are collected through the ownership graph and history pins, not because one reference disappeared. See [History and recovery](history-and-recovery.md).
 
 ## Search and destination reads
 

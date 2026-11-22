@@ -74,6 +74,16 @@ export class NotesPageSessionController {
     if (this.titleDraft?.pageId === pageId) this.titleDraft = null;
   }
 
+  /**
+   * Forgets the title draft for `pageId` once `savedTitle` is saved, unless the draft changed while the save ran.
+   *
+   * @param pageId - The page whose title was saved.
+   * @param savedTitle - The trimmed title that was saved.
+   */
+  clearSavedTitleDraft(pageId: string, savedTitle: string): void {
+    if (this.titleDraft?.pageId === pageId && this.titleDraft.title.trim() === savedTitle) this.titleDraft = null;
+  }
+
   titleDraftForPage(pageId: string): string | null {
     return this.titleDraft?.pageId === pageId ? this.titleDraft.title : null;
   }

@@ -218,7 +218,10 @@
   let uploadPreviewUrl = $state<string | null>(null);
   let uploadPreviewRequestId = 0;
   let uploadError = $state<string | null>(null);
+  /** One upload at a time across picking, pasting, and fetching, so the first to settle cannot clear another's progress. */
   let uploading = $state(false);
+  /** Counts picker closes, so an upload that settles after a close neither shows its failure in nor closes the reopened picker. */
+  let pickerSession = 0;
   let iconColor = $state<IconPickerColor>("default");
   let emojiSkinTone = $state<ProjectEmojiSkinTone>("default");
   let emojiCategory = $state<ProjectEmojiCategoryId | "all">("all");
@@ -652,6 +655,7 @@
     iconColorPanelOpen = false;
     iconCategoryMenuOpen = false;
     iconColorChoice = null;
+    pickerSession += 1;
     uploadError = null;
     customEmojiError = null;
     if (source === "keyboard") {
@@ -830,10 +834,12 @@
   }
 
   async function chooseUploadFile(): Promise<void> {
+    if (uploading) return;
     if (!nativeFilePickerAvailable) {
       uploadFileInput?.click();
       return;
     }
+    const session = pickerSession;
     uploading = true;
     uploadError = null;
     try {
@@ -842,12 +848,12 @@
         : await pickProjectIconImageFile();
       if (asset && uploadAdapter?.selectPickedAssetImmediately) {
         await uploadAdapter.selectAsset(asset);
-        closePicker(pickerInteractionSource);
+        if (session === pickerSession) closePicker(pickerInteractionSource);
       } else {
         uploadDraft = asset;
       }
     } catch (error) {
-      uploadError = userErrorMessage(error, t("projects.iconPicker.uploadSaveFailed"));
+      if (session === pickerSession) uploadError = userErrorMessage(error, t("projects.iconPicker.uploadSaveFailed"));
     } finally {
       uploading = false;
       await refreshPanelPlacement();
@@ -855,18 +861,20 @@
   }
 
   async function saveUploadFile(file: File): Promise<void> {
+    if (uploading) return;
+    const session = pickerSession;
     uploading = true;
     uploadError = null;
     try {
       const asset = await saveFileAsUploadAsset(file);
       if (uploadAdapter?.selectPickedAssetImmediately) {
         await uploadAdapter.selectAsset(asset);
-        closePicker(pickerInteractionSource);
+        if (session === pickerSession) closePicker(pickerInteractionSource);
       } else {
         uploadDraft = asset;
       }
     } catch (error) {
-      uploadError = userErrorMessage(error, t("projects.iconPicker.uploadSaveFailed"));
+      if (session === pickerSession) uploadError = userErrorMessage(error, t("projects.iconPicker.uploadSaveFailed"));
     } finally {
       uploading = false;
       await refreshPanelPlacement();
@@ -883,21 +891,24 @@
 
   async function downloadUploadUrl(): Promise<void> {
     const url = uploadUrl.trim();
-    if (!url) return;
+    if (!url || uploading) return;
+    const session = pickerSession;
     uploading = true;
     uploadError = null;
     try {
       if (uploadAdapter?.selectExternalUrl) {
         await uploadAdapter.selectExternalUrl(url);
-        uploadUrl = "";
-        closePicker(pickerInteractionSource);
+        if (session === pickerSession) {
+          uploadUrl = "";
+          closePicker(pickerInteractionSource);
+        }
       } else {
         uploadDraft = uploadAdapter?.downloadImageUrl
           ? await uploadAdapter.downloadImageUrl(url)
           : await downloadProjectIconImageUrl(url);
       }
     } catch (error) {
-      uploadError = userErrorMessage(error, t("projects.iconPicker.downloadFailed"));
+      if (session === pickerSession) uploadError = userErrorMessage(error, t("projects.iconPicker.downloadFailed"));
     } finally {
       uploading = false;
       await refreshPanelPlacement();

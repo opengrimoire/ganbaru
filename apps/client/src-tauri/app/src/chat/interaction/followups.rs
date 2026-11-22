@@ -6,6 +6,10 @@ use super::support::{
 use crate::chat::attachment_commands::MAX_IMAGE_COUNT;
 use crate::chat::interaction_commands::{ChatQueuedFollowupRead, SaveQueuedFollowupRequest};
 use ganbaru_chat::repository::attachments;
+use ganbaru_chat::repository::state_writes::{
+    GuardedRow, StateWriteColumns, StateWriteValue, persist_guarded_transition, sources_sql,
+};
+use ganbaru_chat::state::ChatQueuedFollowupState;
 use ganbaru_chat_contracts::models::{
     ChatAttachmentId, ChatError, ChatErrorCode, ChatResult, ChatThreadId, InteractionMode,
     ProviderInstanceId, SafetyMode, UtcTimestamp,
@@ -194,16 +198,18 @@ pub(crate) async fn cancel_queued_followup(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    let changed = sqlx::query(
+    let cancel = format!(
         "UPDATE chat_queued_followups SET state = 'cancelled', updated_at = ?
-         WHERE thread_id = ? AND state = 'queued'",
-    )
-    .bind(now_timestamp()?.as_str())
-    .bind(thread_id.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?
-    .rows_affected();
+         WHERE thread_id = ? AND state IN ({})",
+        sources_sql(ChatQueuedFollowupState::Cancelled)
+    );
+    let changed = sqlx::query(sqlx::AssertSqlSafe(cancel))
+        .bind(now_timestamp()?.as_str())
+        .bind(thread_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?
+        .rows_affected();
     if let Some(active_id) = active_id {
         sqlx::query("DELETE FROM chat_queued_attachment_references WHERE queued_followup_id = ?")
             .bind(active_id)
@@ -223,18 +229,26 @@ pub(crate) async fn mark_queued_followup_dispatched(
 ) -> ChatResult<bool> {
     let pool = chat_pool(app, db_url).await?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    let changed = sqlx::query(
-        "UPDATE chat_queued_followups SET state = 'dispatched', updated_at = ?
-         WHERE id = ? AND thread_id = ? AND state = 'queued'",
+    let now = now_timestamp()?;
+    let changed = persist_guarded_transition(
+        &mut transaction,
+        GuardedRow {
+            table: "chat_queued_followups",
+            key: "id = ? AND thread_id = ?",
+            key_values: &[
+                StateWriteValue::Text(&queued_followup_id),
+                StateWriteValue::Text(thread_id.as_str()),
+            ],
+        },
+        ChatQueuedFollowupState::Dispatched,
+        StateWriteColumns {
+            assignments: "updated_at = ?",
+            values: &[StateWriteValue::Text(now.as_str())],
+        },
     )
-    .bind(now_timestamp()?.as_str())
-    .bind(&queued_followup_id)
-    .bind(thread_id.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?
-    .rows_affected();
-    if changed > 0 {
+    .await?
+    .is_applied();
+    if changed {
         sqlx::query("DELETE FROM chat_queued_attachment_references WHERE queued_followup_id = ?")
             .bind(&queued_followup_id)
             .execute(&mut *transaction)
@@ -242,7 +256,7 @@ pub(crate) async fn mark_queued_followup_dispatched(
             .map_err(persistence_error)?;
     }
     transaction.commit().await.map_err(persistence_error)?;
-    Ok(changed > 0)
+    Ok(changed)
 }
 
 pub(super) async fn read_queued_followup(

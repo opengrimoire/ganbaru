@@ -140,11 +140,11 @@ impl FocusNativeContext {
     /// Heartbeats can refresh revisions without changing the displayed action's target.
     fn matches_phase(&self, generation: u64, snapshot: &FocusExecutionSnapshot) -> bool {
         self.vault_generation == generation
-            && self.mode == snapshot.mode
+            && self.mode == snapshot.mode.kind()
             && self.phase == snapshot.segment.as_ref().map(|segment| segment.phase)
             && self.run_id == snapshot.run.as_ref().map(|run| run.id.clone())
             && self.segment_id == snapshot.segment.as_ref().map(|segment| segment.id.clone())
-            && self.idle_detected_at_ms == snapshot.idle_detected_at_ms
+            && self.idle_detected_at_ms == snapshot.mode.idle_detected_at_ms()
     }
 }
 
@@ -248,8 +248,7 @@ struct Owner {
     foreground: bool,
     /// Cached stable device id for the activity row.
     device_id: Option<String>,
-    frozen: bool,
-    resume_pending: Option<u64>,
+    access: VaultAccess,
     next_heartbeat_ms: i64,
     next_activity_ms: i64,
     next_boundary_ms: Option<i64>,
@@ -264,6 +263,28 @@ struct Owner {
     native_command_sequence: u64,
     effects: delivery::DeliveryHandle,
     subscriptions: subscriptions::Subscriptions<Channel<FocusNotice>>,
+}
+
+/// Whether the owner may touch the active vault. A freeze detaches it; a resume stays
+/// `Resuming` until effects are quiescent and the lifecycle completes that revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VaultAccess {
+    Attached,
+    Frozen,
+    Resuming { revision: u64 },
+}
+
+impl VaultAccess {
+    fn is_frozen(self) -> bool {
+        !matches!(self, Self::Attached)
+    }
+
+    fn resume_revision(self) -> Option<u64> {
+        match self {
+            Self::Resuming { revision } => Some(revision),
+            Self::Attached | Self::Frozen => None,
+        }
+    }
 }
 
 fn error(code: FocusErrorCode, message: impl Into<String>) -> FocusExecutionError {
@@ -359,8 +380,7 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
             recovered_vault: None,
             foreground: platform() == FocusPlatform::Desktop,
             device_id: None,
-            frozen: false,
-            resume_pending: None,
+            access: VaultAccess::Attached,
             next_heartbeat_ms: 0,
             next_activity_ms: 0,
             next_boundary_ms: None,
@@ -416,7 +436,7 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
                 changed = owner.effects.feedback.changed(), if delivery_feedback_open => {
                     if changed.is_err() { delivery_feedback_open = false; }
                     owner.sync_delivery_feedback();
-                    if owner.resume_pending.is_some() && owner.effects.is_quiescent() {
+                    if owner.access.resume_revision().is_some() && owner.effects.is_quiescent() {
                         next_wake = tokio::time::Instant::now();
                     }
                 }
@@ -427,7 +447,7 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
                     if let Err(error) = owner.observe(FocusObservation::ForegroundChanged { foreground: observation.foreground }, observation.observed_at_ms).await { owner.record_failure(error); }
                 }
                 _ = invalidation.notified() => {
-                    if !owner.frozen
+                    if !owner.frozen()
                         && !owner.freeze_requested()
                         && calendar_dirty.swap(false, Ordering::AcqRel)
                     {
@@ -527,7 +547,7 @@ pub(crate) fn focus_phase_activity_of(
     if snapshot.segment.as_ref()?.phase != FocusPhase::Focus {
         return None;
     }
-    match snapshot.mode {
+    match snapshot.mode.kind() {
         FocusMode::Running => Some(FocusPhaseActivity {
             deadline_ms: snapshot.phase_deadline_ms,
         }),
@@ -761,6 +781,10 @@ pub(crate) fn resume_after_vault_handoff<R: Runtime>(
 }
 
 impl Owner {
+    fn frozen(&self) -> bool {
+        self.access.is_frozen()
+    }
+
     async fn handle(&mut self, request: Request) -> Result<Reply, FocusExecutionError> {
         let request = match request {
             Request::CalendarDismissUndo {
@@ -772,7 +796,7 @@ impl Owner {
                 return Ok(self.projection.clone().into());
             }
             Request::CalendarReview => {
-                if self.frozen || self.freeze_requested() {
+                if self.frozen() || self.freeze_requested() {
                     return Err(error(
                         FocusErrorCode::Unavailable,
                         "Calendar preview is suspended while the vault changes",
@@ -829,8 +853,7 @@ impl Owner {
                         "Native Focus freeze request was superseded",
                     ));
                 }
-                self.frozen = true;
-                self.resume_pending = None;
+                self.access = VaultAccess::Frozen;
                 self.recovered_vault = None;
                 self.clear_effect_authority();
                 self.idle_grace = clock::IdleGraceClock::default();
@@ -866,7 +889,7 @@ impl Owner {
                 {
                     return Ok(self.projection.clone().into());
                 }
-                if !self.frozen {
+                if !self.frozen() {
                     self.clear_effect_authority();
                     self.recovered_vault = None;
                     self.idle_grace = clock::IdleGraceClock::default();
@@ -881,8 +904,7 @@ impl Owner {
                     self.subscriptions.publish(&self.projection, Instant::now());
                 }
                 self.effects.begin_freeze()?;
-                self.resume_pending = Some(revision);
-                self.frozen = true;
+                self.access = VaultAccess::Resuming { revision };
                 self.pool = None;
                 if !self.effects.is_quiescent()
                     || !self
@@ -893,10 +915,9 @@ impl Owner {
                 {
                     return Ok(self.projection.clone().into());
                 }
-                self.resume_pending = None;
-                self.frozen = false;
+                self.access = VaultAccess::Attached;
             }
-            _ if self.frozen || self.freeze_requested() => {
+            _ if self.frozen() || self.freeze_requested() => {
                 return Err(error(
                     FocusErrorCode::Unavailable,
                     "Focus is suspended while this vault is changing",
@@ -1063,7 +1084,7 @@ impl Owner {
     }
 
     async fn ensure_context(&mut self, recover: bool) -> Result<(), FocusExecutionError> {
-        if self.frozen {
+        if self.frozen() {
             return Err(error(FocusErrorCode::Unavailable, "Focus vault is frozen"));
         }
         let app = self.app.clone();
@@ -1168,8 +1189,8 @@ impl Owner {
         let Ok(now) = now_ms() else {
             return Duration::from_millis(ERROR_RETRY_INTERVAL_MS as u64);
         };
-        if self.frozen || self.freeze_requested() {
-            return if self.resume_pending.is_some() {
+        if self.frozen() || self.freeze_requested() {
+            return if self.access.resume_revision().is_some() {
                 Duration::from_millis(ERROR_RETRY_INTERVAL_MS as u64)
             } else {
                 Duration::from_secs(60 * 60)
@@ -1215,8 +1236,8 @@ impl Owner {
     }
 
     async fn tick(&mut self, calendar_dirty: bool) -> Result<(), FocusExecutionError> {
-        if self.frozen {
-            if let Some(revision) = self.resume_pending
+        if self.frozen() {
+            if let Some(revision) = self.access.resume_revision()
                 && self.effects.is_quiescent()
                 && self
                     .app
@@ -1224,8 +1245,7 @@ impl Owner {
                     .lifecycle
                     .complete_resume(revision)
             {
-                self.frozen = false;
-                self.resume_pending = None;
+                self.access = VaultAccess::Attached;
             } else {
                 return Ok(());
             }

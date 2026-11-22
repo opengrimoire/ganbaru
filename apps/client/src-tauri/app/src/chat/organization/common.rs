@@ -522,17 +522,7 @@ pub(super) fn wire_folder_capability(value: ChatFolderCapability) -> &'static st
 }
 
 pub(super) fn parse_work_state(value: &str) -> ChatResult<ChatWorkAssignmentState> {
-    match value {
-        "queued" => Ok(ChatWorkAssignmentState::Queued),
-        "working" => Ok(ChatWorkAssignmentState::Working),
-        "waiting_for_answer" => Ok(ChatWorkAssignmentState::WaitingForAnswer),
-        "waiting_for_approval" => Ok(ChatWorkAssignmentState::WaitingForApproval),
-        "ready_for_review" => Ok(ChatWorkAssignmentState::ReadyForReview),
-        "completed" => Ok(ChatWorkAssignmentState::Completed),
-        "failed" => Ok(ChatWorkAssignmentState::Failed),
-        "cancelled" => Ok(ChatWorkAssignmentState::Cancelled),
-        _ => Err(stored_value_error("assignment state")),
-    }
+    ChatWorkAssignmentState::parse(value).ok_or_else(|| stored_value_error("assignment state"))
 }
 
 /// The stored review outcome `value`.
@@ -571,16 +561,7 @@ pub(crate) fn native_assignment_safety_mode(approval: ChatRuntimeApprovalPolicy)
 }
 
 pub(super) fn wire_work_state(value: ChatWorkAssignmentState) -> &'static str {
-    match value {
-        ChatWorkAssignmentState::Queued => "queued",
-        ChatWorkAssignmentState::Working => "working",
-        ChatWorkAssignmentState::WaitingForAnswer => "waiting_for_answer",
-        ChatWorkAssignmentState::WaitingForApproval => "waiting_for_approval",
-        ChatWorkAssignmentState::ReadyForReview => "ready_for_review",
-        ChatWorkAssignmentState::Completed => "completed",
-        ChatWorkAssignmentState::Failed => "failed",
-        ChatWorkAssignmentState::Cancelled => "cancelled",
-    }
+    value.as_str()
 }
 
 pub(super) fn u32_value(value: i64) -> ChatResult<u32> {
@@ -647,12 +628,11 @@ pub(super) async fn chat_writers(
 }
 
 /// The devices with an active sync writer in the vault of `pool` that the authorization log
-/// has not removed. An unlinked device's writer is revoked or carries a removal cutoff, so it
-/// is not listed.
+/// has not removed. A removed or forked device's writer is not active, so it is not listed.
 pub(super) async fn active_writer_devices(pool: &sqlx::SqlitePool) -> ChatResult<Vec<String>> {
     sqlx::query_scalar(
         "SELECT DISTINCT writer.device_id FROM sync_writers writer
-         WHERE writer.state = 'active' AND writer.removal_cutoff_seq IS NULL
+         WHERE writer.state = 'active'
            AND NOT EXISTS (
              SELECT 1 FROM sync_devices device
              WHERE device.space_id = writer.space_id AND device.device_id = writer.device_id

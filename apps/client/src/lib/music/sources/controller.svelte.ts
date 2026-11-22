@@ -52,6 +52,24 @@ import {
   resolveMusicYouTubeSource,
   type MusicYouTubeSourcePreview,
 } from "./youtube-source-resolver";
+import {
+  IDLE_YOUTUBE_RESOLUTION,
+  isCurrentYouTubeResolution,
+  transitionYouTubeResolution,
+  type YouTubeResolutionState,
+} from "./youtube-resolution-state";
+
+/**
+ * Where the first-use folder preparation stands. `detecting` asks the system for its Music folder, `preparing` adds and
+ * scans a detected or chosen folder, and `idle` and `failed` keep the last folder path for the preparing screen.
+ */
+export type FirstUseFolderState =
+  | { phase: "idle"; folderPath: string | null }
+  | { phase: "detecting" }
+  | { phase: "preparing"; origin: "detected" | "chosen"; folderPath: string }
+  | { phase: "failed"; folderPath: string | null; error: string };
+
+const IDLE_FIRST_USE_FOLDER: FirstUseFolderState = { phase: "idle", folderPath: null };
 
 /** A local source this device cannot scan until the user chooses its folder. */
 export interface UnlinkedMusicSource {
@@ -126,9 +144,7 @@ export class MusicSourcesController {
   busy = $state(false);
   loaded = $state(false);
   error = $state<string | null>(null);
-  resolving = $state(false);
-  resolutionError = $state<string | null>(null);
-  youtubePreview = $state<MusicYouTubeSourcePreview | null>(null);
+  private resolution = $state.raw<YouTubeResolutionState>(IDLE_YOUTUBE_RESOLUTION);
   removalImpact = $state<MusicSourceRemovalImpact | null>(null);
   relinkPlan = $state<MusicRelinkPlanSummary | null>(null);
   relinkEntries = $state<MusicRelinkPlanEntry[]>([]);
@@ -137,22 +153,19 @@ export class MusicSourcesController {
   itemRepairPreview = $state<MusicItemRepairPreview | null>(null);
   itemRepairApplied = $state<{ locationId: string; rootId: string } | null>(null);
   detectedDefaultFolder = $state<MediaFolderSelection | null>(null);
-  detectingDefaultFolder = $state(false);
   addingDefaultFolder = $state(false);
-  preparingDefaultFolder = $state(false);
-  preparingDefaultFolderPath = $state<string | null>(null);
-  defaultFolderPreparationError = $state<string | null>(null);
+  /** Each async step advances only the variant it started from, so a vault switch or a newer choice drops it. */
+  firstUseFolder = $state.raw<FirstUseFolderState>(IDLE_FIRST_USE_FOLDER);
   firstUseSession = $state(false);
 
   private readonly api: MusicSourcesControllerApi;
   private readonly now: () => number;
   private readonly id: () => string;
   private readonly refresh: MusicSourceRefreshController;
-  private resolutionController: AbortController | null = null;
   private loadGeneration = 0;
   private pendingLoad: Promise<boolean> | null = null;
-  private defaultFolderChecked = false;
-  private defaultFolderDismissed = false;
+  /** Set once detection ran or the person declined, chose, or added a folder, so detection never runs twice. */
+  private defaultFolderSettled = false;
 
   constructor(
     api: MusicSourcesControllerApi = defaultApi,
@@ -196,6 +209,42 @@ export class MusicSourcesController {
     );
   }
 
+  /** Whether a YouTube link is being resolved. */
+  get resolving(): boolean {
+    return this.resolution.phase === "resolving";
+  }
+
+  /** Why the last YouTube resolution failed, or `null`. */
+  get resolutionError(): string | null {
+    return this.resolution.phase === "failed" ? this.resolution.error : null;
+  }
+
+  /** The last resolved YouTube preview, or `null`. */
+  get youtubePreview(): MusicYouTubeSourcePreview | null {
+    return this.resolution.phase === "resolved" ? this.resolution.preview : null;
+  }
+
+  /** Whether the system Music folder is being detected or the detected folder is being added. */
+  get detectingDefaultFolder(): boolean {
+    const state = this.firstUseFolder;
+    return state.phase === "detecting" || (state.phase === "preparing" && state.origin === "detected");
+  }
+
+  /** Whether a first-use folder is being detected, added, or scanned. */
+  get preparingDefaultFolder(): boolean {
+    return this.firstUseFolder.phase === "detecting" || this.firstUseFolder.phase === "preparing";
+  }
+
+  /** The folder the preparing screen names, kept after preparation ends. */
+  get preparingDefaultFolderPath(): string | null {
+    return this.firstUseFolder.phase === "detecting" ? null : this.firstUseFolder.folderPath;
+  }
+
+  /** Why the last first-use folder preparation failed, or `null`. */
+  get defaultFolderPreparationError(): string | null {
+    return this.firstUseFolder.phase === "failed" ? this.firstUseFolder.error : null;
+  }
+
   setVault(vaultId: string | null): void {
     const normalized = vaultId?.trim() || null;
     if (normalized === this.vaultId) return;
@@ -209,15 +258,12 @@ export class MusicSourcesController {
     this.refreshStatuses = {};
     this.error = null;
     this.loaded = false;
+    this.busy = false;
     this.detectedDefaultFolder = null;
-    this.detectingDefaultFolder = false;
     this.addingDefaultFolder = false;
-    this.preparingDefaultFolder = false;
-    this.preparingDefaultFolderPath = null;
-    this.defaultFolderPreparationError = null;
+    this.firstUseFolder = IDLE_FIRST_USE_FOLDER;
     this.firstUseSession = false;
-    this.defaultFolderChecked = false;
-    this.defaultFolderDismissed = false;
+    this.defaultFolderSettled = false;
   }
 
   load(): Promise<boolean> {
@@ -248,7 +294,7 @@ export class MusicSourcesController {
       this.roots = roots;
       this.collections = collections;
       this.bindings = bindings;
-      if (roots.length === 0 && !this.defaultFolderChecked && !this.defaultFolderDismissed) {
+      if (roots.length === 0 && !this.defaultFolderSettled) {
         this.firstUseSession = true;
         await this.detectSystemMusicFolder();
       } else if (roots.length > 0) {
@@ -268,36 +314,41 @@ export class MusicSourcesController {
   }
 
   async detectSystemMusicFolder(): Promise<MediaFolderSelection | null> {
-    if (!this.vaultId || this.defaultFolderChecked || this.defaultFolderDismissed || this.roots.length > 0) return null;
-    const generation = this.loadGeneration;
-    const vaultId = this.vaultId;
-    this.defaultFolderChecked = true;
-    this.detectingDefaultFolder = true;
-    this.preparingDefaultFolder = true;
-    this.defaultFolderPreparationError = null;
+    if (!this.vaultId || this.defaultFolderSettled || this.roots.length > 0) return null;
+    this.defaultFolderSettled = true;
+    const detecting: FirstUseFolderState = { phase: "detecting" };
+    this.firstUseFolder = detecting;
+    let preparing: FirstUseFolderState | null = null;
     try {
       const selection = await this.api.detectDefaultFolder();
-      if (generation !== this.loadGeneration || vaultId !== this.vaultId || this.defaultFolderDismissed) return null;
+      if (this.firstUseFolder !== detecting) return null;
       this.detectedDefaultFolder = selection;
-      this.preparingDefaultFolderPath = selection?.folderPath ?? null;
-      if (selection) await this.addDetectedDefaultFolder(true);
+      if (!selection) {
+        this.firstUseFolder = IDLE_FIRST_USE_FOLDER;
+        return null;
+      }
+      preparing = { phase: "preparing", origin: "detected", folderPath: selection.folderPath };
+      this.firstUseFolder = preparing;
+      await this.addDetectedDefaultFolder(true);
+      if (this.firstUseFolder === preparing) this.firstUseFolder = { phase: "idle", folderPath: selection.folderPath };
       return selection;
     } catch (error) {
-      if (vaultId === this.vaultId) {
-        this.defaultFolderPreparationError = musicErrorMessage(error, translate("music.errors.folderPrepareFailed"));
+      const current = this.firstUseFolder;
+      if (current === detecting || current === preparing) {
+        this.firstUseFolder = {
+          phase: "failed",
+          folderPath: current.phase === "preparing" ? current.folderPath : null,
+          error: musicErrorMessage(error, translate("music.errors.folderPrepareFailed")),
+        };
       }
       return null;
-    } finally {
-      if (vaultId === this.vaultId) {
-        this.detectingDefaultFolder = false;
-        this.preparingDefaultFolder = false;
-      }
     }
   }
 
   dismissDefaultMusicFolder(): void {
-    this.defaultFolderDismissed = true;
+    this.defaultFolderSettled = true;
     this.detectedDefaultFolder = null;
+    if (this.firstUseFolder.phase === "detecting") this.firstUseFolder = IDLE_FIRST_USE_FOLDER;
   }
 
   /** Ends the one-time Builder-first presentation after its library is fully ready. */
@@ -309,7 +360,7 @@ export class MusicSourcesController {
     const selection = this.detectedDefaultFolder;
     if (!selection || this.addingDefaultFolder) return null;
     this.addingDefaultFolder = true;
-    this.defaultFolderDismissed = true;
+    this.defaultFolderSettled = true;
     try {
       const collectionId = await this.addLocalFolder(
         selection,
@@ -325,24 +376,26 @@ export class MusicSourcesController {
 
   /**
    * Adds a folder the person chose during first use and reports it through the same preparation state as a detected
-   * default folder, so the Builder opens on its preparing screen. The preparing flag is set before any await.
+   * default folder, so the Builder opens on its preparing screen. The preparing state is set before any await.
    */
   async prepareFirstUseFolder(selection: MediaFolderSelection, name: string): Promise<string | null> {
     if (this.preparingDefaultFolder) return null;
-    const vaultId = this.vaultId;
-    this.defaultFolderDismissed = true;
-    this.preparingDefaultFolder = true;
-    this.preparingDefaultFolderPath = selection.folderPath;
-    this.defaultFolderPreparationError = null;
+    this.defaultFolderSettled = true;
+    const preparing: FirstUseFolderState = { phase: "preparing", origin: "chosen", folderPath: selection.folderPath };
+    this.firstUseFolder = preparing;
     try {
-      return await this.addLocalFolder(selection, name, true);
+      const collectionId = await this.addLocalFolder(selection, name, true);
+      if (this.firstUseFolder === preparing) this.firstUseFolder = { phase: "idle", folderPath: selection.folderPath };
+      return collectionId;
     } catch (error) {
-      if (vaultId === this.vaultId) {
-        this.defaultFolderPreparationError = musicErrorMessage(error, translate("music.errors.folderPrepareFailed"));
+      if (this.firstUseFolder === preparing) {
+        this.firstUseFolder = {
+          phase: "failed",
+          folderPath: selection.folderPath,
+          error: musicErrorMessage(error, translate("music.errors.folderPrepareFailed")),
+        };
       }
       return null;
-    } finally {
-      if (vaultId === this.vaultId) this.preparingDefaultFolder = false;
     }
   }
 
@@ -358,7 +411,8 @@ export class MusicSourcesController {
   }
 
   async addLocalFolder(selection: MediaFolderSelection, name: string, waitForRefresh = false): Promise<string> {
-    if (!this.vaultId) throw new LocalizedError(translate("music.errors.vaultUnavailable"));
+    const vaultId = this.vaultId;
+    if (!vaultId) throw new LocalizedError(translate("music.errors.vaultUnavailable"));
     const trimmedName = name.trim();
     if (!trimmedName) throw new LocalizedError(translate("music.errors.sourceNameRequired"));
     const rootId = this.id();
@@ -368,14 +422,14 @@ export class MusicSourcesController {
       name: trimmedName,
       createdAtMs,
     });
-    await this.api.bindRoot(this.vaultId, rootId, selection.folderPath);
+    await this.api.bindRoot(vaultId, rootId, selection.folderPath);
     await this.loadProjection();
     const target = this.localTarget(collectionId, rootId, trimmedName, selection.folderPath, createdAtMs);
     const plan = this.refresh.prepare([target]);
     if (waitForRefresh) {
       const failure = refreshFailure(await this.runRefresh(plan, true));
       if (failure) {
-        this.error = failure;
+        this.reportVaultError(vaultId, failure);
         throw new LocalizedError(failure);
       }
       notifyMusicLibraryChanged();
@@ -383,10 +437,10 @@ export class MusicSourcesController {
       void this.runRefresh(plan, true)
         .then((statuses) => {
           const failure = refreshFailure(statuses);
-          if (failure) this.error = failure;
+          if (failure) this.reportVaultError(vaultId, failure);
           else notifyMusicLibraryChanged();
         })
-        .catch((error: unknown) => { this.error = musicErrorMessage(error, translate("music.errors.sourceRefreshFailed", trimmedName)); });
+        .catch((error: unknown) => { this.reportVaultError(vaultId, musicErrorMessage(error, translate("music.errors.sourceRefreshFailed", trimmedName))); });
     }
     return collectionId;
   }
@@ -421,34 +475,28 @@ export class MusicSourcesController {
   async resolveYouTube(source: YouTubeVideoSource | YouTubePlaylistSource): Promise<MusicYouTubeSourcePreview | null> {
     this.cancelResolution();
     const controller = new AbortController();
-    this.resolutionController = controller;
-    this.resolving = true;
-    this.resolutionError = null;
-    this.youtubePreview = null;
+    this.resolution = transitionYouTubeResolution(this.resolution, { type: "started", controller });
     try {
       const resolved = await this.api.resolveYouTube(source, controller.signal);
-      if (this.resolutionController !== controller) return null;
+      if (!isCurrentYouTubeResolution(this.resolution, controller)) return null;
       const duplicateCount = await this.api.youtubeDuplicateCount(resolved.videoIds);
-      if (this.resolutionController !== controller) return null;
+      if (!isCurrentYouTubeResolution(this.resolution, controller)) return null;
       const preview = { ...resolved, duplicateCount };
-      this.youtubePreview = preview;
+      this.resolution = transitionYouTubeResolution(this.resolution, { type: "resolved", controller, preview });
       return preview;
     } catch (error) {
-      if (this.resolutionController !== controller || controller.signal.aborted) return null;
-      this.resolutionError = musicErrorMessage(error, translate("music.errors.youtubeResolveFailed"));
+      if (!isCurrentYouTubeResolution(this.resolution, controller) || controller.signal.aborted) return null;
+      const message = musicErrorMessage(error, translate("music.errors.youtubeResolveFailed"));
+      this.resolution = transitionYouTubeResolution(this.resolution, { type: "failed", controller, error: message });
       return null;
     } finally {
-      if (this.resolutionController === controller) {
-        this.resolutionController = null;
-        this.resolving = false;
-      }
+      this.resolution = transitionYouTubeResolution(this.resolution, { type: "settled", controller });
     }
   }
 
   cancelResolution(): void {
-    this.resolutionController?.abort();
-    this.resolutionController = null;
-    this.resolving = false;
+    if (this.resolution.phase === "resolving") this.resolution.controller.abort();
+    this.resolution = transitionYouTubeResolution(this.resolution, { type: "cancelled" });
   }
 
   async addYouTube(preview: MusicYouTubeSourcePreview, name: string): Promise<string> {
@@ -521,10 +569,11 @@ export class MusicSourcesController {
   }
 
   async runRefresh(plan: MusicSourceRefreshPlan, allowNetwork: boolean): Promise<MusicSourceRefreshStatus[]> {
+    const vaultId = this.vaultId;
     const statuses = await this.refresh.run(plan, { allowNetwork });
     const failure = refreshFailure(statuses);
     await this.loadProjection();
-    if (failure) this.error = failure;
+    if (failure) this.reportVaultError(vaultId, failure);
     return statuses;
   }
 
@@ -644,6 +693,7 @@ export class MusicSourcesController {
    * The plan only moves known tracks, so a background refresh then adds new files and settles availability.
    */
   async applyRelink(decisions: MusicRelinkDecision[]): Promise<void> {
+    const vaultId = this.vaultId;
     const plan = this.relinkPlan;
     const folderPath = this.relinkFolderPath;
     if (!plan || !folderPath) throw new LocalizedError(translate("music.errors.relinkNotReady"));
@@ -657,7 +707,7 @@ export class MusicSourcesController {
     const collection = this.collections.find((entry) => entry.kind === "local-root" && entry.localRootId === plan.rootId);
     if (!collection) return;
     void this.refreshLocalRoot(collection, plan.rootId, folderPath).catch((error: unknown) => {
-      this.error = musicErrorMessage(error, translate("music.errors.sourceRefreshFailed", collection.name));
+      this.reportVaultError(vaultId, musicErrorMessage(error, translate("music.errors.sourceRefreshFailed", collection.name)));
     });
   }
 
@@ -684,13 +734,19 @@ export class MusicSourcesController {
   }
 
   private async refreshLocalRoot(collection: MusicSourceCollection, rootId: string, folderPath: string): Promise<void> {
+    const vaultId = this.vaultId;
     const target = this.localTarget(collection.id, rootId, collection.name, folderPath, this.now());
     const failure = refreshFailure(await this.runRefresh(this.refresh.prepare([target]), true));
     if (failure) {
-      this.error = failure;
+      this.reportVaultError(vaultId, failure);
       throw new LocalizedError(failure);
     }
     notifyMusicLibraryChanged();
+  }
+
+  /** Shows `error` only while `vaultId` is still the active vault, so a late failure never lands on another vault. */
+  private reportVaultError(vaultId: string | null, error: string): void {
+    if (vaultId === this.vaultId) this.error = error;
   }
 
   private localTarget(

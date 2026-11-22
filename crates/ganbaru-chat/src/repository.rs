@@ -27,5 +27,6 @@ pub mod receipts;
 pub mod recovery;
 #[cfg(feature = "native-runtime")]
 pub mod resources;
+pub mod state_writes;
 #[cfg(feature = "native-runtime")]
 pub mod workspaces;

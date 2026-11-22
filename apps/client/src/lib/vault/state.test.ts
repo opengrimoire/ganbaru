@@ -97,6 +97,28 @@ describe("vault state api", () => {
     ).toBe(expected);
   });
 
+  it("explains a vault that held data but lost its database instead of generic database guidance", async () => {
+    const { formatVaultError } = await loadModule();
+    const native =
+      "this Ganbaru folder held data but its database is missing or empty, so it was not opened; restore a backup or a rollback copy into it";
+    const expected =
+      "This folder's data is missing, so it wasn't opened to avoid starting over empty. Choose another folder or import a copy.";
+
+    expect(formatVaultError(native, "startup")).toBe(expected);
+    expect(formatVaultError(new Error(`run database migrations: ${native}`), "change")).toBe(expected);
+  });
+
+  it("recognizes a vault that lost its database from the native text however it arrives", async () => {
+    const { isLostVaultDatabaseError } = await loadModule();
+    const native =
+      "this Ganbaru folder held data but its database is missing or empty, so it was not opened; restore a backup or a rollback copy into it";
+
+    expect(isLostVaultDatabaseError(native)).toBe(true);
+    expect(isLostVaultDatabaseError(new Error(`run database migrations: ${native.toUpperCase()}`))).toBe(true);
+    expect(isLostVaultDatabaseError("database is locked")).toBe(false);
+    expect(isLostVaultDatabaseError(null)).toBe(false);
+  });
+
   it("reads the vault lock status and rejects unknown values", async () => {
     const { getVaultLockStatus, parseVaultLockStatus } = await loadModule();
 
@@ -208,26 +230,49 @@ describe("database rollbacks", () => {
     dismissed: false,
   };
 
+  const unreadable = { id: "20261016T070005000Z", createdAt: "2026-10-16T07:00:05.000Z", sizeBytes: 2048 };
+  const listing = (restorable: unknown[], unreadableCopies: unknown[] = []) => ({
+    restorable,
+    unreadable: unreadableCopies,
+  });
+
   it("lists rollbacks in the order Rust returned", async () => {
     const { listDatabaseRollbacks } = await loadModule();
     const older = { ...rollback, id: "20261017T070005000Z", createdAt: "2026-10-17T07:00:05.000Z" };
-    invokeMock.mockResolvedValueOnce([rollback, older]);
-    await expect(listDatabaseRollbacks()).resolves.toEqual([rollback, older]);
+    invokeMock.mockResolvedValueOnce(listing([rollback, older], [unreadable]));
+    await expect(listDatabaseRollbacks()).resolves.toEqual({
+      restorable: [rollback, older],
+      unreadable: [unreadable],
+    });
     expect(invokeMock).toHaveBeenCalledWith("vault_database_rollbacks");
   });
 
   it("rejects malformed rollback entries", async () => {
     const { parseDatabaseRollbacks } = await loadModule();
-    expect(() => parseDatabaseRollbacks(null)).toThrow("not a list");
-    expect(() => parseDatabaseRollbacks(["x"])).toThrow("not an object");
-    expect(() => parseDatabaseRollbacks([{ ...rollback, id: "" }])).toThrow("incomplete");
-    expect(() => parseDatabaseRollbacks([{ ...rollback, createdAt: "yesterday" }])).toThrow("incomplete");
-    expect(() => parseDatabaseRollbacks([{ ...rollback, sizeBytes: -1 }])).toThrow("incomplete");
-    expect(() => parseDatabaseRollbacks([{ ...rollback, sizeBytes: 1.5 }])).toThrow("incomplete");
-    expect(() => parseDatabaseRollbacks([{ ...rollback, origin: "handoff" }])).toThrow("incomplete");
-    expect(() => parseDatabaseRollbacks([{ ...rollback, flagged: "yes" }])).toThrow("incomplete");
+    const restorable = (entry: unknown) => () => parseDatabaseRollbacks(listing([entry]));
+    expect(() => parseDatabaseRollbacks(null)).toThrow("not an object");
+    expect(() => parseDatabaseRollbacks([rollback])).toThrow("not an object");
+    expect(() => parseDatabaseRollbacks({ restorable: [] })).toThrow("not a list");
+    expect(() => parseDatabaseRollbacks({ unreadable: [] })).toThrow("not a list");
+    expect(restorable("x")).toThrow("not an object");
+    expect(restorable({ ...rollback, id: "" })).toThrow("incomplete");
+    expect(restorable({ ...rollback, createdAt: "yesterday" })).toThrow("incomplete");
+    expect(restorable({ ...rollback, sizeBytes: -1 })).toThrow("incomplete");
+    expect(restorable({ ...rollback, sizeBytes: 1.5 })).toThrow("incomplete");
+    expect(restorable({ ...rollback, origin: "handoff" })).toThrow("incomplete");
+    expect(restorable({ ...rollback, flagged: "yes" })).toThrow("incomplete");
     const { dismissed: _omitted, ...withoutDismissed } = rollback;
-    expect(() => parseDatabaseRollbacks([withoutDismissed])).toThrow("incomplete");
+    expect(restorable(withoutDismissed)).toThrow("incomplete");
+    expect(restorable(unreadable)).toThrow("incomplete");
+  });
+
+  it("reads unreadable copies by their date and size alone and rejects malformed ones", async () => {
+    const { parseDatabaseRollbacks } = await loadModule();
+    expect(parseDatabaseRollbacks(listing([], [{ ...unreadable, origin: "reset" }])).unreadable).toEqual([unreadable]);
+    expect(() => parseDatabaseRollbacks(listing([], ["x"]))).toThrow("not an object");
+    expect(() => parseDatabaseRollbacks(listing([], [{ ...unreadable, id: "" }]))).toThrow("incomplete");
+    expect(() => parseDatabaseRollbacks(listing([], [{ ...unreadable, createdAt: "soon" }]))).toThrow("incomplete");
+    expect(() => parseDatabaseRollbacks(listing([], [{ ...unreadable, sizeBytes: -1 }]))).toThrow("incomplete");
   });
 
   it("reports only undismissed flagged replacement copies", async () => {
@@ -235,8 +280,8 @@ describe("database rollbacks", () => {
     const flagged = { ...rollback, id: "20261018T080005000Z", origin: "replacement", flagged: true };
     const dismissed = { ...flagged, id: "20261018T090005000Z", dismissed: true };
     const plain = { ...rollback, origin: "replacement" };
-    const parsed = parseDatabaseRollbacks([dismissed, flagged, plain, rollback]);
-    expect(pendingFlaggedRollbacks(parsed).map((entry) => entry.id)).toEqual([flagged.id]);
+    const parsed = parseDatabaseRollbacks(listing([dismissed, flagged, plain, rollback], [unreadable]));
+    expect(pendingFlaggedRollbacks(parsed.restorable).map((entry) => entry.id)).toEqual([flagged.id]);
   });
 
   it("dismisses a flagged rollback by its ID only", async () => {
@@ -251,6 +296,74 @@ describe("database rollbacks", () => {
     invokeMock.mockResolvedValueOnce(undefined);
     await restoreDatabaseRollback(rollback.id);
     expect(invokeMock).toHaveBeenCalledWith("vault_restore_database_rollback", { id: rollback.id });
+  });
+});
+
+describe("kept vault folders", () => {
+  const folder = {
+    id: "Ganbaru before replacement 1761700000",
+    displayName: "Ganbaru",
+    keptAtMs: 1_761_700_000_000,
+    sizeBytes: 4096,
+  };
+
+  it("lists kept folders in the order Rust returned, with or without a vault name", async () => {
+    const { listKeptVaultFolders } = await loadModule();
+    const unnamed = { ...folder, id: "Ganbaru before replacement 1761600000", displayName: null };
+    invokeMock.mockResolvedValueOnce([folder, unnamed]);
+    await expect(listKeptVaultFolders()).resolves.toEqual([folder, unnamed]);
+    expect(invokeMock).toHaveBeenCalledWith("vault_kept_folders");
+  });
+
+  it("rejects malformed kept folder entries", async () => {
+    const { parseKeptVaultFolders } = await loadModule();
+    expect(() => parseKeptVaultFolders(null)).toThrow("not a list");
+    expect(() => parseKeptVaultFolders(["folder"])).toThrow("not an object");
+    expect(() => parseKeptVaultFolders([{ ...folder, id: "" }])).toThrow("incomplete");
+    expect(() => parseKeptVaultFolders([{ ...folder, displayName: " " }])).toThrow("incomplete");
+    expect(() => parseKeptVaultFolders([{ ...folder, keptAtMs: 1.5 }])).toThrow("incomplete");
+    expect(() => parseKeptVaultFolders([{ ...folder, sizeBytes: -1 }])).toThrow("incomplete");
+  });
+
+  it("starts a new vault and activates the vault Rust returned", async () => {
+    const { getCachedActiveVaultInfo, startNewVaultAfterLostDatabase } = await loadModule();
+    const info = {
+      path: "/data/ganbaru/Ganbaru",
+      databasePath: "/data/ganbaru/Ganbaru/ganbaru.sqlite",
+      vaultId: "vault-2",
+      displayName: "Ganbaru",
+      created: true,
+    };
+    invokeMock.mockResolvedValueOnce(info);
+    await expect(startNewVaultAfterLostDatabase()).resolves.toEqual(info);
+    expect(invokeMock).toHaveBeenCalledWith("vault_start_new_after_lost_database");
+    expect(getCachedActiveVaultInfo()).toEqual(info);
+    invokeMock.mockResolvedValueOnce({ path: "/data/ganbaru/Ganbaru" });
+    await expect(startNewVaultAfterLostDatabase()).rejects.toThrow();
+  });
+
+  it("explains that a linked phone must unlink before starting a new vault", async () => {
+    const { formatVaultError } = await loadModule();
+    expect(
+      formatVaultError("this phone is linked to other devices; unlink it before starting a new vault"),
+    ).toBe("This phone is linked to other devices. Unlink this phone first, then start a new vault.");
+  });
+
+  it("puts a kept folder back by its identifier and activates the vault Rust returned", async () => {
+    const { getCachedActiveVaultInfo, putBackKeptVaultFolder } = await loadModule();
+    const info = {
+      path: "/data/ganbaru/Ganbaru",
+      databasePath: "/data/ganbaru/Ganbaru/ganbaru.sqlite",
+      vaultId: "vault-1",
+      displayName: "Ganbaru",
+      created: false,
+    };
+    invokeMock.mockResolvedValueOnce(info);
+    await expect(putBackKeptVaultFolder(folder.id)).resolves.toEqual(info);
+    expect(invokeMock).toHaveBeenCalledWith("vault_put_back_kept_folder", { id: folder.id });
+    expect(getCachedActiveVaultInfo()).toEqual(info);
+    invokeMock.mockResolvedValueOnce({ path: "/data/ganbaru/Ganbaru" });
+    await expect(putBackKeptVaultFolder(folder.id)).rejects.toThrow();
   });
 });
 

@@ -11,6 +11,21 @@ import { workspacePreviewImpact } from "./change-model";
 import { useChat } from "$lib/stores/chat.svelte";
 import { requestConfirmation, type ConfirmationRequest } from "$lib/components/ui/confirmation.svelte";
 
+/** A workspace change that reached the open file while its preview was still loading. */
+interface PendingDiskRefresh {
+  path: string;
+  moved: boolean;
+  previousPath: string;
+}
+
+/**
+ * The preview read that opens a file. A workspace change during the read is held in the loading variant and applied
+ * once the opened preview lands, so the read is never superseded mid-flight.
+ */
+type PreviewLoad =
+  | { phase: "idle" }
+  | { phase: "loading"; requestId: number; visible: boolean; pendingRefresh: PendingDiskRefresh | null };
+
 interface FileMutationContext {
   requestId: number;
   scopeRevision: number;
@@ -53,8 +68,7 @@ export class ChatFileEditorSession {
   fileDeleted = $state(false);
   conflictDiskText = $state<string | null>(null);
   saveCopyPath = $state("");
-  loading = $state(false);
-  loadingVisible = $state(false);
+  private previewLoad = $state.raw<PreviewLoad>({ phase: "idle" });
   error = $state<string | null>(null);
 
   private readonly chat = useChat();
@@ -64,6 +78,16 @@ export class ChatFileEditorSession {
   private loadingTimer: number | null = null;
 
   constructor(private readonly options: ChatFileEditorSessionOptions) {}
+
+  /** Whether a file preview is being opened. */
+  get loading(): boolean {
+    return this.previewLoad.phase === "loading";
+  }
+
+  /** Whether the open has run long enough to show its progress. */
+  get loadingVisible(): boolean {
+    return this.previewLoad.phase === "loading" && this.previewLoad.visible;
+  }
 
   get dirty(): boolean {
     return this.preview?.text !== null
@@ -130,9 +154,10 @@ export class ChatFileEditorSession {
     const requestId = ++this.previewRequestId;
     const previousPath = this.preview?.relativePath ?? null;
     this.options.setSelectedPath(path);
-    this.beginLoading();
+    this.beginLoading(requestId);
     this.error = null;
     let opened = false;
+    let pendingRefresh: PendingDiskRefresh | null = null;
     try {
       const result = await chatApi.previewProjectWorkingFolderFile(
         workingFolderId,
@@ -151,7 +176,13 @@ export class ChatFileEditorSession {
         if (previousPath) this.options.setSelectedPath(previousPath);
       }
     } finally {
-      if (requestId === this.previewRequestId) this.finishLoading();
+      if (this.previewLoad.phase === "loading" && this.previewLoad.requestId === requestId) {
+        pendingRefresh = this.previewLoad.pendingRefresh;
+        this.finishLoading();
+      }
+    }
+    if (opened && pendingRefresh) {
+      void this.refreshFromDisk(pendingRefresh.path, pendingRefresh.moved, pendingRefresh.previousPath);
     }
     return opened;
   }
@@ -173,6 +204,10 @@ export class ChatFileEditorSession {
     const workingFolderId = this.options.workingFolderId();
     const current = this.preview;
     if (!workingFolderId) return;
+    if (this.previewLoad.phase === "loading") {
+      this.previewLoad = { ...this.previewLoad, pendingRefresh: { path, moved, previousPath } };
+      return;
+    }
     const environmentId = this.options.executionEnvironmentId();
     const scopeRevision = this.scopeRevision;
     const requestId = ++this.previewRequestId;
@@ -459,19 +494,19 @@ export class ChatFileEditorSession {
       && (this.preview?.relativePath ?? null) === relativePath;
   }
 
-  private beginLoading(): void {
-    this.loading = true;
-    this.loadingVisible = false;
+  private beginLoading(requestId: number): void {
+    this.previewLoad = { phase: "loading", requestId, visible: false, pendingRefresh: null };
     if (this.loadingTimer !== null) window.clearTimeout(this.loadingTimer);
     this.loadingTimer = window.setTimeout(() => {
       this.loadingTimer = null;
-      if (this.loading) this.loadingVisible = true;
+      if (this.previewLoad.phase === "loading" && this.previewLoad.requestId === requestId) {
+        this.previewLoad = { ...this.previewLoad, visible: true };
+      }
     }, 140);
   }
 
   private finishLoading(): void {
-    this.loading = false;
-    this.loadingVisible = false;
+    this.previewLoad = { phase: "idle" };
     if (this.loadingTimer !== null) window.clearTimeout(this.loadingTimer);
     this.loadingTimer = null;
   }

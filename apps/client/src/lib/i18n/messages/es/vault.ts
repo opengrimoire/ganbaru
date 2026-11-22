@@ -217,10 +217,16 @@ export const dataFolderError = {
     "No se encontró la carpeta. Elige otra o importa una existente.",
   openElsewhere:
     "Esta carpeta está abierta en otra app de Ganbaru. Cierra esa app o elige otra carpeta.",
+  linkedAndroidNewVault:
+    "Este teléfono está vinculado a otros dispositivos. Desvincula primero este teléfono y luego empieza una bóveda nueva.",
   linkedAndroid:
     "Este teléfono está vinculado a otros dispositivos. Desvincula primero este teléfono y luego restaura.",
   anchorRollback:
     "Esta computadora es el ancla de tus dispositivos vinculados y esta copia desharía cambios que ellos ya siguen. Traspasa el ancla o quita esos dispositivos y luego restaura.",
+  lostDatabase:
+    "Faltan los datos de esta carpeta, así que no se abrió para no empezar de cero. Elige otra carpeta o importa una copia.",
+  lostDatabaseMobile:
+    "Faltan los datos de Ganbaru en este teléfono, así que no se abrieron para no empezar de cero; restaura un archivo de copia o una copia anterior de abajo, o empieza una bóveda nueva.",
 } as const satisfies MessageShape<typeof enDataFolderError>;
 
 export const language = {

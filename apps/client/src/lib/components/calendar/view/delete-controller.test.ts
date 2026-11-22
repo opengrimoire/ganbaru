@@ -34,14 +34,14 @@ function fixture() {
   const toasts = { showDeletePendingToast: vi.fn(() => "toast"), showDeleteUndoToast: vi.fn(),
     dismissDeleteToastIfPending: vi.fn(), dismissDeleteUndoToast: vi.fn(),
     showSavePendingToast: vi.fn(() => "error"), showSaveErrorToast: vi.fn() };
-  const setCommitState = vi.fn(), closeSession = vi.fn();
+  const setDeleteHold = vi.fn(), closeSession = vi.fn();
   let mounted = true, current = true;
   const controller = new CalendarViewDeleteController({ calendarStore, nativeEditor, toasts,
     getWindow: () => ({ start: Temporal.PlainDate.from("2026-07-11"), end: Temporal.PlainDate.from("2026-07-18") }),
     getEvents: () => [event("source"), event("removed", "source"), event("unrelated")],
-    canPresent: () => mounted, isCurrent: () => current, setCommitState, closeSession,
+    canPresent: () => mounted, isCurrent: () => current, setDeleteHold, closeSession,
     pendingLabel: () => "pending", outcomeLabel: () => "completed", errorLabel: (error) => String(error) });
-  return { input, review, receipt, nativeEditor, calendarStore, toasts, setCommitState, closeSession, controller,
+  return { input, review, receipt, nativeEditor, calendarStore, toasts, setDeleteHold, closeSession, controller,
     unmount: () => { mounted = false; }, changeSelection: () => { current = false; } };
 }
 
@@ -50,7 +50,7 @@ describe("native Calendar deletion presentation", () => {
     const f = fixture();
     await f.controller.execute(f.input, f.review, true);
     expect(f.nativeEditor.commitReviewed).toHaveBeenCalledExactlyOnceWith(f.input, f.review, true);
-    expect(f.setCommitState.mock.calls[0][0].frozenEvents.map((row: CalendarEvent) => row.id)).toEqual(["unrelated", "survivor"]);
+    expect(f.setDeleteHold.mock.calls[0][0].frozenEvents.map((row: CalendarEvent) => row.id)).toEqual(["unrelated", "survivor"]);
     expect(f.calendarStore.acceptNativeEdit).toHaveBeenCalledOnce();
     expect(f.calendarStore.refreshWindow).toHaveBeenCalledOnce();
     expect(f.closeSession).toHaveBeenCalledOnce();

@@ -9,6 +9,8 @@ import {
   importedTheme,
   toUserThemeSnapshot,
   withSeedOf,
+  differsFromSeed,
+  resetToSeed,
 } from "./operations";
 import {
   APP_TOKEN_KEYS,
@@ -21,6 +23,7 @@ import {
   isSemanticSignalAppToken,
   lightTheme,
   serializeTheme,
+  syncSemanticSignalAppTokens,
   type ThemeSources,
   type UserTheme,
 } from "$lib/themes";
@@ -88,6 +91,10 @@ function makeUserTheme(overrides: Partial<UserTheme> = {}): UserTheme {
       overrides.calendarDefaultCustom ??
       sources.canvas,
     seedIconLabel: overrides.seedIconLabel ?? iconLabel,
+    seedDerivationEngineVersion:
+      overrides.seedDerivationEngineVersion ??
+      overrides.derivationEngineVersion ??
+      DERIVATION_ENGINE_VERSION,
   };
 }
 
@@ -393,6 +400,52 @@ describe("withSeedOf", () => {
     expect(next.seedCalendarIsolated).toBe(current.seedCalendarIsolated);
     expect(next.seedCalendarDefaultMode).toBe(current.seedCalendarDefaultMode);
     expect(next.seedCalendarDefaultCustom).toBe(current.seedCalendarDefaultCustom);
+  });
+});
+
+describe("resetToSeed", () => {
+  const syncedAppTokens = syncSemanticSignalAppTokens(
+    DEFAULT_SOURCES_DARK,
+    BASE_APP_TOKENS.dark,
+  );
+
+  it("restores the seed engine stamp so a rebaked theme offers the rebake again", () => {
+    const outdated = DERIVATION_ENGINE_VERSION - 1;
+    const rebaked = makeUserTheme({
+      appTokens: syncedAppTokens,
+      derivationEngineVersion: DERIVATION_ENGINE_VERSION,
+      seedDerivationEngineVersion: outdated,
+    });
+    expect(differsFromSeed(rebaked)).toBe(true);
+
+    const reset = resetToSeed(rebaked);
+    expect(reset.derivationEngineVersion).toBe(outdated);
+    expect(reset.derivationEngineVersion < DERIVATION_ENGINE_VERSION).toBe(true);
+    expect(differsFromSeed(reset)).toBe(false);
+  });
+
+  it("restores the seed icon label and appearance and keeps the name", () => {
+    const edited = makeUserTheme({
+      displayName: "Renamed",
+      iconLabel: "light",
+      appTokens: syncedAppTokens,
+      calendarTokens: { ...BASE_CALENDAR_TOKENS.dark },
+      seedIconLabel: "dark",
+      blendCanvas: "#eeeeee",
+      seedBlendCanvas: "#000000",
+      eventPalette: paletteOf("#fefefe"),
+      seedEventPalette: paletteOf("#010101"),
+    });
+    const reset = resetToSeed(edited);
+    expect(reset.displayName).toBe("Renamed");
+    expect(reset.iconLabel).toBe("dark");
+    expect(reset.blendCanvas).toBe("#000000");
+    expect(reset.eventPalette).toEqual(paletteOf("#010101"));
+    expect(differsFromSeed(reset)).toBe(false);
+  });
+
+  it("leaves a theme that matches its seed without anything to reset", () => {
+    expect(differsFromSeed(makeUserTheme())).toBe(false);
   });
 });
 

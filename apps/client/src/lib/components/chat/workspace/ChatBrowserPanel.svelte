@@ -132,16 +132,16 @@
     if (!threadId || !approval) return;
     const selectedThread = threadId;
     const resolved = approval;
-    const page = "requestId" in resolved
+    const answer = "requestId" in resolved
       ? {
         requestId: resolved.requestId,
         text: allow && resolved.kind === "dialog" && resolved.dialogKind === "prompt" ? promptText : undefined,
       }
-      : undefined;
+      : { approvalId: resolved.approvalId };
     approval = null;
     error = null;
     try {
-      const navigated = await chatApi.resolveBrowserApproval(selectedThread, allow, page);
+      const navigated = await chatApi.resolveBrowserApproval(selectedThread, allow, answer);
       if (navigated && selectedThread === threadId) {
         tabs = tabs.map((tab) => tab.tabId === navigated.tabId ? navigated : tab);
         if (navigated.tabId === tabId) {
@@ -292,22 +292,31 @@
     loading = true;
     error = null;
     try {
+      let opened: BrowserTabRead;
       if (browserTab?.visible) {
-        browserTab = await chatApi.navigateBrowserTab(threadId, tabId, destination, externalConfirmed);
+        opened = await chatApi.navigateBrowserTab(selectedThread, selectedTab, destination, externalConfirmed);
       } else {
         await tick();
-        browserTab = await chatApi.openBrowserTab({
-          threadId,
-          tabId,
+        if (threadId !== selectedThread || tabId !== selectedTab) return;
+        opened = await chatApi.openBrowserTab({
+          threadId: selectedThread,
+          tabId: selectedTab,
           url: destination,
           bounds: currentBounds(),
           externalNavigationConfirmed: externalConfirmed,
         });
       }
-      url = browserTab.currentUrl;
-      upsertTab(browserTab);
+      // A thread switch during the read already replaced the tabs, so the tab belongs to a thread no longer shown.
+      if (threadId !== selectedThread) {
+        if (opened.visible) void chatApi.setBrowserTabVisible(selectedThread, selectedTab, false).catch(() => undefined);
+        return;
+      }
+      upsertTab(opened);
+      if (tabId !== selectedTab) return;
+      browserTab = opened;
+      url = opened.currentUrl;
     } catch (reason) {
-      error = message(reason);
+      if (threadId === selectedThread) error = message(reason);
     } finally {
       loading = false;
     }
@@ -451,13 +460,22 @@
         await finishRecording(selectedThread, selectedTab, true);
       } else {
         await chatApi.startBrowserRecording(selectedThread, selectedTab);
-        recording = true;
+        if (!isShownTarget(selectedThread, selectedTab)) {
+          await chatApi.stopBrowserRecording(selectedThread, selectedTab).catch(() => undefined);
+        } else {
+          recording = true;
+        }
       }
     } catch (reason) {
-      error = message(reason);
+      if (isShownTarget(selectedThread, selectedTab)) error = message(reason);
     } finally {
       loading = false;
     }
+  }
+
+  /** Whether the panel is still mounted and showing this thread and tab. */
+  function isShownTarget(selectedThread: string, selectedTab: string): boolean {
+    return !destroyed && threadId === selectedThread && tabId === selectedTab;
   }
 
   async function finishRecording(
@@ -468,9 +486,9 @@
     recording = false;
     try {
       const artifact = await chatApi.stopBrowserRecording(selectedThread, selectedTab);
-      if (reportResult) artifactStatus = t("chat.browser.artifactSaved", artifact.displayName);
+      if (reportResult && isShownTarget(selectedThread, selectedTab)) artifactStatus = t("chat.browser.artifactSaved", artifact.displayName);
     } catch (reason) {
-      if (reportResult) error = message(reason);
+      if (reportResult && isShownTarget(selectedThread, selectedTab)) error = message(reason);
     }
   }
 

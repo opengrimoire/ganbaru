@@ -46,7 +46,7 @@
   let host: HTMLDivElement | undefined = $state();
   let xterm: import("@xterm/xterm").Terminal | null = null;
   let refitTerminal: (() => void) | null = null;
-  let outputState = { generation: 0, lastSequence: 0 };
+  let outputState = { lastSequence: 0 };
   let error = $state<string | null>(null);
   const subscriptionId = crypto.randomUUID();
   const outputAcknowledger = new TerminalOutputAcknowledger();
@@ -95,7 +95,7 @@
         allowProposedApi: false,
         convertEol: false,
         cursorBlink: true,
-        disableStdin: !snapshot.terminal.running,
+        disableStdin: snapshot.terminal.status.kind !== "running",
         scrollback: chat.settings?.configuration.behavior.terminalScrollbackLines ?? 10_000,
         fontFamily: TERMINAL_FONT_FAMILY,
         fontSize: terminalFontSize,
@@ -127,7 +127,7 @@
       terminal.loadAddon(fit);
       terminal.open(host);
       xterm = terminal;
-      outputState = replayStartState(snapshot.terminal.generation, snapshot.scrollback);
+      outputState = replayStartState(snapshot.scrollback);
       for (const chunk of snapshot.scrollback) applyChunk(chunk);
       flushLiveOutput();
       terminal.onData((data) => {
@@ -266,7 +266,7 @@
         terminalIdentity.workingFolderId,
       );
       xterm?.reset();
-      outputState = replayStartState(snapshot.terminal.generation, snapshot.scrollback);
+      outputState = replayStartState(snapshot.scrollback);
       for (const chunk of snapshot.scrollback) applyChunk(chunk);
       notifyState(snapshot.terminal);
     } finally {
@@ -308,7 +308,7 @@
   }
 
   $effect(() => {
-    if (xterm) xterm.options.disableStdin = !(terminalRead?.running ?? false);
+    if (xterm) xterm.options.disableStdin = terminalRead?.status.kind !== "running";
   });
 
   $effect(() => {

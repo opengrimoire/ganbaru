@@ -88,6 +88,14 @@ import {
   type NotesBlockConflictChoice,
   type NotesBlockEditConflict,
 } from "./persistence";
+import {
+  NO_EDITOR_RECOVERY,
+  notesEditorBanner,
+  transitionEditorRecovery,
+  type NotesEditorBanner,
+  type NotesEditorRecovery,
+  type NotesEditorRecoveryEvent,
+} from "./block-save-state";
 import { NotesPageSessionController } from "./page-session.svelte";
 import { NotesTreeProjectionController } from "./tree-projection.svelte";
 import { createNotesPageCreationController } from "./page-creation.svelte";
@@ -329,6 +337,11 @@ export function createNotesEditorStore(
 
   function clearPageTitleDraft(pageId: string): void {
     pageSession.clearTitleDraft(pageId);
+  }
+
+  /** Forgets a page title draft once its saved title lands, unless the draft changed meanwhile. */
+  function clearSavedPageTitleDraft(pageId: string, savedTitle: string): void {
+    pageSession.clearSavedTitleDraft(pageId, savedTitle);
   }
 
   function pageTitleDraftForPage(pageId: string): string | null {
@@ -606,13 +619,14 @@ export function createNotesEditorStore(
   async function loadPageTree(pageId: string, options: NotesLoadPageTreeOptions = {}): Promise<boolean> {
     const requestId = pageSession.invalidate();
     treeProjection.primaryContentReady = false;
-    editorConflict = false;
+    dispatchEditorRecovery({ type: "page-opened" });
     const loaded = await openNotesPage(pageId);
     if (!pageSession.isCurrent(requestId, pageId)) return false;
     if (options.focusOnLoad) {
       requestLoadedPageFocus(loaded, options.focusBlockId ?? null);
     }
     setLoadedPage(loaded);
+    workspaceController.dispatchPageLoad({ type: "loaded", pageId });
     replaceBlockOutlines(loaded.outlines, pageId);
     const bodyId = blockActions.ensurePageBody(pageId);
     if (options.focusOnLoad && OPENING_MAY_FOCUS_TEXT && loaded.outlines.length === 0) requestBlockFocus(bodyId, { start: 0, end: 0 });
@@ -623,10 +637,16 @@ export function createNotesEditorStore(
       if (pendingPageOutline?.promise === outlinePromise) pendingPageOutline = null;
     }, (error: unknown) => {
       if (pageSession.isCurrent(requestId, pageId)) {
-        workspaceController.setError(notesErrorDetail(error));
+        workspaceController.dispatchPageLoad({ type: "failed", pageId, error: notesErrorDetail(error) });
       }
     });
     return true;
+  }
+
+  /** Reports a failure of the selected page's history, hydration, or undo as that page's load failure. */
+  function reportSelectedPageFailure(message: string): void {
+    const pageId = pageSession.selectedPageId;
+    if (pageId) workspaceController.dispatchPageLoad({ type: "failed", pageId, error: message });
   }
 
   async function loadPageTreeForUndo(pageId: string): Promise<void> {
@@ -764,16 +784,14 @@ export function createNotesEditorStore(
     linksController.resetPageState();
     collaborationController.resetPageState();
     if (!pageId) {
-      workspaceController.setError(null);
-      workspaceController.setLoading(false);
+      workspaceController.dispatchPageLoad({ type: "cleared" });
       treeProjection.clearSelection();
       pageSession.breadcrumbs = [];
       linksController.resetAll();
       pageHistoryController.resetPageState();
       return;
     }
-    workspaceController.setLoading(true);
-    workspaceController.setError(null);
+    workspaceController.dispatchPageLoad({ type: "started", pageId });
     const preview = pageCreationController.previewForSelection(pageId);
     if (preview) {
       const currentPage = allPages.find((page) => page.id === pageId) ?? preview.loaded.page;
@@ -782,7 +800,7 @@ export function createNotesEditorStore(
       treeProjection.applyPostMutation({ loadedPage: loaded });
       pageSession.breadcrumbs = [];
       pageSession.recordRecentIfCurrent(pageSession.generation, pageId);
-      workspaceController.setLoading(false);
+      workspaceController.dispatchPageLoad({ type: "loaded", pageId });
       if (!preview.pending) {
         void reloadPageBreadcrumb(pageId).catch((error: unknown) => {
           console.error("load Notes page breadcrumb failed", error);
@@ -803,10 +821,10 @@ export function createNotesEditorStore(
     } catch (error) {
       if (!pageSession.isCurrent(loadGeneration, pageId) || pendingPageRemovalIds.has(pageId)) return;
       if (options.databaseBlockId) closeDatabase();
-      workspaceController.setError(notesErrorDetail(error));
+      workspaceController.dispatchPageLoad({ type: "failed", pageId, error: notesErrorDetail(error) });
       throw error;
     } finally {
-      if (pageSession.isCurrent(loadGeneration, pageId)) workspaceController.setLoading(false);
+      if (pageSession.isCurrent(loadGeneration, pageId)) workspaceController.dispatchPageLoad({ type: "settled", pageId });
     }
   }
 
@@ -1014,7 +1032,15 @@ export function createNotesEditorStore(
     requestPageOpenFocus(visibleBlockIds(), requestedBlockId);
   }
 
+  /** The write queue's failure while it is paused, as the persistence reports it. */
   let editorSaveError = $state<string | null>(null);
+  /** Notices about the open page that do not come from the write queue. */
+  let editorRecovery = $state<NotesEditorRecovery>(NO_EDITOR_RECOVERY);
+  const editorBanner = $derived<NotesEditorBanner>(notesEditorBanner(editorSaveError, editorRecovery));
+
+  function dispatchEditorRecovery(event: NotesEditorRecoveryEvent): void {
+    editorRecovery = transitionEditorRecovery(editorRecovery, event);
+  }
 
   const {
     readCanonicalRevision,
@@ -1042,8 +1068,8 @@ export function createNotesEditorStore(
     },
     onCommitted: publishSelectedPageChange,
     onConflict: () => {
-      editorConflict = true;
-      refreshAfterConflict();
+      dispatchEditorRecovery({ type: "write-refused" });
+      void refreshAfterConflict();
     },
     readCanonicalBlock,
     currentPageId: () => pageSession.selectedPageId,
@@ -1051,19 +1077,21 @@ export function createNotesEditorStore(
       const { [blockId]: _settled, ...others } = blockConflicts;
       blockConflicts = conflict ? { ...others, [blockId]: conflict } : others;
     },
-    onCanonicalChanged: refreshAfterConflict,
+    onCanonicalChanged: () => void refreshAfterConflict(),
     debounceMs: BLOCK_SAVE_DEBOUNCE_MS,
   });
 
-  let editorConflict = $state(false);
   /** Block edits held because another device changed or removed the same block, by block ID. */
   let blockConflicts = $state<Record<string, NotesBlockEditConflict>>({});
   /** Counts the times leaving the page was refused because an edit is held, so the conflict strip can call for a choice. */
   let heldEditRefusals = $state(0);
 
-  function refreshAfterConflict(): void {
-    void refreshCanonicalPage().catch((error: unknown) => {
-      editorSaveError = notesErrorDetail(error);
+  /** Reloads the open page after a refused write or a settled held edit; a failure stays on the banner until a reload succeeds. */
+  function refreshAfterConflict(): Promise<void> {
+    const generation = pageSession.generation;
+    return refreshCanonicalPage().catch((error: unknown) => {
+      if (pageSession.generation !== generation) return;
+      dispatchEditorRecovery({ type: "reload-failed", error: notesErrorDetail(error) });
     });
   }
 
@@ -1121,7 +1149,10 @@ export function createNotesEditorStore(
     })();
     canonicalRefresh = refresh;
     const clear = () => { if (canonicalRefresh === refresh) canonicalRefresh = null; };
-    void refresh.then(clear, clear);
+    void refresh.then(() => {
+      clear();
+      dispatchEditorRecovery({ type: "reloaded" });
+    }, clear);
     return refresh;
   }
 
@@ -1198,7 +1229,7 @@ export function createNotesEditorStore(
     requestPageLoadFocus,
     flushPendingBlockSaves,
     setLoadError: (message) => {
-      workspaceController.setError(message);
+      reportSelectedPageFailure(message);
     },
   });
 
@@ -1263,6 +1294,7 @@ export function createNotesEditorStore(
     awaitPageReady: pageCreationController.awaitReady,
     awaitPageCreationAttempt: pageCreationController.awaitAttempt,
     discardFailedPageCreation: pageCreationController.discardFailed,
+    releaseRemovedPageCreation: pageCreationController.releaseRemoved,
     activateRestoredPage,
     applyPostMutation,
     selectPage: (pageId) => selectPage(pageId),
@@ -1471,7 +1503,7 @@ export function createNotesEditorStore(
       treeProjection.replaceHydratedBlocks(nextBlocksById, nextChildIdsByParentId);
     },
     setLoadError: (message) => {
-      workspaceController.setError(message);
+      reportSelectedPageFailure(message);
     },
   });
 
@@ -1554,7 +1586,7 @@ export function createNotesEditorStore(
       }
       return await undoController.undo();
     } catch (error) {
-      workspaceController.setError(notesErrorDetail(error));
+      reportSelectedPageFailure(notesErrorDetail(error));
       throw error;
     }
   }
@@ -1566,7 +1598,7 @@ export function createNotesEditorStore(
       }
       return await undoController.redo();
     } catch (error) {
-      workspaceController.setError(notesErrorDetail(error));
+      reportSelectedPageFailure(notesErrorDetail(error));
       throw error;
     }
   }
@@ -1774,10 +1806,10 @@ export function createNotesEditorStore(
     set explorerCollapsed(collapsed: boolean) {
       ui.explorerCollapsed = collapsed;
     },
-    get editorSaveError() { return editorSaveError; },
-    /** Whether a local edit was dropped because another window changed the same content first. */
-    get editorConflict(): boolean { return editorConflict; },
-    dismissEditorConflict: (): void => { editorConflict = false; },
+    /** The one notice above the open page: a paused write queue, a failed reload, or a write refused elsewhere. */
+    get editorBanner(): NotesEditorBanner { return editorBanner; },
+    /** Hides the changed-elsewhere notice; failures stay until Retry succeeds. */
+    dismissEditorBanner: (): void => dispatchEditorRecovery({ type: "dismissed" }),
     /** Block edits of the open page held for the user because another device changed or removed the block. */
     get blockConflicts(): readonly NotesBlockEditConflict[] { return Object.values(blockConflicts); },
     /** Grows each time leaving the page or closing the window was refused because a block edit is held. */
@@ -1794,9 +1826,11 @@ export function createNotesEditorStore(
       return refreshCanonicalPage();
     },
     get trashActionError(): string | null { return trashActionError; },
+    /** Retries the paused write queue, then reloads the open page if its last reload failed. */
     retryEditorMutations: async () => {
       await retryEditorMutations();
       await undoController.persist();
+      if (editorRecovery.kind === "reload-failed") await refreshAfterConflict();
     },
     get pages(): NotesPage[] {
       return pages;
@@ -1891,6 +1925,10 @@ export function createNotesEditorStore(
     },
     get pageCreationPending(): boolean {
       return pageCreationController.isPending(pageSession.selectedPageId);
+    },
+    /** Whether the selected new page was saved and only showing it failed. */
+    get pageCreationSaved(): boolean {
+      return pageCreationController.isSaved(pageSession.selectedPageId);
     },
     get pageCreationError(): string | null {
       return pageCreationController.errorFor(pageSession.selectedPageId);
@@ -2258,6 +2296,7 @@ export function createNotesEditorStore(
     redoNotesEdit,
     setPageTitleDraft,
     clearPageTitleDraft,
+    clearSavedPageTitleDraft,
     reconcileDatabaseTitle,
     updateBlockText, updateBlockRichText,
     insertPageMention,

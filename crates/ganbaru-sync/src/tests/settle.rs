@@ -367,7 +367,7 @@ fn a_device_without_a_writer_settles_nothing_and_keeps_applying_the_row() {
 #[test]
 fn a_device_whose_writer_is_no_longer_active_settles_nothing() {
     block_on(async {
-        for state in ["retired", "revoked", "forked"] {
+        for state in ["revoked", "forked"] {
             let mut replicas = concurrent_clear_and_loose_set().await;
             let writer = replicas[0].writer();
             let head = replicas[0].stored_vector().await.get(&writer);
@@ -378,7 +378,8 @@ fn a_device_whose_writer_is_no_longer_active_settles_nothing() {
                 .collect();
             replicas[0]
                 .exec(&format!(
-                    "UPDATE sync_writers SET state = '{state}', cutoff_seq = {head}
+                    "UPDATE sync_writers SET state = '{state}', cutoff_seq = {head},
+                        removal_cutoff_seq = CASE '{state}' WHEN 'revoked' THEN {head} END
                      WHERE writer_id = x'{hex}'"
                 ))
                 .await;

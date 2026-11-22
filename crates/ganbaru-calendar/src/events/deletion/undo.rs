@@ -59,11 +59,19 @@ pub struct UndoPreimage {
     before: Metadata,
     source_id: String,
     source_removed: bool,
-    expected_source_revision: Option<String>,
-    sealed: bool,
+    postimage: SourcePostimage,
     references: UndoReferences,
     archives: Vec<String>,
     pub review_revision: String,
+}
+
+/// The source event as the deletion transaction left it. Only a sealed postimage can be undone.
+enum SourcePostimage {
+    Unsealed,
+    /// The source revision after deletion, or `None` when the deletion removed the source.
+    Sealed {
+        revision: Option<String>,
+    },
 }
 
 pub(in crate::events) struct PreparedUndo {
@@ -93,8 +101,7 @@ impl UndoPreimage {
             source_removed,
             references,
             archives,
-            expected_source_revision: None,
-            sealed: false,
+            postimage: SourcePostimage::Unsealed,
             review_revision,
         })
     }
@@ -115,11 +122,11 @@ impl UndoPreimage {
             let _permit = permit;
             source.map(|source| source.revision()).transpose()
         });
-        self.expected_source_revision = tokio::time::timeout(SCOPE_WORKER_TIMEOUT, worker)
+        let revision = tokio::time::timeout(SCOPE_WORKER_TIMEOUT, worker)
             .await
             .map_err(|_| "Calendar Undo sealing timed out")?
             .map_err(|error| format!("Calendar Undo sealing worker: {error}"))??;
-        self.sealed = true;
+        self.postimage = SourcePostimage::Sealed { revision };
         Ok(())
     }
 
@@ -148,9 +155,13 @@ impl UndoPreimage {
         tx: &mut Transaction<'_, Sqlite>,
         command_id: &str,
     ) -> Result<super::super::commit::PreparedCommit, String> {
-        if !self.sealed {
+        let SourcePostimage::Sealed {
+            revision: expected_source_revision,
+        } = &self.postimage
+        else {
             return Err("Calendar Undo has no confirmed postimage".into());
-        }
+        };
+        let expected_source_revision = expected_source_revision.clone();
         let mut budget = ReadBudget::default();
         let current = self.read_current_source(tx, &mut budget).await?;
         let original_graph = if current.is_none() {
@@ -213,7 +224,7 @@ impl UndoPreimage {
         let worker = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let actual = current.as_ref().map(Metadata::revision).transpose()?;
-            if actual != self.expected_source_revision {
+            if actual != expected_source_revision {
                 return Err(
                     "Calendar source changed after deletion; Undo cannot overwrite later work"
                         .into(),

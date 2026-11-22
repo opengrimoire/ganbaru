@@ -78,6 +78,7 @@ async fn record(pool: &SqlitePool, samples: &[DistractionsUsageSampleRow]) -> us
     insert_own_samples(&mut connection, samples, &window())
         .await
         .unwrap()
+        .skipped
 }
 
 async fn own_totals(pool: &SqlitePool) -> Vec<(String, i64)> {

@@ -24,7 +24,7 @@ function setup(overrides: Partial<CalendarViewSaveControllerOptions> = {}) {
     wouldSaveStopSession: () => false, endWouldStopProductivity: () => false,
     confirmSaveStop: (action) => { confirmed = action; },
     confirmEndStop: (action) => { confirmed = action; },
-    buildFreeze: () => [selected], setDisplayState: vi.fn(),
+    buildFreeze: () => [selected], setSaveHold: vi.fn(),
     refreshWindow: async () => { order.push("refresh"); },
     closeSession: () => { order.push("close"); }, afterRender: async () => undefined,
     savePendingLabel: () => "saving", saveSuccessLabel: () => "saved",
@@ -77,9 +77,7 @@ describe("Calendar panel native actions", () => {
     await test.controller.end(data);
     expect(test.order).toEqual([]);
     expect(test.toasts.showSaveErrorToast).toHaveBeenCalledWith("toast-a", "failed");
-    expect(test.options.setDisplayState).toHaveBeenLastCalledWith({
-      suppressGlow: false, suppressPreview: false, frozenEvents: null,
-    });
+    expect(test.options.setSaveHold).toHaveBeenLastCalledWith(null);
     expect(test.controller.endingActiveEvent).toBe(false);
   });
 

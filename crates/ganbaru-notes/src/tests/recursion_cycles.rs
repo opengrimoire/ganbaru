@@ -150,7 +150,7 @@ fn page_walks_end_on_a_planted_parent_cycle() {
         .await;
         assert!(under_descendant.is_err());
 
-        sqlx::query("UPDATE notes_pages SET in_trash = 1 WHERE id IN (?, ?)")
+        sqlx::query("UPDATE notes_pages SET in_trash = 1, trashed_time = '2026-01-01T00:00:00.000Z' WHERE id IN (?, ?)")
             .bind(PAGE_A)
             .bind(PAGE_B)
             .execute(&pool)

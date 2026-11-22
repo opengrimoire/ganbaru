@@ -7,11 +7,13 @@ use super::organizational::*;
 use super::protocol::*;
 use super::session::*;
 use super::transport::{CodexRpcConnection, CodexRpcFailure};
+use super::turn_route::{TurnRoute, TurnRouteEvent};
 use crate::events::{
     CanonicalEvent, ContentDeltaEvent, ItemLifecycleEvent, NotificationEvent, RateLimitStatusEvent,
     SessionConfiguredEvent, SessionExitedEvent, SessionStartedEvent, TurnCompletedEvent,
     TurnStartedEvent,
 };
+use crate::live_session::LiveSessionLifecycle;
 use crate::models::*;
 use crate::process::{ProviderProcessConfig, spawn_provider_process};
 use crate::{DriverFuture, DriverOperationContext, ProviderDriver, ProviderEventSink};
@@ -21,7 +23,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -83,8 +85,7 @@ struct CodexLiveSession {
     pending_requests: PendingCodexRequests,
     normalizer: Arc<CodexEventNormalizer>,
     sink: Arc<dyn ProviderEventSink>,
-    expected_shutdown: Arc<AtomicBool>,
-    terminal_error: Arc<Mutex<Option<ChatError>>>,
+    lifecycle: LiveSessionLifecycle,
     session_id: ProviderSessionId,
     workspace: PathBuf,
     effective_model: String,
@@ -97,11 +98,9 @@ struct CodexLiveSession {
 
 impl Drop for CodexLiveSession {
     fn drop(&mut self) {
-        self.expected_shutdown.store(true, Ordering::Release);
-        if let Ok(mut state) = self.route.lock()
-            && let Some(retry) = state.capacity_retry.take()
-        {
-            retry.cancel();
+        self.lifecycle.begin_stop();
+        if let Ok(mut state) = self.route.lock() {
+            state.cancel_capacity_retry();
         }
         self.router_task.abort();
     }
@@ -192,12 +191,7 @@ impl CodexProviderDriver {
                 false,
             ));
         }
-        if let Some(error) = live
-            .terminal_error
-            .lock()
-            .map_err(|_| driver_state_error())?
-            .clone()
-        {
+        if let Some(error) = live.lifecycle.failure() {
             return Err(error);
         }
         Ok(live)
@@ -417,16 +411,10 @@ impl ProviderDriver for CodexProviderDriver {
             {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                 ensure_no_retry_in_flight(&state)?;
-                if state.active_chat_turn_id.is_some() {
-                    return Err(ChatError::new(
-                        ChatErrorCode::Busy,
-                        "Codex already has an active turn",
-                        true,
-                    ));
-                }
-                state.active_chat_turn_id = Some(request.turn_id);
-                state.active_provider_turn_id = None;
-                state.session_state = ProviderSessionState::Active;
+                state.transition_turn(TurnRouteEvent::Begin {
+                    chat_turn: request.turn_id,
+                    retry: None,
+                })?;
             }
             if let Err(error) = live
                 .connection
@@ -722,22 +710,12 @@ impl ProviderDriver for CodexProviderDriver {
             {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                 ensure_no_retry_in_flight(&state)?;
-                // A second turn/start would replace the running turn's route and its armed retry.
-                if state.active_chat_turn_id.is_some() {
-                    return Err(ChatError::new(
-                        ChatErrorCode::Busy,
-                        "Codex already has an active turn",
-                        true,
-                    ));
-                }
-                state.active_chat_turn_id = Some(request.turn_id.clone());
-                state.active_provider_turn_id = None;
-                if let Some(previous) = state
-                    .capacity_retry
-                    .replace(CodexCapacityRetry::arm(&params))
-                {
-                    previous.cancel();
-                }
+                // A second turn/start would replace the running turn's route and its armed retry,
+                // so the route refuses it as busy.
+                state.transition_turn(TurnRouteEvent::Begin {
+                    chat_turn: request.turn_id.clone(),
+                    retry: Some(CodexCapacityRetry::arm(&params)),
+                })?;
                 state.modes = request.modes;
                 if let Some(model) = request.model_id.clone() {
                     state.effective_model_id = Some(model);
@@ -776,19 +754,20 @@ impl ProviderDriver for CodexProviderDriver {
             let observed_mismatch = {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                 let mismatch = state
-                    .active_provider_turn_id
-                    .as_deref()
+                    .turn()
+                    .provider_turn()
                     .is_some_and(|observed| observed != provider_turn_id.as_str());
                 // The router may already have settled the turn or started a capacity retry; the
                 // response must not revive the provider turn that ended.
-                let ended = state.active_chat_turn_id.as_ref() != Some(&request.turn_id)
+                let ended = state.turn().chat_turn() != Some(&request.turn_id)
                     || state
-                        .capacity_retry
-                        .as_ref()
+                        .turn()
+                        .retry()
                         .is_some_and(CodexCapacityRetry::retrying);
                 if !mismatch && !ended {
-                    state.active_provider_turn_id = Some(provider_turn_id.as_str().to_string());
-                    state.session_state = ProviderSessionState::Active;
+                    state.transition_turn(TurnRouteEvent::ProviderTurn(
+                        provider_turn_id.as_str().to_string(),
+                    ))?;
                 }
                 mismatch
             };
@@ -829,9 +808,12 @@ impl ProviderDriver for CodexProviderDriver {
             let state = live.route.lock().map_err(|_| driver_state_error())?.clone();
             let provider_thread_id = state
                 .provider_thread_id
+                .clone()
                 .ok_or_else(|| protocol_identifier_error("provider thread"))?;
             let provider_turn_id = state
-                .active_provider_turn_id
+                .turn()
+                .provider_turn()
+                .map(str::to_string)
                 .ok_or_else(|| ChatError::invalid_transition("Codex has no active turn"))?;
             live.connection
                 .client()
@@ -923,7 +905,7 @@ impl ProviderDriver for CodexProviderDriver {
             let provider_thread_id = {
                 let route = live.route.lock().map_err(|_| driver_state_error())?;
                 ensure_no_retry_in_flight(&route)?;
-                if route.active_chat_turn_id.is_some() || route.active_provider_turn_id.is_some() {
+                if !matches!(route.turn(), TurnRoute::Idle) {
                     return Err(ChatError::new(
                         ChatErrorCode::Busy,
                         "Codex cannot rewind the thread while a turn is running",
@@ -998,7 +980,7 @@ impl ProviderDriver for CodexProviderDriver {
                     false,
                 ));
             }
-            live.expected_shutdown.store(true, Ordering::Release);
+            live.lifecycle.begin_stop();
             let _ = interrupt_live_turn(&mut live, context).await;
             live.sink.flush().await?;
             let state = live.route.lock().map_err(|_| driver_state_error())?.clone();

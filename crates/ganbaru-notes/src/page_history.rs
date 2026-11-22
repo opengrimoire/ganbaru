@@ -318,14 +318,13 @@ async fn replace_page_from_snapshot(
     if owns_database || snapshot_has_database {
         return Err("This page contains database content. Restore a project version to recover its complete database graph.".to_string());
     }
+    // Only a live page restores a snapshot (see `ensure_active_page_exists_tx`), so the restore
+    // leaves its lifecycle alone.
     sqlx::query(
         "UPDATE notes_pages
          SET title = ?,
              icon = ?,
              cover = ?,
-             in_trash = 0,
-             trashed_time = NULL,
-             archived = 0,
              last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
@@ -535,10 +534,6 @@ async fn upsert_snapshot_child_page(
                  folder_id = NULL,
                  project_id = NULL,
                  title = ?,
-                 in_trash = 0,
-                 trash_owner = NULL,
-                 trashed_time = NULL,
-                 archived = 0,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?",
         )
@@ -551,6 +546,12 @@ async fn upsert_snapshot_child_page(
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("restore history child page: {e}"))?;
+        crate::page_lifecycle::move_page_lifecycle_tx(
+            tx,
+            page_id,
+            &crate::page_lifecycle::PageMove::Revive,
+        )
+        .await?;
         crate::structure::detach_row_hierarchy_tx(tx, page_id).await?;
     } else {
         sqlx::query(

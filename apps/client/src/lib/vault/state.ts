@@ -45,8 +45,14 @@ const VAULT_OPEN_ELSEWHERE_MESSAGE = "this vault is open in another ganbaru app"
 /** Lowercase text of the native error raised when a linked phone restores another vault. */
 const LINKED_ANDROID_RESTORE_MESSAGE = "unlink it before restoring another vault";
 
+/** Lowercase text of the native error raised when a linked phone starts a new vault after losing its database. */
+const LINKED_ANDROID_NEW_VAULT_MESSAGE = "unlink it before starting a new vault";
+
 /** Lowercase text of the native error raised when a rollback would rewind a live anchor. */
 const ANCHOR_ROLLBACK_MESSAGE = "the rollback copy is behind its authorization head";
+
+/** Lowercase text of the native error raised when a vault that held data opens without its database. */
+const LOST_DATABASE_MESSAGE = "held data but its database is missing or empty";
 
 /**
  * Validates the native vault lock status.
@@ -161,6 +167,17 @@ function fallbackForAction(
 }
 
 /**
+ * Whether a vault command refused a vault whose marker records data while its database is missing or empty.
+ *
+ * @param error - Thrown or rejected value from a vault command.
+ * @returns True for that refusal, which only restoring data into the vault can clear.
+ */
+export function isLostVaultDatabaseError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.toLowerCase().includes(LOST_DATABASE_MESSAGE);
+}
+
+/**
  * The localized message for a failed vault action. Native text is only matched, never shown.
  *
  * @param error - Thrown or rejected value from a vault command.
@@ -181,12 +198,19 @@ export function formatVaultError(
     return t("dataFolderError.openElsewhere");
   }
 
+  if (lower.includes(LINKED_ANDROID_NEW_VAULT_MESSAGE)) {
+    return t("dataFolderError.linkedAndroidNewVault");
+  }
   if (lower.includes(LINKED_ANDROID_RESTORE_MESSAGE)) {
     return t("dataFolderError.linkedAndroid");
   }
 
   if (lower.includes(ANCHOR_ROLLBACK_MESSAGE)) {
     return t("dataFolderError.anchorRollback");
+  }
+
+  if (isLostVaultDatabaseError(error)) {
+    return t("dataFolderError.lostDatabase");
   }
 
   if (
@@ -307,39 +331,63 @@ export interface DatabaseRollback {
   dismissed: boolean;
 }
 
+/** A kept copy whose retention record cannot be read, so it is never restored or removed. */
+export interface UnreadableDatabaseRollback {
+  id: string;
+  createdAt: string;
+  sizeBytes: number;
+}
+
+/** Every kept copy of the active vault, newest first, split by whether it can be read. */
+export interface DatabaseRollbackListing {
+  restorable: DatabaseRollback[];
+  unreadable: UnreadableDatabaseRollback[];
+}
+
 function readRollbackOrigin(value: unknown): DatabaseRollbackOrigin | null {
   return value === "reset" || value === "replacement" ? value : null;
+}
+
+function readUnreadableRollback(entry: unknown): UnreadableDatabaseRollback {
+  if (!isRecord(entry)) throw new Error("database rollback entry is not an object");
+  const id = readString(entry.id);
+  const createdAt = readString(entry.createdAt);
+  const sizeBytes = readNonNegativeInteger(entry.sizeBytes);
+  if (!id || !createdAt || Number.isNaN(Date.parse(createdAt)) || sizeBytes === null) {
+    throw new Error("database rollback entry is incomplete");
+  }
+  return { id, createdAt, sizeBytes };
+}
+
+function readRestorableRollback(entry: unknown): DatabaseRollback {
+  if (!isRecord(entry)) throw new Error("database rollback entry is not an object");
+  const { id, createdAt, sizeBytes } = readUnreadableRollback(entry);
+  const origin = readRollbackOrigin(entry.origin);
+  const flagged = readBoolean(entry.flagged);
+  const dismissed = readBoolean(entry.dismissed);
+  if (origin === null || flagged === null || dismissed === null) {
+    throw new Error("database rollback entry is incomplete");
+  }
+  return { id, createdAt, sizeBytes, origin, flagged, dismissed };
+}
+
+function readRollbackList<T>(value: unknown, read: (entry: unknown) => T): T[] {
+  if (!Array.isArray(value)) throw new Error("database rollback response is not a list");
+  return value.map(read);
 }
 
 /**
  * Validates the native rollback listing.
  *
  * @param value - Untrusted `vault_database_rollbacks` response.
- * @returns Rollbacks newest first, as Rust ordered them.
+ * @returns Restorable and unreadable copies, each newest first, as Rust ordered them.
  */
-export function parseDatabaseRollbacks(value: unknown): DatabaseRollback[] {
-  if (!Array.isArray(value)) throw new Error("database rollback response is not a list");
-  return value.map((entry: unknown) => {
-    if (!isRecord(entry)) throw new Error("database rollback entry is not an object");
-    const id = readString(entry.id);
-    const createdAt = readString(entry.createdAt);
-    const sizeBytes = readNonNegativeInteger(entry.sizeBytes);
-    const origin = readRollbackOrigin(entry.origin);
-    const flagged = readBoolean(entry.flagged);
-    const dismissed = readBoolean(entry.dismissed);
-    if (
-      !id ||
-      !createdAt ||
-      Number.isNaN(Date.parse(createdAt)) ||
-      sizeBytes === null ||
-      origin === null ||
-      flagged === null ||
-      dismissed === null
-    ) {
-      throw new Error("database rollback entry is incomplete");
-    }
-    return { id, createdAt, sizeBytes, origin, flagged, dismissed };
-  });
+export function parseDatabaseRollbacks(value: unknown): DatabaseRollbackListing {
+  if (!isRecord(value)) throw new Error("database rollback response is not an object");
+  return {
+    restorable: readRollbackList(value.restorable, readRestorableRollback),
+    unreadable: readRollbackList(value.unreadable, readUnreadableRollback),
+  };
 }
 
 /** Reports flagged rollbacks whose notice the user has not dismissed, newest first. */
@@ -353,7 +401,7 @@ export async function dismissDatabaseRollback(id: string): Promise<void> {
 }
 
 /** Lists device-local copies kept by data resets, restores, and handoff replacements. */
-export async function listDatabaseRollbacks(): Promise<DatabaseRollback[]> {
+export async function listDatabaseRollbacks(): Promise<DatabaseRollbackListing> {
   return parseDatabaseRollbacks(await invoke<unknown>("vault_database_rollbacks"));
 }
 
@@ -416,6 +464,63 @@ export async function exportReplacedVaultBackup(id: string): Promise<BackupSaveO
 /** Deletes one replaced vault backup from this device. */
 export async function deleteReplacedVaultBackup(id: string): Promise<void> {
   await invoke("vault_delete_replaced_backup", { id });
+}
+
+/** A whole vault folder this Android device kept beside the vault in use instead of deleting it. */
+export interface KeptVaultFolder {
+  id: string;
+  /** The kept vault's name, when its marker is readable. */
+  displayName: string | null;
+  keptAtMs: number;
+  sizeBytes: number;
+}
+
+/**
+ * Validates the native listing of kept vault folders.
+ *
+ * @param value - Untrusted `vault_kept_folders` response.
+ * @returns Folders newest first, as Rust ordered them.
+ */
+export function parseKeptVaultFolders(value: unknown): KeptVaultFolder[] {
+  if (!Array.isArray(value)) throw new Error("kept vault folder response is not a list");
+  return value.map((entry: unknown) => {
+    if (!isRecord(entry)) throw new Error("kept vault folder entry is not an object");
+    const id = readString(entry.id);
+    const rawDisplayName: unknown = entry.displayName ?? null;
+    const displayName = rawDisplayName === null ? null : readString(rawDisplayName);
+    const keptAtMs = readNonNegativeInteger(entry.keptAtMs);
+    const sizeBytes = readNonNegativeInteger(entry.sizeBytes);
+    if (!id || (rawDisplayName !== null && displayName === null) || keptAtMs === null || sizeBytes === null) {
+      throw new Error("kept vault folder entry is incomplete");
+    }
+    return { id, displayName, keptAtMs, sizeBytes };
+  });
+}
+
+/** Lists the whole vault folders Android keeps beside the vault in use. */
+export async function listKeptVaultFolders(): Promise<KeptVaultFolder[]> {
+  return parseKeptVaultFolders(await invoke<unknown>("vault_kept_folders"));
+}
+
+/**
+ * Sets the vault whose database is lost aside, whole, and starts a new empty vault in its place. A phone linked to other
+ * devices is refused, as is a vault whose database is still there.
+ *
+ * @returns The new vault.
+ */
+export async function startNewVaultAfterLostDatabase(): Promise<VaultInfo> {
+  return activateVaultInfo(parseVaultInfo(await invoke<unknown>("vault_start_new_after_lost_database")));
+}
+
+/**
+ * Puts a kept vault folder back in place of the vault in use, which is kept whole as another kept folder. A phone
+ * linked to other devices is refused.
+ *
+ * @param id - The kept folder's identifier from {@link listKeptVaultFolders}.
+ * @returns The vault now in use.
+ */
+export async function putBackKeptVaultFolder(id: string): Promise<VaultInfo> {
+  return activateVaultInfo(parseVaultInfo(await invoke<unknown>("vault_put_back_kept_folder", { id })));
 }
 
 /** Why the app did not write or restore an encrypted backup. */

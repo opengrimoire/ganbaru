@@ -348,19 +348,28 @@
     focus();
   }
 
+  /**
+   * Clears what was posted while keeping what the user added during the post: text typed meanwhile stays as the
+   * draft, and files attached meanwhile stay attached.
+   */
+  function clearPostedDraft(sentRichText: NotesRichText[], sentAttachments: CommentAttachment[]): void {
+    attachments = attachments.filter((attachment) => !sentAttachments.includes(attachment));
+    if (richText !== sentRichText) return;
+    richText = [];
+    lastSelection = null;
+    void placeCaret({ start: 0, end: 0 }, false);
+  }
+
   async function submit(): Promise<void> {
     if (submitting || disabled || empty) return;
     submitting = true;
     errorMessage = null;
     mentionQuery = null;
+    const sentRichText = richText;
+    const sentAttachments = attachments;
     try {
-      const posted = await onSubmit(richText, attachments);
-      if (posted && mode === "create") {
-        richText = [];
-        attachments = [];
-        lastSelection = null;
-        void placeCaret({ start: 0, end: 0 }, false);
-      }
+      const posted = await onSubmit(sentRichText, sentAttachments);
+      if (posted && mode === "create") clearPostedDraft(sentRichText, sentAttachments);
     } catch (error) {
       const failure = notesFailure(error, t("notes.commentSendFailed"));
       errorMessage = isNotesCommentTooLargeMessage(failure.detail ?? "")

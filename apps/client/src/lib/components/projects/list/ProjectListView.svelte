@@ -373,7 +373,7 @@
       return;
     }
     await projects.setTasksStatus([task], status.id);
-    interaction.statusMenuTaskId = null;
+    if (interaction.statusMenuTaskId === task.id) interaction.statusMenuTaskId = null;
   }
 
   async function setTaskPriorityFromList(task: ProjectTask, priority: ProjectPriority): Promise<void> {
@@ -382,9 +382,13 @@
       return;
     }
     await projects.setTaskPriority(task, priority);
-    interaction.priorityMenuTaskId = null;
+    if (interaction.priorityMenuTaskId === task.id) interaction.priorityMenuTaskId = null;
   }
 
+  /**
+   * Apply a date pick, then close its menu and chain to the paired date menu only while the picked menu is still open
+   * for this task, so a save that finishes late never closes or replaces a menu opened meanwhile.
+   */
   async function setTaskStartDateFromList(task: ProjectTask, startDate: string | undefined): Promise<void> {
     const plan = projectListStartDateEditPlan({
       task,
@@ -394,10 +398,12 @@
     if (plan.patch) {
       await projects.updateTask(task, plan.patch);
     }
+    if (interaction.startDateMenuTaskId !== task.id) return;
     interaction.startDateMenuTaskId = null;
     interaction.dueDateMenuTaskId = plan.nextOpenMenu === "due" ? task.id : null;
   }
 
+  /** Apply a due date pick with the same menu ownership rule as the start date. */
   async function setTaskDueDateFromList(task: ProjectTask, dueDate: string | undefined): Promise<void> {
     const plan = projectListDueDateEditPlan({
       task,
@@ -407,6 +413,7 @@
     if (plan.patch) {
       await projects.updateTask(task, plan.patch);
     }
+    if (interaction.dueDateMenuTaskId !== task.id) return;
     interaction.dueDateMenuTaskId = null;
     interaction.startDateMenuTaskId = plan.nextOpenMenu === "start" ? task.id : null;
   }

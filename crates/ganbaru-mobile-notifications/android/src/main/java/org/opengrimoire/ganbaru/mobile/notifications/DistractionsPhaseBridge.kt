@@ -23,6 +23,7 @@ internal object DistractionsPhaseBridge {
       putExtra("runId", projection.runId)
       putExtra("phase", phase.phase)
       putExtra("running", projection.isRunning)
+      putExtra("pauseLiftsBlocking", projection.pauseLiftsBlocking)
       putExtra(
         "validUntilEpochMs",
         if (projection.isRunning) phase.endsAtEpochMs else projection.eventEndsAtEpochMs,

@@ -135,13 +135,19 @@
     if (nextIds.every((id, index) => id === originIds[index])) return true;
     saving = true;
     reorderError = false;
-    const saved = await onReorder(nextIds);
+    let saved = false;
+    try {
+      saved = await onReorder(nextIds);
+    } catch (cause: unknown) {
+      console.warn("playlist order could not be saved", cause);
+    } finally {
+      saving = false;
+    }
     if (!saved) {
       restoreOrder(originIds);
       reorderError = true;
       announcement = t("music.builder.playlistReorderFailed");
     }
-    saving = false;
     return saved;
   }
 

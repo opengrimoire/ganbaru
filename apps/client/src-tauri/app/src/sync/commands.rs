@@ -5,7 +5,7 @@ use super::authority::{self, AuthorityView, LateChangesView, OutboxEntryView};
 use super::contests::{self, ContestsDto};
 use super::host::{AppHost, SyncHost};
 use super::recovery::{self, RecoveryAction, RecoveryChoice, RecoveryEntryView};
-use super::recovery_kit::{self, KIT_LOCK, RecoveryKitState};
+use super::recovery_kit::{self, RecoveryKitState};
 #[cfg(desktop)]
 use super::service::{AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision};
 use super::service::{SyncRuntime, blocking};
@@ -18,6 +18,7 @@ use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_WRITERS_PER_SPACE}
 use ganbaru_sync_contracts::ids::parse_hex;
 #[cfg(desktop)]
 use ganbaru_sync_contracts::{Digest32, KitCode, LateResolution};
+use ganbaru_sync_replica::authority::RECOVERY_KIT_LOCK;
 use ganbaru_sync_replica::quarantine::Quarantine;
 use serde::Deserialize;
 #[cfg(desktop)]
@@ -256,7 +257,6 @@ pub async fn sync_promote_device(
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn sync_regenerate_recovery_kit(runtime: State<'_, SyncRuntime>) -> Result<(), String> {
-    let _kit = KIT_LOCK.lock().await;
     match run_authority(&runtime, AuthorityAction::RegenerateRecoveryKit).await? {
         AuthorityAnswer::RecoveryKit => Ok(()),
         _ => Err("sync answered the recovery kit request with something else".to_string()),
@@ -274,7 +274,6 @@ pub async fn sync_rotate_recovery_kit(
     kit_code: String,
 ) -> Result<(), String> {
     let kit_code = KitCode::new(kit_code);
-    let _kit = KIT_LOCK.lock().await;
     match run_authority(&runtime, AuthorityAction::RotateRecoveryKit(kit_code)).await? {
         AuthorityAnswer::RecoveryKit => Ok(()),
         _ => Err("sync answered the recovery kit request with something else".to_string()),
@@ -287,7 +286,7 @@ pub async fn sync_rotate_recovery_kit(
 pub async fn sync_recovery_kit_state<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<RecoveryKitState, String> {
-    let _kit = KIT_LOCK.lock().await;
+    let _kit = RECOVERY_KIT_LOCK.lock().await;
     let pool = crate::db::connect_active_vault_for_sync(&app).await?;
     let mut conn = acquire_kit_connection(&pool).await?;
     recovery_kit::state(
@@ -302,7 +301,7 @@ pub async fn sync_recovery_kit_state<R: Runtime>(
 /// keys found the charter when the vault first links.
 #[tauri::command]
 pub async fn sync_create_recovery_kit<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    let _kit = KIT_LOCK.lock().await;
+    let _kit = RECOVERY_KIT_LOCK.lock().await;
     let pool = crate::db::connect_active_vault_for_sync(&app).await?;
     let mut conn = acquire_kit_connection(&pool).await?;
     recovery_kit::create(
@@ -322,7 +321,7 @@ pub async fn sync_recovery_kit_saved<R: Runtime>(
     app: AppHandle<R>,
     last_group: String,
 ) -> Result<bool, String> {
-    let _kit = KIT_LOCK.lock().await;
+    let _kit = RECOVERY_KIT_LOCK.lock().await;
     let pool = crate::db::connect_active_vault_for_sync(&app).await?;
     let mut conn = acquire_kit_connection(&pool).await?;
     recovery_kit::confirm_saved(

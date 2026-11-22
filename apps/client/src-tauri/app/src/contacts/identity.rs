@@ -24,8 +24,9 @@ pub(crate) const KEY_DIRECTORY: &str = "contacts";
 #[cfg(desktop)]
 const KEY_UNAVAILABLE_CODE: &str = "key_unavailable";
 
-/// Vault whose key copy this device has already confirmed, so reconnect polls skip the lookup.
-static KEY_CONFIRMED_FOR_VAULT: Mutex<Option<String>> = Mutex::new(None);
+/// The vault id and identity public key whose key copy this device has already confirmed, so
+/// reconnect polls skip the lookup while the identity row still names that key.
+static KEY_CONFIRMED: Mutex<Option<(String, String)>> = Mutex::new(None);
 
 /// Serializes identity creation and card nonce repair between Contacts commands and the sync
 /// service.
@@ -213,9 +214,12 @@ pub(crate) async fn ensure_identity<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
 ) -> Result<LocalIdentity, ContactsError> {
+    // Every key step names the vault read here, so a vault switch while this runs never moves
+    // the key into another vault's entry.
+    let vault_id = crate::vault::active_vault_id(app)?;
     // Callers race on a fresh vault, and a losing insert removes the stored key, so creation
     // runs under the guard `existing_identity` returns.
-    let _creating = match existing_identity(pool, || load_key(app)).await? {
+    let _creating = match existing_identity(pool, || load_key_for_vault(app, &vault_id)).await? {
         ExistingIdentity::Ready(identity) => return Ok(identity),
         ExistingIdentity::Missing(creating) => creating,
     };
@@ -230,7 +234,7 @@ pub(crate) async fn ensure_identity<R: Runtime>(
     random_bytes(&mut card_nonce)
         .map_err(|error| ContactsError::Failed(format!("generate card nonce: {error}")))?;
     let public_key = key.public_key();
-    store_key(app, pkcs8).await?;
+    store_key(app, &vault_id, pkcs8).await?;
     let now = super::store::format_time(super::store::now());
     let inserted = insert_identity(
         pool,
@@ -240,7 +244,7 @@ pub(crate) async fn ensure_identity<R: Runtime>(
     )
     .await;
     if let Err(error) = inserted {
-        let _ = remove_key(app).await;
+        let _ = remove_key(app, &vault_id).await;
         return Err(ContactsError::Failed(format!(
             "store person identity: {error}"
         )));
@@ -394,8 +398,12 @@ async fn load_key_for_vault<R: Runtime>(
         .map_err(|error| format!("person key task: {error}"))?
 }
 
-async fn store_key<R: Runtime>(app: &AppHandle<R>, pkcs8: Vec<u8>) -> Result<(), String> {
-    let vault_id = crate::vault::active_vault_id(app)?;
+async fn store_key<R: Runtime>(
+    #[cfg_attr(desktop, allow(unused_variables))] app: &AppHandle<R>,
+    vault_id: &str,
+    pkcs8: Vec<u8>,
+) -> Result<(), String> {
+    let vault_id = vault_id.to_string();
     #[cfg(desktop)]
     let task = tauri::async_runtime::spawn_blocking(move || write_key_sync(&vault_id, &pkcs8));
     #[cfg(mobile)]
@@ -410,8 +418,12 @@ async fn store_key<R: Runtime>(app: &AppHandle<R>, pkcs8: Vec<u8>) -> Result<(),
         .map_err(|error| format!("person key task: {error}"))?
 }
 
-async fn remove_key<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let vault_id = crate::vault::active_vault_id(app)?;
+async fn remove_key<R: Runtime>(
+    #[cfg_attr(desktop, allow(unused_variables))] app: &AppHandle<R>,
+    vault_id: &str,
+) -> Result<(), String> {
+    forget_confirmation(vault_id);
+    let vault_id = vault_id.to_string();
     #[cfg(desktop)]
     let task = tauri::async_runtime::spawn_blocking(move || remove_key_sync(&vault_id));
     #[cfg(mobile)]
@@ -472,64 +484,157 @@ fn key_release_response(
 }
 
 /// Linked device side: fetches the key from the coordinator when the replica carries an
-/// identity row but this device has no key copy. Returns true when a copy is present.
+/// identity row but this device has no key copy that matches it. Returns true when a matching
+/// copy is present.
 pub(crate) async fn try_release<R: Runtime>(app: &AppHandle<R>) -> bool {
     let Ok(vault_id) = crate::vault::active_vault_id(app) else {
         return false;
     };
-    if KEY_CONFIRMED_FOR_VAULT
-        .lock()
-        .ok()
-        .is_some_and(|confirmed| confirmed.as_deref() == Some(vault_id.as_str()))
-    {
-        return true;
-    }
     let Ok(pool) = super::contacts_pool(app).await else {
         return false;
     };
     let Ok(Some(row)) = load_identity_row(&pool).await else {
         return false;
     };
-    if matches!(load_key(app).await, Ok(Some(_))) {
-        confirm_key(vault_id);
+    // The pool opens after the vault id is read, so a switch in between reads another vault's
+    // row.
+    if crate::vault::active_vault_id(app).ok().as_deref() != Some(vault_id.as_str()) {
+        return false;
+    }
+    if is_confirmed(&vault_id, &row.public_key) {
         return true;
     }
     let manager = app.state::<PairingManager>().inner().clone();
-    let response = match crate::vault::handoff::transport::request_person_key(&manager).await {
-        Ok(response) => response,
-        Err(_) => return false,
-    };
-    let ControlMessage::PersonKeyRelease {
-        public_key,
-        private_key_pkcs8,
-    } = response
-    else {
-        return false;
-    };
-    if public_key != row.public_key {
-        return false;
-    }
-    let Ok(pkcs8) = URL_SAFE_NO_PAD.decode(private_key_pkcs8) else {
-        return false;
-    };
-    let Ok(identity) = identity_from_row(row, Some(&pkcs8)) else {
-        return false;
-    };
-    if identity.key.is_none() {
-        return false;
-    }
-    match store_key(app, pkcs8).await {
-        Ok(()) => {
-            confirm_key(vault_id);
-            true
+    let fetch = || async move {
+        match crate::vault::handoff::transport::request_person_key(&manager).await {
+            Ok(ControlMessage::PersonKeyRelease {
+                public_key,
+                private_key_pkcs8,
+            }) => Some(ReleasedKey {
+                public_key,
+                private_key_pkcs8,
+            }),
+            _ => None,
         }
-        Err(_) => false,
+    };
+    release_person_key(&AppKeyCopies(app), &vault_id, &row, fetch).await
+}
+
+/// A person key as the coordinator released it.
+struct ReleasedKey {
+    public_key: String,
+    private_key_pkcs8: String,
+}
+
+/// The device-local key copies a release reads and writes, each step bound to the vault it
+/// names.
+trait PersonKeyCopies {
+    /// The vault that is active now.
+    fn active_vault_id(&self) -> Result<String, String>;
+    /// Admits the final key write; the admission is held until the write finished.
+    fn admit_write(&self) -> Result<impl Send, String>;
+    async fn load(&self, vault_id: &str) -> Result<Option<Vec<u8>>, String>;
+    async fn store(&self, vault_id: &str, pkcs8: Vec<u8>) -> Result<(), String>;
+}
+
+struct AppKeyCopies<'a, R: Runtime>(&'a AppHandle<R>);
+
+impl<R: Runtime> PersonKeyCopies for AppKeyCopies<'_, R> {
+    fn active_vault_id(&self) -> Result<String, String> {
+        crate::vault::active_vault_id(self.0)
+    }
+
+    fn admit_write(&self) -> Result<impl Send, String> {
+        self.0
+            .state::<crate::vault::write_fence::VaultWriteFence>()
+            .acquire_managed_write()
+    }
+
+    async fn load(&self, vault_id: &str) -> Result<Option<Vec<u8>>, String> {
+        load_key_for_vault(self.0, vault_id).await
+    }
+
+    async fn store(&self, vault_id: &str, pkcs8: Vec<u8>) -> Result<(), String> {
+        store_key(self.0, vault_id, pkcs8).await
     }
 }
 
-fn confirm_key(vault_id: String) {
-    if let Ok(mut confirmed) = KEY_CONFIRMED_FOR_VAULT.lock() {
-        *confirmed = Some(vault_id);
+/// Makes sure `copies` holds a key of `vault_id` that matches the identity `row` read from that
+/// vault, fetching one with `fetch` when it does not. The fetched key is written into the entry
+/// of `vault_id` only while that vault is still the active one, so a vault switch during the
+/// fetch writes nothing, and the copy is confirmed only once it matches the row.
+async fn release_person_key<C, F, Fut>(
+    copies: &C,
+    vault_id: &str,
+    row: &IdentityRow,
+    fetch: F,
+) -> bool
+where
+    C: PersonKeyCopies,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Option<ReleasedKey>>,
+{
+    if let Ok(Some(stored)) = copies.load(vault_id).await
+        && key_matches_row(row, &stored)
+    {
+        confirm_key(vault_id, &row.public_key);
+        return true;
+    }
+    let Some(released) = fetch().await else {
+        return false;
+    };
+    if released.public_key != row.public_key {
+        return false;
+    }
+    let Ok(pkcs8) = URL_SAFE_NO_PAD.decode(released.private_key_pkcs8) else {
+        return false;
+    };
+    if !key_matches_row(row, &pkcs8) {
+        return false;
+    }
+    let Ok(_admitted) = copies.admit_write() else {
+        return false;
+    };
+    if copies.active_vault_id().ok().as_deref() != Some(vault_id) {
+        return false;
+    }
+    if copies.store(vault_id, pkcs8).await.is_err() {
+        return false;
+    }
+    confirm_key(vault_id, &row.public_key);
+    true
+}
+
+/// Whether the key `pkcs8` decodes and belongs to the identity `row` names.
+fn key_matches_row(row: &IdentityRow, pkcs8: &[u8]) -> bool {
+    let Ok(public_key) = PersonPublicKey::from_text(&row.public_key) else {
+        return false;
+    };
+    PersonKeyPair::from_pkcs8(pkcs8).is_ok_and(|key| key.public_key() == public_key)
+}
+
+fn is_confirmed(vault_id: &str, public_key: &str) -> bool {
+    KEY_CONFIRMED.lock().ok().is_some_and(|confirmed| {
+        confirmed
+            .as_ref()
+            .is_some_and(|(vault, key)| vault == vault_id && key == public_key)
+    })
+}
+
+fn confirm_key(vault_id: &str, public_key: &str) {
+    if let Ok(mut confirmed) = KEY_CONFIRMED.lock() {
+        *confirmed = Some((vault_id.to_string(), public_key.to_string()));
+    }
+}
+
+/// Drops the confirmation of `vault_id`, whose key copy is being removed.
+fn forget_confirmation(vault_id: &str) {
+    if let Ok(mut confirmed) = KEY_CONFIRMED.lock()
+        && confirmed
+            .as_ref()
+            .is_some_and(|(vault, _)| vault == vault_id)
+    {
+        *confirmed = None;
     }
 }
 
@@ -593,5 +698,116 @@ mod tests {
                 CoordinatorResponse::Rejected { ref code, .. } if code == KEY_UNAVAILABLE_CODE
             ));
         }
+    }
+
+    /// Key copies by vault id with a settable active vault.
+    struct FakeCopies {
+        active: std::cell::RefCell<String>,
+        stored: std::cell::RefCell<std::collections::HashMap<String, Vec<u8>>>,
+    }
+
+    impl FakeCopies {
+        fn new(active: &str) -> Self {
+            Self {
+                active: std::cell::RefCell::new(active.to_string()),
+                stored: std::cell::RefCell::default(),
+            }
+        }
+
+        fn stored(&self, vault_id: &str) -> Option<Vec<u8>> {
+            self.stored.borrow().get(vault_id).cloned()
+        }
+    }
+
+    impl PersonKeyCopies for FakeCopies {
+        fn active_vault_id(&self) -> Result<String, String> {
+            Ok(self.active.borrow().clone())
+        }
+
+        fn admit_write(&self) -> Result<impl Send, String> {
+            Ok(())
+        }
+
+        async fn load(&self, vault_id: &str) -> Result<Option<Vec<u8>>, String> {
+            Ok(self.stored(vault_id))
+        }
+
+        async fn store(&self, vault_id: &str, pkcs8: Vec<u8>) -> Result<(), String> {
+            self.stored.borrow_mut().insert(vault_id.to_string(), pkcs8);
+            Ok(())
+        }
+    }
+
+    fn released(public_key: &PersonPublicKey, pkcs8: &[u8]) -> ReleasedKey {
+        ReleasedKey {
+            public_key: public_key.to_text(),
+            private_key_pkcs8: URL_SAFE_NO_PAD.encode(pkcs8),
+        }
+    }
+
+    #[test]
+    fn a_vault_switch_during_the_key_fetch_stores_the_key_nowhere() {
+        let (pkcs8, key) = PersonKeyPair::generate().unwrap();
+        let row = row_for(&key.public_key());
+        let copies = FakeCopies::new("vault-fetch-a");
+
+        let present = tauri::async_runtime::block_on(release_person_key(
+            &copies,
+            "vault-fetch-a",
+            &row,
+            || async {
+                *copies.active.borrow_mut() = "vault-fetch-b".to_string();
+                Some(released(&key.public_key(), &pkcs8))
+            },
+        ));
+
+        assert!(!present);
+        assert_eq!(copies.stored("vault-fetch-a"), None);
+        assert_eq!(copies.stored("vault-fetch-b"), None);
+        assert!(!is_confirmed("vault-fetch-a", &row.public_key));
+        assert!(!is_confirmed("vault-fetch-b", &row.public_key));
+    }
+
+    #[test]
+    fn a_stored_key_of_another_identity_is_replaced_before_it_is_confirmed() {
+        let (pkcs8, key) = PersonKeyPair::generate().unwrap();
+        let (other_pkcs8, _) = PersonKeyPair::generate().unwrap();
+        let row = row_for(&key.public_key());
+        let copies = FakeCopies::new("vault-replace");
+        copies
+            .stored
+            .borrow_mut()
+            .insert("vault-replace".to_string(), other_pkcs8);
+
+        let present = tauri::async_runtime::block_on(release_person_key(
+            &copies,
+            "vault-replace",
+            &row,
+            || async { Some(released(&key.public_key(), &pkcs8)) },
+        ));
+
+        assert!(present);
+        assert_eq!(copies.stored("vault-replace"), Some(pkcs8));
+        assert!(is_confirmed("vault-replace", &row.public_key));
+        assert!(!is_confirmed("vault-replace", "another public key"));
+    }
+
+    #[test]
+    fn a_released_key_that_does_not_match_the_row_is_refused() {
+        let (_, key) = PersonKeyPair::generate().unwrap();
+        let (other_pkcs8, _) = PersonKeyPair::generate().unwrap();
+        let row = row_for(&key.public_key());
+        let copies = FakeCopies::new("vault-mismatch");
+
+        let present = tauri::async_runtime::block_on(release_person_key(
+            &copies,
+            "vault-mismatch",
+            &row,
+            || async { Some(released(&key.public_key(), &other_pkcs8)) },
+        ));
+
+        assert!(!present);
+        assert_eq!(copies.stored("vault-mismatch"), None);
+        assert!(!is_confirmed("vault-mismatch", &row.public_key));
     }
 }

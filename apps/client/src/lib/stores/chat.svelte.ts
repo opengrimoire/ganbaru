@@ -118,7 +118,7 @@ class ChatSharedState {
   agents = $state<ChatAiAgentRead[]>([]);
   archivedAgents = $state<ChatAiAgentRead[]>([]);
   providerDiscoveryStarted = false;
-  /** Bumped by {@link resetAgents}, so an agent read started for an earlier vault is dropped. */
+  /** Bumped by {@link resetAgents} and every agent read, so an earlier read or one for an earlier vault is dropped. */
   private agentReadGeneration = 0;
   readonly configuration = new ChatConfigurationController({
     onSettingsChanged: () => {
@@ -159,13 +159,8 @@ class ChatSharedState {
     if (!settings) return;
     const covered = new Set([...this.agents, ...this.archivedAgents].map((agent) => agent.providerFamilyId));
     if (settings.providerInstances.every((provider) => covered.has(provider.configuration.familyId))) return;
-    const generation = this.agentReadGeneration;
-    void Promise.all([chatApi.listChatAgents(false), chatApi.listChatAgents(true)])
-      .then(([agents, archivedAgents]) => {
-        if (generation !== this.agentReadGeneration) return;
-        this.agents = agents;
-        this.archivedAgents = archivedAgents;
-      })
+    const generation = this.agentReadGeneration + 1;
+    void this.reloadAgents()
       .catch((error: unknown) => {
         if (generation === this.agentReadGeneration) console.error("Chat agent refresh after a provider change failed", error);
       });
@@ -176,6 +171,35 @@ class ChatSharedState {
     this.agentReadGeneration += 1;
     this.agents = [];
     this.archivedAgents = [];
+  }
+
+  /**
+   * Rereads the active and archived agents. The lists apply only when no newer read or vault reset started meanwhile,
+   * so a read that finishes late never replaces a newer list or shows another vault's agents.
+   *
+   * @returns Whether the read applied.
+   */
+  async reloadAgents(): Promise<boolean> {
+    const generation = this.beginAgentRead();
+    const [agents, archivedAgents] = await Promise.all([chatApi.listChatAgents(false), chatApi.listChatAgents(true)]);
+    return this.applyAgentRead(generation, agents, archivedAgents);
+  }
+
+  /** Starts an agent read, superseding every read already in flight, and returns its generation. */
+  beginAgentRead(): number {
+    return ++this.agentReadGeneration;
+  }
+
+  /**
+   * Applies the agent lists a read returned, unless a newer read or vault reset started after it.
+   *
+   * @returns Whether the lists applied.
+   */
+  applyAgentRead(generation: number, agents: ChatAiAgentRead[], archivedAgents: ChatAiAgentRead[]): boolean {
+    if (generation !== this.agentReadGeneration) return false;
+    this.agents = agents;
+    this.archivedAgents = archivedAgents;
+    return true;
   }
   /** The vault-wide queue of work that waits for the person, which every pane's rail shows. */
   readonly reviewQueue = new ChatReviewQueueController({
@@ -254,6 +278,8 @@ export class ChatStore {
   private channelSelectionRequest = 0;
   /** The latest channel selection that finished or failed; another value means a selection is still loading. */
   private settledChannelSelectionRequest = 0;
+  /** Bumped by each search result or review item opened, so only the newest one continues past its reads. */
+  private placeNavigationRequest = 0;
   /** The reply thread each channel had open when it was left, in memory for this app session. */
   private readonly openReplyThreadByChannel = new Map<ChatChannelId, ChatReplyThreadId>();
   private channelReadPromise: { channelId: ChatChannelId; promise: Promise<void> } | null = null;
@@ -399,7 +425,6 @@ export class ChatStore {
   get interaction(): ChatInteractionStateRead | null { return this.composerRuntimeController.interaction; }
   set interaction(interaction: ChatInteractionStateRead | null) { this.composerRuntimeController.interaction = interaction; }
   get interactionLoading(): boolean { return this.composerRuntimeController.interactionLoading; }
-  set interactionLoading(loading: boolean) { this.composerRuntimeController.interactionLoading = loading; }
   get sendError(): string | null { return this.composerRuntimeController.sendError; }
   set sendError(error: string | null) { this.composerRuntimeController.sendError = error; }
   get draftWorkingFolderId(): ProjectWorkingFolderId | null { return this.composerRuntimeController.draftWorkingFolderId; }
@@ -662,6 +687,7 @@ export class ChatStore {
   private async loadSharedState(): Promise<{ settings: ChatSettingsRead; navigationChannels: ChatChannelRead[] }> {
     const vaultGeneration = this.vaultGeneration;
     if (localExecutionAvailable) await chatApi.recoverInterruptedChatTurns();
+    const agentGeneration = shared.beginAgentRead();
     const [settings, workingFolders, navigationChannels, agents, archivedAgents] = await Promise.all([
       chatApi.readChatSettings(),
       localExecutionAvailable
@@ -672,8 +698,7 @@ export class ChatStore {
       chatApi.listChatAgents(true),
     ]);
     if (vaultGeneration === this.vaultGeneration) {
-      this.agents = agents;
-      this.archivedAgents = archivedAgents;
+      shared.applyAgentRead(agentGeneration, agents, archivedAgents);
       this.configurationController.hydrate(settings, workingFolders);
     }
     return { settings, navigationChannels };
@@ -829,6 +854,14 @@ export class ChatStore {
     return true;
   }
 
+  /** Clears the selected provider thread, its run and environment, and its interaction state. */
+  private dropThreadSelection(): void {
+    this.selectedThreadId = null;
+    this.selectedExecutionRunId = null;
+    this.selectedExecutionEnvironmentId = null;
+    this.interaction = null;
+  }
+
   /** Reads and shows a channel for one selection request, stopping when a newer request starts. */
   private async loadShownChannel(
     request: number,
@@ -840,9 +873,17 @@ export class ChatStore {
     if (request !== this.channelSelectionRequest) return;
     this.channelNavigationController.upsert(channel);
     const changedChannel = this.selectedChannelId !== channelId;
+    const changedProject = this.selectedChannel?.projectId !== channel.projectId;
     const changedMode = this.replyThreadTabId !== replyThreadTabId;
     this.selectedChannelId = channelId;
     this.replyThreadTabId = replyThreadTabId;
+    // Nothing chosen for the previous channel may stay a target while this channel's folder is read below.
+    if (changedChannel) this.dropThreadSelection();
+    if (changedProject) {
+      this.selectedWorkingFolderId = null;
+      this.primaryWorkingFolder = null;
+      this.composerRuntimeController.discardDraft();
+    }
     // A cached history and the open reply thread appear with the channel instead of after the reads below.
     if (changedChannel) this.communicationController.showCachedChannel(channelId);
     if (replyThreadTabId) this.showReplyThreadOfTab(channelId, replyThreadTabId);
@@ -936,16 +977,14 @@ export class ChatStore {
     return this.channelNavigationController.updateDetails(channel, name, topic);
   }
 
+  /** Rereads the agents and the selected channel, dropping results that land after a vault switch. */
   async refreshAgents(): Promise<void> {
-    const [agents, archivedAgents] = await Promise.all([
-      chatApi.listChatAgents(false),
-      chatApi.listChatAgents(true),
-    ]);
-    this.agents = agents;
-    this.archivedAgents = archivedAgents;
-    if (this.selectedChannelId) {
-      this.channelNavigationController.upsert(await chatApi.readChatChannel(this.selectedChannelId));
-    }
+    const vaultGeneration = this.vaultGeneration;
+    await shared.reloadAgents();
+    const channelId = this.selectedChannelId;
+    if (!channelId || vaultGeneration !== this.vaultGeneration) return;
+    const channel = await chatApi.readChatChannel(channelId);
+    if (vaultGeneration === this.vaultGeneration) this.channelNavigationController.upsert(channel);
   }
 
   organizationalDraft(destination: string): ChatOrganizationalDraft {
@@ -1086,10 +1125,8 @@ export class ChatStore {
   }
 
   async openMessageSearchResult(result: ChatMessageSearchResultRead): Promise<void> {
-    this.messageAnchorId = null;
-    await this.projects.selectProject(result.projectId);
-    await this.loadProjectChannels(result.projectId);
-    await this.selectChannel(result.channelId);
+    const isCurrent = await this.openPlaceChannel(result);
+    if (!isCurrent()) return;
     if (result.replyThreadId) {
       this.openReplyThreadId = result.replyThreadId;
       this.rememberChannelReplyThread(result.replyThreadId);
@@ -1098,7 +1135,7 @@ export class ChatStore {
     } else {
       await this.communicationController.loadChannelAtCursor(result.channelId, result.anchorCursor);
     }
-    this.messageAnchorId = result.messageItemId;
+    if (isCurrent()) this.messageAnchorId = result.messageItemId;
   }
 
   clearMessageAnchor(messageItemId: string): void {
@@ -1176,8 +1213,9 @@ export class ChatStore {
       ? this.replyThread.assignment.revision
       : null;
     if (expectedRevision === null) throw new Error("Work assignment was not loaded");
+    const channelId = this.selectedChannelId;
     await chatApi.cancelChatAssignment(assignmentId, expectedRevision);
-    this.publishChannelChange(this.selectedChannelId);
+    this.publishChannelChange(channelId);
     this.refreshReviewQueue();
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
     if (this.selectedChannelId) await this.loadChannelMessages(this.selectedChannelId, true);
@@ -1192,6 +1230,7 @@ export class ChatStore {
       ? this.replyThread.assignment.revision
       : null;
     if (expectedRevision === null) throw new Error("Work assignment was not loaded");
+    const channelId = this.selectedChannelId;
     let reviewed = true;
     try {
       await chatApi.reviewChatAssignment(assignmentId, expectedRevision, review);
@@ -1199,7 +1238,7 @@ export class ChatStore {
       if (chatErrorCode(error) !== "stale_revision") throw error;
       reviewed = false;
     }
-    this.publishChannelChange(this.selectedChannelId);
+    this.publishChannelChange(channelId);
     this.refreshReviewQueue();
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
     if (this.selectedChannelId) await this.loadChannelMessages(this.selectedChannelId, true);
@@ -1211,8 +1250,9 @@ export class ChatStore {
       ? this.replyThread.assignment.revision
       : null;
     if (expectedRevision === null) throw new Error("Work assignment was not loaded");
+    const channelId = this.selectedChannelId;
     await chatApi.retryChatAssignment(assignmentId, expectedRevision);
-    this.publishChannelChange(this.selectedChannelId);
+    this.publishChannelChange(channelId);
     this.refreshReviewQueue();
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
   }
@@ -1245,11 +1285,32 @@ export class ChatStore {
   private async openAssignmentReplyThread(
     target: Pick<ChatReviewQueueItemRead, "projectId" | "channelId" | "replyThreadId">,
   ): Promise<void> {
+    const isCurrent = await this.openPlaceChannel(target);
+    if (isCurrent()) await this.openReplyThread(target.replyThreadId);
+  }
+
+  /**
+   * Selects the project and channel of a place a person opened, such as a search result. Another place opened while
+   * the reads run supersedes this one, and so does another channel selected after this one selected its channel; the
+   * project selection before that may itself select a remembered channel, which this navigation then replaces.
+   *
+   * @param target - The project and channel to show.
+   * @returns A check of whether this navigation is still the current one, for the steps that follow.
+   */
+  private async openPlaceChannel(
+    target: Pick<ChatReviewQueueItemRead, "projectId" | "channelId">,
+  ): Promise<() => boolean> {
+    const navigation = ++this.placeNavigationRequest;
+    const isNewest = () => navigation === this.placeNavigationRequest;
     this.messageAnchorId = null;
     await this.projects.selectProject(target.projectId);
+    if (!isNewest()) return isNewest;
     await this.loadProjectChannels(target.projectId);
-    await this.selectChannel(target.channelId);
-    await this.openReplyThread(target.replyThreadId);
+    if (!isNewest()) return isNewest;
+    const selection = this.selectChannel(target.channelId);
+    const channelRequest = this.channelSelectionRequest;
+    await selection;
+    return () => isNewest() && channelRequest === this.channelSelectionRequest;
   }
 
   /**
@@ -1503,9 +1564,10 @@ export class ChatStore {
   cancelQueuedFollowup(): Promise<void> { return this.composerRuntimeController.cancelQueuedFollowup(); }
   editQueuedFollowup(): Promise<void> { return this.composerRuntimeController.editQueuedFollowup(); }
   stop(force = false): Promise<void> { return this.composerRuntimeController.stop(force); }
-  /** Resolves the open approval; `remember` also records its offered rule, so matching requests in the channel are allowed without asking. */
-  resolveApproval(decision: import("$lib/chat/contracts").ApprovalDecision, remember = false): Promise<void> { return this.composerRuntimeController.resolveApproval(decision, remember); }
-  resolveUserInput(answers: UserInputAnswer[]): Promise<void> { return this.composerRuntimeController.resolveUserInput(answers); }
+  /** Resolves the open approval `pending`; `remember` also records its offered rule, so matching requests in the channel are allowed without asking. */
+  resolveApproval(pending: import("$lib/chat/contracts").ChatPendingRequestRead, decision: import("$lib/chat/contracts").ApprovalDecision, remember = false): Promise<void> { return this.composerRuntimeController.resolveApproval(pending, decision, remember); }
+  /** Answers the open user input request `pending`. */
+  resolveUserInput(pending: import("$lib/chat/contracts").ChatPendingRequestRead, answers: UserInputAnswer[]): Promise<void> { return this.composerRuntimeController.resolveUserInput(pending, answers); }
   importComposerImages(files: File[]): Promise<void> { return this.composerRuntimeController.importImages(files); }
   pickComposerImages(title: string): Promise<void> { return this.composerRuntimeController.pickImages(title); }
   importComposerTextSnippet(text: string, displayName: string): Promise<void> { return this.composerRuntimeController.importTextSnippet(text, displayName); }

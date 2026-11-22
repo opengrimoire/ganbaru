@@ -107,6 +107,10 @@ function makeUserTheme(overrides: Partial<UserTheme> = {}): UserTheme {
       overrides.calendarDefaultCustom ??
       sources.canvas,
     seedIconLabel: overrides.seedIconLabel ?? iconLabel,
+    seedDerivationEngineVersion:
+      overrides.seedDerivationEngineVersion ??
+      overrides.derivationEngineVersion ??
+      DERIVATION_ENGINE_VERSION,
   };
 }
 

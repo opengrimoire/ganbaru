@@ -63,6 +63,8 @@
   let error = $state<string | null>(null);
   let destroyed = false;
   let cancelRenderWait: (() => void) | null = null;
+  /** Counts runtime loads and releases so a load that a release or newer load superseded stops after its await. */
+  let loadRequest = 0;
 
   onMount(() => {
     const observer = new MutationObserver(() => applyOptions());
@@ -102,11 +104,12 @@
 
   async function loadRuntime(): Promise<void> {
     if (!active || !host || runtime || destroyed) return;
+    const request = ++loadRequest;
     enhancedFailed = false;
     error = null;
     try {
       const module = await loadChatReviewDiffRuntime();
-      if (!active || !host || destroyed) return;
+      if (request !== loadRequest || !active || !host || destroyed) return;
       runtime = new module.ReviewDiffRuntime(host, runtimeOptions());
       rejectedItems = runtime.setItems(items);
       onViewport({
@@ -115,13 +118,14 @@
         clearSelection: () => runtime?.clearSelection(),
       });
       await waitForRenderedDiff(host);
-      if (!destroyed) enhancedVisible = true;
+      if (request === loadRequest && !destroyed) enhancedVisible = true;
     } catch (reason: unknown) {
-      if (!destroyed) failEnhanced(reason);
+      if (request === loadRequest && !destroyed) failEnhanced(reason);
     }
   }
 
   function releaseRuntime(): void {
+    loadRequest += 1;
     cancelRenderWait?.();
     cancelRenderWait = null;
     runtime?.cleanUp();

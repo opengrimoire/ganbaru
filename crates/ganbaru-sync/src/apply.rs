@@ -18,9 +18,10 @@ use sqlx::{Connection, Row, SqliteConnection};
 use crate::error::{SyncError, SyncResult, corrupt, failpoint};
 use crate::exclusion::{Excluding, Retention};
 use crate::hooks::ChangeNotice;
-use crate::log::{self, WriterState, seq_i64, stored_u64};
+use crate::log::{self, seq_i64, stored_u64};
 use crate::materialize::{Execution, Materialized};
 use crate::merge::{self, Batch};
+use crate::op_state::{self, OpMove, OpState};
 use crate::refused::Refusals;
 use crate::seal::{self, SealReport, SealSlot};
 use crate::store::HoldReason;
@@ -321,7 +322,7 @@ async fn chain_position(
 }
 
 /// Up to `limit` stored operations of `writer` after `after`, in sequence order, with the
-/// columns `seq, kind, state, hold_reason, excluded_revision IS NOT NULL, group_continues,
+/// columns `seq, kind, state, hold_reason, excluded_revision, group_continues,
 /// length(envelope), clock, context, authorization_revision, stored_order`.
 async fn chain_rows(
     conn: &mut SqliteConnection,
@@ -331,7 +332,7 @@ async fn chain_rows(
     limit: usize,
 ) -> SyncResult<Vec<SqliteRow>> {
     Ok(sqlx::query(
-        "SELECT seq, kind, state, hold_reason, excluded_revision IS NOT NULL, group_continues,
+        "SELECT seq, kind, state, hold_reason, excluded_revision, group_continues,
             length(envelope), clock, context, authorization_revision, stored_order
          FROM sync_ops
          WHERE space_id = ? AND writer_id = ? AND seq > ?
@@ -371,11 +372,15 @@ fn chain_extent(
             return Ok(None);
         }
         let state: String = row.try_get(2)?;
-        if state == "held" {
-            let excluded: bool = row.try_get(4)?;
-            let reason: Option<String> = row.try_get(3)?;
-            let invalid = reason.as_deref() == Some(HoldReason::Invalid.as_str());
-            return Ok((excluded || invalid).then_some(count));
+        let reason: Option<String> = row.try_get(3)?;
+        match OpState::from_columns(&state, reason.as_deref(), row.try_get(4)?)? {
+            OpState::Excluded { .. } | OpState::Held(HoldReason::Invalid) => {
+                return Ok(Some(count));
+            }
+            OpState::Held(HoldReason::NewerFormat | HoldReason::NewerManifest) => {
+                return Ok(None);
+            }
+            OpState::Waiting | OpState::Applied => {}
         }
         if !row.try_get::<bool, _>(5)? {
             return Ok(Some(count + 1));
@@ -412,7 +417,8 @@ async fn scan_group(
     let cutoff = log::writer(conn, ctx.space, first.writer)
         .await?
         .ok_or_else(|| corrupt("operation of an unknown writer reached apply"))?
-        .cutoff;
+        .state
+        .cutoff();
     let rows = chain_rows(conn, ctx, first.writer, first.seq, room).await?;
     let Some(extent) = chain_extent(&rows, first.seq, room, cutoff)? else {
         return Ok(GroupScan::Waiting { on_others: false });
@@ -511,16 +517,21 @@ async fn hold_invalid(
     writer: WriterId,
     seq: Seq,
 ) -> SyncResult<()> {
-    sqlx::query(
-        "UPDATE sync_ops SET state = 'held', hold_reason = 'invalid'
-         WHERE space_id = ? AND writer_id = ? AND seq = ?",
-    )
+    let (state, hold_reason) = op_state::target(OpState::Waiting, OpMove::HoldInvalid)?.columns();
+    let affected = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE sync_ops SET state = ?, hold_reason = ?
+         WHERE space_id = ? AND writer_id = ? AND seq = ? AND {}",
+        OpMove::HoldInvalid.source()
+    )))
+    .bind(state)
+    .bind(hold_reason)
     .bind(ctx.space.as_bytes().as_slice())
     .bind(writer.as_bytes().as_slice())
     .bind(seq_i64(seq)?)
     .execute(&mut *conn)
-    .await?;
-    Ok(())
+    .await?
+    .rows_affected();
+    op_state::expect_one(affected, OpMove::HoldInvalid)
 }
 
 /// Derives and stores the context of a candidate whose context was unknown when it was stored.
@@ -905,7 +916,7 @@ async fn apply_authorization(
     if let Some(local) = slot.local_id() {
         let inactive = log::writer(conn, ctx.space, local)
             .await?
-            .is_some_and(|writer| writer.state != WriterState::Active);
+            .is_some_and(|writer| !writer.state.is_active());
         if inactive {
             slot.freeze();
             report.local_writer_frozen = true;
@@ -948,16 +959,21 @@ async fn mark_applied(
     context: VersionVector,
     retention: &mut Retention,
 ) -> SyncResult<()> {
-    sqlx::query(
-        "UPDATE sync_ops SET state = 'applied', context = ?
-         WHERE space_id = ? AND writer_id = ? AND seq = ?",
-    )
+    let (state, _) = op_state::target(OpState::Waiting, OpMove::Apply)?.columns();
+    let affected = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE sync_ops SET state = ?, context = ?
+         WHERE space_id = ? AND writer_id = ? AND seq = ? AND {}",
+        OpMove::Apply.source()
+    )))
+    .bind(state)
     .bind(context.encode())
     .bind(ctx.space.as_bytes().as_slice())
     .bind(candidate.writer.as_bytes().as_slice())
     .bind(seq_i64(candidate.seq)?)
     .execute(&mut *conn)
-    .await?;
+    .await?
+    .rows_affected();
+    op_state::expect_one(affected, OpMove::Apply)?;
     batch.applied.set(candidate.writer, candidate.seq);
     retention.confirm(candidate.writer, &context);
     retention.release(candidate.writer, candidate.seq);
@@ -1379,7 +1395,7 @@ impl Engine {
         if let Some(local) = slot.local_id()
             && log::writer(&mut tx, ctx.space, local)
                 .await?
-                .is_some_and(|writer| writer.state == WriterState::Forked)
+                .is_some_and(|writer| writer.state.is_forked())
         {
             slot.freeze();
             report.local_writer_frozen = true;

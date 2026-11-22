@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { untrack } from "svelte";
   import {
     isPreservedDataOmissionMessage,
     timingTooLargeImportLabel,
@@ -26,6 +26,19 @@
   import { DEFAULT_CALENDAR_TIME_FORMAT, isCalendarTimeFormat } from "$lib/stores/preference-options";
   import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
   import { cn } from "$lib/utils";
+  import { idleAsyncResource, type AsyncResource } from "$lib/utils/async-resource";
+  import {
+    EMPTY_CALENDAR_IMPORT_TOTALS,
+    isCalendarImportBusy,
+    refreshCalendarEventCounts,
+    runCalendarImport,
+    type CalendarEventCounts,
+    type CalendarImportEntry,
+    type CalendarImportEntryResult,
+    type CalendarImportPhase,
+    type CalendarImportSourceKind,
+    type CalendarImportTotals,
+  } from "./calendar-import-flow";
 
   let {
     fileTransfersAvailable = true,
@@ -55,38 +68,14 @@
   const MAX_VISIBLE_IMPORT_WARNINGS = 8;
   const TOAST_TIMEOUT_MS = 5_000;
 
-  /**
-   * One `.ics` entry as returned by the Rust import command. `name` is
-   * always a basename (no directory components) and `contents` is the
-   * UTF-8 decoded entry body.
-   */
-  type IcsZipEntry = { name: string; contents: string };
-
-  /** Aggregate counters used to build the summary toast after an import. */
-  type ImportTotals = {
-    added: number;
-    updated: number;
-    skippedOlder: number;
-    calendars: number;
-    warnings: string[];
-  };
-
   let toast = $state<string | undefined>(undefined);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   let pendingDelete = $state<Calendar | undefined>(undefined);
-  let counts = $state<Record<string, number>>({});
+  let countsResource = $state.raw<AsyncResource<CalendarEventCounts>>(idleAsyncResource({}));
+  const counts = $derived(countsResource.data);
   let importWarnings = $state<string[]>([]);
-  let isImporting = $state(false);
-
-  /**
-   * Live import progress. `total` is set once the picked entry list
-   * resolves (one entry for a plain `.ics`, every `.ics` entry for a
-   * `.zip`); `current` increments before each entry begins. It stays
-   * undefined while the picker is open, leaving the spinner-only state.
-   */
-  let importProgress = $state<
-    { current: number; total: number; label: string } | undefined
-  >(undefined);
+  let importPhase = $state.raw<CalendarImportPhase>({ phase: "idle" });
+  const isImporting = $derived(isCalendarImportBusy(importPhase));
   let loadingIcsParser: Promise<typeof import("$lib/calendar/ics/parser")> | null = null;
 
   function loadIcsParser(): Promise<typeof import("$lib/calendar/ics/parser")> {
@@ -139,67 +128,65 @@
   }
 
   function importButtonLabel(): string {
-    if (!isImporting) return t("settings.calendars.importCalendar");
-    if (!importProgress) return t("settings.calendars.importingCalendar");
-    return t(
-      "settings.calendars.importingEntry",
-      importProgress.label,
-      importProgress.current,
-      importProgress.total,
-    );
-  }
-
-  async function refreshCounts() {
-    const next: Record<string, number> = {};
-    for (const calendar of calendarsStore.list) {
-      next[calendar.id] = await calendarsStore.countEvents(calendar.id);
+    if (importPhase.phase === "picking") return t("settings.calendars.importingCalendar");
+    if (importPhase.phase === "importing") {
+      return t("settings.calendars.importingEntry", importPhase.label, importPhase.index, importPhase.total);
     }
-    counts = next;
+    return t("settings.calendars.importCalendar");
   }
 
-  onMount(() => {
-    void refreshCounts();
-  });
+  async function refreshCounts(): Promise<void> {
+    try {
+      await refreshCalendarEventCounts({
+        read: () => countsResource,
+        write: (resource) => {
+          countsResource = resource;
+        },
+        calendarIds: () => calendarsStore.list.map((calendar) => calendar.id),
+        countEvents: (calendarId) => calendarsStore.countEvents(calendarId),
+      });
+    } catch (error) {
+      console.warn("[calendar] event counts failed", error);
+    }
+  }
 
   $effect(() => {
-    // Re-count whenever the calendars list changes (add/remove).
+    // Counts on open and whenever the calendars list changes (add/remove). The refresh reads and writes the counts
+    // resource, so it runs untracked to keep this effect from rerunning on its own write.
     calendarsStore.list.length;
-    void refreshCounts();
+    untrack(() => void refreshCounts());
   });
 
   /**
-   * Parse a single `.ics` payload, upsert into a calendar grouping keyed by
-   * `groupingFilename`, and fold the result into `totals`. Same code path
-   * for plain `.ics` files and individual entries inside `.zip` bundles.
+   * Parse a single `.ics` payload and upsert it into a calendar grouping keyed by `entry.name`. Same code path for
+   * plain `.ics` files and individual entries inside `.zip` bundles.
    */
-  async function importIcsText(
-    text: string,
-    groupingFilename: string,
-    totals: ImportTotals,
-    sourceKind: "import-file" | "import-zip-entry",
-  ): Promise<void> {
+  async function importIcsEntry(
+    entry: CalendarImportEntry,
+    sourceKind: CalendarImportSourceKind,
+  ): Promise<CalendarImportEntryResult> {
     const { parseIcs } = await loadIcsParser();
-    const parsed = parseIcs(text);
+    const parsed = parseIcs(entry.contents);
     const hasPreservation = (parsed.preservation?.objects.length ?? 0) > 0;
     if (parsed.events.length === 0 && !hasPreservation) {
-      if (parsed.warnings.length > 0) totals.warnings.push(...parsed.warnings);
-      return;
+      return { ...EMPTY_CALENDAR_IMPORT_TOTALS, warnings: parsed.warnings };
     }
-    const targetCalendar = await calendarsStore.findOrCreateImported(groupingFilename);
+    const targetCalendar = await calendarsStore.findOrCreateImported(entry.name);
     const summary = await calendarStore.bulkImport(parsed.events, targetCalendar.id, {
       preservation: parsed.preservation,
-      sourceName: groupingFilename,
+      sourceName: entry.name,
       sourceKind,
     });
-    totals.added += summary.added;
-    totals.updated += summary.updated;
-    totals.skippedOlder += summary.skippedOlder;
-    totals.calendars += 1;
-    if (summary.warnings.length > 0) totals.warnings.push(...summary.warnings);
-    if (parsed.warnings.length > 0) totals.warnings.push(...parsed.warnings);
+    return {
+      added: summary.added,
+      updated: summary.updated,
+      skippedOlder: summary.skippedOlder,
+      calendars: 1,
+      warnings: [...summary.warnings, ...parsed.warnings],
+    };
   }
 
-  function summarizeTotals(totals: ImportTotals): string {
+  function summarizeTotals(totals: CalendarImportTotals): string {
     const parts: string[] = [];
     if (totals.added) parts.push(t("settings.calendars.newEvents", totals.added));
     if (totals.updated) parts.push(t("settings.calendars.updatedEvents", totals.updated));
@@ -211,62 +198,46 @@
     return t("settings.calendars.imported", summaryLine);
   }
 
+  /** Shows the toast and warnings for the phase an import ended in. */
+  function reportImportOutcome(outcome: CalendarImportPhase): void {
+    if (outcome.phase === "failed") {
+      console.error("ics import failed", outcome.error);
+      importWarnings = [];
+      flashToast(userErrorMessage(outcome.error, t("settings.calendars.importFailed")));
+      return;
+    }
+    if (outcome.phase !== "done") return;
+    const { totals } = outcome;
+    for (const warning of totals.warnings) console.warn("[ics import]", warning);
+    if (outcome.entryCount === 0) {
+      flashToast(t("settings.calendars.noIcsFiles"));
+      return;
+    }
+    importWarnings = visibleImportWarnings([...totals.warnings]);
+    if (totals.calendars === 0) {
+      flashToast(t("settings.calendars.noEventsFound"));
+      return;
+    }
+    const summaryLine = summarizeTotals(totals);
+    flashToast(totals.warnings.length > 0
+      ? t("settings.calendars.withWarnings", summaryLine, totals.warnings.length)
+      : summaryLine);
+  }
+
   async function handleImport() {
     if (isImporting) return;
-
-    isImporting = true;
     importWarnings = [];
-    try {
-      const entries = await invoke<IcsZipEntry[] | null>("vault_pick_and_read_ics_import");
-      if (!entries) return;
-
-      const totals: ImportTotals = {
-        added: 0,
-        updated: 0,
-        skippedOlder: 0,
-        calendars: 0,
-        warnings: [],
-      };
-
-      if (entries.length === 0) {
-        flashToast(t("settings.calendars.noIcsFiles"));
-        return;
-      }
-      importProgress = { current: 0, total: entries.length, label: entries[0].name };
-      const sourceKind = entries.length > 1 ? "import-zip-entry" : "import-file";
-      for (let i = 0; i < entries.length; i++) {
-        importProgress = {
-          current: i + 1,
-          total: entries.length,
-          label: entries[i].name,
-        };
-        await importIcsText(entries[i].contents, entries[i].name, totals, sourceKind);
-      }
-
-      if (totals.calendars === 0) {
-        importWarnings = visibleImportWarnings(totals.warnings);
-        for (const w of totals.warnings) console.warn("[ics import]", w);
-        flashToast(t("settings.calendars.noEventsFound"));
-        return;
-      }
-
-      const summaryLine = summarizeTotals(totals);
-      if (totals.warnings.length > 0) {
-        for (const w of totals.warnings) console.warn("[ics import]", w);
-        importWarnings = visibleImportWarnings(totals.warnings);
-        flashToast(t("settings.calendars.withWarnings", summaryLine, totals.warnings.length));
-      } else {
-        importWarnings = [];
-        flashToast(summaryLine);
-      }
+    const outcome = await runCalendarImport({
+      pick: () => invoke<CalendarImportEntry[] | null>("vault_pick_and_read_ics_import"),
+      importEntry: importIcsEntry,
+      onPhase: (phase) => {
+        importPhase = phase;
+      },
+    });
+    reportImportOutcome(outcome);
+    // Entries committed before a failure stay imported, so the counts reload after either ending.
+    if ((outcome.phase === "done" || outcome.phase === "failed") && outcome.totals.calendars > 0) {
       await refreshCounts();
-    } catch (err) {
-      console.error("ics import failed", err);
-      importWarnings = [];
-      flashToast(userErrorMessage(err, t("settings.calendars.importFailed")));
-    } finally {
-      isImporting = false;
-      importProgress = undefined;
     }
   }
 
@@ -295,7 +266,7 @@
     pendingDelete = undefined;
     try {
       await calendarsStore.remove(target.id);
-      await calendarStore.load();
+      await calendarStore.acceptCalendarChange();
       await refreshCounts();
       flashToast(t("settings.calendars.deleted", calendarDisplayName(target)));
     } catch (err) {

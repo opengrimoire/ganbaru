@@ -16,9 +16,9 @@
 //! The picked file never travels back from the webview: inspection keeps it behind a random
 //! token, and only that token selects it for the restore.
 
+use super::backup::swap_journal::{self, Replacement};
 use super::backup::{
-    SkippedEntries, extract_backup_archive, move_into_new_folder, recover_interrupted_restore,
-    replace_vault_flagging, replace_with_other_vault, replacement_shrinks_drastically,
+    SkippedEntries, extract_backup_archive, move_into_new_folder, replacement_shrinks_drastically,
     validate_restored_vault,
 };
 use super::quiescence::{self, RunningTerminals, VaultTransition};
@@ -55,12 +55,16 @@ const RESTORE_TRANSFER_PREFIX: &str = "restore-";
 const SAVE_TRANSFER_PREFIX: &str = "save-";
 /// The decrypted archive inside a restore transfer directory.
 const RESTORED_ARCHIVE_FILE: &str = "archive.zip";
-/// Folder name that holds a restored vault before it replaces the vault beside it.
-const RESTORE_STAGING_NAME: &str = ".ganbaru.restore";
-/// Prefix of the private folder an independent copy is restored in beside its new folder.
-const RESTORE_COPY_STAGING_PREFIX: &str = ".ganbaru.restore-";
-/// Folder name the replaced vault waits in while a restore swaps folders.
-const RESTORE_ROLLBACK_NAME: &str = ".ganbaru.rollback";
+/// Prefix of the folder that holds a restored vault before it replaces the vault beside it. The
+/// target folder's name follows, so vaults sharing a parent folder, such as a production and a
+/// development vault, never share or sweep each other's staging.
+const RESTORE_STAGING_PREFIX: &str = ".ganbaru.restore.";
+/// Prefix of the private folder an independent copy is restored in beside its new folder. The
+/// identifier of the build that made it, a dot, and a random lowercase hex suffix follow, so a
+/// build sweeps every copy staging it left behind and never one another build is still using.
+const RESTORE_COPY_STAGING_PREFIX: &str = ".ganbaru.restore-copy.";
+/// Length of the random suffix of an independent copy's staging folder.
+const RESTORE_COPY_SUFFIX_CHARS: usize = 32;
 /// Trigger names that keep the person identity and contact card from being deleted. An
 /// independent copy recreates them unchanged after removing both rows.
 const IDENTITY_TRIGGERS: [&str; 2] = [
@@ -490,7 +494,11 @@ fn remove_stale_transfers(root: &Path, prefix: &str) {
 /// the next restore into that parent sweeps it.
 pub(crate) fn sweep_interrupted_backups(app: &tauri::AppHandle) -> Result<(), String> {
     let _transition = quiescence::reserve_vault_transition()?;
-    sweep_interrupted_backups_at(&transfer_root(app)?, restore_target(app)?.as_deref())
+    sweep_interrupted_backups_at(
+        &transfer_root(app)?,
+        restore_target(app)?.as_deref(),
+        &app.config().identifier,
+    )
 }
 
 /// The vault folder an in-place restore replaces, beside which it stages: the selected vault
@@ -514,6 +522,7 @@ fn restore_target(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
 fn sweep_interrupted_backups_at(
     transfer_root: &Path,
     restore_target: Option<&Path>,
+    build: &str,
 ) -> Result<(), String> {
     remove_stale_transfers(transfer_root, RESTORE_TRANSFER_PREFIX);
     remove_stale_transfers(transfer_root, SAVE_TRANSFER_PREFIX);
@@ -521,8 +530,8 @@ fn sweep_interrupted_backups_at(
     if let Err(error) = sweep_backup_staging(transfer_root) {
         failures.push(error.to_string());
     }
-    if let Some(parent) = restore_target.and_then(Path::parent)
-        && let Err(error) = sweep_restore_staging(parent)
+    if let Some(target) = restore_target
+        && let Err(error) = sweep_restore_staging(target, build)
     {
         failures.push(error);
     }
@@ -533,12 +542,57 @@ fn sweep_interrupted_backups_at(
     }
 }
 
-/// Removes in-place and independent-copy restore staging directly below `parent`.
-fn sweep_restore_staging(parent: &Path) -> Result<(), String> {
+/// Removes the in-place restore staging of `target` and the independent-copy staging the build
+/// `build` left beside it, and nothing staged for another folder or by another build. A swap of
+/// `target` left pending may still need its staged vault, so the in-place staging stays until
+/// the swap settles.
+fn sweep_restore_staging(target: &Path, build: &str) -> Result<(), String> {
+    let parent = staging_parent(target)?;
+    let in_place = restore_staging_name(target)?;
+    let copy = restore_copy_staging_prefix(build);
+    let keep_in_place = swap_journal::has_unfinished_swap(target);
     sweep_staging_entries(parent, |name| {
-        name == RESTORE_STAGING_NAME || name.starts_with(RESTORE_COPY_STAGING_PREFIX)
+        (name == in_place && !keep_in_place) || is_restore_copy_staging(name, &copy)
     })
     .map_err(|error| format!("sweep restore staging: {error}"))
+}
+
+/// The folder restore staging of `target` lives in.
+fn staging_parent(target: &Path) -> Result<&Path, String> {
+    target
+        .parent()
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())
+}
+
+/// The name of `target`'s folder, which its staging names carry.
+fn staging_target_name(target: &Path) -> Result<&str, String> {
+    target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "the Ganbaru folder name is not valid text".to_string())
+}
+
+/// The name of the folder a restore stages `target`'s replacement in.
+fn restore_staging_name(target: &Path) -> Result<String, String> {
+    Ok(format!(
+        "{RESTORE_STAGING_PREFIX}{}",
+        staging_target_name(target)?
+    ))
+}
+
+/// The prefix of the private folders the build `build` stages independent copies in.
+fn restore_copy_staging_prefix(build: &str) -> String {
+    format!("{RESTORE_COPY_STAGING_PREFIX}{build}.")
+}
+
+/// Whether `name` is a private staging folder made with `prefix` and a random suffix.
+fn is_restore_copy_staging(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix).is_some_and(|suffix| {
+        suffix.len() == RESTORE_COPY_SUFFIX_CHARS
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
 /// Removes a folder a restore staged when the restore stops before using it.
@@ -577,13 +631,49 @@ async fn blocking<T: Send + 'static>(
 /// The active vault as a restore sees it.
 struct ActiveVault {
     root: PathBuf,
+    /// Whether this device is linked now, as the link status reports it.
+    linked: bool,
+    database: ActiveDatabase,
+}
+
+impl ActiveVault {
+    /// What its database holds, `None` when the database is lost.
+    fn opened(&self) -> Option<&OpenedVault> {
+        match &self.database {
+            ActiveDatabase::Open(opened) => Some(opened.as_ref()),
+            ActiveDatabase::Lost => None,
+        }
+    }
+}
+
+/// What a restore could read from the active vault's database.
+enum ActiveDatabase {
+    /// The database opened.
+    Open(Box<OpenedVault>),
+    /// The marker records data that the missing or empty database no longer holds, so nothing
+    /// in the vault vouches for a backup and the vault is replaced only as another vault, which
+    /// keeps the lost folder.
+    Lost,
+}
+
+/// The sync state read from an active vault whose database opened.
+struct OpenedVault {
     summary: LinkSummary,
     /// The recovery key and charter its sync state names.
     keys: RestoreKeys,
-    /// Whether this device is linked now, as the link status reports it.
-    linked: bool,
     /// The active space's key of the backup's epoch, when this installation holds it.
     epoch_key: Option<SpaceKey>,
+}
+
+/// Maps the open of the active vault's database to `None` when the vault refused to open because
+/// its database is lost, so a backup can still be restored over it. Every other failure stays an
+/// error, so a damaged database is never treated as gone.
+fn opened_or_lost<T>(opened: Result<T, String>) -> Result<Option<T>, String> {
+    match opened {
+        Ok(pool) => Ok(Some(pool)),
+        Err(error) if error == super::VAULT_DATABASE_MISSING => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// Reads the active vault's link summary and, for a backup of its space, the epoch key.
@@ -606,7 +696,14 @@ async fn active_vault_with(
     let root = super::active_vault_path(app)?;
     let vault_id = super::active_vault_id(app)?;
     let device_id = super::ensure_device_id(app)?;
-    let pool = crate::db::connect_vault(app).await?;
+    let linked = device_linked(app)?;
+    let Some(pool) = opened_or_lost(crate::db::connect_vault(app).await)? else {
+        return Ok(Some(ActiveVault {
+            root,
+            linked,
+            database: ActiveDatabase::Lost,
+        }));
+    };
     let mut conn = pool
         .acquire()
         .await
@@ -622,10 +719,12 @@ async fn active_vault_with(
     };
     Ok(Some(ActiveVault {
         root,
-        summary,
-        keys,
-        linked: device_linked(app)?,
-        epoch_key,
+        linked,
+        database: ActiveDatabase::Open(Box::new(OpenedVault {
+            summary,
+            keys,
+            epoch_key,
+        })),
     }))
 }
 
@@ -904,7 +1003,11 @@ pub async fn vault_inspect_backup(app: tauri::AppHandle) -> Result<BackupInspect
         if let Err(reason) = refuse_linked_active(active.as_ref()) {
             return Ok(BackupInspection::Refused { reason });
         }
-        let needs_kit = active.and_then(|active| active.epoch_key).is_none();
+        let needs_kit = active
+            .as_ref()
+            .and_then(ActiveVault::opened)
+            .and_then(|opened| opened.epoch_key.as_ref())
+            .is_none();
         hold_pending(Some(PendingBackup {
             token: token.clone(),
             source,
@@ -1008,7 +1111,10 @@ async fn restore_pending(
         .map_err(|error| RestoreError::from_file(error, false))?;
     let active = active_vault_for(app, &header).await?;
     refuse_linked_active(active.as_ref())?;
-    let epoch_key = active.as_ref().and_then(|active| active.epoch_key.clone());
+    let epoch_key = active
+        .as_ref()
+        .and_then(ActiveVault::opened)
+        .and_then(|opened| opened.epoch_key.clone());
     let unlock = Unlock::choose(kit, epoch_key)?;
     let with_kit = unlock.with_kit();
     let opener = unlock.opener();
@@ -1091,8 +1197,9 @@ async fn stage_and_plan(
 ) -> Result<(VaultInfo, RestorePlacement), RestoreError> {
     let info = stage_restored_vault(archive, staging, origin).await?;
     let (backup, staged_keys) = read_staged_state(staging, &info.vault_id, device_id).await?;
-    let trusted = origin.trusts(active.map(|active| &active.keys), &staged_keys);
-    let placement = plan_restore(active.map(|active| &active.summary), &backup, trusted);
+    let opened = active.and_then(ActiveVault::opened);
+    let trusted = origin.trusts(opened.map(|opened| &opened.keys), &staged_keys);
+    let placement = plan_restore(opened.map(|opened| &opened.summary), &backup, trusted);
     Ok((info, placement))
 }
 
@@ -1204,15 +1311,9 @@ async fn remove_person_identity(conn: &mut sqlx::SqliteConnection) -> Result<(),
     tx.commit().await.map_err(failed)
 }
 
-/// The staging and swap folders a restore uses beside `target`.
-fn restore_paths(target: &Path) -> Result<(PathBuf, PathBuf), String> {
-    let parent = target
-        .parent()
-        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-    Ok((
-        parent.join(RESTORE_STAGING_NAME),
-        parent.join(RESTORE_ROLLBACK_NAME),
-    ))
+/// The staging folder a restore uses beside `target`.
+fn restore_staging_path(target: &Path) -> Result<PathBuf, String> {
+    Ok(staging_parent(target)?.join(restore_staging_name(target)?))
 }
 
 /// Replaces the vault at `target` with the staged vault while every runtime is drained, then
@@ -1221,19 +1322,21 @@ fn restore_paths(target: &Path) -> Result<(PathBuf, PathBuf), String> {
 async fn replace_active_vault(
     app: &tauri::AppHandle,
     transition: VaultTransition,
-    (staging, target, rollback): (&Path, &Path, &Path),
+    (staging, target): (&Path, &Path),
     other_vault: bool,
     expected_active: Option<PathBuf>,
 ) -> Result<VaultInfo, String> {
-    let flagged = !other_vault && replacement_shrinks_drastically(target, staging).await;
+    let replacement = if other_vault {
+        Replacement::OtherVault
+    } else {
+        Replacement::SameVault {
+            flagged: replacement_shrinks_drastically(target, staging).await,
+        }
+    };
     let quiescence =
         quiescence::begin_reserved_quiescence(app, transition, RunningTerminals::Block).await?;
     let activation_app = app.clone();
-    let (staging, target, rollback) = (
-        staging.to_path_buf(),
-        target.to_path_buf(),
-        rollback.to_path_buf(),
-    );
+    let (staging, target) = (staging.to_path_buf(), target.to_path_buf());
     blocking(move || {
         let activated = (|| {
             let active = super::read_app_state(&activation_app)?
@@ -1245,11 +1348,7 @@ async fn replace_active_vault(
             }
             super::ensure_vault_skeleton(&staging)?;
             super::vault_lock::process_vault_lock().replace_with(&staging, &target, || {
-                if other_vault {
-                    replace_with_other_vault(&staging, &target, &rollback)
-                } else {
-                    replace_vault_flagging(&staging, &target, &rollback, flagged)
-                }
+                swap_journal::swap(&staging, &target, replacement)
             })?;
             let info = vault_info_from_path(&target)?;
             super::select_quiesced_vault(&activation_app, &info, &quiescence)?;
@@ -1278,14 +1377,14 @@ async fn place_restored_backup(
     active: Option<&ActiveVault>,
 ) -> Result<(VaultInfo, RestorePlacement), RestoreError> {
     if let Some(active) = active
-        && origin.space() == Some(&active.summary.space)
-        && active.summary.other_devices == 0
+        && let Some(opened) = active.opened()
+        && origin.space() == Some(&opened.summary.space)
+        && opened.summary.other_devices == 0
     {
         let target = &active.root;
-        let (staging, rollback) = restore_paths(target)?;
+        let staging = restore_staging_path(target)?;
         let recover_target = target.clone();
-        let recover_rollback = rollback.clone();
-        blocking(move || recover_interrupted_restore(&recover_target, &recover_rollback)).await??;
+        blocking(move || swap_journal::recover_or_refuse(&recover_target)).await??;
         let staged = StagedFolder::new(&staging);
         let device_id = super::ensure_device_id(app)?;
         let (_, placement) =
@@ -1294,7 +1393,7 @@ async fn place_restored_backup(
             let restored = replace_active_vault(
                 app,
                 transition,
-                (&staging, target, &rollback),
+                (&staging, target),
                 false,
                 Some(target.clone()),
             )
@@ -1335,11 +1434,12 @@ async fn restore_in_new_folder(
     let parent = target
         .parent()
         .ok_or_else(|| "the chosen folder has no parent directory".to_string())?;
-    let sweep_parent = parent.to_path_buf();
-    blocking(move || sweep_restore_staging(&sweep_parent)).await??;
+    let sweep_target = target.clone();
+    let build = app.config().identifier.clone();
+    blocking(move || sweep_restore_staging(&sweep_target, &build)).await??;
     let staging_parent = ganbaru_atomic_files::create_private_temporary_directory(
         parent,
-        RESTORE_COPY_STAGING_PREFIX,
+        &restore_copy_staging_prefix(&app.config().identifier),
     )
     .map_err(|error| format!("create restore staging: {error}"))?;
     let staged = StagedFolder::new(&staging_parent);
@@ -1367,15 +1467,14 @@ async fn place_restored_backup(
     active: Option<&ActiveVault>,
 ) -> Result<(VaultInfo, RestorePlacement), RestoreError> {
     let target = super::default_vault_path(app)?;
-    let (staging, rollback) = restore_paths(&target)?;
+    let staging = restore_staging_path(&target)?;
     let recover_target = target.clone();
-    let recover_rollback = rollback.clone();
     blocking(move || {
         if let Some(parent) = recover_target.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("create app data directory: {error}"))?;
         }
-        recover_interrupted_restore(&recover_target, &recover_rollback)
+        swap_journal::recover_or_refuse(&recover_target)
     })
     .await??;
     let staged = StagedFolder::new(&staging);
@@ -1399,7 +1498,7 @@ async fn place_restored_backup(
         replace_active_vault(
             app,
             transition,
-            (&staging, &target, &rollback),
+            (&staging, &target),
             other_vault,
             active.map(|active| active.root.clone()),
         )

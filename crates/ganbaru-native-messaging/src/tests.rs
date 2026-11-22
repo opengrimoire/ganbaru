@@ -1,21 +1,21 @@
 use super::{
-    NativeResponse,
     config::{DistractionsConfig, DistractionsMode, UsageLimitsConfig},
-    events::{block_event_phase, spool_block_event},
+    events::{block_event_context, spool_block_event},
     rules::{HostDecision, decide_url, host_from_url, host_matches_rule},
-    snapshot::{RuntimeState, StateSnapshot, runtime_status_at, should_enforce},
+    snapshot::{RuntimeStatus, StateSnapshot, runtime_status_at, should_enforce},
 };
 use chrono::{DateTime, SecondsFormat, Utc};
+use ganbaru_distractions_authority::{
+    ActivePhase, BlockingPhase, DistractionsRuntimeState, PauseReason, PhaseBlockingSettings,
+    RuntimeAuthority,
+};
 use sqlx::Row;
 
 fn config() -> DistractionsConfig {
     DistractionsConfig {
         mode: DistractionsMode::Blacklist,
         enabled: true,
-        block_during_focus: true,
-        block_during_short_breaks: true,
-        block_during_long_breaks: true,
-        pause_during_focus_pause: true,
+        blocking: PhaseBlockingSettings::default(),
         blocked_category_ids: Vec::new(),
         custom_category_stacks: Vec::new(),
         blocked_hosts: vec!["reddit.com".to_string(), "youtube.com".to_string()],
@@ -29,58 +29,70 @@ fn config() -> DistractionsConfig {
     }
 }
 
-fn response_for_phase(phase: &str) -> NativeResponse {
-    NativeResponse {
-        message_type: "decision",
-        host_name: super::HOST_NAME.to_string(),
-        connected: true,
-        active: true,
-        paused: false,
-        pause_reason: None,
-        phase: phase.to_string(),
+fn active_authority(phase: BlockingPhase, pause_reason: Option<PauseReason>) -> RuntimeAuthority {
+    RuntimeAuthority::Active(ActivePhase {
+        phase,
+        pause_reason,
+        run_id: "run-1".to_string(),
+        occurrence_id: None,
+        remaining_seconds: 60,
+    })
+}
+
+fn status_for(phase: BlockingPhase, pause_reason: Option<PauseReason>) -> RuntimeStatus {
+    RuntimeStatus {
+        authority: active_authority(phase, pause_reason),
         remaining_seconds: Some(60),
-        rules_fingerprint: "test".to_string(),
-        blocked: false,
-        host: None,
-        matched_rule_name: None,
         reason: None,
-        environment_name: "Ganbaru",
     }
 }
 
-fn runtime_for_phase(phase: &str, paused: bool) -> RuntimeState {
+fn runtime_for_phase(
+    phase: BlockingPhase,
+    pause_reason: Option<PauseReason>,
+) -> DistractionsRuntimeState {
     runtime_for_phase_updated_at(
         phase,
-        paused,
+        pause_reason,
         super::now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
     )
 }
 
-fn runtime_for_phase_updated_at(phase: &str, paused: bool, updated_at: String) -> RuntimeState {
-    RuntimeState {
-        active: true,
-        paused,
-        pause_reason: paused.then(|| "manual".to_string()),
-        active_run_id: Some("run-1".to_string()),
-        phase: phase.to_string(),
-        remaining_seconds: Some(60),
+fn runtime_for_phase_updated_at(
+    phase: BlockingPhase,
+    pause_reason: Option<PauseReason>,
+    updated_at: String,
+) -> DistractionsRuntimeState {
+    DistractionsRuntimeState {
+        authority: active_authority(phase, pause_reason),
         updated_at,
-        valid_until_ms: None,
+        valid_until_ms: i64::MAX,
     }
 }
 
 #[test]
 fn maps_block_event_metadata() {
-    let focus = runtime_for_phase("focus", false);
-    let idle_pause = RuntimeState {
-        paused: true,
-        pause_reason: Some("idle".to_string()),
-        ..runtime_for_phase("focus", false)
+    let updated = "2026-05-26T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+    let mut snapshot = StateSnapshot {
+        config_dir: None,
+        vault_path: None,
+        config: config(),
+        limit_state: None,
+        runtime: Some(runtime_for_phase_updated_at(
+            BlockingPhase::Focus,
+            None,
+            updated.to_rfc3339(),
+        )),
     };
-
-    assert_eq!(block_event_phase(Some(&focus)).as_deref(), Some("focus"));
+    let checked_at = updated + chrono::Duration::seconds(1);
     assert_eq!(
-        block_event_phase(Some(&idle_pause)).as_deref(),
+        block_event_context(&snapshot, checked_at).0.as_deref(),
+        Some("focus")
+    );
+    snapshot.runtime.as_mut().unwrap().authority =
+        active_authority(BlockingPhase::Focus, Some(PauseReason::Idle));
+    assert_eq!(
+        block_event_context(&snapshot, checked_at).0.as_deref(),
         Some("idle_pause")
     );
     assert_eq!(
@@ -184,23 +196,61 @@ fn decision_reasons_preserve_wire_labels_and_typed_event_metadata() {
 }
 
 #[test]
-fn runtime_state_requires_current_nullable_fields() {
+fn runtime_state_files_fail_closed_unless_well_formed() {
+    let root = std::env::temp_dir().join(format!(
+        "ganbaru-native-runtime-file-{}-{}",
+        std::process::id(),
+        super::now_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("distractions-state.json");
     let current = serde_json::json!({
+        "authority": {
+            "status": "active",
+            "phase": "focus",
+            "pauseReason": null,
+            "runId": "run-1",
+            "occurrenceId": null,
+            "remainingSeconds": 60
+        },
+        "updatedAt": "2026-05-28T12:00:00Z",
+        "validUntilMs": 1_000
+    });
+    std::fs::write(&path, current.to_string()).unwrap();
+    assert!(super::snapshot::read_runtime_state(&path).is_some());
+
+    let mut malformed = Vec::new();
+    for field in ["pauseReason", "runId", "occurrenceId", "remainingSeconds"] {
+        let mut missing = current.clone();
+        missing["authority"].as_object_mut().unwrap().remove(field);
+        malformed.push(missing);
+    }
+    let mut missing_validity = current.clone();
+    missing_validity
+        .as_object_mut()
+        .unwrap()
+        .remove("validUntilMs");
+    malformed.push(missing_validity);
+    let mut unknown_reason = current.clone();
+    unknown_reason["authority"]["pauseReason"] = serde_json::json!("network");
+    malformed.push(unknown_reason);
+    malformed.push(serde_json::json!({
         "active": true,
-        "paused": false,
+        "paused": true,
         "pauseReason": null,
         "activeRunId": "run-1",
         "phase": "focus",
         "remainingSeconds": 60,
         "updatedAt": "2026-05-28T12:00:00Z"
-    });
-    assert!(serde_json::from_value::<super::snapshot::RuntimeState>(current.clone()).is_ok());
-
-    for field in ["pauseReason", "activeRunId", "remainingSeconds"] {
-        let mut missing = current.clone();
-        missing.as_object_mut().unwrap().remove(field);
-        assert!(serde_json::from_value::<super::snapshot::RuntimeState>(missing).is_err());
+    }));
+    for contents in malformed {
+        std::fs::write(&path, contents.to_string()).unwrap();
+        assert!(
+            super::snapshot::read_runtime_state(&path).is_none(),
+            "{contents} must read as no runtime authority"
+        );
     }
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -225,7 +275,7 @@ fn block_events_are_spooled_without_opening_the_vault_or_keeping_full_urls() {
         config_dir: Some(config_dir.clone()),
         vault_path: Some(vault_path.clone()),
         config: config(),
-        runtime: Some(runtime_for_phase("focus", false)),
+        runtime: Some(runtime_for_phase(BlockingPhase::Focus, None)),
         limit_state: None,
     };
     let blocked = HostDecision::BlockedHost("youtube.com".into());
@@ -378,8 +428,8 @@ fn active_runtime_state_remains_fresh_inside_heartbeat_window() {
         vault_path: None,
         config: config(),
         runtime: Some(runtime_for_phase_updated_at(
-            "focus",
-            false,
+            BlockingPhase::Focus,
+            None,
             "2026-05-26T00:00:00.000Z".to_string(),
         )),
         limit_state: None,
@@ -388,12 +438,14 @@ fn active_runtime_state_remains_fresh_inside_heartbeat_window() {
         .unwrap()
         .with_timezone(&Utc);
 
-    let (active, phase, remaining_seconds, reason) = runtime_status_at(&snapshot, checked_at);
+    let status = runtime_status_at(&snapshot, checked_at);
 
-    assert!(active);
-    assert_eq!(phase, "focus");
-    assert_eq!(remaining_seconds, Some(16));
-    assert!(reason.is_none());
+    assert_eq!(
+        status.active_phase().map(|active| active.phase),
+        Some(BlockingPhase::Focus)
+    );
+    assert_eq!(status.remaining_seconds, Some(16));
+    assert!(status.reason.is_none());
 }
 
 #[test]
@@ -403,8 +455,8 @@ fn active_runtime_state_fails_open_after_missed_heartbeat() {
         vault_path: None,
         config: config(),
         runtime: Some(runtime_for_phase_updated_at(
-            "focus",
-            false,
+            BlockingPhase::Focus,
+            None,
             "2026-05-26T00:00:00.000Z".to_string(),
         )),
         limit_state: None,
@@ -413,12 +465,11 @@ fn active_runtime_state_fails_open_after_missed_heartbeat() {
         .unwrap()
         .with_timezone(&Utc);
 
-    let (active, phase, remaining_seconds, reason) = runtime_status_at(&snapshot, checked_at);
+    let status = runtime_status_at(&snapshot, checked_at);
 
-    assert!(!active);
-    assert_eq!(phase, "inactive");
-    assert_eq!(remaining_seconds, None);
-    assert_eq!(reason.as_deref(), Some("runtime state is stale"));
+    assert_eq!(status.authority, RuntimeAuthority::Inactive {});
+    assert_eq!(status.remaining_seconds, None);
+    assert_eq!(status.reason.as_deref(), Some("runtime state is stale"));
 }
 
 #[test]
@@ -430,28 +481,38 @@ fn fresh_heartbeat_cannot_extend_accepted_phase_or_owner_validity() {
         config: config(),
         limit_state: None,
         runtime: Some(runtime_for_phase_updated_at(
-            "focus",
-            false,
+            BlockingPhase::Focus,
+            None,
             updated.to_rfc3339(),
         )),
     };
-    snapshot.runtime.as_mut().unwrap().valid_until_ms = Some(updated.timestamp_millis() + 500);
-    assert!(runtime_status_at(&snapshot, updated + chrono::Duration::milliseconds(499)).0);
+    let is_active = |snapshot: &StateSnapshot, offset: chrono::Duration| {
+        runtime_status_at(snapshot, updated + offset)
+            .active_phase()
+            .is_some()
+    };
+    snapshot.runtime.as_mut().unwrap().valid_until_ms = updated.timestamp_millis() + 500;
+    assert!(is_active(&snapshot, chrono::Duration::milliseconds(499)));
     let expired = runtime_status_at(&snapshot, updated + chrono::Duration::milliseconds(500));
-    assert!(!expired.0);
-    assert_eq!(expired.1, "inactive");
+    assert_eq!(expired.authority, RuntimeAuthority::Inactive {});
     assert_eq!(
-        expired.3.as_deref(),
+        expired.reason.as_deref(),
         Some("accepted phase validity expired")
     );
-    snapshot.runtime.as_mut().unwrap().paused = true;
-    assert!(!runtime_status_at(&snapshot, updated + chrono::Duration::milliseconds(500)).0);
+    snapshot.runtime.as_mut().unwrap().authority =
+        active_authority(BlockingPhase::Focus, Some(PauseReason::Manual));
+    assert!(!is_active(&snapshot, chrono::Duration::milliseconds(500)));
     let runtime = snapshot.runtime.as_mut().unwrap();
-    runtime.valid_until_ms = None;
-    runtime.paused = false;
-    runtime.remaining_seconds = Some(1);
-    assert!(runtime_status_at(&snapshot, updated + chrono::Duration::milliseconds(999)).0);
-    assert!(!runtime_status_at(&snapshot, updated + chrono::Duration::seconds(1)).0);
+    runtime.valid_until_ms = i64::MAX;
+    runtime.authority = RuntimeAuthority::Active(ActivePhase {
+        phase: BlockingPhase::Focus,
+        pause_reason: None,
+        run_id: "run-1".to_string(),
+        occurrence_id: None,
+        remaining_seconds: 1,
+    });
+    assert!(is_active(&snapshot, chrono::Duration::milliseconds(999)));
+    assert!(!is_active(&snapshot, chrono::Duration::seconds(1)));
 }
 
 #[test]
@@ -903,117 +964,112 @@ fn blocks_enabled_custom_category_stacks() {
 #[test]
 fn enforces_short_and_long_break_settings_independently() {
     let mut config = config();
-    config.block_during_short_breaks = true;
-    config.block_during_long_breaks = false;
-    let snapshot = StateSnapshot {
-        config_dir: None,
-        vault_path: None,
-        config,
-        runtime: None,
-        limit_state: None,
-    };
-    let short_break = response_for_phase("short_break");
-    let long_break = response_for_phase("long_break");
+    config.blocking.block_during_short_breaks = true;
+    config.blocking.block_during_long_breaks = false;
 
-    assert!(should_enforce(&snapshot, &short_break));
-    assert!(!should_enforce(&snapshot, &long_break));
+    assert!(should_enforce(
+        &config,
+        &status_for(BlockingPhase::ShortBreak, None)
+    ));
+    assert!(!should_enforce(
+        &config,
+        &status_for(BlockingPhase::LongBreak, None)
+    ));
 }
 
 #[test]
 fn enforces_focus_independently_from_break_toggles() {
     let mut config = config();
-    config.block_during_focus = false;
-    config.block_during_short_breaks = true;
-    let snapshot = StateSnapshot {
-        config_dir: None,
-        vault_path: None,
-        config,
-        runtime: None,
-        limit_state: None,
-    };
-    let focus = response_for_phase("focus");
-    let short_break = response_for_phase("short_break");
+    config.blocking.block_during_focus = false;
+    config.blocking.block_during_short_breaks = true;
 
-    assert!(!should_enforce(&snapshot, &focus));
-    assert!(should_enforce(&snapshot, &short_break));
+    assert!(!should_enforce(
+        &config,
+        &status_for(BlockingPhase::Focus, None)
+    ));
+    assert!(should_enforce(
+        &config,
+        &status_for(BlockingPhase::ShortBreak, None)
+    ));
 }
 
 #[test]
 fn skips_paused_focus_when_pause_setting_enabled() {
-    let snapshot = StateSnapshot {
-        config_dir: None,
-        vault_path: None,
-        config: config(),
-        runtime: Some(runtime_for_phase("focus", true)),
-        limit_state: None,
-    };
-    let focus = response_for_phase("focus");
+    let paused = status_for(BlockingPhase::Focus, Some(PauseReason::Manual));
 
-    assert!(!should_enforce(&snapshot, &focus));
+    assert!(!should_enforce(&config(), &paused));
 }
 
 #[test]
 fn keeps_enforcing_idle_paused_focus() {
-    let mut runtime = runtime_for_phase("focus", true);
-    runtime.pause_reason = Some("idle".to_string());
-    let snapshot = StateSnapshot {
-        config_dir: None,
-        vault_path: None,
-        config: config(),
-        runtime: Some(runtime),
-        limit_state: None,
-    };
-    let focus = response_for_phase("focus");
+    let paused = status_for(BlockingPhase::Focus, Some(PauseReason::Idle));
 
-    assert!(should_enforce(&snapshot, &focus));
+    assert!(should_enforce(&config(), &paused));
 }
 
 #[test]
 fn keeps_enforcing_suspend_paused_focus() {
-    let mut runtime = runtime_for_phase("focus", true);
-    runtime.pause_reason = Some("suspend".to_string());
-    let snapshot = StateSnapshot {
-        config_dir: None,
-        vault_path: None,
-        config: config(),
-        runtime: Some(runtime),
-        limit_state: None,
-    };
-    let focus = response_for_phase("focus");
+    let paused = status_for(BlockingPhase::Focus, Some(PauseReason::Suspend));
 
-    assert!(should_enforce(&snapshot, &focus));
+    assert!(should_enforce(&config(), &paused));
 }
 
 #[test]
-fn treats_missing_pause_reason_as_regular_pause() {
-    let mut runtime = runtime_for_phase("focus", true);
-    runtime.pause_reason = None;
+fn paused_runtime_with_an_unknown_reason_reads_as_no_authority() {
+    let root = std::env::temp_dir().join(format!(
+        "ganbaru-native-pause-reason-{}-{}",
+        std::process::id(),
+        super::now_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("distractions-state.json");
+    let paused = serde_json::json!({
+        "authority": {
+            "status": "active",
+            "phase": "focus",
+            "pauseReason": "paused",
+            "runId": "run-1",
+            "occurrenceId": null,
+            "remainingSeconds": 60
+        },
+        "updatedAt": super::now_utc().to_rfc3339(),
+        "validUntilMs": i64::MAX
+    });
+    std::fs::write(&path, paused.to_string()).unwrap();
     let snapshot = StateSnapshot {
         config_dir: None,
         vault_path: None,
         config: config(),
-        runtime: Some(runtime),
+        runtime: super::snapshot::read_runtime_state(&path),
         limit_state: None,
     };
-    let focus = response_for_phase("focus");
 
-    assert!(!should_enforce(&snapshot, &focus));
+    assert!(snapshot.runtime.is_none());
+    assert!(!should_enforce(
+        &snapshot.config,
+        &runtime_status_at(&snapshot, super::now_utc())
+    ));
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn enforces_paused_focus_when_pause_setting_disabled() {
     let mut config = config();
-    config.pause_during_focus_pause = false;
-    let snapshot = StateSnapshot {
-        config_dir: None,
-        vault_path: None,
-        config,
-        runtime: Some(runtime_for_phase("focus", true)),
-        limit_state: None,
-    };
-    let focus = response_for_phase("focus");
+    config.blocking.pause_during_focus_pause = false;
+    let paused = status_for(BlockingPhase::Focus, Some(PauseReason::Manual));
 
-    assert!(should_enforce(&snapshot, &focus));
+    assert!(should_enforce(&config, &paused));
+}
+
+#[test]
+fn disabled_rules_never_enforce_an_active_phase() {
+    let mut config = config();
+    config.enabled = false;
+
+    assert!(!should_enforce(
+        &config,
+        &status_for(BlockingPhase::Focus, None)
+    ));
 }
 
 #[test]
@@ -1077,7 +1133,7 @@ fn block_events_leave_no_device_local_browsing_log() {
         config_dir: Some(config_path.clone()),
         vault_path: None,
         config: config(),
-        runtime: Some(runtime_for_phase("focus", false)),
+        runtime: Some(runtime_for_phase(BlockingPhase::Focus, None)),
         limit_state: None,
     };
 
@@ -1145,4 +1201,35 @@ fn published_rules_apply_only_to_the_vault_they_were_read_from() {
     assert!(!defaults.blocked_category_ids.is_empty());
     assert!(!defaults.blocked_category_ids.iter().any(|id| id == "news"));
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn block_events_record_only_the_current_runtime_phase_and_run() {
+    let updated = "2026-05-26T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+    let mut snapshot = StateSnapshot {
+        config_dir: None,
+        vault_path: None,
+        config: config(),
+        limit_state: None,
+        runtime: Some(runtime_for_phase_updated_at(
+            BlockingPhase::Focus,
+            None,
+            updated.to_rfc3339(),
+        )),
+    };
+    assert_eq!(
+        block_event_context(&snapshot, updated + chrono::Duration::seconds(10)),
+        (Some("focus".to_string()), Some("run-1".to_string()))
+    );
+    assert_eq!(
+        block_event_context(&snapshot, updated + chrono::Duration::seconds(46)),
+        (None, None),
+        "a stale runtime file must not stamp its run on a later block"
+    );
+    snapshot.runtime.as_mut().unwrap().authority = RuntimeAuthority::Inactive {};
+    assert_eq!(
+        block_event_context(&snapshot, updated + chrono::Duration::seconds(10)),
+        (None, None),
+        "an inactive runtime records no phase or run"
+    );
 }

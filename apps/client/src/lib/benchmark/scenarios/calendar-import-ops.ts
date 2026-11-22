@@ -180,8 +180,9 @@ export const calendarImportOpsScenario: BenchmarkScenario = {
   async seed(
     dataset: BenchmarkDatasetProfile,
     context: BenchmarkScenarioContext,
+    signal: AbortSignal,
   ): Promise<BenchmarkSeedHandle> {
-    return seedCalendarDataset(dataset, context);
+    return seedCalendarDataset(dataset, context, signal);
   },
 
   async cleanup(_seedHandle: BenchmarkSeedHandle): Promise<void> {

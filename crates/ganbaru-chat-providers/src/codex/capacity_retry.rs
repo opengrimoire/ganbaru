@@ -8,11 +8,12 @@
 use super::normalizer::{CodexEventNormalizer, CodexRouteState};
 use super::protocol::{TurnStartResponse, decode_response};
 use super::transport::CodexRpcClient;
+use super::turn_route::TurnRouteEvent;
 use crate::events::*;
+use crate::live_session::LiveSessionLifecycle;
 use crate::models::*;
 use crate::{DriverCancellation, DriverOperationContext, ProviderEventSink};
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -50,6 +51,20 @@ impl CodexCapacityRetry {
         self.attempts < CODEX_CAPACITY_MAX_RETRIES && !self.cancellation.is_cancelled()
     }
 
+    /// Spends one attempt when another is still available and returns the updated retry.
+    pub(super) fn claim_attempt(&mut self) -> Option<Self> {
+        if !self.available() {
+            return None;
+        }
+        self.attempts += 1;
+        Some(self.clone())
+    }
+
+    /// The attempts spent so far.
+    pub(super) fn attempts(&self) -> u32 {
+        self.attempts
+    }
+
     /// Whether a retry is waiting out its backoff or starting, with no provider turn running.
     pub(super) fn retrying(&self) -> bool {
         self.attempts > 0 && !self.cancellation.is_cancelled()
@@ -73,7 +88,7 @@ pub(super) struct CodexRetryResources {
     pub route: Arc<Mutex<CodexRouteState>>,
     pub normalizer: Arc<CodexEventNormalizer>,
     pub sink: Arc<dyn ProviderEventSink>,
-    pub expected_shutdown: Arc<AtomicBool>,
+    pub lifecycle: LiveSessionLifecycle,
 }
 
 /// Starts the next retry when `params` is a capacity failure of the active turn and retries
@@ -107,20 +122,14 @@ pub(super) async fn begin_capacity_retry(
         if other_thread || other_turn {
             return Ok(false);
         }
-        let Some(chat_turn) = state.active_chat_turn_id.clone() else {
+        let Some(chat_turn) = state.turn().chat_turn().cloned() else {
             return Ok(false);
         };
-        let Some(retry) = state
-            .capacity_retry
-            .as_mut()
-            .filter(|retry| retry.available())
-        else {
+        let Some(retry) = state.claim_retry_attempt() else {
             return Ok(false);
         };
-        retry.attempts += 1;
-        let attempt = retry.attempts;
-        let retry = retry.clone();
-        state.active_provider_turn_id = None;
+        let attempt = retry.attempts();
+        state.transition_turn(TurnRouteEvent::RestartAttempt)?;
         state.stream_indexes.clear();
         let provider_turn = turn
             .get("id")
@@ -197,23 +206,25 @@ async fn run_capacity_retry(
         });
     let (current, abandoned) = match resources.route.lock() {
         Ok(mut state) => {
-            state.retry_request_in_flight = false;
+            state.finish_retry_request();
             let current = retry_is_current_in(&state, &resources, &chat_turn, &retry);
             let abandoned = match &accepted {
                 Ok(provider_turn_id) if current => {
                     // A later failure may already have absorbed this turn into the next attempt.
                     let still_this_attempt = state
-                        .capacity_retry
-                        .as_ref()
+                        .turn()
+                        .retry()
                         .is_some_and(|current| current.attempts == attempt);
-                    if state.active_provider_turn_id.is_none() && still_this_attempt {
-                        state.active_provider_turn_id = Some(provider_turn_id.clone());
+                    if state.turn().provider_turn().is_none() && still_this_attempt {
+                        let _ = state.transition_turn(TurnRouteEvent::ProviderTurn(
+                            provider_turn_id.clone(),
+                        ));
                     }
                     None
                 }
                 // An interrupt that saw this turn start already stopped it for its chat turn.
                 Ok(provider_turn_id)
-                    if state.active_provider_turn_id.as_deref() == Some(provider_turn_id) =>
+                    if state.turn().provider_turn() == Some(provider_turn_id.as_str()) =>
                 {
                     None
                 }
@@ -243,7 +254,7 @@ async fn abandon_started_retry(
     retry: &CodexCapacityRetry,
     provider_turn_id: String,
 ) {
-    if resources.expected_shutdown.load(Ordering::Acquire) {
+    if !resources.lifecycle.is_running() {
         return;
     }
     let context = DriverOperationContext {
@@ -275,7 +286,7 @@ fn begin_retry_request(
     };
     let current = retry_is_current_in(&state, resources, chat_turn, retry);
     if current {
-        state.retry_request_in_flight = true;
+        state.begin_retry_request();
     }
     current
 }
@@ -288,14 +299,14 @@ fn retry_is_current_in(
     retry: &CodexCapacityRetry,
 ) -> bool {
     !retry.cancellation.is_cancelled()
-        && !resources.expected_shutdown.load(Ordering::Acquire)
-        && state.active_chat_turn_id.as_ref() == Some(chat_turn)
+        && resources.lifecycle.is_running()
+        && state.turn().chat_turn() == Some(chat_turn)
 }
 
 /// Refuses to start a turn while a retry request is in flight, because the retried provider turn
 /// is not known yet and could not be told apart from the new one.
 pub(super) fn ensure_no_retry_in_flight(state: &CodexRouteState) -> ChatResult<()> {
-    if state.retry_request_in_flight {
+    if state.retry_request_in_flight() {
         return Err(ChatError::new(
             ChatErrorCode::Busy,
             "Codex is still stopping a retried turn",

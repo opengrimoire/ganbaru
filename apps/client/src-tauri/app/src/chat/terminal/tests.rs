@@ -21,9 +21,11 @@ fn session_at(
             shell: "test-shell".to_string(),
             columns: 80,
             rows: 24,
-            running,
-            exit_code: None,
-            generation: 1,
+            status: if running {
+                ChatTerminalStatus::Running
+            } else {
+                ChatTerminalStatus::Stopped
+            },
             sequence: 0,
             replay_bytes: 0,
             replay: VecDeque::new(),
@@ -37,19 +39,19 @@ fn session_at(
 }
 
 #[test]
-fn replay_is_sequenced_generation_scoped_and_byte_bounded() {
+fn replay_is_sequenced_and_byte_bounded() {
     let session = session(true);
     assert!(
         session
-            .record_output(0, b"stale".to_vec())
-            .expect("stale output should be handled")
+            .record_output(Vec::new())
+            .expect("empty output should be handled")
             .is_none()
     );
     for byte in [1_u8, 2, 3] {
         session
-            .record_output(1, vec![byte; MAX_REPLAY_BYTES / 2])
+            .record_output(vec![byte; MAX_REPLAY_BYTES / 2])
             .expect("output should record")
-            .expect("current generation should emit");
+            .expect("output should emit");
     }
     let snapshot = session.snapshot().expect("snapshot should read");
     assert_eq!(snapshot.terminal.last_sequence, 3);
@@ -82,12 +84,12 @@ fn replay_starts_with_the_mode_reset_and_live_output_does_not() {
             .is_empty()
     );
     let live = session
-        .record_output(1, b"\x1b[?1049hvim".to_vec())
+        .record_output(b"\x1b[?1049hvim".to_vec())
         .expect("output should record")
-        .expect("current generation should emit");
+        .expect("output should emit");
     assert_eq!(decoded(&live), b"\x1b[?1049hvim");
     session
-        .record_output(1, b"second".to_vec())
+        .record_output(b"second".to_vec())
         .expect("output should record");
 
     let snapshot = session.snapshot().expect("snapshot should read");
@@ -102,7 +104,7 @@ fn replay_starts_with_the_mode_reset_and_live_output_does_not() {
 
     for byte in [1_u8, 2, 3] {
         session
-            .record_output(1, vec![byte; MAX_REPLAY_BYTES / 2])
+            .record_output(vec![byte; MAX_REPLAY_BYTES / 2])
             .expect("output should record");
     }
     let trimmed = session.snapshot().expect("snapshot should read");
@@ -262,14 +264,21 @@ fn shutting_down_a_folder_stops_its_terminals_in_every_channel() {
 
     for (index, id) in ["terminal:a", "terminal:b"].iter().enumerate() {
         assert!(registry.snapshot(id).is_err());
-        assert!(!sessions[index].read().expect("session should read").running);
+        assert!(
+            !sessions[index]
+                .read()
+                .expect("session should read")
+                .status
+                .is_running()
+        );
     }
     assert!(
         registry
             .snapshot("terminal:other")
             .expect("terminal should remain")
             .terminal
-            .running
+            .status
+            .is_running()
     );
 }
 
@@ -302,7 +311,6 @@ fn recording_sink(open: bool) -> (Box<dyn TerminalOutputSink>, Arc<Mutex<Vec<u64
 fn output_chunk(sequence: u64) -> ChatTerminalOutputChunk {
     ChatTerminalOutputChunk {
         terminal_id: "terminal:test".to_string(),
-        generation: 1,
         sequence,
         data_base64: String::new(),
         replay: false,
@@ -313,7 +321,7 @@ fn output_chunk(sequence: u64) -> ChatTerminalOutputChunk {
 fn output_reaches_only_attached_views_and_pauses_at_the_watermark() {
     let session = session(true);
     session
-        .record_output(1, b"before".to_vec())
+        .record_output(b"before".to_vec())
         .expect("output should record");
     let (sink, delivered) = recording_sink(true);
     let snapshot = session
@@ -709,4 +717,36 @@ fn hostname_decoding_accepts_terminated_and_full_buffers() {
     );
     assert_eq!(hostname_from_buffer(b"invalid\nname\0"), None);
     assert_eq!(hostname_from_call(-1, b"ignored\0"), None);
+}
+
+#[test]
+fn a_terminal_settles_once_and_keeps_how_it_ended() {
+    let exited = session(true);
+    assert!(exited.mark_exited(3).expect("exit should record"));
+    exited.terminate().expect("stop should apply");
+    assert_eq!(
+        exited.read().expect("session should read").status,
+        ChatTerminalStatus::Exited { exit_code: 3 }
+    );
+
+    let stopped = session(true);
+    stopped.terminate().expect("stop should apply");
+    assert!(!stopped.mark_exited(137).expect("exit should record"));
+    assert_eq!(
+        stopped.read().expect("session should read").status,
+        ChatTerminalStatus::Stopped
+    );
+}
+
+#[test]
+fn terminal_status_serializes_as_a_tagged_union() {
+    let encode = |status| serde_json::to_value(status).expect("status should serialize");
+    assert_eq!(
+        encode(ChatTerminalStatus::Running),
+        serde_json::json!({ "kind": "running" })
+    );
+    assert_eq!(
+        encode(ChatTerminalStatus::Exited { exit_code: 2 }),
+        serde_json::json!({ "kind": "exited", "exitCode": 2 })
+    );
 }

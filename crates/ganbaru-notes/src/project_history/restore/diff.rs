@@ -268,15 +268,16 @@ async fn trash_row_tx(
     table: &str,
     key: &RowKey,
 ) -> Result<(), String> {
+    let id = key
+        .first()
+        .ok_or_else(|| format!("Notes history {table} row key is empty"))?;
     let sql = match table {
         "notes_pages" => {
-            "UPDATE notes_pages
-             SET in_trash = 1,
-                 trash_owner = NULL,
-                 archived = 0,
-                 trashed_time = COALESCE(trashed_time, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                 last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             WHERE id = ? AND in_trash = 0"
+            return crate::page_lifecycle::trash_pages_without_owner_tx(
+                tx,
+                std::slice::from_ref(id),
+            )
+            .await;
         }
         "notes_blocks" => {
             "UPDATE notes_blocks
@@ -297,9 +298,6 @@ async fn trash_row_tx(
         }
         _ => return Err(format!("Notes history cannot trash rows of {table}")),
     };
-    let id = key
-        .first()
-        .ok_or_else(|| format!("Notes history {table} row key is empty"))?;
     sqlx::query(sql)
         .bind(id)
         .execute(&mut **tx)
@@ -426,6 +424,22 @@ async fn relation_edge_endpoints_exist_tx(
     Ok(count == expected)
 }
 
+/// Refuses a bundle page row whose lifecycle columns contradict each other, so a damaged
+/// version fails with the reason instead of a constraint error.
+fn validate_page_lifecycle(row: &Value) -> Result<(), String> {
+    let flag = |column: &str| row.get(column).and_then(Value::as_i64).unwrap_or(0);
+    crate::page_lifecycle::PageLifecycle::from_columns(
+        crate::page_lifecycle::PageLifecycleColumns {
+            in_trash: flag("in_trash"),
+            archived: flag("archived"),
+            trashed_time: json_optional_string(row, "trashed_time"),
+            trash_owner: json_optional_string(row, "trash_owner"),
+        },
+    )
+    .map(|_| ())
+    .map_err(|e| format!("Notes history page row: {e}"))
+}
+
 async fn upsert_json_row_tx(
     tx: &mut Transaction<'_, Sqlite>,
     table: &str,
@@ -437,6 +451,9 @@ async fn upsert_json_row_tx(
         .ok_or_else(|| format!("Notes history {table} row is not an object"))?;
     if object.is_empty() {
         return Err(format!("Notes history {table} row is empty"));
+    }
+    if table == "notes_pages" {
+        validate_page_lifecycle(row)?;
     }
     let columns = object.keys().collect::<Vec<_>>();
     let column_sql = columns

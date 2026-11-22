@@ -135,6 +135,32 @@ describe("Settings list of hidden and archived projects", () => {
     await vi.waitFor(() => expect(target.textContent).toContain("Could not update Draft."));
   });
 
+  it("keeps a project busy until its own activation settles when another one finishes first", async () => {
+    store.projects = [project("Draft", "group-a", "hidden"), project("Errands", "group-b", "archived")];
+    let finishDraft = (): void => {};
+    store.setProjectStatus
+      .mockReturnValueOnce(new Promise<void>((resolve) => {
+        finishDraft = resolve;
+      }))
+      .mockReturnValueOnce(new Promise<void>(() => {}));
+    render();
+
+    const [draftButton, errandsButton] = [...target.querySelectorAll<HTMLButtonElement>("li button")];
+    draftButton?.click();
+    flushSync();
+    errandsButton?.click();
+    flushSync();
+    finishDraft();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+
+    expect(draftButton?.disabled).toBe(false);
+    expect(errandsButton?.disabled).toBe(true);
+    errandsButton?.click();
+    expect(store.setProjectStatus).toHaveBeenCalledTimes(2);
+  });
+
   it("says when nothing is hidden or archived", () => {
     store.projects = [project("Launch", "group-a", "active")];
     render();

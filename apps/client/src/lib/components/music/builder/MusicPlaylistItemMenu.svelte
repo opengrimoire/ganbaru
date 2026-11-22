@@ -54,7 +54,9 @@
   let error = $state<string | null>(null);
   let snoozes = $state<MusicSnooze[]>([]);
   let snoozePlaylistId = $state<string | null>(null);
-  let snoozesLoading = $state(false);
+  /** The snooze read in flight; opening the subpanel again or closing the menu supersedes it. */
+  let snoozeRead = $state.raw<symbol | null>(null);
+  const snoozesLoading = $derived(snoozeRead !== null);
   let panelLeft = $state(0);
   let panelTop = $state(0);
   const duration = $derived(formatMusicDuration(item.durationMs));
@@ -100,6 +102,7 @@
   function close(restoreFocus = true): void {
     open = false;
     subpanel = null;
+    snoozeRead = null;
     error = null;
     if (restoreFocus && trigger?.isConnected) queueMicrotask(() => trigger?.focus());
   }
@@ -112,17 +115,19 @@
   }
 
   async function loadSnoozes(): Promise<void> {
-    snoozesLoading = true;
+    const token = Symbol("snoozes");
+    snoozeRead = token;
+    const isCurrent = () => snoozeRead === token && open && subpanel === "snooze";
     try {
       const detail = await getMusicInspectorDetail(item.id);
-      if (open && subpanel === "snooze") {
+      if (isCurrent()) {
         snoozes = detail.snoozes;
         snoozePlaylistId = detail.memberships.find((entry) => entry.id === item.membershipId)?.playlistId ?? null;
       }
     } catch (cause) {
-      if (open && subpanel === "snooze") error = musicErrorMessage(cause, t("music.errors.trackSettingsLoadFailed"));
+      if (isCurrent()) error = musicErrorMessage(cause, t("music.errors.trackSettingsLoadFailed"));
     } finally {
-      snoozesLoading = false;
+      if (snoozeRead === token) snoozeRead = null;
     }
   }
 

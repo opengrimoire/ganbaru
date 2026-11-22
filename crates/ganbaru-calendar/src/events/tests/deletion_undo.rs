@@ -22,6 +22,14 @@ async fn deleted(pool: &sqlx::SqlitePool) -> Arc<UndoPreimage> {
 }
 
 async fn deleted_with(pool: &sqlx::SqlitePool, lease: Option<DeletionLease>) -> Arc<UndoPreimage> {
+    deleted_sealing(pool, lease, true).await
+}
+
+async fn deleted_sealing(
+    pool: &sqlx::SqlitePool,
+    lease: Option<DeletionLease>,
+    seal: bool,
+) -> Arc<UndoPreimage> {
     let mut tx = pool.begin().await.unwrap();
     let clock = clock();
     let review = prepare(
@@ -59,7 +67,9 @@ async fn deleted_with(pool: &sqlx::SqlitePool, lease: Option<DeletionLease>) -> 
         .record_receipt(&mut tx, &receipt, clock.epoch_ms)
         .await
         .unwrap();
-    undo.seal(&mut tx).await.unwrap();
+    if seal {
+        undo.seal(&mut tx).await.unwrap();
+    }
     tx.commit().await.unwrap();
     Arc::new(undo)
 }
@@ -496,5 +506,21 @@ fn undo_of_an_unpublished_deletion_needs_no_hold() {
         let undo = deleted_with(&pool, Some(LEASE)).await;
         expire_holds(&pool).await;
         undo_with(undo, &pool).await.unwrap();
+    });
+}
+
+#[test]
+fn undo_refuses_a_preimage_whose_postimage_was_never_sealed() {
+    crate::test_support::block_on(async {
+        let pool = published_source().await;
+        let undo = deleted_sealing(&pool, Some(LEASE), false).await;
+        let refused = undo_with(undo, &pool).await.unwrap_err();
+        assert!(refused.contains("no confirmed postimage"), "{refused}");
+        let restored: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM calendar_events WHERE id='source'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(restored, 0);
     });
 }

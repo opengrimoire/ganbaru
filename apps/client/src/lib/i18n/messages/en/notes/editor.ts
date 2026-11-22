@@ -1,6 +1,7 @@
 export const editor = {
   editorSaveFailed: "Edits could not be saved, but your draft is still open, so keep this window open and try again.",
   editorChangedElsewhere: "This note changed in another window, so the latest saved version replaced your last edit.",
+  editorReloadFailed: "The latest saved version of this note could not be loaded, but your draft is still open, so try again.",
   blockList: "Note blocks",
   richTextEditorLabel: "Rich text block editor",
   emptyPagePlaceholder: "Write, or press '/' for commands and '@' to mention",

@@ -1,5 +1,6 @@
 #[cfg(desktop)]
 use ganbaru_chat::repository::project_files;
+use ganbaru_projects::lifecycle::{self, ProjectLifecycleChange};
 use ganbaru_projects::project_commands;
 use ganbaru_projects::{ProjectCreate, ProjectUpdate, ProjectsMutationRows};
 #[cfg(desktop)]
@@ -32,7 +33,22 @@ pub async fn projects_update_project<R: Runtime>(
     let pool = connect_sqlite(app.clone(), db_url).await?;
     let vault_root = vault::active_writable_vault_path(&app)?;
     let mutation = project_commands::update_project(&pool, &vault_root, project).await?;
-    // An update may archive the project, which ends the live authority of its Chat runs.
+    // An update may move the project to another group, which changes the scope of its Chat runs.
+    crate::chat::authority_epoch::bump_authority_epoch(&app);
+    Ok(mutation)
+}
+
+/// Moves a project between active, hidden, and archived, refused when it left `expected`.
+#[tauri::command]
+pub async fn projects_set_project_lifecycle<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    change: ProjectLifecycleChange,
+) -> Result<ProjectsMutationRows, String> {
+    let pool = connect_sqlite(app.clone(), db_url).await?;
+    vault::active_writable_vault_path(&app)?;
+    let mutation = lifecycle::set_project_lifecycle(&pool, change).await?;
+    // Archiving a project ends the live authority of its Chat runs.
     crate::chat::authority_epoch::bump_authority_epoch(&app);
     Ok(mutation)
 }

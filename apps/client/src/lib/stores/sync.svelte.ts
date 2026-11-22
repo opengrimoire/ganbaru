@@ -11,21 +11,24 @@ import { onActiveVaultIdentityChange } from "$lib/vault/active-vault";
 let status = $state<SyncStatusView>(OFF_SYNC_STATUS);
 let loaded = $state(false);
 let generation = 0;
+/** Advances on every vault change and status event, so a read that started earlier never replaces either. */
+let observed = 0;
 let subscribers = 0;
 let unlisten: (() => void) | null = null;
 
 onActiveVaultIdentityChange(() => {
   generation += 1;
+  observed += 1;
   status = OFF_SYNC_STATUS;
   loaded = false;
   if (subscribers > 0) void refresh();
 });
 
 async function refresh(): Promise<void> {
-  const expected = generation;
+  const expected = observed;
   try {
     const next = await getSyncStatus();
-    if (expected !== generation) return;
+    if (expected !== observed) return;
     status = next;
     loaded = true;
   } catch (cause: unknown) {
@@ -35,6 +38,7 @@ async function refresh(): Promise<void> {
 
 async function startListening(): Promise<void> {
   const stop = await listenSyncStatus((next) => {
+    observed += 1;
     status = next;
     loaded = true;
   });

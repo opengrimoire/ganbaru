@@ -12,6 +12,9 @@ export const mobile = {
     dataLocation: "Data location",
     startFromZero: "Start from zero",
     restoreBackupFile: "Restore backup file",
+    startNewVault: "Start a new vault",
+    startNewVaultTitle: "Start a new vault?",
+    startNewVaultMessage: "Ganbaru keeps the current vault folder whole on this phone, listed under Settings > Data, and opens a new empty vault in its place.",
     importExistingFolder: "Import existing folder",
   },
   onboarding: {

@@ -503,7 +503,7 @@
           {editingId}
           {previewedIds}
           {persistedSegmentsByEvent}
-          draggingEventId={drag.dragPreview ? drag.dragState?.eventId : undefined}
+          draggingEventId={drag.draggingEventId}
           grabbingId={drag.grabbingId ?? undefined}
           didDrag={drag.didDrag}
           dragPreview={drag.getDragPreviewForDate(dateStr)}

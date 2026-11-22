@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderInstanceRead, ProviderUpdateRead } from "$lib/chat/contracts";
-import { appUpdatePending, cliUpdateEntries, offersUpdateAll, runnableCliUpdates } from "./updates-control";
+import { appUpdatePending, cliUpdateEntries, offersUpdateAll, runCliUpdateSteps, runnableCliUpdates } from "./updates-control";
 import type { UpdateStatus } from "$lib/stores/updates.svelte";
 
 const NOW_MS = Date.parse("2026-11-17T12:00:00Z");
@@ -92,5 +92,35 @@ describe("updates control", () => {
     expect(offersUpdateAll(true, 0)).toBe(false);
     expect(offersUpdateAll(true, 1)).toBe(true);
     expect(offersUpdateAll(false, 2)).toBe(true);
+  });
+});
+
+describe("runCliUpdateSteps", () => {
+  it("finishes the update when only the probe after it fails", async () => {
+    const outcome = await runCliUpdateSteps(
+      async () => ({ successful: true, output: null }),
+      async () => { throw new Error("probe timed out"); },
+    );
+    expect(outcome.phase).toBe("updated-unprobed");
+  });
+
+  it("finishes the update when the probe succeeds", async () => {
+    const outcome = await runCliUpdateSteps(async () => ({ successful: true, output: null }), async () => {});
+    expect(outcome).toEqual({ phase: "updated" });
+  });
+
+  it("reports the command output when the update fails, without probing", async () => {
+    let probed = false;
+    const outcome = await runCliUpdateSteps(
+      async () => ({ successful: false, output: "permission denied" }),
+      async () => { probed = true; },
+    );
+    expect(outcome).toEqual({ phase: "update-failed", output: "permission denied" });
+    expect(probed).toBe(false);
+  });
+
+  it("reports an update failure without output when the command cannot start", async () => {
+    const outcome = await runCliUpdateSteps(async () => { throw new Error("not found"); }, async () => {});
+    expect(outcome).toEqual({ phase: "update-failed", output: null });
   });
 });

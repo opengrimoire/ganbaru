@@ -1,5 +1,12 @@
 import * as chatApi from "$lib/api/chat";
 import {
+  NO_INTERACTION,
+  shownInteraction,
+  transitionInteractionLoad,
+  type InteractionLoad,
+  type InteractionLoadEvent,
+} from "./interaction-state";
+import {
   ChatComposerController,
   parseDraftMentions,
   type ChatComposerSeed,
@@ -16,6 +23,7 @@ import type {
   ChatAttachmentRead,
   ChatDraftMention,
   ChatInteractionStateRead,
+  ChatPendingRequestRead,
   ChatQueuedFollowupRead,
   ChatSettingsRead,
   ChatThreadId,
@@ -63,8 +71,7 @@ export class ChatComposerRuntimeController {
 
   composer = $state<ChatComposerSnapshot>(this.composerController.snapshot());
   attachments = $state<ChatAttachmentRead[]>([]);
-  interaction = $state<ChatInteractionStateRead | null>(null);
-  interactionLoading = $state(false);
+  private interactionLoad = $state.raw<InteractionLoad>(NO_INTERACTION);
   sendError = $state<string | null>(null);
   pendingUserMessage = $state<{ threadId: ChatThreadId; row: TimelineMessageRow } | null>(null);
   draftWorkingFolderId = $state<ProjectWorkingFolderId | null>(null);
@@ -93,8 +100,7 @@ export class ChatComposerRuntimeController {
     this.interactionRequest += 1;
     this.queuedDispatches.clear();
     this.attachments = [];
-    this.interaction = null;
-    this.interactionLoading = false;
+    this.interactionLoad = NO_INTERACTION;
     this.sendError = null;
     this.pendingUserMessage = null;
     this.draftWorkingFolderId = null;
@@ -161,31 +167,76 @@ export class ChatComposerRuntimeController {
     this.composerController.markSent();
   }
 
+  /** The interaction state shown for the selected thread. */
+  get interaction(): ChatInteractionStateRead | null {
+    return shownInteraction(this.interactionLoad);
+  }
+
+  set interaction(interaction: ChatInteractionStateRead | null) {
+    this.dispatchInteraction({ type: "replaced", interaction });
+  }
+
+  /** Whether a read for the selected thread is in flight. */
+  get interactionLoading(): boolean {
+    return this.interactionLoad.phase === "loading";
+  }
+
   flush(): Promise<void> {
     return this.composerController.flush();
   }
 
   async refreshInteraction(threadId = this.options.selectedThreadId()): Promise<void> {
-    const request = ++this.interactionRequest;
+    // A thread out of view has no interaction to show, so its read must not supersede the selected thread's.
+    if (threadId && threadId !== this.options.selectedThreadId()) return;
     if (!threadId) {
-      this.interaction = null;
+      this.dispatchInteraction({ type: "cleared" });
       return;
     }
-    this.interactionLoading = true;
+    const request = ++this.interactionRequest;
+    this.dispatchInteraction({ type: "started", threadId, request });
+    let interaction: ChatInteractionStateRead;
     try {
-      const interaction = await chatApi.readChatInteractionState(threadId);
-      if (request !== this.interactionRequest || threadId !== this.options.selectedThreadId()) return;
-      this.interaction = interaction;
-      const latestTurnState = this.options.selectedThread()?.latestTurnState ?? null;
-      if (queuedFollowupDispatchReady(interaction.sessionState, latestTurnState)
-        && interaction.queuedFollowup) {
-        void this.dispatchQueuedFollowup(interaction.queuedFollowup).catch((error: unknown) => {
-          this.sendError = chatErrorMessage(error, translate("chatErrors.actions.sendMessage"));
-        });
-      }
-    } finally {
-      if (request === this.interactionRequest) this.interactionLoading = false;
+      interaction = await chatApi.readChatInteractionState(threadId);
+    } catch (error) {
+      this.dispatchInteraction({ type: "failed", request });
+      throw error;
     }
+    if (threadId !== this.options.selectedThreadId()) {
+      this.dispatchInteraction({ type: "abandoned", request });
+      return;
+    }
+    const before = this.interactionLoad;
+    this.dispatchInteraction({ type: "loaded", request, interaction });
+    if (this.interactionLoad === before) return;
+    const latestTurnState = this.options.selectedThread()?.latestTurnState ?? null;
+    if (queuedFollowupDispatchReady(interaction.sessionState, latestTurnState)
+      && interaction.queuedFollowup) {
+      void this.dispatchQueuedFollowup(interaction.queuedFollowup).catch((error: unknown) => {
+        this.sendError = chatErrorMessage(error, translate("chatErrors.actions.sendMessage"));
+      });
+    }
+  }
+
+  /**
+   * Identifies what the composer shows, so a finished send can tell whether the user moved on.
+   *
+   * @returns The selected thread ID and bound draft ID joined into one comparable key.
+   */
+  private selectionKey(): string {
+    return JSON.stringify([this.options.selectedThreadId(), this.composer.draftId]);
+  }
+
+  /**
+   * Drops the optimistic user message only while it is still the one a send showed, so a later send keeps its own.
+   *
+   * @param messageId Message ID of the send that is settling.
+   */
+  private clearPendingUserMessage(messageId: string): void {
+    if (this.pendingUserMessage?.row.id === messageId) this.pendingUserMessage = null;
+  }
+
+  private dispatchInteraction(event: InteractionLoadEvent): void {
+    this.interactionLoad = transitionInteractionLoad(this.interactionLoad, event);
   }
 
   async send(options: ChatComposerSendOptions = {}): Promise<void> {
@@ -207,6 +258,7 @@ export class ChatComposerRuntimeController {
         }));
     this.sendError = null;
     this.failedSendOptions = null;
+    const origin = this.selectionKey();
     const selectedCurrent = this.options.selectedThread();
     const current = selectedCurrent && !threadMatchesExecutionConfiguration(
       selectedCurrent,
@@ -253,6 +305,7 @@ export class ChatComposerRuntimeController {
         sourceThreadId: threadId,
       },
     };
+    const sentDraftId = this.composer.draftId;
     this.composerController.markSent();
     let result: Awaited<ReturnType<typeof chatApi.sendChatTurn>>;
     try {
@@ -285,22 +338,29 @@ export class ChatComposerRuntimeController {
         mentions,
       });
     } catch (error: unknown) {
-      this.pendingUserMessage = null;
-      this.composerController.restoreSentSnapshot();
-      await this.composerController.flush();
+      this.clearPendingUserMessage(messageId);
+      // Another draft shown meanwhile must not receive this text; the sent draft keeps it in its stored sent snapshot.
+      if (this.composer.draftId === sentDraftId) {
+        this.composerController.restoreSentSnapshot();
+        await this.composerController.flush();
+      }
       throw error;
     }
     this.options.upsertThread(result.thread);
-    if (!current) this.discardDraft();
-    this.options.setSelectedThreadId(result.thread.id);
-    this.sendError = result.launchError
-      ? chatErrorMessage(result.launchError, translate("chatErrors.actions.sendMessage"))
-      : null;
-    this.failedSendOptions = result.launchError ? { ...options } : null;
+    // The backend consumed the draft thread ID, so it must not be reused even when the user moved on.
+    if (newThreadId !== null && this.draftThreadId === newThreadId) this.discardDraft();
+    // A user who picked another thread or draft meanwhile keeps it; the sent thread records any launch failure.
+    if (this.selectionKey() === origin) {
+      this.options.setSelectedThreadId(result.thread.id);
+      this.sendError = result.launchError
+        ? chatErrorMessage(result.launchError, translate("chatErrors.actions.sendMessage"))
+        : null;
+      this.failedSendOptions = result.launchError ? { ...options } : null;
+    }
     try {
       await this.options.refreshTimeline(result.thread.id);
     } finally {
-      this.pendingUserMessage = null;
+      this.clearPendingUserMessage(messageId);
     }
     // The turn is already sent, so preference bookkeeping must not report a send failure.
     try {
@@ -454,10 +514,12 @@ export class ChatComposerRuntimeController {
     await this.refreshInteraction(threadId);
   }
 
-  async resolveApproval(decision: ApprovalDecision, remember = false): Promise<void> {
-    const pending = this.interaction?.pendingRequest;
+  /**
+   * Resolves the open approval `pending` with `decision`; `remember` also records its offered rule.
+   */
+  async resolveApproval(pending: ChatPendingRequestRead, decision: ApprovalDecision, remember = false): Promise<void> {
     const thread = this.options.selectedThread();
-    if (!pending || !thread) return;
+    if (!thread) return;
     await chatApi.resolveChatApproval({
       command: { clientCommandId: crypto.randomUUID(), expectedThreadRevision: null },
       threadId: thread.id,
@@ -469,10 +531,10 @@ export class ChatComposerRuntimeController {
     await this.refreshInteraction(thread.id);
   }
 
-  async resolveUserInput(answers: UserInputAnswer[]): Promise<void> {
-    const pending = this.interaction?.pendingRequest;
+  /** Answers the open user input request `pending` with `answers`. */
+  async resolveUserInput(pending: ChatPendingRequestRead, answers: UserInputAnswer[]): Promise<void> {
     const thread = this.options.selectedThread();
-    if (!pending || !thread) return;
+    if (!thread) return;
     await chatApi.resolveChatUserInput({
       command: { clientCommandId: crypto.randomUUID(), expectedThreadRevision: null },
       threadId: thread.id,
@@ -489,6 +551,7 @@ export class ChatComposerRuntimeController {
     if (this.attachments.length + files.length > CHAT_IMAGE_LIMIT) {
       throw new Error(`Attach up to ${CHAT_IMAGE_LIMIT} Chat images`);
     }
+    const draftId = this.composer.draftId;
     for (const file of files) {
       const attachment = await chatApi.importChatImage(
         workingFolderId,
@@ -496,6 +559,7 @@ export class ChatComposerRuntimeController {
         file.name,
         new Uint8Array(await file.arrayBuffer()),
       );
+      if (this.composer.draftId !== draftId) return;
       this.attachments = [...this.attachments, attachment];
       this.composerController.setAttachments(this.attachments.map((entry) => entry.id));
     }
@@ -511,7 +575,9 @@ export class ChatComposerRuntimeController {
     const workingFolderId = this.composer.workingFolderId;
     if (!workingFolderId) throw new Error("Choose a project working folder before attaching pasted text");
     if (this.attachments.length >= CHAT_IMAGE_LIMIT) throw new Error(`Attach up to ${CHAT_IMAGE_LIMIT} Chat attachments`);
+    const draftId = this.composer.draftId;
     const attachment = await chatApi.importChatTextSnippet(workingFolderId, crypto.randomUUID(), displayName, text);
+    if (this.composer.draftId !== draftId) return;
     this.attachments = [...this.attachments, attachment];
     this.composerController.setAttachments(this.attachments.map((entry) => entry.id));
   }
@@ -521,11 +587,14 @@ export class ChatComposerRuntimeController {
     if (!workingFolderId) throw new Error("Choose a project working folder before attaching images");
     const available = Math.max(0, CHAT_IMAGE_LIMIT - this.attachments.length);
     if (available === 0) throw new Error(`Attach up to ${CHAT_IMAGE_LIMIT} Chat images`);
+    const draftId = this.composer.draftId;
     const imported = await chatApi.pickChatImages(
       workingFolderId,
       Array.from({ length: available }, () => crypto.randomUUID()),
       title,
     );
+    // Attachments imported for a draft that was replaced meanwhile stay out of the draft now shown.
+    if (this.composer.draftId !== draftId) return;
     this.attachments = [...this.attachments, ...imported];
     this.composerController.setAttachments(this.attachments.map((attachment) => attachment.id));
   }

@@ -235,7 +235,7 @@ async fn replacement_carries_operations_and_device_state_through_failed_attempts
 
     let initial = parent.join("initial-staging");
     hand_off(&source, &initial, &parent, "initial", &vault_id).await;
-    replace_vault(&initial, &target, &parent.join("initial-rollback")).unwrap();
+    replace_vault(&initial, &target).unwrap();
 
     // The receiver seals a note the owner never sees and raises both revisions.
     let pool = registry.connect_path(database_path(&target)).await.unwrap();
@@ -334,7 +334,7 @@ async fn replacement_carries_operations_and_device_state_through_failed_attempts
     carry_into_replacement(&engine, &staging, &target, &files, RECEIVING_DEVICE, now)
         .await
         .unwrap();
-    replace_vault(&staging, &target, &parent.join("newer-rollback")).unwrap();
+    replace_vault(&staging, &target).unwrap();
     assert_eq!(
         notes(&target).await,
         [
@@ -434,7 +434,7 @@ async fn replacement_carries_the_anchors_unsent_authorization_entries() {
     carry_into_replacement(&engine, &staging, &source, &owner_files, OWNER_DEVICE, now)
         .await
         .unwrap();
-    replace_vault(&staging, &source, &parent.join("older-rollback")).unwrap();
+    replace_vault(&staging, &source).unwrap();
 
     let pool = registry.connect_path(database_path(&source)).await.unwrap();
     let mut conn = pool.acquire().await.unwrap();
@@ -497,12 +497,7 @@ async fn failed_carry_keeps_the_live_vault() {
         &vault_id,
     )
     .await;
-    replace_vault(
-        &parent.join("initial-staging"),
-        &target,
-        &parent.join("initial-rollback"),
-    )
-    .unwrap();
+    replace_vault(&parent.join("initial-staging"), &target).unwrap();
 
     let pool = registry.connect_path(database_path(&target)).await.unwrap();
     let mut conn = pool.acquire().await.unwrap();

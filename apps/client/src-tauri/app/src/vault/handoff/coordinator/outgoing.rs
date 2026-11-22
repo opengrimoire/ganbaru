@@ -1,9 +1,8 @@
 //! Coordinator snapshot preparation and receiver acknowledgement.
 
-use super::{CompletedActivation, CoordinatorResponse, CoordinatorState, PreparedTransfer};
-use crate::vault::handoff::pairing::{
-    PendingAcknowledgement, StoredOutgoingTransfer, random_token,
-};
+use super::{CoordinatorResponse, CoordinatorState};
+use crate::vault::handoff::pairing::{PendingAcknowledgement, random_token};
+use crate::vault::handoff::protocol::unix_time_ms;
 use crate::vault::handoff::snapshot::{archive_active_vault, bundle_metadata};
 use crate::vault::handoff::transport::BUNDLE_BUSY_CODE;
 use crate::vault::quiescence::begin_snapshot_quiescence;
@@ -12,18 +11,18 @@ use std::time::Instant;
 use tauri::Runtime;
 
 impl<R: Runtime> CoordinatorState<R> {
-    /// Prepares a vault copy for one linked device, or answers with the copy already prepared for
-    /// it. While a copy for another device is pending, the request is refused as retryable.
+    /// Prepares a vault copy for one linked device, or answers with the copy already offered to
+    /// it. While a copy for another device is offered, the request is refused as retryable; the
+    /// pairing manager releases an offered copy once its lifetime passes.
     pub(super) async fn prepare(
         &mut self,
         vault_id: String,
         device_id: String,
     ) -> Result<CoordinatorResponse, String> {
-        if let Some(prepared) = self.prepared.as_ref() {
-            if prepared.metadata.vault_id == vault_id && prepared.metadata.device_id == device_id {
-                return Ok(CoordinatorResponse::Prepared {
-                    metadata: prepared.metadata.clone(),
-                });
+        if let Some(offered) = self.pairing.active_outgoing_transfer(unix_time_ms())? {
+            let metadata = offered.metadata;
+            if metadata.vault_id == vault_id && metadata.device_id == device_id {
+                return Ok(CoordinatorResponse::Prepared { metadata });
             }
             return Ok(CoordinatorResponse::Rejected {
                 code: BUNDLE_BUSY_CODE.to_string(),
@@ -47,76 +46,62 @@ impl<R: Runtime> CoordinatorState<R> {
                     return Err(error);
                 }
             };
-        if let Err(error) = self
+        let offered = self
             .pairing
-            .register_outgoing_bundle(metadata.clone(), archive_path.clone())
-        {
-            let _ = fs::remove_file(&archive_path);
-            return Err(error);
-        }
-        if let Err(error) = self
-            .pairing
-            .store_outgoing_transfer(StoredOutgoingTransfer {
-                metadata: metadata.clone(),
-            })
-        {
-            let _ = self
-                .pairing
-                .unregister_outgoing_bundle(&metadata.transfer_id);
-            let _ = fs::remove_file(&archive_path);
-            return Err(error);
-        }
-        self.prepared = Some(PreparedTransfer {
-            metadata: metadata.clone(),
-            archive_path,
-        });
-        Ok(CoordinatorResponse::Prepared { metadata })
+            .begin_outgoing_transfer(metadata, unix_time_ms())?;
+        Ok(CoordinatorResponse::Prepared {
+            metadata: offered.metadata,
+        })
     }
 
+    /// Records the activation of the copy offered to `device_id`, which releases it. A repeated
+    /// acknowledgement, or one for a copy already released, is answered so the receiver stops
+    /// retrying; `device_id` is the authenticated device linked for `vault_id`.
     pub(super) fn activated(
         &mut self,
         vault_id: String,
         device_id: String,
         transfer_id: String,
     ) -> Result<CoordinatorResponse, String> {
-        let completed = CompletedActivation {
+        let completed = PendingAcknowledgement {
             vault_id,
             device_id,
             transfer_id: transfer_id.clone(),
         };
-        if self.completed.as_ref() == Some(&completed) {
+        if self.pairing.completed_activation()?.as_ref() == Some(&completed) {
             return Ok(CoordinatorResponse::ActivationAcknowledged { transfer_id });
         }
-        let prepared = self
-            .prepared
-            .as_ref()
-            .ok_or_else(|| "activation does not match an active transfer".to_string())?;
-        if prepared.metadata.vault_id != completed.vault_id
-            || prepared.metadata.device_id != completed.device_id
-            || prepared.metadata.transfer_id != completed.transfer_id
-        {
-            return Err("activation does not match the prepared transfer".to_string());
+        match self.pairing.active_outgoing_transfer(unix_time_ms())? {
+            Some(offered)
+                if offered.metadata.vault_id == completed.vault_id
+                    && offered.metadata.device_id == completed.device_id
+                    && offered.metadata.transfer_id == completed.transfer_id =>
+            {
+                self.pairing.complete_outgoing_activation(completed)?;
+            }
+            Some(offered) if offered.metadata.device_id == completed.device_id => {
+                return Err("activation does not match the prepared transfer".to_string());
+            }
+            _ => {}
         }
-        self.pairing
-            .complete_outgoing_activation(PendingAcknowledgement {
-                vault_id: completed.vault_id.clone(),
-                device_id: completed.device_id.clone(),
-                transfer_id: completed.transfer_id.clone(),
-            })?;
-        self.cleanup_prepared();
-        self.completed = Some(completed);
         Ok(CoordinatorResponse::ActivationAcknowledged { transfer_id })
     }
 
-    pub(super) fn cancel(&mut self, transfer_id: String) -> Result<CoordinatorResponse, String> {
-        let prepared = self
-            .prepared
-            .as_ref()
+    /// Cancels the offered copy when it is the one `device_id` asked for; another linked device
+    /// cannot cancel it.
+    pub(super) fn cancel(
+        &mut self,
+        transfer_id: String,
+        device_id: String,
+    ) -> Result<CoordinatorResponse, String> {
+        let offered = self
+            .pairing
+            .active_outgoing_transfer(unix_time_ms())?
             .ok_or_else(|| "transfer is no longer active".to_string())?;
-        if prepared.metadata.transfer_id != transfer_id {
+        if offered.metadata.transfer_id != transfer_id || offered.metadata.device_id != device_id {
             return Err("cancelled transfer does not match the active transfer".to_string());
         }
-        self.cleanup_prepared();
+        self.pairing.release_outgoing_transfer(&transfer_id)?;
         Ok(CoordinatorResponse::Cancelled { transfer_id })
     }
 }

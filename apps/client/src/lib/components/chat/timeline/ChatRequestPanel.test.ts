@@ -58,7 +58,8 @@ describe("ChatRequestPanel", () => {
 
   it("renders only provider-offered approval choices without focusing the permissive action", async () => {
     const resolve = vi.spyOn(getChat(), "resolveApproval").mockResolvedValue();
-    const body = setup(approval());
+    const pending = approval();
+    const body = setup(pending);
     await tick();
     await Promise.resolve();
     await tick();
@@ -68,7 +69,7 @@ describe("ChatRequestPanel", () => {
     expect(body.querySelector("section")?.contains(document.activeElement)).toBe(true);
     buttons[1]?.click();
     await tick();
-    expect(resolve).toHaveBeenCalledWith({
+    expect(resolve).toHaveBeenCalledWith(pending, {
       kind: "deny",
       providerOptionId: "deny",
       updatedToolInput: null,
@@ -77,7 +78,8 @@ describe("ChatRequestPanel", () => {
 
   it("offers to allow and not ask again only when Rust offers a rule, and remembers with allow once", async () => {
     const resolve = vi.spyOn(getChat(), "resolveApproval").mockResolvedValue();
-    const body = setup(approval(undefined, DECISIONS, { kind: "url_origin", key: "https://docs.example.org" }));
+    const pending = approval(undefined, DECISIONS, { kind: "url_origin", key: "https://docs.example.org" });
+    const body = setup(pending);
     await tick();
     const buttons = [...body.querySelectorAll<HTMLButtonElement>(".request-actions button")];
     expect(buttons.map((button) => button.textContent)).toEqual(["Allow once", en.chat.composer.allowAlways, "Deny"]);
@@ -85,7 +87,7 @@ describe("ChatRequestPanel", () => {
     expect(document.getElementById(remember?.getAttribute("aria-describedby") ?? "")?.textContent).toBe("Always allow pages from docs.example.org in this channel");
     remember?.click();
     await tick();
-    expect(resolve).toHaveBeenCalledWith({ kind: "allow_once", providerOptionId: "allow", updatedToolInput: null }, true);
+    expect(resolve).toHaveBeenCalledWith(pending, { kind: "allow_once", providerOptionId: "allow", updatedToolInput: null }, true);
   });
 
   it("withholds allow and don't ask again without an allow once choice", async () => {
@@ -174,7 +176,7 @@ describe("ChatRequestPanel", () => {
       updatedAt: "2026-07-21T12:00:00.000Z",
     });
     const submitted: UserInputAnswer[][] = [];
-    vi.spyOn(getChat(), "resolveUserInput").mockImplementation(async (answers) => { submitted.push(answers); });
+    vi.spyOn(getChat(), "resolveUserInput").mockImplementation(async (_pending, answers) => { submitted.push(answers); });
     const body = setup(question());
     await tick();
     await Promise.resolve();
@@ -226,7 +228,7 @@ describe("ChatRequestPanel", () => {
     api.pickImages.mockResolvedValueOnce([attachment("image-picked", "image", "picked.png")]);
     api.importSnippet.mockImplementation(async (_folder, id, name) => attachment(id, "text_snippet", name));
     const submitted: UserInputAnswer[][] = [];
-    vi.spyOn(chat, "resolveUserInput").mockImplementation(async (answers) => { submitted.push(answers); });
+    vi.spyOn(chat, "resolveUserInput").mockImplementation(async (_pending, answers) => { submitted.push(answers); });
     const body = setup(question());
     await vi.advanceTimersByTimeAsync(0);
     await tick();

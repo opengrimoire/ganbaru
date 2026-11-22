@@ -38,6 +38,8 @@ pub(crate) mod backup;
 pub(crate) mod database_rollback;
 pub(crate) mod encrypted_backup;
 pub(crate) mod handoff;
+mod journal_file;
+pub(crate) mod kept_folders;
 pub(crate) mod preferences;
 #[cfg(any(mobile, test))]
 pub(crate) mod process_managers;
@@ -443,6 +445,40 @@ fn read_vault_manifest(path: &Path) -> Result<VaultManifest, String> {
     parse_vault_manifest(&contents)
 }
 
+/// Error an open returns for a vault whose marker records data but whose database is gone.
+pub(crate) const VAULT_DATABASE_MISSING: &str = "this Ganbaru folder held data but its database is missing or empty, so it was not opened; restore a backup or a rollback copy into it";
+
+/// Refuses with [`VAULT_DATABASE_MISSING`] when the marker of the vault at `root` records that it
+/// held data but its database is missing or empty, so an open never silently starts it over.
+pub(crate) fn refuse_lost_database(root: &Path) -> Result<(), String> {
+    if !read_vault_manifest(root)?.has_data {
+        return Ok(());
+    }
+    match fs::symlink_metadata(database_path(root)) {
+        Ok(metadata) if metadata.len() > 0 => Ok(()),
+        Ok(_) => Err(VAULT_DATABASE_MISSING.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(VAULT_DATABASE_MISSING.to_string())
+        }
+        Err(error) => Err(format!("read Ganbaru database: {error}")),
+    }
+}
+
+/// Records in the marker of the vault at `root` whether it holds data, rewriting the marker only
+/// when it says otherwise.
+pub(crate) fn record_vault_data(root: &Path, has_data: bool) -> Result<(), String> {
+    let manifest = read_vault_manifest(root)?;
+    if manifest.has_data == has_data {
+        return Ok(());
+    }
+    let json = serde_json::to_string_pretty(&VaultManifest {
+        has_data,
+        ..manifest
+    })
+    .map_err(|error| format!("encode the Ganbaru folder marker: {error}"))?;
+    write_text_file_atomically(&manifest_path(root), &json, FileAccess::OwnerOnly)
+}
+
 fn vault_info_from_manifest(path: &Path, manifest: VaultManifest) -> Result<VaultInfo, String> {
     Ok(VaultInfo {
         path: path_to_string(path, "Ganbaru folder")?,
@@ -525,6 +561,13 @@ fn validate_vault_candidate(path: &Path) -> Result<VaultInfo, String> {
 }
 
 fn initialize_vault(path: &Path) -> Result<VaultInfo, String> {
+    initialize_named_vault(path, None)
+}
+
+/// Creates a vault in the empty folder at `path`, or validates the vault already there. A new
+/// vault takes `display_name`, or the folder name when it is `None`, so a vault staged beside
+/// its final place can carry the name of that place.
+fn initialize_named_vault(path: &Path, display_name: Option<String>) -> Result<VaultInfo, String> {
     let path = canonical_vault_path(path.to_path_buf())?;
     reject_symlinked_vault_entries(&path)?;
     if manifest_path(&path).exists() {
@@ -537,8 +580,9 @@ fn initialize_vault(path: &Path) -> Result<VaultInfo, String> {
         app: VAULT_APP_MARKER.to_string(),
         schema_version: VAULT_SCHEMA_VERSION,
         vault_id: new_vault_id(),
-        display_name: display_name_from_path(&path),
+        display_name: display_name.unwrap_or_else(|| display_name_from_path(&path)),
         created_at: now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
+        has_data: false,
     };
     ensure_vault_skeleton(&path)?;
     let json = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
@@ -1051,6 +1095,7 @@ pub(crate) fn activate_test_vault(
         vault_id: vault_id.to_string(),
         display_name: display_name_from_path(&path),
         created_at: now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
+        has_data: false,
     };
     ensure_vault_skeleton(&path)?;
     let json = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;

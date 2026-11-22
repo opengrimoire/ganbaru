@@ -61,8 +61,27 @@ impl Session {
         self.live_run()?;
         self.segment
             .as_ref()
-            .filter(|segment| segment.status == "active" && segment.actual_end_ms.is_none())
+            .filter(|segment| {
+                segment.status == FocusSegmentStatus::Active && segment.actual_end_ms.is_none()
+            })
             .ok_or_else(|| invalid_state("There is no active Focus phase"))
+    }
+
+    /// The only writer of the execution mode. A move outside `FOCUS_MODE_TRANSITIONS`
+    /// is rejected, so the caller's transaction rolls back instead of committing it.
+    /// The facts of the previous mode are dropped with it, so no idle, suspend, or return
+    /// evidence survives into a mode it does not belong to.
+    pub fn enter_mode(&mut self, next: FocusModeState) -> Result<(), FocusExecutionError> {
+        let current = self.state.mode.kind();
+        let target = next.kind();
+        if !current.can_transition_to(target) {
+            return Err(execution_error(
+                FocusErrorCode::InvalidState,
+                format!("Focus cannot move from {current:?} to {target:?}"),
+            ));
+        }
+        self.state.mode = next;
+        Ok(())
     }
 
     pub fn mark_changed(&mut self, id: &str) {
@@ -125,9 +144,10 @@ impl Session {
             .max(lower_bound)
             .min(detected_at_ms.max(lower_bound));
         let id = segment.id.clone();
-        sqlx::query("INSERT INTO pomodoro_pauses (segment_id, ordinal, started_at, ended_at, reason, detected_at) SELECT ?1, COALESCE(MAX(ordinal) + 1, 0), ?2, NULL, ?3, ?4 FROM pomodoro_pauses WHERE segment_id = ?1")
+        let inserted = sqlx::query("INSERT INTO pomodoro_pauses (segment_id, ordinal, started_at, ended_at, reason, detected_at) SELECT ?1, COALESCE(MAX(ordinal) + 1, 0), ?2, NULL, ?3, ?4 FROM pomodoro_pauses WHERE segment_id = ?1")
             .bind(&id).bind(format_timestamp(start_ms)?).bind(reason).bind(format_timestamp(detected_at_ms.max(start_ms))?)
             .execute(&mut **tx).await.map_err(|error| format!("Start Focus pause: {error}"))?;
+        expect_one_row(inserted, "Start Focus pause")?;
         self.record_event(tx, "pause_start", start_ms, Some(reason), None)
             .await?;
         self.segment
@@ -162,7 +182,8 @@ impl Session {
         let reason = pause.reason.clone();
         let start_ms = pause.started_at_ms;
         let id = segment.id.clone();
-        sqlx::query(
+        // The projection holds an open pause, so exactly one open row must close.
+        let closed = sqlx::query(
             "UPDATE pomodoro_pauses SET ended_at = ? WHERE segment_id = ? AND ended_at IS NULL",
         )
         .bind(format_timestamp(end_ms)?)
@@ -170,6 +191,7 @@ impl Session {
         .execute(&mut **tx)
         .await
         .map_err(|error| format!("Close Focus pause: {error}"))?;
+        expect_one_row(closed, "Close Focus pause")?;
         self.record_event(
             tx,
             "pause_end",
@@ -196,7 +218,7 @@ impl Session {
         &mut self,
         tx: &mut Transaction<'_, Sqlite>,
         at_ms: i64,
-        status: &str,
+        status: FocusSegmentStatus,
         reason: &str,
     ) -> Result<(), FocusExecutionError> {
         let segment = self.active_segment()?;
@@ -209,9 +231,10 @@ impl Session {
         );
         let id = segment.id.clone();
         self.close_pause(tx, end_ms).await?;
-        sqlx::query("UPDATE pomodoro_segments SET actual_end = ?, status = ?, end_reason = ? WHERE id = ? AND status = 'active' AND actual_end IS NULL")
-            .bind(format_timestamp(end_ms)?).bind(status).bind(reason).bind(&id).execute(&mut **tx).await
+        let closed = sqlx::query("UPDATE pomodoro_segments SET actual_end = ?, status = ?, end_reason = ? WHERE id = ? AND status = 'active' AND actual_end IS NULL")
+            .bind(format_timestamp(end_ms)?).bind(status.as_str()).bind(reason).bind(&id).execute(&mut **tx).await
             .map_err(|error| format!("Close Focus phase: {error}"))?;
+        expect_one_row(closed, "Close Focus phase")?;
         self.record_event(
             tx,
             if reason == "focus_failed" {
@@ -229,7 +252,7 @@ impl Session {
             .as_mut()
             .ok_or_else(|| invalid_state("Focus phase disappeared"))?;
         segment.actual_end_ms = Some(end_ms);
-        segment.status = status.to_owned();
+        segment.status = status;
         segment.end_reason = Some(reason.to_owned());
         self.mark_changed(&id);
         Ok(())
@@ -242,7 +265,7 @@ impl Session {
         reason: &str,
         segment_reason: &str,
         event_type: &str,
-        mode: FocusMode,
+        mode: FocusModeState,
     ) -> Result<(), FocusExecutionError> {
         let run = self.live_run()?;
         let id = run.id.clone();
@@ -250,7 +273,7 @@ impl Session {
         if self
             .segment
             .as_ref()
-            .is_some_and(|segment| segment.status == "active")
+            .is_some_and(|segment| segment.status == FocusSegmentStatus::Active)
         {
             let segment = self.active_segment()?;
             let phase_end_ms = if self.state.mode == FocusMode::Running
@@ -263,8 +286,13 @@ impl Session {
             } else {
                 ended_at_ms
             };
-            self.close_segment(tx, phase_end_ms, "interrupted", segment_reason)
-                .await?;
+            self.close_segment(
+                tx,
+                phase_end_ms,
+                FocusSegmentStatus::Interrupted,
+                segment_reason,
+            )
+            .await?;
         }
         writes::close_run_tx(
             tx,
@@ -272,7 +300,7 @@ impl Session {
                 run_id: id,
                 ended_at: format_timestamp(ended_at_ms)?,
                 end_reason: reason.to_owned(),
-                segment_status: "interrupted".to_owned(),
+                segment_status: FocusSegmentStatus::Interrupted.as_str().to_owned(),
                 segment_end_reason: segment_reason.to_owned(),
                 event_type: event_type.to_owned(),
             },
@@ -282,21 +310,9 @@ impl Session {
             .as_mut()
             .ok_or_else(|| invalid_state("Focus run disappeared"))?
             .ended_at_ms = Some(ended_at_ms);
-        self.state.mode = mode;
+        self.enter_mode(mode)?;
         self.state.last_transition_at_ms = ended_at_ms;
-        self.clear_waits();
         Ok(())
-    }
-
-    pub fn clear_waits(&mut self) {
-        self.state.idle_started_at_ms = None;
-        self.state.idle_detected_at_ms = None;
-        self.state.idle_overlay_visible_at_ms = None;
-        self.state.focus_failed_at_ms = None;
-        self.state.suspend_started_at_ms = None;
-        self.state.suspend_returned_at_ms = None;
-        self.state.return_started_at_ms = None;
-        self.state.paused_prompts_dismissed = false;
     }
 
     pub async fn update_deadline(
@@ -312,8 +328,9 @@ impl Session {
             .min(run.planned_end_ms)
             .max(segment.planned_start_ms);
         let id = segment.id.clone();
-        sqlx::query(
-            "UPDATE pomodoro_segments SET planned_end = ?, chosen_duration_ms = ? WHERE id = ?",
+        let updated = sqlx::query(
+            "UPDATE pomodoro_segments SET planned_end = ?, chosen_duration_ms = ?
+             WHERE id = ? AND status = 'active' AND actual_end IS NULL",
         )
         .bind(format_timestamp(end_ms)?)
         .bind(segment.chosen_duration_ms)
@@ -321,6 +338,7 @@ impl Session {
         .execute(&mut **tx)
         .await
         .map_err(|error| format!("Update accepted Focus phase deadline: {error}"))?;
+        expect_one_row(updated, "Update accepted Focus phase deadline")?;
         self.segment
             .as_mut()
             .ok_or_else(|| invalid_state("Focus phase disappeared"))?
@@ -378,20 +396,21 @@ impl Session {
             )?;
             writes::insert_adaptive_decision_envelope_tx(tx, &envelope).await?;
         }
-        sqlx::query("UPDATE pomodoro_segments SET chosen_duration_ms = ? WHERE id = ?")
-            .bind(duration_ms)
-            .bind(&segment.id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|error| format!("Persist accepted Focus phase duration: {error}"))?;
+        let persisted =
+            sqlx::query("UPDATE pomodoro_segments SET chosen_duration_ms = ? WHERE id = ?")
+                .bind(duration_ms)
+                .bind(&segment.id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|error| format!("Persist accepted Focus phase duration: {error}"))?;
+        expect_one_row(persisted, "Persist accepted Focus phase duration")?;
         self.state.segment_id = Some(segment.id.clone());
         self.segment = Some(load_segment(tx, &segment.id).await?);
         self.run = Some(run);
         self.mark_changed(&segment.id);
-        self.state.mode = FocusMode::Running;
+        self.enter_mode(FocusModeState::Running)?;
         self.state.focus_extension_used = false;
         self.state.break_extension_ms = 0;
-        self.clear_waits();
         self.record_event(tx, "phase_start", now_ms, None, None)
             .await?;
         Ok(())
@@ -427,6 +446,8 @@ impl Session {
         if let Some(decision) = &decision {
             configuration.rhythm = decision.selected_rhythm.into_rhythm();
         }
+        // A skip request belongs to the focus work it was made in, which only a continuation carries.
+        let continues_work = continuation.is_some();
         let mut continuation = continuation.unwrap_or_default();
         let position = normalize_position(&configuration, continuation.position);
         if continuation.phase == FocusPhase::Focus
@@ -490,24 +511,29 @@ impl Session {
             adaptive_snapshot,
         };
         writes::insert_run_tx(tx, &write, &segment).await?;
-        sqlx::query("UPDATE pomodoro_runs SET inherited_focus_milliseconds = ?, inherited_phase_milliseconds = ? WHERE id = ?")
+        let inherited = sqlx::query("UPDATE pomodoro_runs SET inherited_focus_milliseconds = ?, inherited_phase_milliseconds = ? WHERE id = ?")
             .bind(continuation.focus_elapsed_ms).bind(continuation.phase_elapsed_ms).bind(&run_id)
             .execute(&mut **tx).await.map_err(|error| format!("Persist precise Focus inheritance: {error}"))?;
-        sqlx::query("UPDATE pomodoro_segments SET chosen_duration_ms = ? WHERE id = ?")
-            .bind(duration_ms)
-            .bind(&segment.id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|error| format!("Persist accepted Focus duration: {error}"))?;
+        expect_one_row(inherited, "Persist precise Focus inheritance")?;
+        let persisted =
+            sqlx::query("UPDATE pomodoro_segments SET chosen_duration_ms = ? WHERE id = ?")
+                .bind(duration_ms)
+                .bind(&segment.id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|error| format!("Persist accepted Focus duration: {error}"))?;
+        expect_one_row(persisted, "Persist accepted Focus duration")?;
         self.state.run_id = Some(run_id);
         self.state.calendar_configuration = Some(commitment.configuration.clone());
         self.state.segment_id = Some(segment.id.clone());
-        self.state.mode = FocusMode::Running;
+        self.enter_mode(FocusModeState::Running)?;
         self.state.dismissed_occurrence_id = None;
+        if !continues_work {
+            self.state.skip_next_break = false;
+        }
         self.state.focus_extension_used = false;
         self.state.break_extension_ms = 0;
         self.state.last_transition_at_ms = now_ms;
-        self.clear_waits();
         self.run = Some(run);
         self.segment = Some(load_segment(tx, &segment.id).await?);
         self.mark_changed(&segment.id);
@@ -555,7 +581,22 @@ async fn build_segment_write(
         actual_start: Some(format_timestamp(now_ms)?),
         actual_end: None,
         pauses: Vec::new(),
-        status: "active".to_owned(),
+        status: FocusSegmentStatus::Active.as_str().to_owned(),
         end_reason: None,
     })
+}
+
+/// Guards a write whose target row was loaded in this transaction: anything other than
+/// exactly one changed row means the projection and SQLite disagree, so the move is refused.
+pub(super) fn expect_one_row(
+    result: sqlx::sqlite::SqliteQueryResult,
+    write: &str,
+) -> Result<(), FocusExecutionError> {
+    match result.rows_affected() {
+        1 => Ok(()),
+        rows => Err(execution_error(
+            FocusErrorCode::InvalidState,
+            format!("{write} changed {rows} rows instead of one"),
+        )),
+    }
 }

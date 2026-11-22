@@ -171,16 +171,15 @@ impl CodexEventNormalizer {
             .and_then(Value::as_object)
             .ok_or_else(|| protocol_error("turn/started.turn"))?;
         let provider_turn_id = required_text(turn, "id")?.to_string();
-        if state.retry_request_in_flight && state.active_chat_turn_id.is_none() {
+        if state.retry_request_in_flight() && state.turn().chat_turn().is_none() {
             // The retry's chat turn settled while its request was in flight, and no new turn
             // starts until it resolves, so this turn has no owner.
             state.abandon_provider_turn(&provider_turn_id);
             return Ok(Vec::new());
         }
-        state.active_provider_turn_id = Some(provider_turn_id.clone());
-        state.session_state = ProviderSessionState::Active;
+        state.transition_turn(TurnRouteEvent::ProviderTurn(provider_turn_id.clone()))?;
         state.changed_files.clear();
-        let chat_turn_id = state.active_chat_turn_id.clone();
+        let chat_turn_id = state.turn().chat_turn().cloned();
         let provider_turn = provider_identifier::<ProviderTurnId>(&provider_turn_id)
             .unwrap_or_else(|| self.fallback_provider_turn_id());
         Ok(vec![self.event(
@@ -258,14 +257,10 @@ impl CodexEventNormalizer {
         turn_state: ChatTurnState,
         stop_reason: Option<String>,
     ) -> ChatResult<CanonicalRuntimeEvent> {
-        let chat_turn = state.active_chat_turn_id.clone();
-        state.session_state = ProviderSessionState::Ready;
-        state.active_chat_turn_id = None;
-        state.active_provider_turn_id = None;
+        let chat_turn = state
+            .transition_turn(TurnRouteEvent::Settle)?
+            .settled_chat_turn;
         state.stream_indexes.clear();
-        if let Some(retry) = state.capacity_retry.take() {
-            retry.cancel();
-        }
         let changed_files = std::mem::take(&mut state.changed_files);
         self.event(
             state,

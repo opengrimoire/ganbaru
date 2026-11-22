@@ -53,6 +53,7 @@ fn theme_write(id: &str) -> UserThemeWrite {
         blend_canvas: "#101010".to_string(),
         seed_blend_canvas: "#202020".to_string(),
         derivation_engine_version: 2,
+        seed_derivation_engine_version: 1,
         calendar_default_mode: "custom".to_string(),
         calendar_default_custom: "#303030".to_string(),
         seed_calendar_default_mode: "app-canvas".to_string(),
@@ -180,6 +181,8 @@ fn inserted_themes_load_with_their_own_current_and_seed_rows() {
         let first = load_one(&pool, "first").await;
         assert_eq!(first.theme.display_name, "Custom");
         assert_eq!(first.theme.seed_icon_label, "light");
+        assert_eq!(first.theme.derivation_engine_version, 2);
+        assert_eq!(first.theme.seed_derivation_engine_version, 1);
         assert_eq!(
             token_values(&first.tokens),
             [
@@ -231,6 +234,8 @@ fn replace_content_rewrites_current_rows_keeps_the_seed_and_requires_an_existing
         replacement.tokens = vec![token("source", "accent", "#555555", false)];
         replacement.seed_tokens = vec![token("source", "accent", "#666666", false)];
         replacement.seed_blend_canvas = "#999999".to_string();
+        replacement.derivation_engine_version = 4;
+        replacement.seed_derivation_engine_version = 4;
         replacement.palette = palette("#cccccc");
         replace_content(&pool, &replacement).await.unwrap();
 
@@ -248,6 +253,8 @@ fn replace_content_rewrites_current_rows_keeps_the_seed_and_requires_an_existing
             ]
         );
         assert_eq!(theme.theme.seed_blend_canvas, "#202020");
+        assert_eq!(theme.theme.derivation_engine_version, 4);
+        assert_eq!(theme.theme.seed_derivation_engine_version, 1);
         assert!(theme.palette.iter().all(|row| row.value == "#cccccc"));
         assert!(theme.seed_palette.iter().all(|row| row.value == "#bbbbbb"));
 
@@ -256,60 +263,6 @@ fn replace_content_rewrites_current_rows_keeps_the_seed_and_requires_an_existing
             .unwrap_err();
         assert!(error.contains("not found"), "{error}");
         assert_eq!(count_rows(&pool, "themes").await, 1);
-    });
-}
-
-#[test]
-fn reset_token_to_seed_restores_only_the_named_token() {
-    block_on(async {
-        let pool = migrated_memory_pool().await;
-        insert(&pool, &theme_write("custom")).await.unwrap();
-
-        reset_token_to_seed(&pool, "custom", "source", "canvas")
-            .await
-            .unwrap();
-        assert_eq!(
-            token_values(&load_one(&pool, "custom").await.tokens),
-            [
-                ("app", "--background", "#121212", 0),
-                ("source", "canvas", "#222222", 0),
-            ]
-        );
-
-        let error = reset_token_to_seed(&pool, "custom", "source", "missing")
-            .await
-            .unwrap_err();
-        assert!(error.contains("no matching row"), "{error}");
-        assert!(
-            reset_token_to_seed(&pool, "custom", "invalid", "canvas")
-                .await
-                .is_err()
-        );
-    });
-}
-
-#[test]
-fn reset_to_seed_restores_appearance_and_keeps_the_name_and_icon() {
-    block_on(async {
-        let pool = migrated_memory_pool().await;
-        insert(&pool, &theme_write("custom")).await.unwrap();
-        rename(&pool, "custom", "Renamed").await.unwrap();
-
-        reset_to_seed(&pool, "custom").await.unwrap();
-        let theme = load_one(&pool, "custom").await;
-        assert_eq!(theme.theme.display_name, "Renamed");
-        assert_eq!(theme.theme.icon_label, "dark");
-        assert_eq!(theme.theme.blend_canvas, "#202020");
-        assert_eq!(theme.theme.calendar_default_mode, "app-canvas");
-        assert_eq!(theme.theme.calendar_default_custom, "#27282a");
-        assert_eq!(
-            token_values(&theme.tokens),
-            token_values(&theme.seed_tokens)
-        );
-        assert!(theme.palette.iter().all(|row| row.value == "#bbbbbb"));
-
-        let error = reset_to_seed(&pool, "missing").await.unwrap_err();
-        assert!(error.contains("no matching row"), "{error}");
     });
 }
 
@@ -481,23 +434,6 @@ fn a_rename_through_save_captures_the_name_without_the_content() {
     });
 }
 
-#[test]
-fn resets_that_change_nothing_capture_nothing() {
-    block_on(async {
-        let pool = migrated_memory_pool().await;
-        insert(&pool, &theme_write("custom")).await.unwrap();
-        reset_to_seed(&pool, "custom").await.unwrap();
-        take_captures(&pool).await;
-
-        reset_to_seed(&pool, "custom").await.unwrap();
-        reset_token_to_seed(&pool, "custom", "source", "canvas")
-            .await
-            .unwrap();
-        assert_eq!(take_captures(&pool).await, []);
-    });
-}
-
-/// Restores a recovered theme on a connection of its own, outside any caller transaction.
 async fn restore_from_pool(
     pool: &SqlitePool,
     values: &[(GroupId, Value)],
@@ -571,6 +507,7 @@ fn restoring_a_recovered_theme_creates_a_new_theme_seeded_with_its_content() {
         assert_eq!(restored.theme.blend_canvas, "#0a0a0a");
         assert_eq!(restored.theme.seed_blend_canvas, "#0a0a0a");
         assert_eq!(restored.theme.derivation_engine_version, 3);
+        assert_eq!(restored.theme.seed_derivation_engine_version, 3);
         assert_eq!(restored.theme.seed_calendar_default_custom, "#0b0b0b");
         assert_eq!(
             token_values(&restored.tokens),

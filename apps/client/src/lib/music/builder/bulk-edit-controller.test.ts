@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { MusicLibraryController } from "$lib/music/library/controller.svelte";
-import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
+import type { MusicItemSignal, MusicItemSignalsWrite, MusicPlaylistSummary } from "$lib/music/library/contracts";
 import { MusicBulkEditController } from "./bulk-edit-controller.svelte";
 
-const { applyMusicReviewSelection, bulkEditMusicMemberships, bulkSetMusicReviewState, getMusicMembershipMatrix } = vi.hoisted(() => ({
+const { applyMusicReviewSelection, bulkEditMusicMemberships, bulkSetMusicReviewState, getMusicInspectorDetail, getMusicMembershipMatrix, setMusicItemSignals } = vi.hoisted(() => ({
+  getMusicInspectorDetail: vi.fn(async (itemId: string) => ({ item: { id: itemId }, signals: [] as MusicItemSignal[] })),
+  setMusicItemSignals: vi.fn(async (_write: MusicItemSignalsWrite) => undefined),
   applyMusicReviewSelection: vi.fn(async () => ({
     membershipChangedCount: 2,
     reviewChangedCount: 2,
@@ -20,6 +22,8 @@ const { applyMusicReviewSelection, bulkEditMusicMemberships, bulkSetMusicReviewS
 
 vi.mock("$lib/api/music-library", () => ({
   applyMusicReviewSelection,
+  getMusicInspectorDetail,
+  setMusicItemSignals,
   getMusicMembershipMatrix,
   bulkEditMusicMemberships,
   bulkSetMusicReviewState,
@@ -224,5 +228,98 @@ describe("MusicBulkEditController", () => {
     resolveMatrix([{ itemId: "item-1", playlistId: "all", weight: "normal" }]);
     expect(await loading).toBe(true);
     expect(controller.states.empty).toBe("checked");
+  });
+
+  it("keeps a membership save that lands after a new selection opened off the new selection", async () => {
+    const library = { refreshAfterMutation: vi.fn(async () => true) } as unknown as MusicLibraryController;
+    const controller = new MusicBulkEditController(library, () => 100, () => "action");
+    getMusicMembershipMatrix.mockImplementationOnce(async () => []);
+    await controller.open(["item-1"], [summary("all"), summary("empty")]);
+    controller.toggle("empty");
+    let rejectSave!: (error: Error) => void;
+    bulkEditMusicMemberships.mockImplementationOnce(() => new Promise((_, reject) => { rejectSave = reject; }));
+    let resolveSave!: (value: { changedCount: number }) => void;
+    bulkEditMusicMemberships.mockImplementationOnce(() => new Promise((resolve) => { resolveSave = resolve; }));
+
+    const failing = controller.saveMemberships();
+    getMusicMembershipMatrix.mockImplementationOnce(async () => [{ itemId: "item-2", playlistId: "all", weight: "normal" }]);
+    await controller.open(["item-2", "item-3"], [summary("all"), summary("empty")]);
+    rejectSave(new Error("late failure"));
+    expect(await failing).toBe(false);
+    expect(controller.error).toBeNull();
+
+    controller.toggle("all");
+    const saving = controller.saveMemberships();
+    getMusicMembershipMatrix.mockImplementationOnce(async () => []);
+    await controller.open(["item-4"], [summary("all"), summary("empty")]);
+    resolveSave({ changedCount: 1 });
+    expect(await saving).toBe(true);
+    expect(controller.initialCounts).toEqual({});
+    expect(controller.states).toEqual({ all: "unchecked", empty: "unchecked" });
+  });
+
+  it("keeps a playlist created during a selection change checked once the new selection loads", async () => {
+    const library = { refreshSummariesAfterMutation: vi.fn(async () => true) } as unknown as MusicLibraryController;
+    const controller = new MusicBulkEditController(library, () => 100, () => "created");
+    await controller.open(["item-1"], [summary("all")]);
+    let resolveMatrix!: (value: Array<{ itemId: string; playlistId: string; weight: "normal" }>) => void;
+    getMusicMembershipMatrix.mockImplementationOnce(() => new Promise((resolve) => { resolveMatrix = resolve; }));
+
+    const loading = controller.open(["item-1", "item-2"], [summary("all")], true);
+    expect(await controller.createPlaylistAndSelect("Late", "music")).toBe("created");
+    resolveMatrix([]);
+    expect(await loading).toBe(true);
+
+    expect(controller.states.created).toBe("checked");
+    expect(controller.membershipsChanged).toBe(true);
+  });
+
+  it("creates a playlist without checking it in an edit that started over meanwhile", async () => {
+    let finishRefresh!: (value: boolean) => void;
+    const library = {
+      refreshSummariesAfterMutation: vi.fn(() => new Promise<boolean>((resolve) => { finishRefresh = resolve; })),
+    } as unknown as MusicLibraryController;
+    const controller = new MusicBulkEditController(library, () => 100, () => "created");
+    await controller.open(["item-1"], [summary("all")]);
+
+    const creating = controller.createPlaylistAndSelect("Late", "music");
+    await vi.waitFor(() => expect(library.refreshSummariesAfterMutation).toHaveBeenCalledOnce());
+    await controller.open(["item-9"], [summary("all")]);
+    finishRefresh(true);
+
+    expect(await creating).toBe("created");
+    expect(controller.states.created).toBeUndefined();
+    expect(controller.touchedPlaylistIds.has("created")).toBe(false);
+  });
+
+  it("describes and restores the tracks selected when describing started after the selection changes", async () => {
+    const runOptimistic = vi.fn(async (action: { persist: () => Promise<unknown>; undo: () => Promise<void> }) => {
+      await action.persist();
+      return action;
+    });
+    const library = { runOptimistic, refreshAfterMutation: vi.fn(async () => true) } as unknown as MusicLibraryController;
+    const controller = new MusicBulkEditController(library, () => 100, () => "action");
+    controller.useSelection(["item-1", "item-2"]);
+    let releasePrior!: () => void;
+    const priorRead = new Promise<void>((resolve) => { releasePrior = resolve; });
+    getMusicInspectorDetail.mockImplementation(async (itemId: string) => {
+      await priorRead;
+      return { item: { id: itemId }, signals: ["calm"] as MusicItemSignal[] };
+    });
+
+    const describing = controller.setSignals(["lyrics"]);
+    controller.useSelection(["item-3"]);
+    releasePrior();
+    expect(await describing).toBe(true);
+
+    expect(setMusicItemSignals).toHaveBeenCalledWith({ itemIds: ["item-1", "item-2"], signals: ["lyrics"], updatedAtMs: 100 });
+    const action = runOptimistic.mock.calls[0]?.[0];
+    expect(action).toMatchObject({ key: "bulk-signals:item-1:item-2" });
+    setMusicItemSignals.mockClear();
+    await action?.undo();
+    expect(setMusicItemSignals.mock.calls.map(([write]) => write)).toEqual([
+      { itemIds: ["item-1"], signals: ["calm"], updatedAtMs: 100 },
+      { itemIds: ["item-2"], signals: ["calm"], updatedAtMs: 100 },
+    ]);
   });
 });

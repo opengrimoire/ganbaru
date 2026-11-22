@@ -73,4 +73,14 @@ describe("Project dependency review lifetime", () => {
     await controller.apply();
     expect(apply).not.toHaveBeenCalled();
   });
+
+  it("shows a task open failure only while its project is still selected", () => {
+    let projectId = "first";
+    const controller = new ProjectDependencyCascadeController(() => projectId, vi.fn(async () => undefined), async (id) => proposal(id));
+    projectId = "second";
+    controller.reportOpenFailure("first", new Error("gone"));
+    expect(controller.error).toBeNull();
+    controller.reportOpenFailure("second", new Error("gone"));
+    expect(controller.error?.action).toBe("open");
+  });
 });

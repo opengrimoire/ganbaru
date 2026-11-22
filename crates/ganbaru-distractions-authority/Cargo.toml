@@ -1,0 +1,18 @@
+[package]
+name = "ganbaru-distractions-authority"
+version = "0.1.0"
+description = "Ganbaru distraction blocker runtime authority shared by the app and the browser host"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

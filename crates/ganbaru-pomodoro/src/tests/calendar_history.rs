@@ -18,10 +18,10 @@ async fn completed_run(pool: &sqlx::SqlitePool, id: &str, occurrence: &str) {
     sqlx::query(
         "INSERT INTO pomodoro_segments
          (id, event_id, event_date, run_id, rhythm_position, phase,
-          planned_start, planned_end, actual_start, actual_end, status)
+          planned_start, planned_end, actual_start, actual_end, status, end_reason)
          VALUES (?, 'event-1', '2026-05-28', ?, 1, 'focus',
           '2026-05-29T00:00:00Z', '2026-05-29T01:00:00Z',
-          '2026-05-29T00:00:00Z', '2026-05-29T01:00:00Z', 'completed')",
+          '2026-05-29T00:00:00Z', '2026-05-29T01:00:00Z', 'completed', 'completed')",
     )
     .bind(id)
     .bind(id)
@@ -79,10 +79,10 @@ fn unrelated_series_history_cannot_exhaust_the_visible_occurrence_budget() {
         sqlx::query(
             "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i < 10001)
              INSERT INTO pomodoro_segments (id, event_id, event_date, run_id, rhythm_position, phase,
-              planned_start, planned_end, actual_start, actual_end, status)
+              planned_start, planned_end, actual_start, actual_end, status, end_reason)
              SELECT 'old-' || i, 'event-1', '2026-05-28', 'old', i, 'focus',
               '2026-05-28T00:00:00Z', '2026-05-28T00:01:00Z',
-              '2026-05-28T00:00:00Z', '2026-05-28T00:01:00Z', 'completed' FROM n",
+              '2026-05-28T00:00:00Z', '2026-05-28T00:01:00Z', 'completed', 'completed' FROM n",
         ).execute(&pool).await.unwrap();
         let visible =
             pomodoro_load_segments_for_events(pool.clone(), vec!["event-1::2026-05-29".into()])

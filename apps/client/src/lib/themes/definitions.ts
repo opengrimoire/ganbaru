@@ -142,6 +142,8 @@ export interface UserTheme {
   blendCanvas: string;
   /** Engine version stamp; drives the rebake banner. */
   derivationEngineVersion: number;
+  /** Engine version the seed tokens were derived with; "Reset all" restores the stamp to this. */
+  seedDerivationEngineVersion: number;
   /**
    * Default bundle used for the internal calendar area, including its day
    * and time headers: calendar surface, event palette, and calendar details.

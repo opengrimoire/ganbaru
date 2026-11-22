@@ -106,7 +106,7 @@ pub(super) async fn load_graph(
     let tasks = sqlx::query_as::<_, CascadeTask>("SELECT t.id, t.title, t.revision, t.start_date, t.due_date, t.target_end_date,
         (t.milestone != 0 OR t.task_type = 'milestone') AS milestone,
         (t.archived_at IS NOT NULL) AS archived,
-        (t.completed_at IS NOT NULL OR s.terminal != 0 OR s.category = 'done') AS completed,
+        (s.terminal = 1) AS completed,
         EXISTS(SELECT 1 FROM project_task_event_links l WHERE l.task_id = t.id AND l.link_kind = 'scheduled') AS scheduled
         FROM project_tasks t JOIN project_statuses s ON s.id = t.status_id AND s.project_id = t.project_id WHERE t.project_id = ? ORDER BY t.id")
         .bind(project_id).fetch_all(&mut **tx).await.map_err(|error| format!("read cascade task graph: {error}"))?;

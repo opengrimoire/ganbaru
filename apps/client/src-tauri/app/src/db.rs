@@ -23,25 +23,48 @@ static VAULT_POOLS: LazyLock<DatabaseState> = LazyLock::new(|| {
     registry.set_connection_hook(Some(ganbaru_sync_replica::access::vault_connection_hook(
         vault_commits().clone(),
     )));
-    registry.set_migrated_hook(Some(Arc::new(|pool| Box::pin(convert_migrated_keys(pool)))));
+    registry.set_migrated_hook(Some(Arc::new(|pool| Box::pin(settle_migrated_vault(pool)))));
     registry
 });
 
 /// Replaces the placeholder row keys the Music capture migration writes with their derived
-/// keys, before any writer or sync start can capture a placeholder.
-async fn convert_migrated_keys(pool: sqlx::SqlitePool) -> Result<(), String> {
+/// keys, before any writer or sync start can capture a placeholder, and settles Music refreshes
+/// a previous process left queued or running, before this process can start one.
+async fn settle_migrated_vault(pool: sqlx::SqlitePool) -> Result<(), String> {
     let mut connection = pool
         .acquire()
         .await
         .map_err(|error| format!("acquire key conversion connection: {error}"))?;
     ganbaru_music_library::identity::rekey_pending(&mut connection)
         .await
-        .map(|_| ())
-        .map_err(|error| format!("convert music row keys: {error}"))
+        .map_err(|error| format!("convert music row keys: {error}"))?;
+    drop(connection);
+    settle_music_refreshes(&pool).await
+}
+
+/// Settles Music refreshes a previous process left queued or running. Local refreshes run
+/// only on desktop.
+#[cfg(desktop)]
+async fn settle_music_refreshes(pool: &sqlx::SqlitePool) -> Result<(), String> {
+    let settled_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("read the clock to settle music refreshes: {error}"))?
+        .as_millis();
+    let settled_at = i64::try_from(settled_at)
+        .map_err(|error| format!("read the clock to settle music refreshes: {error}"))?;
+    ganbaru_music_library::local_refresh::settle_interrupted(pool, settled_at)
+        .await
+        .map_err(|error| format!("settle interrupted music refreshes: {error}"))
+}
+
+/// Local Music refreshes do not run on mobile, so there is nothing to settle.
+#[cfg(mobile)]
+async fn settle_music_refreshes(_pool: &sqlx::SqlitePool) -> Result<(), String> {
+    Ok(())
 }
 
 /// The process pool registry. Its connection hook, which signals commits, and its
-/// post-migration key conversion are in place before the first pool opens.
+/// post-migration key conversion and refresh settling are in place before the first pool opens.
 pub(crate) fn vault_pools() -> &'static DatabaseState {
     &VAULT_POOLS
 }
@@ -219,7 +242,36 @@ async fn connect_database<R: Runtime>(
     }
     drop(app);
     drop(db_url);
-    connect_read_write(&registry, path).await
+    if is_vault_database {
+        open_vault_read_write(&registry, path).await
+    } else {
+        connect_read_write(&registry, path).await
+    }
+}
+
+/// Opens the vault database at `path` read-write. Before the first pool opens, an interrupted
+/// reset or restore settles and a vault that held data but lost its database is refused; once the
+/// first open migrated the database, the vault marker records that it holds data. A failed
+/// record closes the pool, so the next open records it again.
+async fn open_vault_read_write(
+    registry: &DatabaseState,
+    path: PathBuf,
+) -> Result<sqlx::SqlitePool, String> {
+    let opening = registry.access(&path).await.is_none();
+    settle_vault_restore(registry, &path).await?;
+    let pool = connect_read_write(registry, path.clone()).await?;
+    if opening {
+        let root = path
+            .parent()
+            .ok_or_else(|| "Ganbaru database has no vault folder".to_string())?;
+        if let Err(error) = vault::record_vault_data(root, true) {
+            return Err(match registry.close_path(&path).await {
+                Ok(()) => error,
+                Err(close) => format!("{error}; close the vault database: {close}"),
+            });
+        }
+    }
+    Ok(pool)
 }
 
 /// Opens `path` read-write in `registry`, converting placeholder keys on the first open.
@@ -275,7 +327,25 @@ pub(crate) async fn connect_vault_for_sync_in(
     let _connection_guard = VAULT_CONNECTION_GATE.read().await;
     let path = vault::active_database_path_in(config_dir)?;
     hold_vault_lock(&path)?;
-    connect_read_write(registry, path).await
+    open_vault_read_write(registry, path).await
+}
+
+/// Settles an interrupted reset or rollback restore of the vault of `database_path` before its
+/// first pool opens, so SQLite never creates an empty database where either moved the data out,
+/// then refuses a vault whose marker records data while its database is missing or empty. A
+/// reset or restore left pending refuses the open. An open pool means the vault already settled.
+async fn settle_vault_restore(
+    registry: &DatabaseState,
+    database_path: &Path,
+) -> Result<(), String> {
+    if registry.access(database_path).await.is_some() {
+        return Ok(());
+    }
+    let root = database_path
+        .parent()
+        .ok_or_else(|| "Ganbaru database has no vault folder".to_string())?;
+    vault::database_rollback::recover_restore_or_refuse(root)?;
+    vault::refuse_lost_database(root)
 }
 
 pub(crate) async fn close_all_sqlite_pools_for_restore<R: Runtime>(

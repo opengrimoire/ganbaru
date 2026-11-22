@@ -50,6 +50,7 @@ mod hydrate;
 mod log;
 mod materialize;
 mod merge;
+mod op_state;
 mod publication;
 mod records;
 mod recovery;

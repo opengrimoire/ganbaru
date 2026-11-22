@@ -115,6 +115,8 @@
         console.error("Failed to select a project from the sidebar", error);
         return;
       }
+      // A later selection supersedes this one, and the store then settles this one without selecting its project.
+      if (projects.selectedProjectId !== view.projectId) return;
       onProjectSelected();
     }
     query = "";

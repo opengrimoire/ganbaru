@@ -7,6 +7,9 @@ use crate::chat::send_commands::{SendChatTurnCommand, SendChatTurnResult, SteerC
 use crate::vault;
 use ganbaru_chat::agent_runs::{StartingAgentRun, TurnOrigin};
 use ganbaru_chat::repository::receipts::{CommandReceiptRead, CommandReceiptState};
+use ganbaru_chat::repository::state_writes::{
+    StateWriteColumns, StateWriteValue, guarded_thread_state_assignment, persist_turn_transition,
+};
 use ganbaru_chat::repository::{attachments, reads};
 use ganbaru_chat_contracts::models::*;
 use serde_json::json;
@@ -423,23 +426,27 @@ pub(super) async fn persist_user_turn(context: PersistUserTurnContext<'_>) -> Ch
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    sqlx::query(
+    // A thread closed after the send read it stays closed.
+    let statement = format!(
         "UPDATE chat_threads SET model_selection_data = ?, safety_mode = ?,
-                interaction_mode = ?, state = 'active', latest_turn_state = 'pending',
+                interaction_mode = ?, {}, latest_turn_state = ?,
                 latest_preview = ?, message_count = message_count + 1,
                 revision = revision + 1, last_activity_at = ?, updated_at = ?
          WHERE id = ?",
-    )
-    .bind(model_selection)
-    .bind(wire_safety(request.modes.safety_mode))
-    .bind(wire_interaction(request.modes.interaction_mode))
-    .bind(prompt_preview(&request.prompt))
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(thread_id.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
+        guarded_thread_state_assignment(ChatThreadState::Active)
+    );
+    sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
+        .bind(model_selection)
+        .bind(wire_safety(request.modes.safety_mode))
+        .bind(wire_interaction(request.modes.interaction_mode))
+        .bind(ChatTurnState::Pending.as_str())
+        .bind(prompt_preview(&request.prompt))
+        .bind(now.as_str())
+        .bind(now.as_str())
+        .bind(thread_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
     if let Some((binding, launch)) = origin.assignment_run() {
         ganbaru_chat::agent_runs::insert_starting_run(
             &mut transaction,
@@ -554,29 +561,40 @@ pub(super) async fn mark_turn_dispatch_failed(
 ) -> ChatResult<()> {
     let error_data = serde_json::to_string(error).map_err(json_error)?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    sqlx::query(
-        "UPDATE chat_turns SET state = 'failed', completed_at = ?, stop_reason = ?,
-                error_schema_version = 1, error_data = ?, updated_at = ?
-         WHERE id = ? AND thread_id = ?",
+    // A provider can settle the turn before the dispatch error reaches this point; a settled
+    // turn keeps its outcome and the thread is left as its own events projected it.
+    let outcome = persist_turn_transition(
+        &mut transaction,
+        thread_id.as_str(),
+        turn_id.as_str(),
+        ChatTurnState::Failed,
+        StateWriteColumns {
+            assignments: "completed_at = ?, stop_reason = ?, error_schema_version = 1,
+                          error_data = ?, updated_at = ?",
+            values: &[
+                StateWriteValue::Text(now.as_str()),
+                StateWriteValue::Text(&error.message),
+                StateWriteValue::Text(&error_data),
+                StateWriteValue::Text(now.as_str()),
+            ],
+        },
     )
-    .bind(now.as_str())
-    .bind(&error.message)
-    .bind(error_data)
-    .bind(now.as_str())
-    .bind(turn_id.as_str())
-    .bind(thread_id.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
-    sqlx::query(
-        "UPDATE chat_threads SET state = 'error', latest_turn_state = 'failed',
+    .await?;
+    if !outcome.is_applied() {
+        return transaction.commit().await.map_err(persistence_error);
+    }
+    let statement = format!(
+        "UPDATE chat_threads SET {}, latest_turn_state = ?,
                 revision = revision + 1, updated_at = ? WHERE id = ?",
-    )
-    .bind(now.as_str())
-    .bind(thread_id.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
+        guarded_thread_state_assignment(ChatThreadState::Error)
+    );
+    sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
+        .bind(ChatTurnState::Failed.as_str())
+        .bind(now.as_str())
+        .bind(thread_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
     transaction.commit().await.map_err(persistence_error)
 }
 

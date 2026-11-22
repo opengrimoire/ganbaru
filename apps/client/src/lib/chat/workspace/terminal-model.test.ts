@@ -14,10 +14,9 @@ import {
   terminalScopeKey,
 } from "./terminal-model";
 
-function chunk(generation: number, sequence: number, text: string) {
+function chunk(sequence: number, text: string) {
   return {
     terminalId: "terminal",
-    generation,
     sequence,
     dataBase64: btoa(text),
     replay: false,
@@ -26,29 +25,27 @@ function chunk(generation: number, sequence: number, text: string) {
 
 describe("Chat terminal model", () => {
   it("accepts contiguous output and detects duplicates and replay gaps", () => {
-    const initial = { generation: 1, lastSequence: 0 };
-    const accepted = applyTerminalOutput(initial, chunk(1, 1, "hello"));
+    const initial = { lastSequence: 0 };
+    const accepted = applyTerminalOutput(initial, chunk(1, "hello"));
     expect(accepted.kind).toBe("accept");
     if (accepted.kind !== "accept") throw new Error("expected accepted output");
     expect(new TextDecoder().decode(accepted.bytes)).toBe("hello");
-    expect(applyTerminalOutput(accepted.state, chunk(1, 1, "hello")).kind).toBe("duplicate");
-    expect(applyTerminalOutput(accepted.state, chunk(1, 3, "later")).kind).toBe("gap");
-    expect(applyTerminalOutput(accepted.state, chunk(2, 1, "restart")).kind).toBe("accept");
+    expect(applyTerminalOutput(accepted.state, chunk(1, "hello")).kind).toBe("duplicate");
+    expect(applyTerminalOutput(accepted.state, chunk(3, "later")).kind).toBe("gap");
   });
 
   it("starts a replay at the first retained chunk so trimmed scrollback is written", () => {
-    expect(replayStartState(1, [])).toEqual({ generation: 1, lastSequence: 0 });
-    expect(replayStartState(1, [chunk(1, 1, "a"), chunk(1, 2, "b")])).toEqual({ generation: 1, lastSequence: 0 });
-    const trimmed = [chunk(1, 41, "a"), chunk(1, 42, "b")];
-    let state = replayStartState(1, trimmed);
-    expect(state).toEqual({ generation: 1, lastSequence: 40 });
+    expect(replayStartState([])).toEqual({ lastSequence: 0 });
+    expect(replayStartState([chunk(1, "a"), chunk(2, "b")])).toEqual({ lastSequence: 0 });
+    const trimmed = [chunk(41, "a"), chunk(42, "b")];
+    let state = replayStartState(trimmed);
+    expect(state).toEqual({ lastSequence: 40 });
     for (const retained of trimmed) {
       const decision = applyTerminalOutput(state, retained);
       expect(decision.kind).toBe("accept");
       state = decision.state;
     }
-    expect(applyTerminalOutput(state, chunk(1, 43, "live")).kind).toBe("accept");
-    expect(replayStartState(2, [chunk(1, 9, "old"), chunk(2, 5, "new")])).toEqual({ generation: 2, lastSequence: 4 });
+    expect(applyTerminalOutput(state, chunk(43, "live")).kind).toBe("accept");
   });
 
   it("requires confirmation only for multiline paste when enabled", () => {
@@ -151,7 +148,7 @@ describe("terminal output flow control", () => {
 
   it("measures decoded chunk size for every padding length", () => {
     for (const text of ["", "a", "ab", "abc", "abcd", "ÿ\u0000\u001b[0m"]) {
-      expect(terminalOutputByteLength(chunk(1, 1, text))).toBe(text.length);
+      expect(terminalOutputByteLength(chunk(1, text))).toBe(text.length);
     }
   });
 });

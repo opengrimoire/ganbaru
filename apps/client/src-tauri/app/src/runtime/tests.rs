@@ -35,6 +35,8 @@ fn mobile_runtime_registers_portable_core_commands() {
         "projects::workspace::projects_load_workspace",
         "projects::conflicts::projects_conflicts",
         "projects::conflicts::projects_resolve_conflict",
+        "projects::project_commands::projects_set_project_lifecycle",
+        "projects::structure_commands::projects_set_section_lifecycle",
         "notes::conflicts::notes_conflicts",
         "notes::conflicts::notes_resolve_conflict",
         "notes::conflicts::notes_preview_mismatched_value",
@@ -117,6 +119,9 @@ fn mobile_runtime_registers_portable_core_commands() {
         "vault::replaced_vaults::vault_export_replaced_backup",
         "vault::replaced_vaults::vault_delete_replaced_backup",
         "vault::encrypted_backup::vault_restore_replaced_backup",
+        "vault::kept_folders::vault_kept_folders",
+        "vault::kept_folders::vault_start_new_after_lost_database",
+        "vault::kept_folders::vault_put_back_kept_folder",
         "crate::sync::server_join::sync_decode_server_qr",
         "crate::sync::server_join::sync_join_through_server",
         "crate::sync::server_join::sync_recover_through_server",
@@ -250,6 +255,7 @@ const RUST_ONLY_COMMANDS: &[&str] = &[
     "focus_idle_status",
     "show_distractions_desktop_block_notification",
     "show_distractions_desktop_limit_notification",
+    "update_music_tray",
 ];
 
 /// Permissions that would let a webview create windows or webviews outside Rust validation.

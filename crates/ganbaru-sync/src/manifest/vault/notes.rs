@@ -762,6 +762,10 @@ pub const PAGES: TableSpec = TableSpec {
             &["folder_id", "child_block_id", "parent_data_source_id"],
             page_group::PLACEMENT,
         ),
+        within(
+            &["in_trash", "trashed_time", "trash_owner"],
+            page_group::LIFECYCLE,
+        ),
     ],
     tree: Some(TreeSpec {
         parent_group: page_group::ROW_PARENT,

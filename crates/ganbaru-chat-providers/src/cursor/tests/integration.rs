@@ -1067,3 +1067,171 @@ async fn instructed_turn(
     .await
     .unwrap();
 }
+
+#[test]
+fn a_request_after_the_reader_closed_fails_at_once() {
+    crate::test_block_on(async {
+        let (application_reader, agent_writer) = tokio::io::duplex(1024);
+        drop(agent_writer);
+        let mut connection = AcpRpcConnection::from_test_io(application_reader, tokio::io::sink());
+        let mut inbound = connection.take_inbound().unwrap();
+        assert!(matches!(
+            inbound.recv().await.unwrap(),
+            AcpInboundMessage::Closed
+        ));
+        let mut long_wait = context("late");
+        long_wait.deadline = std::time::Instant::now() + Duration::from_secs(60);
+
+        let late = tokio::time::timeout(
+            Duration::from_secs(5),
+            connection.client().request("late", json!({}), &long_wait),
+        )
+        .await
+        .expect("a closed connection refuses the request instead of waiting for its deadline");
+
+        assert_eq!(late, Err(AcpRpcFailure::Closed));
+    });
+}
+
+/// Starts a driver over the fixture `scenario` and returns it with its sink and first session.
+async fn started_fixture_session(
+    workspace: &TestDirectory,
+    scenario: FixtureScenario,
+    state: &Arc<AcpFixtureState>,
+) -> (
+    CursorProviderDriver,
+    Arc<RecordingSink>,
+    ProviderSessionSnapshot,
+) {
+    let factory_state = Arc::clone(state);
+    let mut driver = CursorProviderDriver::new(configuration(workspace.path(), None)).unwrap();
+    driver.set_connection_factory(Arc::new(move |_workspace| {
+        Ok((
+            fixture_connection(scenario, Arc::clone(&factory_state)),
+            about().into(),
+        ))
+    }));
+    let sink = Arc::new(RecordingSink::default());
+    let sink_trait: Arc<dyn ProviderEventSink> = sink.clone();
+    let snapshot = driver
+        .start_session(
+            start_request(workspace.path()),
+            sink_trait,
+            &context("start"),
+        )
+        .await
+        .unwrap();
+    (driver, sink, snapshot)
+}
+
+#[test]
+fn a_refused_prompt_ends_only_its_turn() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("refused-prompt");
+        let state = Arc::new(AcpFixtureState::default());
+        let (mut driver, sink, snapshot) =
+            started_fixture_session(&workspace, FixtureScenario::RefuseFirstPrompt, &state).await;
+
+        driver
+            .send_turn(send_request(&snapshot.session_id), &context("first"))
+            .await
+            .unwrap();
+        wait_for_event(&sink, |event| {
+            matches!(event, CanonicalEvent::TurnAborted(_))
+        })
+        .await;
+        let mut second = serde_json::to_value(send_request(&snapshot.session_id)).unwrap();
+        second["turnId"] = json!("cursor-turn-second");
+        let receipt = driver
+            .send_turn(serde_json::from_value(second).unwrap(), &context("second"))
+            .await
+            .expect("a turn-scoped prompt error leaves the session usable");
+
+        assert_eq!(receipt.state, ChatTurnState::Active);
+        wait_for_event(&sink, |event| {
+            matches!(event, CanonicalEvent::TurnCompleted(_))
+        })
+        .await;
+        assert!(!sink.events().iter().any(|event| matches!(
+            &event.event,
+            CanonicalEvent::SessionStateChanged(changed)
+                if changed.state == ProviderSessionState::Failed
+        )));
+    });
+}
+
+#[test]
+fn a_frame_the_router_cannot_read_fails_the_session_and_stops_the_agent() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("malformed-prompt");
+        let state = Arc::new(AcpFixtureState::default());
+        let (mut driver, sink, snapshot) =
+            started_fixture_session(&workspace, FixtureScenario::MalformedDuringPrompt, &state)
+                .await;
+
+        driver
+            .send_turn(send_request(&snapshot.session_id), &context("send"))
+            .await
+            .unwrap();
+        wait_for_event(&sink, |event| {
+            matches!(
+                event,
+                CanonicalEvent::SessionStateChanged(changed)
+                    if changed.state == ProviderSessionState::Failed
+            )
+        })
+        .await;
+
+        wait_for_closed(&state).await;
+        let mut second = serde_json::to_value(send_request(&snapshot.session_id)).unwrap();
+        second["turnId"] = json!("cursor-turn-second");
+        let refused = driver
+            .send_turn(serde_json::from_value(second).unwrap(), &context("second"))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ChatErrorCode::Protocol);
+        assert!(
+            sink.events()
+                .iter()
+                .any(|event| matches!(event.event, CanonicalEvent::TurnAborted(_)))
+        );
+    });
+}
+
+#[test]
+fn an_agent_that_exits_during_a_prompt_fails_the_session_once() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("exit-prompt");
+        let state = Arc::new(AcpFixtureState::default());
+        let (mut driver, sink, snapshot) =
+            started_fixture_session(&workspace, FixtureScenario::ExitDuringPrompt, &state).await;
+
+        driver
+            .send_turn(send_request(&snapshot.session_id), &context("send"))
+            .await
+            .unwrap();
+        wait_for_event(&sink, |event| {
+            matches!(
+                event,
+                CanonicalEvent::SessionStateChanged(changed)
+                    if changed.state == ProviderSessionState::Failed
+            )
+        })
+        .await;
+
+        let aborted = sink
+            .events()
+            .into_iter()
+            .filter_map(|event| match event.event {
+                CanonicalEvent::TurnAborted(aborted) => Some(aborted.reason),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(aborted.len(), 1);
+        assert!(
+            aborted[0].contains("transport closed"),
+            "the session failure interrupts the turn: {}",
+            aborted[0]
+        );
+    });
+}

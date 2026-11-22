@@ -66,11 +66,19 @@ internal data class DistractionsRulesSnapshot(
   val copy: DistractionsCopy,
 )
 
+/**
+ * The accepted Focus phase published by the native Focus owner.
+ *
+ * [pauseLiftsBlocking] is the shared pause rule computed in Rust: true only while a paused phase
+ * lets the pause setting lift blocking. Strict pauses arrive with it false and keep blocking, as on
+ * desktop.
+ */
 internal data class PomodoroPhaseState(
   val active: Boolean,
   val runId: String?,
   val phase: String?,
   val running: Boolean,
+  val pauseLiftsBlocking: Boolean,
   val validUntilEpochMs: Long,
 )
 
@@ -209,7 +217,7 @@ internal object DistractionsEvaluator {
     } ?: return false
     if (rule.packageName.isBlank() || phase == null || !phase.active) return false
     if (phase.validUntilEpochMs <= nowEpochMs) return false
-    if (!phase.running && schedule.pauseDuringFocusPause) return false
+    if (!phase.running && phase.pauseLiftsBlocking && schedule.pauseDuringFocusPause) return false
     return when (phase.phase) {
       "focus" -> schedule.blockDuringFocus
       "short_break" -> schedule.blockDuringShortBreaks

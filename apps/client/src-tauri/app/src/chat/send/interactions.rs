@@ -39,9 +39,13 @@ pub(crate) async fn steer_turn(
             true,
         ));
     }
-    let session_id = snapshot.session_id.ok_or_else(runtime_not_running_error)?;
+    let session_id = snapshot
+        .session_id
+        .clone()
+        .ok_or_else(runtime_not_running_error)?;
     let turn_id = snapshot
-        .active_turn_id
+        .active_turn_id()
+        .cloned()
         .ok_or_else(runtime_not_running_error)?;
     let command_id = request.command.client_command_id.clone();
     match claim_command_receipt(
@@ -90,8 +94,8 @@ pub(crate) async fn resolve_approval(
     resolve_approval_in(&app, &pool, request).await
 }
 
-/// Resolves an open approval through `pool`. A choice to remember the approval is recorded
-/// after every check passed and before the provider receives the choice.
+/// Resolves an open approval through `pool`. A choice to remember the approval is checked
+/// before the provider receives the choice and recorded only after the provider accepted it.
 pub(super) async fn resolve_approval_in(
     app: &tauri::AppHandle,
     pool: &sqlx::SqlitePool,
@@ -140,23 +144,25 @@ pub(super) async fn resolve_approval_in(
         CommandReceiptClaim::Claimed(_) => {}
     }
     let command_id = request.command.client_command_id.clone();
-    if request.remember {
-        if let Err(error) = super::remembered_approvals::remember_choice(&pool, &request).await {
-            return complete_driver_operation(&pool, &command_id, Err(error)).await;
+    let choice = if request.remember {
+        match super::remembered_approvals::prepare_choice(&pool, &request).await {
+            Ok(choice) => Some(choice),
+            Err(error) => return complete_driver_operation(&pool, &command_id, Err(error)).await,
         }
-    }
-    let result = owner
-        .resolve_approval(
-            ResolveApprovalRequest {
-                command: request.command,
-                session_id,
-                request_id: request.request_id,
-                provider_request_id: request.provider_request_id,
-                decision: request.decision,
-            },
-            operation_context("resolve-approval", TURN_OPERATION_TIMEOUT),
-        )
-        .await;
+    } else {
+        None
+    };
+    let resolve = owner.resolve_approval(
+        ResolveApprovalRequest {
+            command: request.command,
+            session_id,
+            request_id: request.request_id,
+            provider_request_id: request.provider_request_id,
+            decision: request.decision,
+        },
+        operation_context("resolve-approval", TURN_OPERATION_TIMEOUT),
+    );
+    let result = super::remembered_approvals::resolve_then_remember(&pool, choice, resolve).await;
     complete_driver_operation(&pool, &command_id, result).await
 }
 

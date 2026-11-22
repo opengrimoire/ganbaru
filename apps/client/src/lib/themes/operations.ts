@@ -69,6 +69,10 @@ export function cloneTheme(
   // so a clone of "Light" starts as iconLabel=light. Cloning a user theme
   // that was manually flipped preserves the flip on the clone.
   const iconLabel = source.iconLabel;
+  const derivationEngineVersion =
+    source.kind === "user"
+      ? source.derivationEngineVersion
+      : DERIVATION_ENGINE_VERSION;
   const calendarDefaultMode =
     source.kind === "user" ? source.calendarDefaultMode : source.base;
   const calendarDefaultCustom =
@@ -82,10 +86,7 @@ export function cloneTheme(
     iconLabel,
     blendCanvas: source.blendCanvas,
     eventPalette: palette,
-    derivationEngineVersion:
-      source.kind === "user"
-        ? source.derivationEngineVersion
-        : DERIVATION_ENGINE_VERSION,
+    derivationEngineVersion,
     calendarDefaultMode,
     calendarDefaultCustom,
     sources,
@@ -103,6 +104,7 @@ export function cloneTheme(
     seedCalendarDefaultMode: calendarDefaultMode,
     seedCalendarDefaultCustom: calendarDefaultCustom,
     seedIconLabel: iconLabel,
+    seedDerivationEngineVersion: derivationEngineVersion,
   };
 }
 
@@ -154,6 +156,74 @@ export function withSeedOf(next: UserTheme, current: UserTheme): UserTheme {
     seedCalendarDefaultMode: current.seedCalendarDefaultMode,
     seedCalendarDefaultCustom: current.seedCalendarDefaultCustom,
     seedIconLabel: current.seedIconLabel,
+    seedDerivationEngineVersion: current.seedDerivationEngineVersion,
+  };
+}
+
+function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const value of a) if (!b.has(value)) return false;
+  return true;
+}
+
+function recordsDiffer(
+  live: Readonly<Record<string, string>>,
+  seed: Readonly<Record<string, string>>,
+): boolean {
+  return Object.keys(seed).some((key) => live[key] !== seed[key]);
+}
+
+/**
+ * Whether a theme looks different from its seed, so "Reset all" has
+ * something to restore. The engine stamp counts: a rebaked theme differs
+ * from a seed derived by an older engine even when no value was edited.
+ */
+export function differsFromSeed(theme: UserTheme): boolean {
+  const sourceKeys = Object.keys(theme.seedSources) as Array<keyof ThemeSources>;
+  if (sourceKeys.some((key) => theme.sources[key] !== theme.seedSources[key])) {
+    return true;
+  }
+  if (recordsDiffer(theme.appTokens, theme.seedAppTokens)) return true;
+  if (recordsDiffer(theme.calendarTokens, theme.seedCalendarTokens)) return true;
+  if (
+    !setsEqual(theme.appIsolated, theme.seedAppIsolated) ||
+    !setsEqual(theme.calendarIsolated, theme.seedCalendarIsolated)
+  ) {
+    return true;
+  }
+  if (theme.eventPalette.length !== theme.seedEventPalette.length) return true;
+  if (theme.eventPalette.some((value, slot) => value !== theme.seedEventPalette[slot])) {
+    return true;
+  }
+  return (
+    theme.blendCanvas !== theme.seedBlendCanvas ||
+    theme.calendarDefaultMode !== theme.seedCalendarDefaultMode ||
+    theme.calendarDefaultCustom !== theme.seedCalendarDefaultCustom ||
+    theme.iconLabel !== theme.seedIconLabel ||
+    theme.derivationEngineVersion !== theme.seedDerivationEngineVersion
+  );
+}
+
+/**
+ * Restore a theme to its seed in one step: every token, isolation flag,
+ * palette slot, blend canvas, Calendar default, the icon label, and the
+ * engine stamp the seed tokens were derived with, so a reset after a
+ * rebake offers the rebake again. The name and identity stay.
+ */
+export function resetToSeed(theme: UserTheme): UserTheme {
+  return {
+    ...theme,
+    sources: { ...theme.seedSources },
+    appTokens: syncSemanticSignalAppTokens(theme.seedSources, theme.seedAppTokens),
+    calendarTokens: { ...theme.seedCalendarTokens },
+    appIsolated: normalizeSemanticSignalAppIsolated(theme.seedAppIsolated),
+    calendarIsolated: new Set(theme.seedCalendarIsolated),
+    eventPalette: [...theme.seedEventPalette],
+    blendCanvas: theme.seedBlendCanvas,
+    calendarDefaultMode: theme.seedCalendarDefaultMode,
+    calendarDefaultCustom: theme.seedCalendarDefaultCustom,
+    iconLabel: theme.seedIconLabel,
+    derivationEngineVersion: theme.seedDerivationEngineVersion,
   };
 }
 

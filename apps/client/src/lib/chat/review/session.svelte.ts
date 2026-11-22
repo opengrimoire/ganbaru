@@ -44,6 +44,8 @@ export class ChatReviewSession {
 
   private requestSequence = 0;
   private patchSequence = 0;
+  /** Bumped whenever the loading patch ids are cleared, so an older patch request never releases ids a later one owns. */
+  private patchLoadEpoch = 0;
   private destroyed = false;
 
   constructor(private readonly options: ReviewSessionOptions) {}
@@ -51,6 +53,7 @@ export class ChatReviewSession {
   cancelLoading(): void {
     this.requestSequence += 1;
     this.patchSequence += 1;
+    this.patchLoadEpoch += 1;
     this.loadingInitial = false;
     this.refreshing = false;
     this.loadingPatchIds = [];
@@ -140,6 +143,7 @@ export class ChatReviewSession {
     const retained = retainReviewFile(next, currentFileId, scope.selectedRelativePath);
     this.snapshot = next;
     this.patches = next.preferredPatch ? [next.preferredPatch] : [];
+    this.patchLoadEpoch += 1;
     this.loadingPatchIds = [];
     this.options.onSelectionReset();
     if (retained?.relativePath !== scope.selectedRelativePath) {
@@ -158,6 +162,7 @@ export class ChatReviewSession {
     ));
     if (missing.length === 0) return;
     const sequence = ++this.patchSequence;
+    const epoch = this.patchLoadEpoch;
     this.loadingPatchIds = [...this.loadingPatchIds, ...missing];
     try {
       for (let index = 0; index < missing.length; index += 8) {
@@ -182,7 +187,8 @@ export class ChatReviewSession {
         this.options.onError(reason);
       }
     } finally {
-      if (sequence === this.patchSequence && this.scopeMatches(scopeToken)) {
+      // A newer request skips ids this one still holds, so this one releases them even when superseded.
+      if (epoch === this.patchLoadEpoch && !this.destroyed) {
         this.loadingPatchIds = this.loadingPatchIds.filter((fileId) => !missing.includes(fileId));
       }
     }

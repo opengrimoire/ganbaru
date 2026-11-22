@@ -40,6 +40,7 @@ import type {
   ProjectTag,
   ProjectTagCreate,
   ProjectTagUpdate,
+  ProjectLifecycleChange,
   ProjectLinkableEvent,
   ProjectMutation,
   ProjectMutationRemoval,
@@ -50,6 +51,7 @@ import type {
   ProjectSection,
   ProjectSectionCreate,
   ProjectSectionUpdate,
+  SectionLifecycleChange,
   ProjectStatus,
   ProjectStatusCreate,
   ProjectStatusUpdate,
@@ -92,8 +94,6 @@ interface ProjectGroupRow {
   color: number | null;
   order_key: string;
   collapsed: number;
-  hidden_at: string | null;
-  archived_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -481,8 +481,6 @@ function mapGroup(row: ProjectGroupRow): ProjectGroup {
     color: optionalNumber(row.color),
     orderKey: row.order_key,
     collapsed: row.collapsed !== 0,
-    hiddenAt: optionalText(row.hidden_at),
-    archivedAt: optionalText(row.archived_at),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -1033,6 +1031,12 @@ export async function updateProject(project: ProjectUpdate): Promise<ProjectMuta
   return invokeProjectMutation("projects_update_project", { dbUrl, project });
 }
 
+/** Moves a project between active, hidden, and archived; Rust refuses it when the project left `change.expected`. */
+export async function setProjectLifecycle(change: ProjectLifecycleChange): Promise<ProjectMutation> {
+  const dbUrl = await ensureDbUrl();
+  return invokeProjectMutation("projects_set_project_lifecycle", { dbUrl, change });
+}
+
 export async function updateProjectNotesSettings(
   projectId: string,
   notesDefaultOpenMode: NotesPageOpenMode | null,
@@ -1055,6 +1059,12 @@ export async function createProjectSection(section: ProjectSectionCreate): Promi
 export async function updateProjectSection(section: ProjectSectionUpdate): Promise<ProjectMutation> {
   const dbUrl = await ensureDbUrl();
   return invokeProjectMutation("projects_update_section", { dbUrl, section });
+}
+
+/** Hides, archives, or restores a section; Rust refuses the move when the section left `expected`. */
+export async function setProjectSectionLifecycle(change: SectionLifecycleChange): Promise<ProjectMutation> {
+  const dbUrl = await ensureDbUrl();
+  return invokeProjectMutation("projects_set_section_lifecycle", { dbUrl, change });
 }
 
 export async function createProjectStatus(status: ProjectStatusCreate): Promise<ProjectMutation> {

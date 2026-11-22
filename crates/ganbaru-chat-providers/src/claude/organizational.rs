@@ -10,7 +10,7 @@ use super::protocol::{
     control_error, control_success, organizational_edits_unattended,
     organizational_permission_error, organizational_runs_unattended, organizational_tools,
 };
-use super::transport::{ClaudeConnectionKill, ClaudeJsonlClient, ClaudeTransportFailure};
+use super::transport::{ClaudeJsonlClient, ClaudeTransportFailure};
 use crate::DriverOperationContext;
 use crate::models::{ChatResult, ProviderOrganizationalScope, TurnModeSnapshot};
 use ganbaru_chat_contracts::web_fetch::fetchable_url;
@@ -199,14 +199,12 @@ pub struct ClaudeOrganizationalRoute {
     /// The scope whose tool surface each init report must match.
     pub scope: ProviderOrganizationalScope,
     pub deadline: watch::Receiver<Option<Instant>>,
-    pub kill: ClaudeConnectionKill,
 }
 
 /// Creates the paired deadline handles for one organizational session.
 pub fn organizational_route(
     expected_server: String,
     scope: ProviderOrganizationalScope,
-    kill: ClaudeConnectionKill,
 ) -> (ClaudeOrganizationalDeadline, ClaudeOrganizationalRoute) {
     let (sender, deadline) = watch::channel(None);
     (
@@ -215,7 +213,6 @@ pub fn organizational_route(
             expected_server,
             scope,
             deadline,
-            kill,
         },
     )
 }
@@ -253,10 +250,6 @@ impl ClaudeOrganizationalGate {
 
     pub fn verified(&self) -> bool {
         self.verified
-    }
-
-    pub fn kill_handle(&self) -> &ClaudeConnectionKill {
-        &self.route.kill
     }
 
     /// Drops every held frame without routing it.

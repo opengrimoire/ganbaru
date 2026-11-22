@@ -74,7 +74,23 @@ class DistractionsEvaluatorTest {
   }
 
   @Test
-  fun failsOpenForPausedOrExpiredProjection() {
+  fun strictPausesKeepBlockingLikeDesktop() {
+    assertTrue(DistractionsEvaluator.isBlockedBySchedule(
+      schedule,
+      phase(phase = "focus", running = false, pauseLiftsBlocking = false),
+      "com.google.android.youtube",
+      NOW,
+    ))
+    assertTrue(DistractionsEvaluator.isBlockedBySchedule(
+      schedule.copy(pauseDuringFocusPause = false),
+      phase(phase = "focus", running = false),
+      "com.google.android.youtube",
+      NOW,
+    ))
+  }
+
+  @Test
+  fun failsOpenForManuallyPausedOrExpiredProjection() {
     assertFalse(DistractionsEvaluator.isBlockedBySchedule(
       schedule,
       phase(phase = "focus", running = false),
@@ -154,12 +170,14 @@ class DistractionsEvaluatorTest {
   private fun phase(
     phase: String,
     running: Boolean = true,
+    pauseLiftsBlocking: Boolean = !running,
     validUntilEpochMs: Long = NOW + 60_000L,
   ) = PomodoroPhaseState(
     active = true,
     runId = "run-1",
     phase = phase,
     running = running,
+    pauseLiftsBlocking = pauseLiftsBlocking,
     validUntilEpochMs = validUntilEpochMs,
   )
 

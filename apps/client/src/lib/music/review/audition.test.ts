@@ -6,6 +6,7 @@ const checkpoint = vi.hoisted((): MusicReviewPlaybackCheckpoint => ({ checkpoint
 const player = vi.hoisted(() => ({
   contextOwner: "manual" as "manual" | "review" | "calendar-event" | "pomodoro",
   snapshot: { positionMs: 0 },
+  playerError: null as string | null,
   suspendForReview: vi.fn(async () => checkpoint),
   restoreAfterReview: vi.fn(async (_checkpoint: MusicReviewPlaybackCheckpoint): Promise<void> => undefined),
   loadReviewItem: vi.fn(async () => undefined),
@@ -87,5 +88,221 @@ describe("MusicReviewAuditionController", () => {
     await reopening;
 
     expect(player.suspendForReview).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("MusicReviewAuditionController interleavings", () => {
+  const bindings = [{ rootId: "root", folderPath: "/Music", status: "available" as const }];
+
+  beforeEach(() => {
+    player.contextOwner = "manual";
+    player.snapshot.positionMs = 0;
+    vi.clearAllMocks();
+  });
+
+  it("is inactive and owns nothing before the first preview", () => {
+    const audition = new MusicReviewAuditionController();
+    expect(audition.active).toBe(false);
+    expect(audition.reviewItemId).toBeNull();
+    expect(audition.ownsPlayback).toBe(false);
+  });
+
+  it("is active while playback suspends and owns playback once the item loads", async () => {
+    let finishSuspend!: (value: MusicReviewPlaybackCheckpoint) => void;
+    player.suspendForReview.mockImplementationOnce(() => new Promise((resolve) => { finishSuspend = resolve; }));
+    const audition = new MusicReviewAuditionController();
+
+    const previewing = audition.preview(detail(), bindings, false);
+    expect(audition.active).toBe(true);
+    expect(audition.reviewItemId).toBeNull();
+
+    finishSuspend(checkpoint);
+    expect(await previewing).toBe(true);
+    expect(audition.reviewItemId).toBe("review-item");
+    expect(audition.ownsPlayback).toBe(true);
+    expect(player.loadReviewItem).toHaveBeenCalledWith("review-item", false);
+  });
+
+  it("restores a checkpoint that arrives after Review was discarded and reports the preview as stale", async () => {
+    let finishSuspend!: (value: MusicReviewPlaybackCheckpoint) => void;
+    player.suspendForReview.mockImplementationOnce(() => new Promise((resolve) => { finishSuspend = resolve; }));
+    const audition = new MusicReviewAuditionController();
+
+    const previewing = audition.preview(detail(), bindings, true);
+    audition.discard();
+    finishSuspend(checkpoint);
+
+    expect(await previewing).toBe(false);
+    expect(player.restoreAfterReview).toHaveBeenCalledWith(checkpoint);
+    expect(player.loadReviewItem).not.toHaveBeenCalled();
+    expect(audition.active).toBe(false);
+  });
+
+  it("keeps the checkpoint for a newer preview that started while the first one was still suspending", async () => {
+    let finishSuspend!: (value: MusicReviewPlaybackCheckpoint) => void;
+    player.suspendForReview.mockImplementationOnce(() => new Promise((resolve) => { finishSuspend = resolve; }));
+    const audition = new MusicReviewAuditionController();
+    const other = detail();
+    other.item = { ...other.item, id: "other-item" };
+
+    const first = audition.preview(detail(), bindings, true);
+    const second = audition.preview(other, bindings, true);
+    finishSuspend(checkpoint);
+
+    expect(await first).toBe(false);
+    expect(await second).toBe(true);
+    expect(player.restoreAfterReview).not.toHaveBeenCalled();
+    expect(audition.reviewItemId).toBe("other-item");
+
+    await audition.restore();
+    expect(player.restoreAfterReview).toHaveBeenCalledOnce();
+    expect(player.restoreAfterReview).toHaveBeenCalledWith(checkpoint);
+  });
+
+  it("ends the audition when playback cannot be suspended", async () => {
+    player.suspendForReview.mockRejectedValueOnce(new Error("busy"));
+    const audition = new MusicReviewAuditionController();
+
+    expect(await audition.preview(detail(), bindings, true)).toBe(false);
+    expect(audition.active).toBe(false);
+    expect(player.loadReviewItem).not.toHaveBeenCalled();
+  });
+
+  it("keeps the suspended checkpoint when an item fails to load, so closing Review still restores it", async () => {
+    player.loadReviewItem.mockRejectedValueOnce(new Error("missing file"));
+    const audition = new MusicReviewAuditionController();
+
+    expect(await audition.preview(detail(), bindings, true)).toBe(false);
+    expect(audition.active).toBe(true);
+    expect(audition.reviewItemId).toBeNull();
+    expect(audition.errorFor("review-item")).not.toBeNull();
+
+    await audition.restore();
+    expect(player.restoreAfterReview).toHaveBeenCalledWith(checkpoint);
+  });
+
+  it("suspends only once across previews of different items", async () => {
+    const audition = new MusicReviewAuditionController();
+    await audition.preview(detail(), bindings, true);
+    const other = detail();
+    other.item = { ...other.item, id: "other-item" };
+
+    expect(await audition.preview(other, bindings, true)).toBe(true);
+    expect(player.suspendForReview).toHaveBeenCalledOnce();
+    expect(audition.reviewItemId).toBe("other-item");
+  });
+
+  it("hands playback to an automation boundary and resumes the item where it stopped on the next preview", async () => {
+    const audition = new MusicReviewAuditionController();
+    await audition.preview(detail(), bindings, true);
+    player.contextOwner = "review";
+    player.snapshot.positionMs = 42_000;
+
+    audition.supersedeForBoundary("pomodoro");
+
+    expect(player.contextOwner).toBe("pomodoro");
+    expect(audition.active).toBe(false);
+    expect(player.restoreAfterReview).not.toHaveBeenCalled();
+
+    await audition.preview(detail(), bindings, true);
+    expect(player.seekToMs).toHaveBeenCalledWith(42_000);
+  });
+
+  it("restores nothing when Review closes before any playback was suspended", async () => {
+    const audition = new MusicReviewAuditionController();
+    await audition.restore();
+    expect(player.restoreAfterReview).not.toHaveBeenCalled();
+    expect(audition.active).toBe(false);
+  });
+});
+
+describe("MusicReviewAuditionController failures", () => {
+  const bindings = [{ rootId: "root", folderPath: "/Music", status: "available" as const }];
+
+  beforeEach(() => {
+    player.contextOwner = "manual";
+    player.snapshot.positionMs = 0;
+    player.playerError = null;
+    vi.clearAllMocks();
+  });
+
+  it("keeps the failure of a preview whose playback could not be suspended", async () => {
+    player.suspendForReview.mockRejectedValueOnce(new Error("busy"));
+    const audition = new MusicReviewAuditionController();
+
+    expect(await audition.preview(detail(), bindings, true)).toBe(false);
+    expect(audition.active).toBe(false);
+    expect(audition.errorFor("review-item")).not.toBeNull();
+  });
+
+  it("shows a failed load only for the item it was for", async () => {
+    player.loadReviewItem.mockRejectedValueOnce(new Error("missing file"));
+    const audition = new MusicReviewAuditionController();
+
+    await audition.preview(detail(), bindings, true);
+
+    expect(audition.errorFor("review-item")).not.toBeNull();
+    expect(audition.errorFor("other-item")).toBeNull();
+    expect(audition.errorFor(null)).toBeNull();
+  });
+
+  it("keeps a failure while its retry runs and clears it once a preview succeeds or it is dismissed", async () => {
+    player.loadReviewItem.mockRejectedValueOnce(new Error("missing file"));
+    const audition = new MusicReviewAuditionController();
+    await audition.preview(detail(), bindings, true);
+
+    audition.dismissError();
+    expect(audition.errorFor("review-item")).toBeNull();
+
+    player.loadReviewItem.mockRejectedValueOnce(new Error("missing file"));
+    await audition.preview(detail(), bindings, true);
+    expect(audition.errorFor("review-item")).not.toBeNull();
+    let finishLoad!: () => void;
+    player.loadReviewItem.mockImplementationOnce(() => new Promise<undefined>((resolve) => { finishLoad = () => resolve(undefined); }));
+    const retrying = audition.preview(detail(), bindings, true);
+    await vi.waitFor(() => expect(player.loadReviewItem).toHaveBeenCalledTimes(3));
+    expect(audition.errorFor("review-item")).not.toBeNull();
+    finishLoad();
+    expect(await retrying).toBe(true);
+    expect(audition.errorFor("review-item")).toBeNull();
+  });
+
+  it("clears a failure left by an item that already owns playback when it is previewed again", async () => {
+    const audition = new MusicReviewAuditionController();
+    await audition.preview(detail(), bindings, true);
+    player.snapshot.positionMs = 5_000;
+    audition.supersedeForBoundary("pomodoro");
+    player.seekToMs.mockRejectedValueOnce(new Error("seek failed"));
+    expect(await audition.preview(detail(), bindings, true)).toBe(false);
+    expect(audition.ownsPlayback).toBe(true);
+    expect(audition.errorFor("review-item")).not.toBeNull();
+
+    expect(await audition.preview(detail(), bindings, true)).toBe(true);
+    expect(audition.errorFor("review-item")).toBeNull();
+  });
+
+  it("drops the failure of a preview that a later operation superseded", async () => {
+    let failLoad!: (error: Error) => void;
+    player.loadReviewItem.mockImplementationOnce(() => new Promise((_resolve, reject) => { failLoad = reject; }));
+    const audition = new MusicReviewAuditionController();
+
+    const previewing = audition.preview(detail(), bindings, true);
+    await vi.waitFor(() => expect(player.loadReviewItem).toHaveBeenCalledOnce());
+    audition.discard();
+    failLoad(new Error("missing file"));
+
+    expect(await previewing).toBe(false);
+    expect(audition.errorFor("review-item")).toBeNull();
+  });
+
+  it("reports a failed return to the earlier playback through the player once Review has closed", async () => {
+    player.restoreAfterReview.mockRejectedValueOnce(new Error("gone"));
+    const audition = new MusicReviewAuditionController();
+    await audition.preview(detail(), bindings, true);
+
+    await audition.restore();
+
+    expect(audition.errorFor("review-item")).toBeNull();
+    expect(player.playerError).not.toBeNull();
   });
 });

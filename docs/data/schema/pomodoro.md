@@ -29,7 +29,7 @@ Calendar edits may retarget a run through separate current-reference columns (`c
 
 Recurrence protection uses original home-zone occurrence identities, not the run's device-local planning date. The two can differ around midnight and must not be substituted for each other.
 
-Triggers that skip sync apply permit at most one open run, one active segment across open runs, and one open pause per segment on a device; partial unique indexes cannot replicate. Multiple runs may refer to the same event and are never merged by title, time range, or event identity. A cross-block transition or reconfiguration closes the current run and starts a new one.
+Triggers that skip sync apply permit at most one open run, one active segment across open runs, and one open pause per segment on a device, and require that a segment has an actual end and an end reason exactly when it is completed or interrupted and that a pause reason is manual, idle, or suspend; partial unique indexes cannot replicate. Multiple runs may refer to the same event and are never merged by title, time range, or event identity. A cross-block transition or reconfiguration closes the current run and starts a new one.
 
 ## Segments and pauses
 
@@ -44,6 +44,8 @@ Run events are append-only explanations for lifecycle decisions not fully expres
 ## Native execution
 
 `pomodoro_execution_state` holds the accepted execution snapshot with a revision. Every command validates the expected revision and stores its receipt in the same transaction as the canonical rows it changes, so a retried command returns the original result. Recovery rules are in [Focus authority](../../algorithms/pomodoro/focus-authority.md#recovery); the heartbeat bounds desktop recovery and is not an activity log. Recovery is idempotent.
+
+The stored state nests the execution mode as a tagged object that carries only that mode's facts (idle, suspend, return, and paused prompt evidence), so evidence cannot outlive its mode; an empty object is the stopped state. The command snapshot flattens the same mode, so `mode` stays a string beside its facts. Segment status is typed as active, completed, or interrupted, matching the segment CHECK.
 
 ## Adaptive data
 

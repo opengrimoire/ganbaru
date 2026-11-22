@@ -217,6 +217,30 @@ pub async fn store_recovery_kit_keys(
     Ok(())
 }
 
+/// Records `keys` as the public keys of the vault's recovery kit unless the vault already keeps
+/// a kit's, and returns the kit the vault keeps afterwards, which founds the charter.
+pub async fn store_recovery_kit_keys_if_absent(
+    conn: &mut SqliteConnection,
+    keys: &RecoveryPublicKeys,
+    now_ms: u64,
+) -> SyncResult<RecoveryPublicKeys> {
+    let created_at_ms = i64::try_from(now_ms)
+        .map_err(|_| SyncError::InvalidRequest("the clock is out of range"))?;
+    sqlx::query(
+        "INSERT INTO sync_recovery_kit (id, recovery_admin_key, recovery_encryption_key, created_at_ms)
+         VALUES (1, ?, ?, ?)
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(keys.admin.as_bytes().as_slice())
+    .bind(keys.encryption.as_bytes().as_slice())
+    .bind(created_at_ms)
+    .execute(&mut *conn)
+    .await?;
+    recovery_kit_keys(conn)
+        .await?
+        .ok_or_else(|| corrupt("the stored recovery kit vanished"))
+}
+
 /// Writes the rows readers of `Local` tables require, keeping any the device already has.
 pub(crate) async fn write_local_seeds(
     conn: &mut SqliteConnection,

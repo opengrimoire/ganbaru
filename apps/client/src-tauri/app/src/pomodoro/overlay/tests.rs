@@ -28,6 +28,30 @@ fn native_completion_dismissal_requires_the_retained_generation_run_and_segment(
     assert!(!scope.matches_retained(3, Some("run"), Some(&scope.segment_id)));
 }
 
+#[test]
+fn overlay_lifecycle_shut_down_is_terminal() {
+    let mut lifecycle = OverlayLifecycle::Closed;
+    assert!(lifecycle.close(false).is_none());
+    assert!(matches!(lifecycle, OverlayLifecycle::Closed));
+    assert!(lifecycle.session().is_none());
+
+    assert!(lifecycle.close(true).is_none());
+    assert!(matches!(lifecycle, OverlayLifecycle::ShutDown));
+    assert!(lifecycle.close(false).is_none());
+    assert!(matches!(lifecycle, OverlayLifecycle::ShutDown));
+    assert!(lifecycle.session_mut().is_none());
+}
+
+#[test]
+fn overlay_state_starts_closed_and_reports_shutdown() {
+    let overlays = PomodoroOverlayState::default();
+    assert!(!overlays.is_active());
+    assert!(!overlays.is_shut_down());
+    overlays.lock_state().close(true);
+    assert!(!overlays.is_active());
+    assert!(overlays.is_shut_down());
+}
+
 fn known_keys() -> HashMap<String, HashSet<String>> {
     HashMap::from([(
         "org.gnome.desktop.wm.keybindings".to_string(),

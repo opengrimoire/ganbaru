@@ -4,6 +4,7 @@ import type { MessageShape } from "../../types";
 export const editor = {
   editorSaveFailed: "No se pudieron guardar los cambios, pero el borrador sigue abierto, así que mantén esta ventana abierta e inténtalo de nuevo.",
   editorChangedElsewhere: "Esta nota cambió en otra ventana, así que la última versión guardada reemplazó tu última edición.",
+  editorReloadFailed: "No se pudo cargar la última versión guardada de esta nota, pero el borrador sigue abierto, así que inténtalo de nuevo.",
   blockList: "Bloques de la nota",
   richTextEditorLabel: "Editor de bloque con texto enriquecido",
   emptyPagePlaceholder: "Escribe, o presiona '/' para comandos y '@' para mencionar",

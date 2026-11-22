@@ -18,8 +18,8 @@
   const { t } = localization;
   let search = $state("");
   let searchInitialized = false;
-  let restoringPageId = $state<string | null>(null);
-  let deletingPageId = $state<string | null>(null);
+  /** Pages with a restore or permanent delete in flight; each row stays disabled until its own operation settles. */
+  let busyPageIds = $state.raw<ReadonlySet<string>>(new Set());
   let pendingDeletePage = $state<NotesPage | null>(null);
   const filteredPages = $derived.by(() =>
     filterNotesPagesByTitle(notes.trashedPages, search, (page) =>
@@ -41,22 +41,30 @@
     return t("notes.metadataEdited", new Date(page.last_edited_time).toLocaleString(localization.locale));
   }
 
-  async function restorePage(page: NotesPage): Promise<void> {
-    restoringPageId = page.id;
+  /**
+   * Runs one row operation while that page stays busy, ignoring a second operation on a page that is already busy.
+   *
+   * @param pageId - The page the operation acts on.
+   * @param operation - The store call to run.
+   */
+  async function runPageOperation(pageId: string, operation: () => Promise<unknown>): Promise<void> {
+    if (busyPageIds.has(pageId)) return;
+    busyPageIds = new Set([...busyPageIds, pageId]);
     try {
-      await notes.restorePage(page.id);
+      await operation();
     } finally {
-      restoringPageId = null;
+      const next = new Set(busyPageIds);
+      next.delete(pageId);
+      busyPageIds = next;
     }
   }
 
+  async function restorePage(page: NotesPage): Promise<void> {
+    await runPageOperation(page.id, () => notes.restorePage(page.id));
+  }
+
   async function permanentlyDeletePage(page: NotesPage): Promise<void> {
-    deletingPageId = page.id;
-    try {
-      await notes.permanentlyDeletePage(page.id);
-    } finally {
-      deletingPageId = null;
-    }
+    await runPageOperation(page.id, () => notes.permanentlyDeletePage(page.id));
   }
 
   function confirmPermanentDelete(): void {
@@ -128,7 +136,7 @@
             <div class="flex shrink-0 flex-wrap justify-end gap-2">
               <button
                 class="flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-[0.8rem] text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={restoringPageId === page.id || deletingPageId === page.id}
+                disabled={busyPageIds.has(page.id)}
                 aria-label={t("notes.restorePage", notesPageTitle(page, t("notes.untitled")))}
                 onclick={() => {
                   void restorePage(page);
@@ -139,7 +147,7 @@
               </button>
               <button
                 class="flex items-center gap-1.5 rounded-md border border-destructive/40 bg-background px-2 py-1.5 text-[0.8rem] text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={restoringPageId === page.id || deletingPageId === page.id}
+                disabled={busyPageIds.has(page.id)}
                 aria-label={t("notes.permanentlyDeletePage", notesPageTitle(page, t("notes.untitled")))}
                 onclick={() => {
                   pendingDeletePage = page;

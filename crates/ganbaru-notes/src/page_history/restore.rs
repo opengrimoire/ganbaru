@@ -273,20 +273,13 @@ async fn trash_missing_block(
     if existing.nested_page == 0 {
         return Ok(());
     }
-    sqlx::query(
-        "UPDATE notes_pages
-         SET in_trash = 1,
-             trash_owner = NULL,
-             archived = 0,
-             trashed_time = COALESCE(trashed_time, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE child_block_id = ? AND in_trash = 0",
-    )
-    .bind(&existing.id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("trash notes child page missing from history snapshot: {e}"))?;
-    Ok(())
+    let nested_pages: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM notes_pages WHERE child_block_id = ? AND in_trash = 0")
+            .bind(&existing.id)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(|e| format!("load notes child page missing from history snapshot: {e}"))?;
+    crate::page_lifecycle::trash_pages_without_owner_tx(tx, &nested_pages).await
 }
 
 fn same_json(stored: &str, restored: &str) -> Result<bool, String> {

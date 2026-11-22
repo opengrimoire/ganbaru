@@ -15,7 +15,7 @@ use crate::{
     ProviderEventSink,
 };
 use ganbaru_chat_contracts::model_recommendation::{NativeCompany, recommended_model_id};
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
 
 impl ProviderDriver for OpenCodeProviderDriver {
     fn metadata(&self) -> ProviderFamilyMetadataRead {
@@ -325,7 +325,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
                     ));
                 }
                 state.active_turn_id = Some(request.turn_id.clone());
-                state.session_state = ProviderSessionState::Active;
+                state.busy = true;
                 state.modes = request.modes;
                 live.normalizer.external_event(
                     &state,
@@ -354,20 +354,27 @@ impl ProviderDriver for OpenCodeProviderDriver {
                         {
                             let aborted = route.lock().map_err(|_| driver_state_error()).and_then(
                                 |mut state| {
-                                    if state.active_turn_id.is_none() {
+                                    let Some((turn_id, interrupted)) = state.take_failed_dispatch()
+                                    else {
                                         return Ok(None);
+                                    };
+                                    state.busy = false;
+                                    if interrupted {
+                                        return normalizer
+                                            .interrupted_turn(
+                                                &state,
+                                                "command/interrupted",
+                                                turn_id,
+                                            )
+                                            .map(Some);
                                     }
-                                    state.active_turn_id = None;
-                                    state.session_state = ProviderSessionState::Ready;
                                     normalizer
-                                        .external_event(
+                                        .failed_turn(
                                             &state,
                                             "command/failed",
-                                            CanonicalEvent::TurnAborted(TurnAbortedEvent {
-                                                state: ChatTurnState::Failed,
-                                                reason: error.message,
-                                                recoverable: error.recoverable,
-                                            }),
+                                            turn_id,
+                                            error.message,
+                                            error.recoverable,
                                         )
                                         .map(Some)
                                 },
@@ -385,15 +392,13 @@ impl ProviderDriver for OpenCodeProviderDriver {
                 let aborted = {
                     let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                     state.active_turn_id = None;
-                    state.session_state = ProviderSessionState::Ready;
-                    live.normalizer.external_event(
+                    state.busy = false;
+                    live.normalizer.failed_turn(
                         &state,
                         "turn/dispatch_failed",
-                        CanonicalEvent::TurnAborted(TurnAbortedEvent {
-                            state: ChatTurnState::Failed,
-                            reason: error.message.clone(),
-                            recoverable: error.recoverable,
-                        }),
+                        request.turn_id.clone(),
+                        error.message.clone(),
+                        error.recoverable,
                     )?
                 };
                 live.sink.emit(aborted).await?;
@@ -482,7 +487,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                 match state.take_interrupted_turn(&request.turn_id) {
                     Some(turn_id) => {
-                        state.session_state = ProviderSessionState::Ready;
+                        state.busy = false;
                         Some(live.normalizer.interrupted_turn(
                             &state,
                             "turn/interrupted",
@@ -680,7 +685,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
                 .map_err(|_| driver_state_error())?
                 .request_interrupt();
             let abort_result = live.client.abort(&live.provider_thread_id).await;
-            live.expected_shutdown.store(true, Ordering::Release);
+            live.lifecycle.begin_stop();
             live.event_task.abort();
             if let Some(task) = live.command_task.take() {
                 task.abort();

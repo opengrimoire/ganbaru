@@ -408,7 +408,7 @@ async fn claim_scheduled_review_reply(
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE chat_work_assignments SET state = ? WHERE id = 'assignment:review'")
+    sqlx::query("UPDATE chat_work_assignments SET state = ?1, settled_at = CASE WHEN ?1 IN ('completed', 'failed', 'cancelled') THEN updated_at END WHERE id = 'assignment:review'")
         .bind(state)
         .execute(&pool)
         .await
@@ -507,9 +507,11 @@ async fn seed_assignment_on_old_owner(pool: &SqlitePool, state: &str) {
         "INSERT INTO chat_work_assignments
              (id, reply_thread_id, agent_id, triggering_message_item_id,
                  model_selection_schema_version, model_selection_data,
-              executing_device_id, state, created_at, updated_at)
+              executing_device_id, state, settled_at, created_at, updated_at)
          VALUES ('assignment:old', 'reply-thread:review', 'participant:review-agent',
-                 'item:review-reply-1', 1, json_object('providerManagedModel', json('true')), 'device:old', ?, '2026-08-04T17:01:00.000Z',
+                 'item:review-reply-1', 1, json_object('providerManagedModel', json('true')), 'device:old', ?1,
+                 CASE WHEN ?1 IN ('completed', 'failed', 'cancelled')
+                     THEN '2026-08-04T17:01:00.000Z' END, '2026-08-04T17:01:00.000Z',
                  '2026-08-04T17:01:00.000Z')",
     )
     .bind(state)

@@ -54,9 +54,13 @@
   let apps = $state<DistractionsDesktopAppCandidate[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let pendingAddApp = $state<DistractionsAppSelection | null>(null);
-  let pendingRemoveName = $state<string | null>(null);
-  const confirmationOpen = $derived(Boolean(pendingAddApp || pendingRemoveName));
+  /** The one add or remove waiting for confirmation, so two confirmations can never be open at once. */
+  let pending = $state.raw<PendingConfirmation | null>(null);
+  const confirmationOpen = $derived(pending !== null);
+
+  type PendingConfirmation =
+    | { readonly kind: "add"; readonly app: DistractionsAppSelection }
+    | { readonly kind: "remove"; readonly name: string };
 
   const existingKeys = $derived(new Set(existingNames.map((name) => name.toLowerCase())));
   const existingNameByKey = $derived(
@@ -107,38 +111,36 @@
       onSelect?.(selection);
       return;
     }
-    pendingAddApp = selection;
+    pending = { kind: "add", app: selection };
   }
 
   function confirmAdd(): void {
-    if (!pendingAddApp) return;
-    onAdd?.(pendingAddApp);
-    pendingAddApp = null;
-  }
-
-  function cancelAdd(): void {
-    pendingAddApp = null;
+    if (pending?.kind !== "add") return;
+    const { app } = pending;
+    pending = null;
+    onAdd?.(app);
   }
 
   function requestRemove(name: string): void {
     const existingName = existingNameByKey.get(name.toLowerCase());
     if (!existingName) return;
     if (mode === "single") return;
-    pendingRemoveName = existingName;
+    pending = { kind: "remove", name: existingName };
   }
 
   function confirmRemove(): void {
-    if (!pendingRemoveName) return;
-    onRemove?.(pendingRemoveName);
-    pendingRemoveName = null;
+    if (pending?.kind !== "remove") return;
+    const { name } = pending;
+    pending = null;
+    onRemove?.(name);
   }
 
-  function cancelRemove(): void {
-    pendingRemoveName = null;
+  function cancelConfirmation(): void {
+    pending = null;
   }
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (pendingAddApp || pendingRemoveName) return;
+    if (pending) return;
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
@@ -271,24 +273,24 @@
   </div>
 </div>
 
-{#if pendingAddApp}
+{#if pending?.kind === "add"}
   <ConfirmDialog
-    title={t("settings.distractions.appSelector.blockTitle", pendingAddApp.name)}
+    title={t("settings.distractions.appSelector.blockTitle", pending.app.name)}
     message={t("settings.distractions.appSelector.blockMessage")}
     confirmLabel={t("settings.distractions.appSelector.blockAction")}
     cancelLabel={t("settings.distractions.shared.cancelAction")}
     onConfirm={confirmAdd}
-    onCancel={cancelAdd}
+    onCancel={cancelConfirmation}
   />
 {/if}
 
-{#if pendingRemoveName}
+{#if pending?.kind === "remove"}
   <ConfirmDialog
-    title={t("settings.distractions.desktop.removeAppTitle", pendingRemoveName)}
+    title={t("settings.distractions.desktop.removeAppTitle", pending.name)}
     message={t("settings.distractions.desktop.removeMessage")}
     confirmLabel={t("settings.distractions.shared.removeAction")}
     cancelLabel={t("settings.distractions.shared.cancelAction")}
     onConfirm={confirmRemove}
-    onCancel={cancelRemove}
+    onCancel={cancelConfirmation}
   />
 {/if}

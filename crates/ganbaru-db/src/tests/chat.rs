@@ -821,6 +821,65 @@ fn scheduled_message_attachments_are_held_by_value_until_the_schedule_is_removed
 }
 
 #[test]
+fn a_failed_scheduled_message_carries_its_error_for_local_writes() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_default_channel(&pool).await;
+        let channel_id: String =
+            sqlx::query_scalar("SELECT id FROM chat_channels WHERE is_default = 1 LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let insert =
+            |id: &'static str, failed_at: Option<&'static str>, error: Option<&'static str>| {
+                sqlx::query(
+                    "INSERT INTO chat_scheduled_messages
+                    (id, client_command_id, channel_id, request_data, scheduled_for,
+                     failed_at, last_error, created_at, updated_at)
+                 VALUES (?, ?, ?, '{}', ?, ?, ?, ?, ?)",
+                )
+                .bind(id)
+                .bind(id)
+                .bind(channel_id.clone())
+                .bind("2026-08-03T15:00:00Z")
+                .bind(failed_at)
+                .bind(error)
+                .bind(NOW)
+                .bind(NOW)
+                .execute(&pool)
+            };
+        let refusal = "A failed Chat scheduled message must carry its error";
+        let error = insert("scheduled-1", Some(NOW), None).await.unwrap_err();
+        assert!(error.to_string().contains(refusal), "{error}");
+        insert("scheduled-1", Some(NOW), Some("channel_archived"))
+            .await
+            .unwrap();
+        insert("scheduled-2", None, None).await.unwrap();
+
+        let fail = |error: Option<&'static str>| {
+            sqlx::query(
+                "UPDATE chat_scheduled_messages SET failed_at = ?, last_error = ?
+                 WHERE id = 'scheduled-2'",
+            )
+            .bind(NOW)
+            .bind(error)
+            .execute(&pool)
+        };
+        let error = fail(None).await.unwrap_err();
+        assert!(error.to_string().contains(refusal), "{error}");
+        fail(Some("channel_archived")).await.unwrap();
+
+        sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        fail(None)
+            .await
+            .expect("a remote apply is checked by the Chat sync domain instead");
+    });
+}
+
+#[test]
 fn chat_workspace_schema_preserves_attachments_and_scopes_resources_to_threads() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
@@ -1217,6 +1276,90 @@ fn working_folder_tool_schema_tracks_restore_invalidation_and_exact_cleanup() {
                 );
             }
         }
+    });
+}
+
+#[test]
+fn a_checkpoint_carries_an_invalidation_time_exactly_when_it_is_invalid() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project(&pool).await;
+        insert_working_folder(&pool, "folder-1", "project-1").await;
+        insert_thread(&pool, "thread-1", "folder-1", "project-1").await;
+        let oid = "a".repeat(40);
+        let insert =
+            |turn_count: i64, status: &'static str, invalidated_at: Option<&'static str>| {
+                sqlx::query(
+                    "INSERT INTO chat_checkpoints
+                    (id, thread_id, turn_count, repository_identity, hidden_ref_name,
+                     git_object_id, status, created_at, invalidated_at)
+                 VALUES (?, 'thread-1', ?, 'repository-1', ?, ?, ?, ?, ?)",
+                )
+                .bind(format!("checkpoint-{turn_count}"))
+                .bind(turn_count)
+                .bind(format!("refs/ganbaru/chat/checkpoint-{turn_count}"))
+                .bind(oid.clone())
+                .bind(status)
+                .bind(NOW)
+                .bind(invalidated_at)
+            };
+
+        for (turn_count, status, invalidated_at) in [
+            (0, "capturing", None),
+            (1, "available", None),
+            (2, "invalid", Some(NOW)),
+            (3, "cleanup_pending", Some(NOW)),
+            (4, "cleanup_failed", None),
+        ] {
+            insert(turn_count, status, invalidated_at)
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("{status} {invalidated_at:?}: {error}"));
+        }
+        for (turn_count, status, invalidated_at) in [
+            (10, "capturing", Some(NOW)),
+            (11, "available", Some(NOW)),
+            (12, "invalid", None),
+        ] {
+            assert!(
+                insert(turn_count, status, invalidated_at)
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "{status} {invalidated_at:?} should be rejected"
+            );
+        }
+
+        let update = |sql: &'static str| sqlx::query(sql).execute(&pool);
+        assert!(
+            update("UPDATE chat_checkpoints SET status = 'invalid' WHERE id = 'checkpoint-1'")
+                .await
+                .is_err(),
+            "an invalidation must record its time"
+        );
+        assert!(
+            update(
+                "UPDATE chat_checkpoints SET invalidated_by_checkpoint_id = 'checkpoint-0'
+                 WHERE id = 'checkpoint-1'"
+            )
+            .await
+            .is_err(),
+            "an available checkpoint names no invalidating checkpoint"
+        );
+        update(
+            "UPDATE chat_checkpoints
+             SET status = 'invalid', invalidated_at = '2026-11-21T00:00:00Z',
+                 invalidated_by_checkpoint_id = 'checkpoint-0'
+             WHERE id = 'checkpoint-1'",
+        )
+        .await
+        .expect("a timed invalidation should apply");
+        assert!(
+            update("UPDATE chat_checkpoints SET invalidated_at = NULL WHERE id = 'checkpoint-1'")
+                .await
+                .is_err(),
+            "an invalid checkpoint keeps its invalidation time"
+        );
     });
 }
 

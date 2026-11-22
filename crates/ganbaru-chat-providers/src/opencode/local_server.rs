@@ -5,6 +5,7 @@ use super::config::{OPENCODE_PASSWORD_ENVIRONMENT, OpenCodeSecret};
 use super::http_client::OpenCodeHttpClient;
 use super::permissions::organizational_runs_commands;
 use crate::confinement::ShellSandbox;
+use crate::live_session::ProcessSlot;
 use crate::models::{
     ChatError, ChatErrorCode, ChatResult, ProjectConfigurationAccess, ProviderInstanceConfig,
 };
@@ -29,7 +30,7 @@ const LINE_LIMIT_BYTES: usize = 16 * 1024;
 pub struct OwnedOpenCodeServer {
     pub origin: String,
     password: OpenCodeSecret,
-    process: ProviderProcessHandle,
+    process: ProcessSlot,
     stdout_task: JoinHandle<()>,
     /// The confined shell of an organizational server whose scope runs commands, kept for the
     /// server's lifetime.
@@ -115,7 +116,7 @@ impl OwnedOpenCodeServer {
         let mut server = Self {
             origin,
             password,
-            process,
+            process: ProcessSlot::new(Some(process)),
             stdout_task,
             shell,
         };
@@ -150,7 +151,25 @@ impl OwnedOpenCodeServer {
 
     /// Process ID of the server process.
     pub fn process_id(&self) -> Option<u32> {
-        self.process.process_id()
+        self.process
+            .with(ProviderProcessHandle::process_id)
+            .flatten()
+    }
+
+    /// A handle that stops the server process from a task that does not own the server.
+    pub fn stop_handle(&self) -> OwnedServerStop {
+        OwnedServerStop(self.process.clone())
+    }
+}
+
+/// Stops an owned server from the event pump when its session fails. Whichever of this handle
+/// and [`OwnedOpenCodeServer::stop`] runs first stops the process.
+#[derive(Clone)]
+pub struct OwnedServerStop(ProcessSlot);
+
+impl OwnedServerStop {
+    pub async fn stop(&self) -> ChatResult<()> {
+        self.0.stop(GRACEFUL_STOP, FORCE_STOP).await
     }
 }
 

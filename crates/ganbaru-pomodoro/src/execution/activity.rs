@@ -140,11 +140,7 @@ fn pause_started_at_ms(snapshot: &FocusExecutionSnapshot) -> Option<i64> {
             .find(|pause| pause.ended_at_ms.is_none())
             .map(|pause| pause.started_at_ms)
     });
-    open_pause
-        .or(snapshot.idle_started_at_ms)
-        .or(snapshot.suspend_started_at_ms)
-        .or(snapshot.focus_failed_at_ms)
-        .or(snapshot.return_started_at_ms)
+    open_pause.or_else(|| snapshot.mode.wait_started_at_ms())
 }
 
 type StoredActivity = (

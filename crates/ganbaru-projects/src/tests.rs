@@ -72,6 +72,25 @@ pub(super) async fn insert_project_graph_fixture(pool: &SqlitePool) {
     }
 }
 
+/// Moves a task of the project graph fixture into a done status, which completes it.
+pub(super) async fn complete_fixture_task(pool: &SqlitePool, task_id: &str, completed_at: &str) {
+    sqlx::query(
+        "INSERT OR IGNORE INTO project_statuses (id, project_id, name, category, order_key, terminal)
+         VALUES ('status-done', 'project-a', 'Done', 'done', 'a9', 1)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE project_tasks SET status_id = 'status-done', completed_at = ? WHERE id = ?",
+    )
+    .bind(completed_at)
+    .bind(task_id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 pub(super) fn task_update_from_row(task: &ProjectTaskRow) -> ProjectTaskUpdate {
     ProjectTaskUpdate {
         id: task.id.clone(),
@@ -92,7 +111,6 @@ pub(super) fn task_update_from_row(task: &ProjectTaskRow) -> ProjectTaskUpdate {
         start_time: task.start_time.clone(),
         start_reminder_minutes: task.start_reminder_minutes,
         target_end_date: task.target_end_date.clone(),
-        archived_at: task.archived_at.clone(),
         blocker_reason: task.blocker_reason.clone(),
         milestone: task.milestone != 0,
         change_reason: None,
@@ -112,6 +130,7 @@ mod routine;
 mod structure;
 mod sync_keys;
 mod task_bulk;
+mod task_completion;
 mod task_lifecycle;
 mod task_reminders;
 mod task_summaries;

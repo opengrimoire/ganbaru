@@ -40,6 +40,7 @@
   import { reportNotesHeldEditFailure } from "$lib/stores/notes/held-edit-notice.svelte";
   import { MUSIC_HOST_OPEN_EVENT } from "$lib/music/host-window";
   import { preloadQuickNotesInitialSnapshot } from "$lib/quick-notes/initial-snapshot";
+  import { quickNotesOpenApplies, startQuickNotesOpen, type QuickNotesOpenRequest, type TitleBarSurfaces } from "./quick-notes-open";
 
   let {
     shellStartupMs = null,
@@ -87,6 +88,8 @@
   const settingsLauncher = getSettingsLauncher();
   const themeEditor = getThemeEditor();
   let perfPinned = $state(false);
+  /** The Quick notes open waiting for its first snapshot. */
+  let pendingQuickNotesOpen: QuickNotesOpenRequest | null = null;
   const lockedByBenchmark = $derived(benchmarkStatus.status !== "idle");
 
 
@@ -112,16 +115,40 @@
     theme.toggle();
   }
 
+  /** The surfaces that replace the Quick notes panel, as they stand now. */
+  function openSurfaces(): TitleBarSurfaces {
+    return {
+      music: showMusicPanel,
+      pomodoro: showPomodoroMenu,
+      performance: showPerfMenu,
+      titleBarMenu: showTitleBarMenu,
+      tabContextMenu: showTabContextMenu,
+      utilityOverflow: showUtilityOverflowMenu,
+      themeQuickSwitcher: showThemeQuickSwitcher,
+      settings: settingsLauncher.isOpen,
+    };
+  }
+
+  /**
+   * Opens Quick notes once its first snapshot is loaded, or closes it. A toggle while the snapshot loads cancels the
+   * open, and so does opening another surface meanwhile.
+   */
   async function toggleQuickNotes(): Promise<void> {
-    if (showQuickNotes) {
+    if (showQuickNotes || pendingQuickNotesOpen) {
+      pendingQuickNotesOpen = null;
       showQuickNotes = false;
       return;
     }
+    const request = startQuickNotesOpen(openSurfaces());
+    pendingQuickNotesOpen = request;
     try {
       await preloadQuickNotesInitialSnapshot();
     } catch (error: unknown) {
       console.warn("Quick notes preload failed", error);
     }
+    const applies = quickNotesOpenApplies(pendingQuickNotesOpen, request, openSurfaces());
+    if (pendingQuickNotesOpen === request) pendingQuickNotesOpen = null;
+    if (!applies) return;
     showQuickNotes = true;
     showMusicPanel = false;
     showPomodoroMenu = false;

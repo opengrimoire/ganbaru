@@ -217,4 +217,24 @@ describe("ChatChannelNotesPanel", () => {
     expect(chat.channelNotesChanged).not.toHaveBeenCalled();
     expect(root.querySelector(".notice, [role=\"alert\"]")).not.toBeNull();
   });
+
+  it("keeps the list from the reread after adding when the slower first read finishes later", async () => {
+    let finishFirstRead: (notes: ChatChannelNoteRead[]) => void = () => undefined;
+    api.listChatChannelNotes
+      .mockReturnValueOnce(new Promise((resolve) => { finishFirstRead = resolve; }))
+      .mockResolvedValue([note("note:new", "Use pnpm")]);
+    api.createChatChannelNote.mockResolvedValue(note("note:new", "Use pnpm"));
+    const root = await render();
+    const field = root.querySelector<HTMLTextAreaElement>('textarea[aria-label="Add note"]');
+    if (!field) throw new Error("The panel shows an add field");
+    type(field, "Use pnpm");
+    button(root, "Add note").click();
+    await settle();
+    expect(root.querySelectorAll("[data-channel-note]")).toHaveLength(1);
+
+    finishFirstRead([]);
+    await settle();
+    expect(root.querySelectorAll("[data-channel-note]")).toHaveLength(1);
+    expect(root.querySelector("[data-channel-notes-empty]")).toBeNull();
+  });
 });

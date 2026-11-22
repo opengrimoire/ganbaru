@@ -154,6 +154,98 @@ fn comments_create_reply_resolve_reopen_and_delete() {
 }
 
 #[test]
+fn repeated_resolve_and_reopen_keep_the_first_transition() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::query(
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('comments', 'Comments', 'a1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('comments-project', 'comments', 'Comments', 'a1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        sqlx::query("UPDATE notes_pages SET project_id = 'comments-project' WHERE id = ?")
+            .bind(PAGE_A)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let thread = comments::create_comment(
+            &pool,
+            NoteCommentCreate {
+                id: COMMENT_A.to_string(),
+                parent: Some(page_parent(PAGE_A)),
+                discussion_id: None,
+                anchor: None,
+                rich_text: vec![rich_text("Status note")],
+                attachments: None,
+            },
+        )
+        .await
+        .unwrap();
+        let thread_id = serde_json::to_value(thread).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let status_columns = || async {
+            sqlx::query_as::<_, (String, Option<String>, Option<String>, String)>(
+                "SELECT status, resolved_at, resolved_by, last_edited_time
+                 FROM notes_comment_threads WHERE id = ?",
+            )
+            .bind(&thread_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+        let dirty_marks = || async {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM notes_project_history_dirty")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        };
+        let clear_dirty_marks = || async {
+            sqlx::query("DELETE FROM notes_project_history_dirty")
+                .execute(&pool)
+                .await
+                .unwrap();
+        };
+
+        for resolved in [true, false] {
+            clear_dirty_marks().await;
+            comments::resolve_comment_thread(&pool, &thread_id, resolved)
+                .await
+                .unwrap();
+            assert_eq!(dirty_marks().await, 1, "a status change marks history");
+            let after_first = status_columns().await;
+            assert_eq!(after_first.0, if resolved { "resolved" } else { "open" });
+            assert_eq!(after_first.1.is_some(), resolved);
+            assert_eq!(after_first.2.is_some(), resolved);
+
+            clear_dirty_marks().await;
+            comments::resolve_comment_thread(&pool, &thread_id, resolved)
+                .await
+                .unwrap();
+            assert_eq!(
+                status_columns().await,
+                after_first,
+                "a repeated request keeps the recorded transition"
+            );
+            assert_eq!(
+                dirty_marks().await,
+                0,
+                "a repeated request writes no history"
+            );
+        }
+    });
+}
+
+#[test]
 fn comment_unread_state_tracks_local_identity() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;

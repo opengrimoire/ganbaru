@@ -226,6 +226,50 @@ describe("ProjectSidebarSection", () => {
     expect(onRename).toHaveBeenCalledWith("Archive");
   });
 
+  it("keeps showing a later rename while an earlier rename settles", async () => {
+    const settles: Array<(error?: Error) => void> = [];
+    const onRename = vi.fn((_name: string) => new Promise<void>((resolve, reject) => {
+      settles.push((error) => (error ? reject(error) : resolve()));
+    }));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    render({ onRename });
+
+    async function rename(name: string): Promise<void> {
+      button(`Project actions: ${headingName()}`).click();
+      flushSync();
+      button("Rename").click();
+      await tick();
+      const input = target.querySelector<HTMLInputElement>('input[aria-label="Project name"]');
+      if (!input) throw new Error("Rename input missing");
+      input.value = name;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      flushSync();
+    }
+
+    function headingName(): string {
+      return target.querySelector(".section-name")?.textContent?.trim() ?? "";
+    }
+
+    await rename("Alpha");
+    expect(headingName()).toBe("Alpha");
+    await rename("Beta");
+    expect(headingName()).toBe("Beta");
+
+    settles[0]?.(new Error("rename refused"));
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+    expect(headingName()).toBe("Beta");
+
+    settles[1]?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+    expect(headingName()).toBe("Launch");
+    expect(onRename.mock.calls.map(([name]) => name)).toEqual(["Alpha", "Beta"]);
+  });
+
   it("marks hosted views the project already has as unavailable and opens a newly added view", async () => {
     const onSelectView = vi.fn();
     render({ onSelectView });
@@ -286,6 +330,31 @@ describe("ProjectSidebarSection", () => {
     confirm?.click();
     await tick();
     expect(store.removeProject).toHaveBeenCalledExactlyOnceWith("project-a");
+  });
+
+  it("keeps one project menu open at a time and reopens the actions menu with the group list folded", () => {
+    render({ actions: { ...actions, canMoveToGroup: true } });
+    const menus = () => [...document.body.querySelectorAll<HTMLElement>('[role="menu"]')].map((menu) => menu.getAttribute("aria-label"));
+
+    button("Project actions: Launch").click();
+    flushSync();
+    expect(menus()).toEqual(["Project actions: Launch"]);
+    button("Move to group").click();
+    flushSync();
+    expect(button("Move to group").getAttribute("aria-expanded")).toBe("true");
+
+    button("Add a view to Launch").click();
+    flushSync();
+    expect(menus()).toEqual(["Add a view to Launch"]);
+
+    button("Project actions: Launch").click();
+    flushSync();
+    expect(menus()).toEqual(["Project actions: Launch"]);
+    expect(button("Move to group").getAttribute("aria-expanded")).toBe("false");
+
+    button("Project actions: Launch").click();
+    flushSync();
+    expect(menus()).toEqual([]);
   });
 
   it("leaves delete out of the menu for a project that cannot be deleted", () => {
@@ -398,6 +467,44 @@ describe("ProjectSidebarSection", () => {
     renamed.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     flushSync();
     expect(store.renameView).toHaveBeenCalledWith("overview", "Status");
+  });
+
+  it("keeps showing a later view rename while an earlier view rename settles", async () => {
+    const settles: Array<(error?: Error) => void> = [];
+    store.renameView.mockImplementation(() => new Promise<void>((resolve, reject) => {
+      settles.push((error) => (error ? reject(error) : resolve()));
+    }));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    render();
+
+    async function renameBacklog(from: string, to: string): Promise<void> {
+      button(`View actions: ${from}`).click();
+      flushSync();
+      button("Rename view").click();
+      await tick();
+      const input = target.querySelector<HTMLInputElement>('input[aria-label="View name"]');
+      if (!input) throw new Error("Rename input missing");
+      input.value = to;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      flushSync();
+    }
+
+    await renameBacklog("Backlog", "Alpha");
+    await renameBacklog("Alpha", "Beta");
+    expect(viewRowLabels()).toEqual(["Overview", "Beta", "Notes"]);
+
+    settles[0]?.(new Error("rename refused"));
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+    expect(viewRowLabels()).toEqual(["Overview", "Beta", "Notes"]);
+
+    settles[1]?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+    expect(viewRowLabels()).toEqual(["Overview", "Backlog", "Notes"]);
   });
 
   it("reorders a view by dragging it past other rows and keeps the release from opening it", () => {

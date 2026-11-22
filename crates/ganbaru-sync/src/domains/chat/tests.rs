@@ -352,6 +352,41 @@ fn chat_assignment_priorities_prefer_the_most_restrictive_ending() {
 }
 
 #[test]
+fn a_replicated_scheduled_failure_carries_its_error() {
+    let adapter = ChatAdapter;
+    let check = |failed_at: Field, error: Field| {
+        adapter.validate(
+            SCHEDULED_TABLE,
+            scheduled_group::FAILURE,
+            &value(vec![failed_at, error]),
+        )
+    };
+    assert!(check(Field::Null, Field::Null).is_ok());
+    assert!(check(Field::Null, t("Retrying after a network error")).is_ok());
+    assert!(check(t(AT), t("The agent left the channel")).is_ok());
+    assert!(check(t(AT), Field::Null).is_err());
+}
+
+#[test]
+fn chat_assignment_settled_time_is_present_exactly_on_settled_work() {
+    let adapter = ChatAdapter;
+    let check =
+        |fields| adapter.validate(ASSIGNMENTS_TABLE, assignment_group::STATE, &value(fields));
+    for state in ASSIGNMENT_STATES {
+        let settled = SETTLED_ASSIGNMENT_STATES.contains(&state);
+        let mut flipped = assignment_state(state, None).fields().to_vec();
+        flipped[2] = if settled { Field::Null } else { t(AT) };
+        assert!(
+            check(flipped).is_err(),
+            "{state} with its settled time flipped"
+        );
+    }
+    let mut malformed = assignment_state("failed", None).fields().to_vec();
+    malformed[2] = t("2026-10-24");
+    assert!(check(malformed).is_err());
+}
+
+#[test]
 fn chat_assignment_reviews_need_all_fields_on_completed_work() {
     let adapter = ChatAdapter;
     let check =

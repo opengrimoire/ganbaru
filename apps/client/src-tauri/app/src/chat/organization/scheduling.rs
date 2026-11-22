@@ -1401,8 +1401,8 @@ pub(super) async fn claim_scheduled_message_for_immediate_send(
     Ok(request_data)
 }
 
-/// Reads the scheduled message `scheduled_message_id`. It is `failed` once its executing device
-/// gave up, `dispatching` while this device holds its send claim, and `scheduled` otherwise.
+/// Reads the scheduled message `scheduled_message_id`, deriving its state from its send claim and
+/// recorded failure through [`ChatScheduledMessageState::from_columns`].
 async fn read_scheduled_message(
     pool: &SqlitePool,
     scheduled_message_id: &ChatScheduledMessageId,
@@ -1411,11 +1411,8 @@ async fn read_scheduled_message(
         "SELECT scheduled.id, scheduled.channel_id, scheduled.reply_thread_id,
                 scheduled.request_data, scheduled.scheduled_for, scheduled.last_error,
                 scheduled.created_at,
-                CASE
-                  WHEN dispatch.claim_token IS NOT NULL THEN 'dispatching'
-                  WHEN scheduled.failed_at IS NOT NULL THEN 'failed'
-                  ELSE 'scheduled'
-                END AS state,
+                dispatch.claim_token IS NOT NULL AS claimed,
+                scheduled.failed_at IS NOT NULL AS failed,
                 {RECURRENCE_RULE_COLUMNS}, recurrence.next_occurrence_at, recurrence.fired_count,
                 dispatch.skipped_occurrences, dispatch.deferred_until
          FROM chat_scheduled_messages scheduled
@@ -1456,7 +1453,10 @@ async fn read_scheduled_message(
         attachment_ids: request.attachment_ids,
         references: request.references,
         also_send_to_channel: request.also_send_to_channel,
-        state: row.try_get("state").map_err(persistence_error)?,
+        state: ChatScheduledMessageState::from_columns(
+            row.try_get("claimed").map_err(persistence_error)?,
+            row.try_get("failed").map_err(persistence_error)?,
+        ),
         scheduled_for: UtcTimestamp::new(
             row.try_get::<String, _>("scheduled_for")
                 .map_err(persistence_error)?,

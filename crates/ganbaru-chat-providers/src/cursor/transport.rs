@@ -1,19 +1,19 @@
 //! Bounded newline-delimited JSON-RPC transport for ACP version 1.
 
 use crate::DriverOperationContext;
+use crate::live_session::{ConnectionKill, ProcessSlot, WriterShutdown};
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use crate::process::ProviderProcessHandle;
+use crate::response_map::{ResponseMap, ResponseSlotRefusal};
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
-const MAX_PENDING_REQUESTS: usize = 128;
 const MAX_INBOUND_MESSAGES: usize = 256;
 const MAX_OUTBOUND_MESSAGES: usize = 256;
 const MAX_METHOD_BYTES: usize = 256;
@@ -98,8 +98,7 @@ pub enum AcpInboundMessage {
     Closed,
 }
 
-type PendingResponse = oneshot::Sender<Result<Value, AcpRpcFailure>>;
-type PendingResponses = Arc<Mutex<HashMap<String, PendingResponse>>>;
+type PendingResponses = ResponseMap<AcpRpcFailure>;
 
 #[derive(Clone)]
 pub struct AcpRpcClient {
@@ -148,17 +147,13 @@ impl AcpRpcClient {
             .next_request_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let key = id.to_string();
-        let (sender, receiver) = oneshot::channel();
-        {
-            let mut pending = self
-                .pending
-                .lock()
-                .map_err(|_| AcpRpcFailure::Unavailable)?;
-            if pending.len() >= MAX_PENDING_REQUESTS {
-                return Err(AcpRpcFailure::Unavailable);
-            }
-            pending.insert(key.clone(), sender);
-        }
+        let receiver = self
+            .pending
+            .register(key.clone())
+            .map_err(|refusal| match refusal {
+                ResponseSlotRefusal::Full => AcpRpcFailure::Unavailable,
+                ResponseSlotRefusal::Closed(failure) => failure,
+            })?;
         if let Err(error) = self
             .send_value(json!({
                 "jsonrpc": "2.0",
@@ -250,9 +245,7 @@ impl AcpRpcClient {
     }
 
     fn remove_pending(&self, key: &str) {
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.remove(key);
-        }
+        self.pending.take(key);
     }
 }
 
@@ -261,24 +254,24 @@ pub struct AcpRpcConnection {
     inbound: Option<mpsc::Receiver<AcpInboundMessage>>,
     reader_task: JoinHandle<()>,
     writer_task: JoinHandle<()>,
-    writer_shutdown: Option<oneshot::Sender<()>>,
-    process: Option<ProviderProcessHandle>,
+    writer_shutdown: WriterShutdown,
+    process: ProcessSlot,
 }
 
 impl AcpRpcConnection {
     /// Process ID of the provider process, while the connection still owns it.
     pub fn process_id(&self) -> Option<u32> {
         self.process
-            .as_ref()
-            .and_then(ProviderProcessHandle::process_id)
+            .with(ProviderProcessHandle::process_id)
+            .flatten()
     }
 
     /// Watch that tells whether the resource scope's memory ceiling stopped the provider; `None`
     /// when the provider is not scoped.
     pub fn memory_limit_watch(&self) -> Option<crate::process::systemd_scope::MemoryLimitWatch> {
         self.process
-            .as_ref()
-            .and_then(ProviderProcessHandle::memory_limit_watch)
+            .with(ProviderProcessHandle::memory_limit_watch)
+            .flatten()
     }
 
     pub fn from_process(mut process: ProviderProcessHandle) -> ChatResult<Self> {
@@ -303,14 +296,14 @@ impl AcpRpcConnection {
     {
         let (outbound, outbound_receiver) = mpsc::channel(MAX_OUTBOUND_MESSAGES);
         let (inbound_sender, inbound) = mpsc::channel(MAX_INBOUND_MESSAGES);
-        let pending = Arc::new(Mutex::new(HashMap::new()));
-        let reader_task = tokio::spawn(read_messages(reader, inbound_sender, Arc::clone(&pending)));
+        let pending = PendingResponses::new();
+        let reader_task = tokio::spawn(read_messages(reader, inbound_sender, pending.clone()));
         let (writer_shutdown, shutdown_receiver) = oneshot::channel();
         let writer_task = tokio::spawn(write_messages(
             writer,
             outbound_receiver,
             shutdown_receiver,
-            Arc::clone(&pending),
+            pending.clone(),
         ));
         Self {
             client: AcpRpcClient {
@@ -321,13 +314,18 @@ impl AcpRpcConnection {
             inbound: Some(inbound),
             reader_task,
             writer_task,
-            writer_shutdown: Some(writer_shutdown),
-            process,
+            writer_shutdown: WriterShutdown::new(writer_shutdown),
+            process: ProcessSlot::new(process),
         }
     }
 
     pub fn client(&self) -> AcpRpcClient {
         self.client.clone()
+    }
+
+    /// A handle that stops the provider process from a task that does not own the connection.
+    pub fn kill_handle(&self) -> ConnectionKill {
+        ConnectionKill::new(self.writer_shutdown.clone(), self.process.clone())
     }
 
     pub fn take_inbound(&mut self) -> ChatResult<mpsc::Receiver<AcpInboundMessage>> {
@@ -345,14 +343,9 @@ impl AcpRpcConnection {
         graceful_deadline: Duration,
         force_deadline: Duration,
     ) -> ChatResult<()> {
-        if let Some(shutdown) = self.writer_shutdown.take() {
-            let _ = shutdown.send(());
-        }
+        self.writer_shutdown.signal();
         let _ = tokio::time::timeout(graceful_deadline, &mut self.writer_task).await;
-        let process_result = match self.process.as_mut() {
-            Some(process) => process.stop(graceful_deadline, force_deadline).await,
-            None => Ok(()),
-        };
+        let process_result = self.process.stop(graceful_deadline, force_deadline).await;
         let _ = tokio::time::timeout(force_deadline, &mut self.reader_task).await;
         if !self.writer_task.is_finished() {
             self.writer_task.abort();
@@ -360,19 +353,17 @@ impl AcpRpcConnection {
         if !self.reader_task.is_finished() {
             self.reader_task.abort();
         }
-        fail_pending(&self.client.pending, AcpRpcFailure::Closed);
+        self.client.pending.close(AcpRpcFailure::Closed);
         process_result
     }
 }
 
 impl Drop for AcpRpcConnection {
     fn drop(&mut self) {
-        if let Some(shutdown) = self.writer_shutdown.take() {
-            let _ = shutdown.send(());
-        }
+        self.writer_shutdown.signal();
         self.writer_task.abort();
         self.reader_task.abort();
-        fail_pending(&self.client.pending, AcpRpcFailure::Closed);
+        self.client.pending.close(AcpRpcFailure::Closed);
     }
 }
 
@@ -394,7 +385,7 @@ async fn write_messages<W>(
             },
         };
         if writer.write_all(&message).await.is_err() || writer.flush().await.is_err() {
-            fail_pending(&pending, AcpRpcFailure::Closed);
+            pending.close(AcpRpcFailure::Closed);
             break;
         }
     }
@@ -418,7 +409,7 @@ async fn read_messages<R>(
                     }
                     Ok(InboundEnvelope::Message(message)) => {
                         if inbound.send(message).await.is_err() {
-                            fail_pending(&pending, AcpRpcFailure::Closed);
+                            pending.close(AcpRpcFailure::Closed);
                             return;
                         }
                     }
@@ -451,7 +442,7 @@ async fn read_messages<R>(
             }
         }
     }
-    fail_pending(&pending, AcpRpcFailure::Closed);
+    pending.close(AcpRpcFailure::Closed);
     let _ = inbound.send(AcpInboundMessage::Closed).await;
 }
 
@@ -526,28 +517,7 @@ fn deliver_response(pending: &PendingResponses, id: &Value, result: Result<Value
     let Ok(key) = rpc_id_key(id) else {
         return;
     };
-    let sender = pending
-        .lock()
-        .ok()
-        .and_then(|mut responses| responses.remove(&key));
-    if let Some(sender) = sender {
-        let _ = sender.send(result);
-    }
-}
-
-fn fail_pending(pending: &PendingResponses, failure: AcpRpcFailure) {
-    let responses = pending
-        .lock()
-        .map(|mut responses| {
-            responses
-                .drain()
-                .map(|(_, sender)| sender)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    for response in responses {
-        let _ = response.send(Err(failure.clone()));
-    }
+    pending.deliver(&key, result);
 }
 
 fn validate_method(method: &str) -> Result<(), AcpRpcFailure> {

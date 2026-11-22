@@ -23,7 +23,7 @@ pub(super) async fn review_work_in(state: &str) -> SqlitePool {
 }
 
 pub(super) async fn set_review_state(pool: &SqlitePool, state: &str) {
-    sqlx::query("UPDATE chat_work_assignments SET state = ?1 WHERE id = ?2")
+    sqlx::query("UPDATE chat_work_assignments SET state = ?1, settled_at = CASE WHEN ?1 IN ('completed', 'failed', 'cancelled') THEN updated_at END WHERE id = ?2")
         .bind(state)
         .bind(ROUTED_ASSIGNMENT_ID)
         .execute(pool)
@@ -405,7 +405,7 @@ fn reviewed_or_continued_work_does_not_continue_again() {
         post_reply(&pool, "command:queue", Some(ChatFollowupRouting::Queue)).await;
         sqlx::query(
             "UPDATE chat_work_assignments
-             SET state = 'completed', review_outcome = 'accepted',
+             SET state = 'completed', settled_at = updated_at, review_outcome = 'accepted',
                  reviewed_by_participant_id = ?1, reviewed_at = ?2
              WHERE id = ?3",
         )
@@ -697,7 +697,13 @@ fn a_phone_agent_read_shows_the_status_of_the_desktop_that_would_run_it() {
     tauri::async_runtime::block_on(async {
         let pool = review_thread_without_assignment().await;
         insert_linked_device(&pool, 1, "device:desk", "desktop").await;
-        super::takeover::insert_sync_writer(&pool, 1, "device:desk", "active", false).await;
+        super::takeover::insert_sync_writer(
+            &pool,
+            1,
+            "device:desk",
+            ganbaru_sync::WriterState::Active,
+        )
+        .await;
         publish_desktop_status(&pool, "device:desk", true).await;
         let agent_id = ChatParticipantId::new("participant:review-agent".to_string()).unwrap();
         let phone =
@@ -729,7 +735,13 @@ fn a_phone_agent_read_ignores_a_desktop_that_no_longer_writes_chat() {
     tauri::async_runtime::block_on(async {
         let pool = review_thread_without_assignment().await;
         insert_linked_device(&pool, 1, "device:desk", "desktop").await;
-        super::takeover::insert_sync_writer(&pool, 1, "device:desk", "active", true).await;
+        super::takeover::insert_sync_writer(
+            &pool,
+            1,
+            "device:desk",
+            ganbaru_sync::WriterState::Revoked { cutoff: 0 },
+        )
+        .await;
         publish_desktop_status(&pool, "device:desk", true).await;
         let agent_id = ChatParticipantId::new("participant:review-agent".to_string()).unwrap();
         let phone =

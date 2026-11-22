@@ -257,6 +257,41 @@ describe("native Calendar edit lifetime", () => {
     expect(controller.uncertain).toBe(false);
   });
 
+  it("reports a write in flight and keeps a retried request uncertain until its reply lands", async () => {
+    const load = vi.fn(async (request: CalendarPreviewRequest) => preview(request));
+    const receipt = { commandId: "edit-1", editedId: "edited", changed: true, preservedIds: [] };
+    const reply = deferred<typeof receipt>();
+    const write = vi.fn().mockRejectedValueOnce(new Error("Lost response")).mockImplementationOnce(() => reply.promise);
+    const controller = new NativeCalendarEditController(() => authority, load, write, identifiers());
+    expect([controller.committing, controller.uncertain, controller.resultPending]).toEqual([false, false, false]);
+    const first = controller.commit(draft());
+    expect(controller.committing).toBe(true);
+    await expect(first).rejects.toThrow("Lost response");
+    expect([controller.committing, controller.uncertain]).toEqual([false, true]);
+    const retry = controller.retryPending();
+    expect([controller.committing, controller.uncertain]).toEqual([true, true]);
+    await expect(controller.commit(draft())).rejects.toThrow("already in progress");
+    await expect(controller.retryPending()).rejects.toThrow("already in progress");
+    reply.resolve(receipt);
+    await expect(retry).resolves.toEqual(receipt);
+    expect([controller.committing, controller.uncertain, controller.resultPending]).toEqual([false, false, false]);
+    expect(controller.pendingKind).toBeUndefined();
+  });
+
+  it("ends a Save whose review fails without retaining a request", async () => {
+    const load = vi.fn().mockRejectedValue(new Error("Calendar source is unreadable"));
+    const write = vi.fn();
+    const controller = new NativeCalendarEditController(() => authority, load, write, identifiers());
+    const saving = controller.commit(draft());
+    const settled = expect(saving).rejects.toThrow("Calendar source is unreadable");
+    await vi.advanceTimersByTimeAsync(250 + 750 + 1500);
+    await settled;
+    expect([controller.committing, controller.uncertain]).toEqual([false, false]);
+    expect(controller.pendingKind).toBeUndefined();
+    expect(controller.error).toBe("Calendar source is unreadable");
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it("keeps an uncertain request while a different vault is selected", async () => {
     let current = { ...authority };
     const load = vi.fn(async (request: CalendarPreviewRequest) => preview(request));

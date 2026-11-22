@@ -105,7 +105,6 @@ pub(super) fn validate_project_update(project: &ProjectUpdate) -> Result<(), Str
     require_non_empty(&project.name, "name")?;
     validate_project_icon(&project.icon)?;
     validate_color(project.color)?;
-    validate_enum(&project.status, "status", &["active", "hidden", "archived"])?;
     validate_optional_text(&project.default_event_name, "default_event_name")?;
     validate_project_event_time_defaults(
         &project.default_event_time_mode,

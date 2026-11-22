@@ -19,10 +19,12 @@ mod cursor;
 mod driver;
 mod home_identity;
 mod host_path;
+mod live_session;
 mod opencode;
 mod registry;
 #[cfg(test)]
 mod replay;
+mod response_map;
 pub mod runtime_review;
 mod unsupported;
 

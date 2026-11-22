@@ -298,8 +298,7 @@ impl CodexProviderDriver {
             session_id.clone(),
         ));
         let (provider_thread_sender, provider_thread_receiver) = watch::channel(None);
-        let expected_shutdown = Arc::new(AtomicBool::new(false));
-        let terminal_error = Arc::new(Mutex::new(None));
+        let lifecycle = LiveSessionLifecycle::default();
         let inbound = connection.take_inbound()?;
         let router_task = spawn_codex_router(CodexRouterResources {
             client: client.clone(),
@@ -309,8 +308,8 @@ impl CodexProviderDriver {
             pending_requests: Arc::clone(&pending_requests),
             sink: Arc::clone(&event_sink),
             provider_thread_sender,
-            expected_shutdown: Arc::clone(&expected_shutdown),
-            terminal_error: Arc::clone(&terminal_error),
+            lifecycle: lifecycle.clone(),
+            kill: connection.kill_handle(),
             organizational: organizational.is_some(),
             memory_limit: connection.memory_limit_watch(),
         });
@@ -426,7 +425,6 @@ impl CodexProviderDriver {
             let mut state = route.lock().map_err(|_| driver_state_error())?;
             state.provider_thread_id = Some(provider_thread_id.as_str().to_string());
             state.effective_model_id = Some(effective_model.clone());
-            state.session_state = ProviderSessionState::Ready;
         }
         let started_at = now_utc()?;
         let resume_cursor = VersionedJson {
@@ -478,8 +476,7 @@ impl CodexProviderDriver {
             pending_requests,
             normalizer,
             sink: event_sink,
-            expected_shutdown,
-            terminal_error,
+            lifecycle,
             session_id: session_id.clone(),
             workspace,
             effective_model: effective_model.as_str().to_string(),

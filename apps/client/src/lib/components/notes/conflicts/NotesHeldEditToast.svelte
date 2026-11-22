@@ -13,26 +13,45 @@
   const { t } = getLocalization();
   const nav = getNavigation();
   const notice = $derived(notesHeldEditNotice.current);
-  let copyFailed = $state(false);
+  /** The removed text whose last copy failed, so the failure shows only while that exact text is still the notice. */
+  let copyFailedText = $state.raw<string | null>(null);
+  const copyFailed = $derived(notice?.kind === "removed" && notice.text === copyFailedText);
 
   function openNotes(): void {
     notesHeldEditNotice.dismiss();
     nav.navigate("notes");
   }
 
+  /**
+   * Whether `text` is still the removed text the notice shows.
+   *
+   * @param text The text a copy started with.
+   */
+  function isShownRemovedText(text: string): boolean {
+    const shown = notesHeldEditNotice.current;
+    return shown?.kind === "removed" && shown.text === text;
+  }
+
+  /**
+   * Copies the removed text and dismisses the notice, unless the notice changed while the copy ran, for example
+   * because more removed text was appended to it, so text that was not copied is never dismissed.
+   *
+   * @param text The removed text to copy.
+   */
   async function copyText(text: string): Promise<void> {
     try {
       await writeTextToClipboard(text);
-      copyFailed = false;
+      if (!isShownRemovedText(text)) return;
+      copyFailedText = null;
       notesHeldEditNotice.dismiss();
     } catch (cause: unknown) {
       console.warn("Held Notes text could not be copied", cause);
-      copyFailed = true;
+      if (isShownRemovedText(text)) copyFailedText = text;
     }
   }
 
   function dismiss(): void {
-    copyFailed = false;
+    copyFailedText = null;
     notesHeldEditNotice.dismiss();
   }
 </script>

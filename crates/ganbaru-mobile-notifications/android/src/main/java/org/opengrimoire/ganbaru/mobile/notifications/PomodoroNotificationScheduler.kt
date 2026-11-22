@@ -66,6 +66,11 @@ internal data class PomodoroNotificationProjection(
   val isRunning: Boolean,
   /** Whether the paused notification may offer Resume: only a manual pause, which Resume ends. */
   val isResumable: Boolean,
+  /**
+   * Whether the distraction blocker's pause setting lifts phase blocking now. Rust computes it from the
+   * shared rule, so Android applies it without knowing which pauses qualify.
+   */
+  val pauseLiftsBlocking: Boolean,
   val remainingSeconds: Int,
   val totalSeconds: Int,
   val configJson: String,
@@ -375,6 +380,9 @@ internal object PomodoroNotificationScheduler {
     require(!projection.isResumable || !projection.isRunning) {
       "Only a paused Pomodoro phase can offer Resume"
     }
+    require(!projection.pauseLiftsBlocking || !projection.isRunning) {
+      "Only a paused Pomodoro phase can lift distraction blocking"
+    }
     require(projection.runId.isNotBlank() && projection.runId.length <= 128) {
       "Pomodoro run ID must contain 1 to 128 characters"
     }
@@ -492,6 +500,7 @@ internal object PomodoroNotificationScheduler {
     .put("generatedAtEpochMs", projection.generatedAtEpochMs)
     .put("isRunning", projection.isRunning)
     .put("isResumable", projection.isResumable)
+    .put("pauseLiftsBlocking", projection.pauseLiftsBlocking)
     .put("remainingSeconds", projection.remainingSeconds)
     .put("totalSeconds", projection.totalSeconds)
     .put("configJson", projection.configJson)
@@ -535,6 +544,7 @@ internal object PomodoroNotificationScheduler {
       generatedAtEpochMs = value.getLong("generatedAtEpochMs"),
       isRunning = value.getBoolean("isRunning"),
       isResumable = value.getBoolean("isResumable"),
+      pauseLiftsBlocking = value.getBoolean("pauseLiftsBlocking"),
       remainingSeconds = value.getInt("remainingSeconds"),
       totalSeconds = value.getInt("totalSeconds"),
       configJson = value.getString("configJson"),

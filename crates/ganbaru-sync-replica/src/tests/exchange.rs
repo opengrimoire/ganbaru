@@ -1204,7 +1204,7 @@ fn only_the_anchor_settles_a_final_rejection() {
             )
             .await
             .expect("replay");
-            let rejection = outbox.get(&removal.hash()).expect("kept").rejection;
+            let rejection = outbox.get(&removal.hash()).expect("kept").rejection();
             let expected = (answering == HUB_DEVICE).then_some(ProposalRejection::DeviceRemoved);
             assert_eq!(rejection, expected, "answered by {answering}");
         }
@@ -1311,7 +1311,7 @@ fn proposals_reach_the_anchor_through_the_hub_until_the_chain_holds_them() {
         assert_eq!(sequenced, 1);
         assert_eq!(*changes.borrow(), 1, "a sequenced proposal wakes waits");
         assert_eq!(
-            outbox.entries()[1].rejection,
+            outbox.entries()[1].rejection(),
             Some(ProposalRejection::AlreadyEnrolled)
         );
         // Replaying again is idempotent: the anchor answers the revision it already holds.
@@ -2541,7 +2541,7 @@ fn a_reset_interrupted_after_the_database_is_cleared_is_repaired_on_the_next_sta
                 outbox
                     .entries()
                     .iter()
-                    .all(|entry| entry.rejection == Some(ProposalRejection::WrongSpace)),
+                    .all(|entry| entry.rejection() == Some(ProposalRejection::WrongSpace)),
                 "a proposal for the old charter is refused for good"
             );
             drop(conn);

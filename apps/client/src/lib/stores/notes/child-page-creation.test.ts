@@ -32,7 +32,7 @@ function editor(text = "/Note") {
   const activateProvisionalPage = vi.fn();
   const beginPageCreation = vi.fn();
   const discardFailedPageCreation = vi.fn();
-  let creationAttempt: "ready" | "failed" = "ready";
+  let creationAttempt: "ready" | "failed" | "unshown" = "ready";
   const session = new NotesPageSessionController({
     initialSelectedPageId: pageId, persistSelectedPageId: vi.fn(), recordRecentPage: vi.fn(),
   });
@@ -74,7 +74,7 @@ function editor(text = "/Note") {
       blocks = Object.fromEntries(next.blocks.results.map((block) => [block.id, block]));
     },
     activateProvisionalPage, beginPageCreation, awaitPageReady: async () => undefined,
-    awaitPageCreationAttempt: async () => creationAttempt, discardFailedPageCreation,
+    awaitPageCreationAttempt: async () => creationAttempt, discardFailedPageCreation, releaseRemovedPageCreation: vi.fn(),
     activateRestoredPage: async () => undefined, applyPostMutation: vi.fn(),
     selectPage: async () => undefined, selectPageAfterRemoval: async () => undefined,
     discardRemovedPageWrites: vi.fn(), reloadPageBreadcrumb: async () => undefined,
@@ -105,6 +105,7 @@ function editor(text = "/Note") {
     actions, pageActions, activateProvisionalPage, persistence, stored, writes, release, session, error, resetUndoHistory,
     beginPageCreation, discardFailedPageCreation,
     failCreation: () => { creationAttempt = "failed"; },
+    unshownCreation: () => { creationAttempt = "unshown"; },
     block: () => blocks[blockId],
   };
 }
@@ -211,5 +212,12 @@ describe("child-note creation through the editor queue", () => {
     const failedId = h.beginPageCreation.mock.calls[1]?.[0].id;
     expect(failedId).toBeDefined();
     expect(h.discardFailedPageCreation).toHaveBeenCalledWith(failedId);
+  });
+
+  it("returns a background note the backend created even when it could not be shown", async () => {
+    const h = editor();
+    h.unshownCreation();
+    await expect(h.pageActions.createPageInBackground("", null)).resolves.toEqual(expect.any(String));
+    expect(h.discardFailedPageCreation).not.toHaveBeenCalled();
   });
 });

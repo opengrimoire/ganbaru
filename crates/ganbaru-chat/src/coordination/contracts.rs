@@ -239,6 +239,29 @@ pub struct UpdateScheduledChatMessageCommand {
     pub recurrence: Option<RecurrenceSpec>,
 }
 
+/// Where a scheduled message stands. It is derived from its rows rather than stored: a held send
+/// claim makes it `Dispatching`, a recorded failure without one makes it `Failed`, and it is
+/// `Scheduled` otherwise.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatScheduledMessageState {
+    Scheduled,
+    Dispatching,
+    Failed,
+}
+
+impl ChatScheduledMessageState {
+    /// Derives the state from whether a send claim is held and whether a failure is recorded.
+    /// A held claim wins, since the send it fences is already underway.
+    pub fn from_columns(claimed: bool, failed: bool) -> Self {
+        match (claimed, failed) {
+            (true, _) => Self::Dispatching,
+            (false, true) => Self::Failed,
+            (false, false) => Self::Scheduled,
+        }
+    }
+}
+
 /// A message waiting to be sent, once or on a repeat rule.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -251,7 +274,7 @@ pub struct ChatScheduledMessageRead {
     pub attachment_ids: Vec<ChatAttachmentId>,
     pub references: Vec<ChatMessageReference>,
     pub also_send_to_channel: bool,
-    pub state: String,
+    pub state: ChatScheduledMessageState,
     /// Delivery time of a one-time message, or the anchor of a repeating one.
     pub scheduled_for: UtcTimestamp,
     pub last_error: Option<String>,
@@ -384,8 +407,8 @@ pub struct PostChatMessageResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatAgentAccess, ChatScratchPromotionDestinationInput, InteractionMode,
-        SetChatAgentPolicyCommand, UpdateChatChannelAgentSettingsCommand,
+        ChatAgentAccess, ChatScheduledMessageState, ChatScratchPromotionDestinationInput,
+        InteractionMode, SetChatAgentPolicyCommand, UpdateChatChannelAgentSettingsCommand,
         UpdateChatProjectAgentSettingsCommand,
     };
     use serde_json::json;
@@ -472,5 +495,22 @@ mod tests {
             serde_json::from_value::<ChatScratchPromotionDestinationInput>(legacy_destination)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_scheduled_message_state_follows_its_claim_then_its_failure_and_keeps_its_wire_names() {
+        use ChatScheduledMessageState::{Dispatching, Failed, Scheduled};
+        for (claimed, failed, state, wire) in [
+            (false, false, Scheduled, "scheduled"),
+            (false, true, Failed, "failed"),
+            (true, false, Dispatching, "dispatching"),
+            (true, true, Dispatching, "dispatching"),
+        ] {
+            assert_eq!(
+                ChatScheduledMessageState::from_columns(claimed, failed),
+                state
+            );
+            assert_eq!(serde_json::to_value(state).unwrap(), json!(wire));
+        }
     }
 }

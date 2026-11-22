@@ -235,6 +235,12 @@ pub enum FixtureScenario {
     /// A plain ACP agent whose sessions advertise the `GENERIC_MODELS` catalog.
     GenericAgentWithModels,
     GenericAgentWithAuth,
+    /// The first `session/prompt` is refused with a usage limit; later prompts complete.
+    RefuseFirstPrompt,
+    /// A `session/prompt` is answered with a line that is not JSON.
+    MalformedDuringPrompt,
+    /// The agent exits when it receives a `session/prompt`.
+    ExitDuringPrompt,
 }
 
 impl FixtureScenario {
@@ -337,6 +343,7 @@ async fn run_fixture<R, W>(
     let mut reader = BufReader::new(reader);
     let mut options = config_options();
     let mut pending_prompt = None;
+    let mut prompts = 0_usize;
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line).await {
@@ -483,6 +490,19 @@ async fn run_fixture<R, W>(
             "session/set_mode" => write_result(&mut writer, id, json!({})).await,
             "cursor/list_available_models" => {
                 write_result(&mut writer, id, models_response()).await;
+            }
+            "session/prompt" if scenario == FixtureScenario::RefuseFirstPrompt => {
+                prompts += 1;
+                if prompts == 1 {
+                    write_error(&mut writer, id, -32000, "Usage limit reached").await;
+                } else {
+                    write_result(&mut writer, id, json!({ "stopReason": "end_turn" })).await;
+                }
+            }
+            "session/prompt" if scenario == FixtureScenario::ExitDuringPrompt => break,
+            "session/prompt" if scenario == FixtureScenario::MalformedDuringPrompt => {
+                writer.write_all(b"not json\n").await.unwrap();
+                writer.flush().await.unwrap();
             }
             "session/prompt" if scenario == FixtureScenario::CompletePrompts => {
                 write_message(

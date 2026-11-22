@@ -10,6 +10,7 @@
     syncContestCauseLine,
     syncContestDeviceName,
   } from "$lib/sync/contests";
+  import { IDLE_SYNC_ACTIONS, runSyncAction, type SyncActionAccess, type SyncActionState } from "./sync-action-state";
 
   type ContestChoice = "yield" | "object" | "withdraw";
 
@@ -23,9 +24,9 @@
 
   const { t } = getLocalization();
   const authorityState = getSyncAuthorityState();
-  let busy = $state(false);
-  let message = $state("");
-  let failed = $state(false);
+  let actions = $state.raw<SyncActionState<"contest">>(IDLE_SYNC_ACTIONS);
+  const actionAccess: SyncActionAccess<"contest"> = { read: () => actions, write: (next) => { actions = next; } };
+  const busy = $derived(actions.running.length > 0);
   let pending = $state<{ choice: ContestChoice; candidate: SyncContestCandidate } | null>(null);
 
   const heldLine = $derived(
@@ -51,21 +52,18 @@
   async function confirmChoice(): Promise<void> {
     const current = pending;
     pending = null;
-    if (!current || busy) return;
-    busy = true;
-    message = "";
-    failed = false;
-    try {
+    if (!current) return;
+    await runSyncAction(actionAccess, "contest", async () => {
       if (current.choice === "object") await authorityState.objectContest(current.candidate.hash);
       else await authorityState.yieldContest(current.candidate.hash);
-      message = t("sync.contest.done");
-    } catch (cause: unknown) {
-      console.warn("contest choice could not be recorded", cause);
-      failed = true;
-      message = t("sync.contest.failed");
-    } finally {
-      busy = false;
-    }
+    }, {
+      success: () => t("sync.contest.done"),
+      failure: (cause) => {
+        console.warn("contest choice could not be recorded", cause);
+        return t("sync.contest.failed");
+      },
+      exclusive: true,
+    });
   }
 </script>
 
@@ -114,12 +112,10 @@
   {#if !kitOffered}
     <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{t("sync.contest.kitHint")}</p>
   {/if}
-  {#if message}
-    {#if failed}
-      <Notice class="px-1 text-[0.8rem] leading-5" {message} copy={false} />
-    {:else}
-      <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{message}</p>
-    {/if}
+  {#if actions.feedback.kind === "failed"}
+    <Notice class="px-1 text-[0.8rem] leading-5" message={actions.feedback.message} copy={false} />
+  {:else if actions.feedback.kind === "done"}
+    <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{actions.feedback.message}</p>
   {/if}
 </div>
 

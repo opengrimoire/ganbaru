@@ -147,8 +147,6 @@ export interface ProjectGroup {
   color?: EventColor;
   orderKey: string;
   collapsed: boolean;
-  hiddenAt?: string;
-  archivedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -723,6 +721,13 @@ export interface ProjectCreate {
   defaultIdleThresholdMinutes: FocusIdleThresholdMinutes;
 }
 
+/** A project lifecycle move, refused by Rust when the project no longer has `expected`. */
+export interface ProjectLifecycleChange {
+  projectId: string;
+  expected: ProjectLifecycleStatus;
+  next: ProjectLifecycleStatus;
+}
+
 export interface ProjectUpdate {
   id: string;
   /** The group the project moves to or stays in, or `null` for outside every group. */
@@ -731,7 +736,6 @@ export interface ProjectUpdate {
   icon: string;
   color: EventColor | null;
   placement?: ProjectOrderPlacement;
-  status: ProjectLifecycleStatus;
   defaultEventName: string | null;
   defaultEventTimeMode: ProjectDefaultEventTimeMode;
   defaultEventDurationMinutes: number | null;
@@ -759,13 +763,19 @@ export interface ProjectSectionCreate {
   placement?: ProjectOrderPlacement;
 }
 
+/** A section field edit; hiding, archiving, and restoring use {@link SectionLifecycleChange}. */
 export interface ProjectSectionUpdate {
   id: string;
   name: string;
   placement?: ProjectOrderPlacement;
   collapsed: boolean;
-  hiddenAt: string | null;
-  archivedAt: string | null;
+}
+
+/** A section lifecycle move, refused by Rust when the section no longer has `expected`. */
+export interface SectionLifecycleChange {
+  sectionId: string;
+  expected: ProjectLifecycleStatus;
+  next: ProjectLifecycleStatus;
 }
 
 export interface ProjectStatusCreate {
@@ -831,7 +841,6 @@ export interface ProjectTaskUpdate {
   startTime: string | null;
   startReminderMinutes: number | null;
   targetEndDate: string | null;
-  archivedAt: string | null;
   blockerReason: string | null;
   milestone: boolean;
   changeReason: string | null;

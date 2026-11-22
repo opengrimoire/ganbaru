@@ -19,29 +19,73 @@ const MAX_PENDING_INTERVALS: usize = 4_000;
 const MAX_CLOSE_KEYS: usize = 4_096;
 const MAX_NOTIFICATION_TIMES: usize = 5;
 
-#[derive(Default)]
+/// Observation lifecycle of the owner. `Active` and `Frozen` alternate across vault handoffs;
+/// `Stopped` precedes process exit and is terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameState {
+    Active,
+    Frozen,
+    Stopped,
+}
+
+impl FrameState {
+    /// The state after a requested move; nothing leaves `Stopped`.
+    fn after(self, requested: FrameState) -> FrameState {
+        match self {
+            Self::Stopped => Self::Stopped,
+            Self::Active | Self::Frozen => requested,
+        }
+    }
+}
+
 struct Frame {
     generation: u64,
-    active: bool,
-    stopped: bool,
+    state: FrameState,
+}
+
+impl Frame {
+    fn new(generation: u64) -> Self {
+        Self {
+            generation,
+            state: FrameState::Active,
+        }
+    }
 }
 
 struct Control {
     frame: Mutex<Frame>,
+    /// Lock-free mirror of the frame generation, written only by [`Control::advance`].
     generation: AtomicU64,
     wake: Notify,
 }
 
 impl Control {
+    fn new(generation: u64) -> Self {
+        Self {
+            frame: Mutex::new(Frame::new(generation)),
+            generation: AtomicU64::new(generation),
+            wake: Notify::new(),
+        }
+    }
+
     fn current(&self, generation: u64) -> Result<std::sync::MutexGuard<'_, Frame>, String> {
         let frame = self
             .frame
             .lock()
             .map_err(|_| "Distractions runtime control is unavailable")?;
-        if !frame.active || frame.generation != generation {
+        if frame.state != FrameState::Active || frame.generation != generation {
             return Err("Distractions observation was invalidated".into());
         }
         Ok(frame)
+    }
+
+    /// Moves the locked frame toward `requested`, revokes every earlier generation, and
+    /// publishes the new generation to the mirror. Returns the new generation.
+    fn advance(&self, frame: &mut Frame, requested: FrameState) -> u64 {
+        frame.state = frame.state.after(requested);
+        frame.generation = frame.generation.wrapping_add(1);
+        self.generation.store(frame.generation, Ordering::Release);
+        frame.generation
     }
 }
 
@@ -105,15 +149,7 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
     if app.try_state::<RuntimeState>().is_some() {
         return;
     }
-    let control = Arc::new(Control {
-        frame: Mutex::new(Frame {
-            generation: 1,
-            active: true,
-            stopped: false,
-        }),
-        generation: AtomicU64::new(1),
-        wake: Notify::new(),
-    });
+    let control = Arc::new(Control::new(1));
     let foreground = Arc::new(Mutex::new((
         Instant::now(),
         unavailable_foreground_desktop_app_status("native observation has not run"),
@@ -230,13 +266,12 @@ fn invalidate<R: Runtime>(app: &tauri::AppHandle<R>, stop: bool) -> Result<u64, 
         .frame
         .lock()
         .map_err(|_| "Distractions runtime control is unavailable")?;
-    frame.active = false;
-    frame.stopped |= stop;
-    frame.generation = frame.generation.wrapping_add(1);
-    runtime
-        .control
-        .generation
-        .store(frame.generation, Ordering::Release);
+    let requested = if stop {
+        FrameState::Stopped
+    } else {
+        FrameState::Frozen
+    };
+    let generation = runtime.control.advance(&mut frame, requested);
     state_files::clear_enforcement_state_files(&state_path(app)?, &limit_state_path(app)?)?;
     if let Ok(mut foreground) = runtime.foreground.lock() {
         *foreground = (
@@ -245,7 +280,7 @@ fn invalidate<R: Runtime>(app: &tauri::AppHandle<R>, stop: bool) -> Result<u64, 
         );
     }
     runtime.control.wake.notify_one();
-    Ok(frame.generation)
+    Ok(generation)
 }
 
 /// Cancel destructive work and file publication before an irreversible process exit.
@@ -290,15 +325,10 @@ pub(crate) fn resume_after_vault_handoff<R: Runtime>(
         .frame
         .lock()
         .map_err(|_| "Distractions runtime control is unavailable")?;
-    if frame.stopped {
+    if frame.state == FrameState::Stopped {
         return Ok(());
     }
-    frame.generation = frame.generation.wrapping_add(1);
-    frame.active = true;
-    runtime
-        .control
-        .generation
-        .store(frame.generation, Ordering::Release);
+    runtime.control.advance(&mut frame, FrameState::Active);
     state_files::clear_enforcement_state_files(&state_path(app)?, &limit_state_path(app)?)?;
     runtime.control.wake.notify_one();
     Ok(())
@@ -318,11 +348,8 @@ pub(crate) fn commit_configuration<R: Runtime>(
         .lock()
         .map_err(|_| "Distractions runtime control is unavailable")?;
     let result = write();
-    frame.generation = frame.generation.wrapping_add(1);
-    runtime
-        .control
-        .generation
-        .store(frame.generation, Ordering::Release);
+    let state = frame.state;
+    runtime.control.advance(&mut frame, state);
     runtime.control.wake.notify_one();
     result
 }
@@ -414,6 +441,39 @@ struct Pending {
     device_id: String,
     rows: Vec<DistractionsUsageSampleRow>,
 }
+
+/// The outcome of retrying the unflushed interval batch before an observation.
+#[derive(Debug)]
+enum SpoolRetry {
+    /// The spool holds every earlier interval, so accounting may produce the next batch.
+    Accepted,
+    /// The batch stays unflushed. Accounting produces no further batch, because the receipt
+    /// names only the last one, while enforcement and the usage read that drains the spool run.
+    Held(String),
+}
+
+impl SpoolRetry {
+    fn of(result: Result<(), String>) -> Self {
+        match result {
+            Ok(()) => Self::Accepted,
+            Err(error) => Self::Held(error),
+        }
+    }
+
+    fn accounts(&self) -> bool {
+        matches!(self, Self::Accepted)
+    }
+
+    /// Reports an enforcement failure first, then a held batch.
+    fn into_result(self, enforced: Result<(), String>) -> Result<(), String> {
+        enforced?;
+        match self {
+            Self::Accepted => Ok(()),
+            Self::Held(error) => Err(error),
+        }
+    }
+}
+
 struct Owner {
     app: tauri::AppHandle,
     control: Arc<Control>,
@@ -459,8 +519,14 @@ impl Owner {
         }
     }
 
+    /// A batch the spool refuses never holds back enforcement; its error still reaches `tick`.
     async fn observe(&mut self) -> Result<(), String> {
-        self.flush_pending().await?;
+        let retry = SpoolRetry::of(self.flush_pending().await);
+        let enforced = self.observe_after_retry(retry.accounts()).await;
+        retry.into_result(enforced)
+    }
+
+    async fn observe_after_retry(&mut self, accounts: bool) -> Result<(), String> {
         let generation = self.control.generation.load(Ordering::Acquire);
         if self.control.current(generation).is_err() {
             self.accounting.clear();
@@ -574,20 +640,27 @@ impl Owner {
                 .as_deref()
                 .ok_or("desktop interval session is unavailable")?
         );
-        let rows = self
-            .accounting
-            .observe(context.observation.clone(), &identity)?;
-        if rows.len() > MAX_PENDING_INTERVALS {
-            return Err("desktop intervals exceed the pending limit".into());
-        }
-        if !rows.is_empty() {
-            self.pending = Some(Pending {
-                vault_id: context.vault_id.clone(),
-                device_id: context.device_id.clone(),
-                rows,
-            });
-            self.flush_pending().await?;
-        }
+        let late = if accounts {
+            let rows = self
+                .accounting
+                .observe(context.observation.clone(), &identity)?;
+            if rows.len() > MAX_PENDING_INTERVALS {
+                return Err("desktop intervals exceed the pending limit".into());
+            }
+            if rows.is_empty() {
+                SpoolRetry::Accepted
+            } else {
+                self.pending = Some(Pending {
+                    vault_id: context.vault_id.clone(),
+                    device_id: context.device_id.clone(),
+                    rows,
+                });
+                SpoolRetry::of(self.flush_pending().await)
+            }
+        } else {
+            self.accounting.clear();
+            SpoolRetry::Accepted
+        };
         if let Ok(mut foreground) = self.foreground.lock() {
             *foreground = (context.observation.monotonic, context.foreground.clone());
         }
@@ -615,7 +688,7 @@ impl Owner {
             projection,
         }) = settled
         else {
-            return self.enforce(context, Vec::new()).await;
+            return late.into_result(self.enforce(context, Vec::new()).await);
         };
         publish(&self.app, Some(generation), || {
             let runtime = self.app.state::<RuntimeState>();
@@ -630,7 +703,7 @@ impl Owner {
             self.republish_limit_state(generation, projection.limit_state.clone())
                 .await;
         }
-        self.enforce(context, projection.totals).await
+        late.into_result(self.enforce(context, projection.totals).await)
     }
 
     /// Keeps closes authorized on the last good totals after a failed read. A failed write is
@@ -924,6 +997,24 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_spool_batch_holds_accounting_but_not_enforcement() {
+        let held = SpoolRetry::of(Err("the Distractions usage spool is full".into()));
+        assert!(!held.accounts());
+        assert_eq!(
+            held.into_result(Ok(())),
+            Err("the Distractions usage spool is full".to_string())
+        );
+        let held = SpoolRetry::of(Err("spool".into()));
+        assert_eq!(
+            held.into_result(Err("enforce".into())),
+            Err("enforce".to_string())
+        );
+        let accepted = SpoolRetry::of(Ok(()));
+        assert!(accepted.accounts());
+        assert_eq!(accepted.into_result(Ok(())), Ok(()));
+    }
+
+    #[test]
     fn observe_enforces_when_usage_read_fails() {
         let binding = UsageBinding {
             generation: 1,
@@ -1000,29 +1091,53 @@ mod tests {
 
     #[test]
     fn revoked_generations_cannot_publish_or_close_after_resume() {
-        let control = Control {
-            frame: Mutex::new(Frame {
-                generation: 1,
-                active: true,
-                stopped: false,
-            }),
-            generation: AtomicU64::new(1),
-            wake: Notify::new(),
-        };
+        let control = Control::new(1);
         assert!(control.current(1).is_ok());
         {
             let mut frame = control.frame.lock().unwrap();
-            frame.active = false;
-            frame.generation = 2;
+            assert_eq!(control.advance(&mut frame, FrameState::Frozen), 2);
         }
+        assert_eq!(control.generation.load(Ordering::Acquire), 2);
         assert!(control.current(1).is_err());
         assert!(control.current(2).is_err());
         {
             let mut frame = control.frame.lock().unwrap();
-            frame.active = true;
-            frame.generation = 3;
+            assert_eq!(control.advance(&mut frame, FrameState::Active), 3);
         }
         assert!(control.current(1).is_err());
         assert!(control.current(3).is_ok());
+    }
+
+    #[test]
+    fn stopped_frames_never_reactivate() {
+        let control = Control::new(1);
+        let mut frame = control.frame.lock().unwrap();
+        assert_eq!(control.advance(&mut frame, FrameState::Stopped), 2);
+        assert_eq!(frame.state, FrameState::Stopped);
+        for requested in [FrameState::Active, FrameState::Frozen, FrameState::Stopped] {
+            let generation = control.advance(&mut frame, requested);
+            assert_eq!(frame.state, FrameState::Stopped);
+            assert_eq!(control.generation.load(Ordering::Acquire), generation);
+        }
+        drop(frame);
+        assert!(control.current(5).is_err());
+    }
+
+    #[test]
+    fn frame_moves_follow_the_lifecycle_table() {
+        use FrameState::{Active, Frozen, Stopped};
+        for (from, requested, expected) in [
+            (Active, Active, Active),
+            (Active, Frozen, Frozen),
+            (Active, Stopped, Stopped),
+            (Frozen, Active, Active),
+            (Frozen, Frozen, Frozen),
+            (Frozen, Stopped, Stopped),
+            (Stopped, Active, Stopped),
+            (Stopped, Frozen, Stopped),
+            (Stopped, Stopped, Stopped),
+        ] {
+            assert_eq!(from.after(requested), expected, "{from:?} -> {requested:?}");
+        }
     }
 }

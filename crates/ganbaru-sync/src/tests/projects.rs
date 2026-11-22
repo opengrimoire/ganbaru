@@ -502,6 +502,49 @@ fn projects_keeping_a_cycle_hidden_dependency_removed_closes_its_conflict_everyw
 }
 
 #[test]
+fn projects_concurrent_status_kind_edits_settle_on_one_whole_category_and_terminal_pair() {
+    block_on(async {
+        let mut replicas = shared(2, &task_sql("task-a", "Draft", 1)).await;
+        replicas[0]
+            .exec(&format!(
+                "UPDATE project_statuses SET category = 'done', terminal = 1, updated_at = {}
+                 WHERE id = 'status-open'",
+                quoted(EDITED)
+            ))
+            .await;
+        replicas[1]
+            .exec(&format!(
+                "UPDATE project_statuses SET name = 'Blocked', category = 'blocked', updated_at = {}
+                 WHERE id = 'status-open'",
+                quoted(EDITED)
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            let kinds = texts(
+                replica,
+                "SELECT category || ':' || terminal FROM project_statuses WHERE id = 'status-open'",
+            )
+            .await;
+            assert!(
+                kinds == ["done:1"] || kinds == ["blocked:0"],
+                "status kind split: {kinds:?}"
+            );
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT name FROM project_statuses WHERE id = 'status-open'"
+                )
+                .await,
+                ["Blocked"]
+            );
+            assert_eq!(surfaced(replica).await, (0, 0));
+        }
+    });
+}
+
+#[test]
 fn projects_a_task_moved_into_a_concurrently_deleted_status_stays_there() {
     block_on(async {
         let mut replicas = shared(2, &task_sql("task-a", "Draft", 1)).await;

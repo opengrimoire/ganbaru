@@ -87,6 +87,26 @@ impl RequestState {
     }
 }
 
+/// A final state a pending request moves to. A closed request never returns to pending, so the
+/// writers that close requests take only these targets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClosedRequestState {
+    Accepted,
+    Declined,
+    Expired,
+}
+
+impl ClosedRequestState {
+    /// The stored state this closure writes.
+    pub(crate) const fn state(self) -> RequestState {
+        match self {
+            Self::Accepted => RequestState::Accepted,
+            Self::Declined => RequestState::Declined,
+            Self::Expired => RequestState::Expired,
+        }
+    }
+}
+
 pub(crate) fn now() -> DateTime<Utc> {
     std::time::SystemTime::now().into()
 }
@@ -701,7 +721,7 @@ pub(crate) async fn close_pending_from<'e, E>(
     executor: E,
     direction: RequestDirection,
     public_key: &str,
-    state: RequestState,
+    state: ClosedRequestState,
     now: DateTime<Utc>,
 ) -> Result<(), String>
 where
@@ -712,7 +732,7 @@ where
          SET state = ?, updated_at = ?
          WHERE direction = ? AND public_key = ? AND state = 'pending'",
     )
-    .bind(state.as_str())
+    .bind(state.state().as_str())
     .bind(format_time(now))
     .bind(direction.as_str())
     .bind(public_key)
@@ -727,7 +747,7 @@ pub(crate) async fn set_request_state<'e, E>(
     executor: E,
     id: &str,
     expected_revision: Option<i64>,
-    state: RequestState,
+    state: ClosedRequestState,
     error_code: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<bool, String>
@@ -739,7 +759,7 @@ where
          SET state = ?, last_error_code = ?, updated_at = ?
          WHERE id = ? AND state = 'pending' AND (? IS NULL OR revision = ?)",
     )
-    .bind(state.as_str())
+    .bind(state.state().as_str())
     .bind(error_code)
     .bind(format_time(now))
     .bind(id)
@@ -823,7 +843,9 @@ where
 }
 
 /// Records a delivery or polling attempt on a sent request. Attempts are device-local and
-/// leave the replicated columns untouched, so polling publishes nothing to linked devices.
+/// leave the replicated columns untouched, so polling publishes nothing to linked devices. Only
+/// a pending request records attempts: a late attempt result after a local close leaves the
+/// closed row as it was.
 pub(crate) async fn touch_request_attempt<'e, E>(
     executor: E,
     id: &str,
@@ -836,7 +858,7 @@ where
     sqlx::query(
         "UPDATE contact_requests
          SET last_attempt_at = ?, last_error_code = ?
-         WHERE id = ?",
+         WHERE id = ? AND state = 'pending'",
     )
     .bind(format_time(now))
     .bind(error_code)

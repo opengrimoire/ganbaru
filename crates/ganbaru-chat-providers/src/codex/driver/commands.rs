@@ -120,8 +120,9 @@ pub(super) async fn dispatch_codex_command(
                 ));
             }
             let mut state = live.route.lock().map_err(|_| driver_state_error())?;
-            state.active_provider_turn_id = Some(provider_turn_id.as_str().to_string());
-            state.session_state = ProviderSessionState::Active;
+            state.transition_turn(TurnRouteEvent::ProviderTurn(
+                provider_turn_id.as_str().to_string(),
+            ))?;
             drop(state);
             Ok(TurnDispatchReceipt {
                 turn_id: request.turn_id,
@@ -168,28 +169,17 @@ fn prepare_codex_command_route(
     request: &SendTurnRequest,
 ) -> ChatResult<()> {
     let mut state = live.route.lock().map_err(|_| driver_state_error())?;
-    if state.active_chat_turn_id.is_some() {
-        return Err(ChatError::new(
-            ChatErrorCode::Busy,
-            "Codex already has an active turn",
-            true,
-        ));
-    }
-    state.active_chat_turn_id = Some(request.turn_id.clone());
-    state.active_provider_turn_id = None;
+    state.transition_turn(TurnRouteEvent::Begin {
+        chat_turn: request.turn_id.clone(),
+        retry: None,
+    })?;
     state.modes = request.modes;
-    state.session_state = ProviderSessionState::Active;
     Ok(())
 }
 
 pub(super) fn clear_codex_command_route(live: &CodexLiveSession) {
     if let Ok(mut state) = live.route.lock() {
-        state.active_chat_turn_id = None;
-        state.active_provider_turn_id = None;
-        state.session_state = ProviderSessionState::Ready;
-        if let Some(retry) = state.capacity_retry.take() {
-            retry.cancel();
-        }
+        let _ = state.transition_turn(TurnRouteEvent::Settle);
     }
 }
 
@@ -376,7 +366,9 @@ async fn emit_codex_command_result(
         .map_err(|_| protocol_identifier_error("command item"))?;
     let events = {
         let mut state = live.route.lock().map_err(|_| driver_state_error())?;
-        state.active_provider_turn_id = Some(provider_turn_id.as_str().to_string());
+        state.transition_turn(TurnRouteEvent::ProviderTurn(
+            provider_turn_id.as_str().to_string(),
+        ))?;
         let turn_id = Some(request.turn_id.clone());
         let provider_turn = Some(provider_turn_id.clone());
         let provider_item = Some(provider_item_id.clone());
@@ -437,9 +429,7 @@ async fn emit_codex_command_result(
                 safe_metadata: None,
             }),
         )?);
-        state.active_chat_turn_id = None;
-        state.active_provider_turn_id = None;
-        state.session_state = ProviderSessionState::Ready;
+        state.transition_turn(TurnRouteEvent::Settle)?;
         events.push(live.normalizer.event(
             &state,
             "command/completed",

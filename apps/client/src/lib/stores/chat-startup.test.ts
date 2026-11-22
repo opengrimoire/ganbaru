@@ -3,12 +3,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as chatApi from "$lib/api/chat";
 import * as workingFolderApi from "$lib/api/project-working-folders";
-import type { ChatChannelRead, ChatMessageRead, ChatSettingsRead } from "$lib/chat/contracts";
+import type { ChatChannelRead, ChatMessageRead, ChatMessageSearchResultRead, ChatSettingsRead } from "$lib/chat/contracts";
 import { readLastChatChannelId } from "$lib/chat/channel-sections";
 import { setActiveVaultIdentity } from "$lib/vault/active-vault";
 import { getChat, getChatStore, resetChatForVault } from "./chat.svelte";
 import { ChatConfigurationController } from "$lib/stores/chat/configuration-controller.svelte";
 import { multiProviderSettings } from "$lib/components/chat/composer/composer-test-store";
+import { publishChatChanges } from "$lib/chat/window-sync";
 
 const projects = vi.hoisted(() => ({
   selectedProjectId: "project",
@@ -126,6 +127,54 @@ describe("Chat startup", () => {
     vi.mocked(chatApi.readChatSettings).mockResolvedValue(found);
     await chat.refreshSettings();
     expect(chatApi.listChatAgents).toHaveBeenCalledTimes(reads);
+  });
+
+  it("keeps the newest agent list when an earlier agent read finishes last, and drops one from a previous vault", async () => {
+    await chat.prewarmForProject("project");
+    vi.spyOn(chatApi, "readChatChannel").mockImplementation(async (channelId) => channel(channelId));
+    type Agents = Awaited<ReturnType<typeof chatApi.listChatAgents>>;
+    const stale = [{ participant: { id: "agent-stale" }, providerFamilyId: "codex" }] as unknown as Agents;
+    const fresh = [{ participant: { id: "agent-fresh" }, providerFamilyId: "codex" }] as unknown as Agents;
+    const earlier = deferred<Agents>();
+    vi.mocked(chatApi.listChatAgents)
+      .mockImplementationOnce(() => earlier.promise)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(fresh)
+      .mockResolvedValueOnce([]);
+
+    const first = chat.refreshAgents();
+    await chat.refreshAgents();
+    earlier.resolve(stale);
+    await first;
+    expect(chat.agents).toEqual(fresh);
+
+    const previousVault = deferred<Agents>();
+    vi.mocked(chatApi.listChatAgents).mockImplementationOnce(() => previousVault.promise).mockResolvedValueOnce([]);
+    const late = chat.refreshAgents();
+    resetChatForVault();
+    previousVault.resolve(stale);
+    await late;
+    expect(chat.agents).toEqual([]);
+  });
+
+  it("keeps the first load's agent list when an agent read that started earlier finishes last", async () => {
+    vi.spyOn(chatApi, "readChatChannel").mockImplementation(async (channelId) => channel(channelId));
+    type Agents = Awaited<ReturnType<typeof chatApi.listChatAgents>>;
+    const stale = [{ participant: { id: "agent-stale" }, providerFamilyId: "codex" }] as unknown as Agents;
+    const fresh = [{ participant: { id: "agent-fresh" }, providerFamilyId: "codex" }] as unknown as Agents;
+    const earlier = deferred<Agents>();
+    vi.mocked(chatApi.listChatAgents)
+      .mockImplementationOnce(() => earlier.promise)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(fresh)
+      .mockResolvedValueOnce([]);
+
+    const first = chat.refreshAgents();
+    await chat.prewarmForProject("project");
+    expect(chat.agents).toEqual(fresh);
+    earlier.resolve(stale);
+    await first;
+    expect(chat.agents).toEqual(fresh);
   });
 
   it("discovers providers again for a vault activated after startup", async () => {
@@ -427,5 +476,96 @@ describe("Chat reply thread tabs", () => {
     expect(chat.openReplyThreadId).toBe("reply-thread");
     await toThread;
     expect(chatApi.readChatChannelPage).toHaveBeenCalledTimes(pageReads);
+  });
+
+  it("opens the newest search result when an earlier one finishes its project selection after it", async () => {
+    await chat.ensureLoaded();
+    const searchResult = (channelId: string, projectId: string) => ({
+      projectId, channelId, channelName: channelId, conversationId: `conversation-${channelId}`, replyThreadId: null,
+      messageItemId: `message-${channelId}`, anchorCursor: "c001", authorParticipantId: null, authorKind: null,
+      authorDisplayName: "User", excerpt: "Saved", createdAt: "2026-09-22T12:00:00Z",
+    }) as ChatMessageSearchResultRead;
+    const earlierProject = deferred<undefined>();
+    projects.selectProject.mockImplementationOnce(() => earlierProject.promise);
+
+    const earlier = chat.openMessageSearchResult(searchResult("elsewhere", "other-project"));
+    await chat.openMessageSearchResult(searchResult("other", "project"));
+    earlierProject.resolve(undefined);
+    await earlier;
+
+    expect(chat.selectedChannelId).toBe("other");
+    expect(chat.messageAnchorId).toBe("message-other");
+  });
+
+  it("tells other windows about the channel an assignment was cancelled in after the person moved on", async () => {
+    await chat.ensureLoaded();
+    await chat.selectChannel("general");
+    const communication = (chat as unknown as { communicationController: { replyThread: unknown } }).communicationController;
+    communication.replyThread = { assignment: { id: "assignment", revision: 1 } };
+    const cancelled = deferred<Awaited<ReturnType<typeof chatApi.cancelChatAssignment>>>();
+    vi.spyOn(chatApi, "cancelChatAssignment").mockImplementationOnce(() => cancelled.promise);
+
+    const cancelling = chat.cancelAssignment("assignment").catch(() => undefined);
+    await chat.selectChannel("other");
+    vi.mocked(publishChatChanges).mockClear();
+    cancelled.resolve({} as Awaited<ReturnType<typeof chatApi.cancelChatAssignment>>);
+    await cancelling;
+
+    const published = vi.mocked(publishChatChanges).mock.calls.flatMap(([changes]) => [...(changes.channelIds ?? [])]);
+    expect(published).toEqual(["general"]);
+  });
+
+  /** Shows the general channel with a working folder and a provider thread of its project selected. */
+  async function showGeneralWithFolder(): Promise<void> {
+    vi.mocked(chatApi.readChatProjectPrimaryWorkingFolder).mockResolvedValue({
+      projectId: "project", workingFolderId: "folder", revision: 1,
+    });
+    await chat.ensureLoaded();
+    await chat.selectChannel("general");
+    chat.selectedThreadId = "thread-of-general";
+    expect(chat.selectedWorkingFolderId).toBe("folder");
+  }
+
+  it("drops the previous project's folder and thread as soon as another project's channel shows", async () => {
+    await showGeneralWithFolder();
+    const primary = deferred<Awaited<ReturnType<typeof chatApi.readChatProjectPrimaryWorkingFolder>>>();
+    vi.mocked(chatApi.readChatProjectPrimaryWorkingFolder).mockReturnValueOnce(primary.promise);
+
+    const selection = chat.selectChannel("elsewhere");
+    await vi.waitFor(() => expect(chat.selectedChannelId).toBe("elsewhere"));
+
+    expect(chat.selectedWorkingFolderId).toBeNull();
+    expect(chat.primaryWorkingFolder).toBeNull();
+    expect(chat.selectedThreadId).toBeNull();
+    expect(chat.draftThreadId).toBeNull();
+    primary.resolve({ projectId: "other-project", workingFolderId: "other-folder", revision: 1 });
+    await selection;
+    expect(chat.selectedWorkingFolderId).toBe("other-folder");
+  });
+
+  it("leaves no previous project's folder selected when loading another project's channel fails", async () => {
+    await showGeneralWithFolder();
+    vi.mocked(chatApi.readChatProjectPrimaryWorkingFolder).mockRejectedValueOnce(new Error("no working folder"));
+    vi.mocked(workingFolderApi.lastProjectWorkingFolder).mockRejectedValueOnce(new Error("device state unreadable"));
+
+    await expect(chat.selectChannel("elsewhere")).rejects.toThrow("device state unreadable");
+
+    expect(chat.selectedChannelId).toBe("elsewhere");
+    expect(chat.selectedWorkingFolderId).toBeNull();
+    expect(chat.selectedThreadId).toBeNull();
+  });
+
+  it("keeps the folder but drops the thread while another channel of the same project loads", async () => {
+    await showGeneralWithFolder();
+    const primary = deferred<Awaited<ReturnType<typeof chatApi.readChatProjectPrimaryWorkingFolder>>>();
+    vi.mocked(chatApi.readChatProjectPrimaryWorkingFolder).mockReturnValueOnce(primary.promise);
+
+    const selection = chat.selectChannel("other");
+    await vi.waitFor(() => expect(chat.selectedChannelId).toBe("other"));
+
+    expect(chat.selectedWorkingFolderId).toBe("folder");
+    expect(chat.selectedThreadId).toBeNull();
+    primary.resolve({ projectId: "project", workingFolderId: "folder", revision: 1 });
+    await selection;
   });
 });

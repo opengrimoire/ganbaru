@@ -394,6 +394,7 @@ function validateSnapshot(input: Record<string, unknown>): ThemeValidationResult
     seedCalendarDefaultMode: calendarDefaults.mode,
     seedCalendarDefaultCustom: calendarDefaults.customBasis,
     seedIconLabel: cleanIconLabel,
+    seedDerivationEngineVersion: cleanEngineVersion,
   };
   return { ok: true, theme };
 }

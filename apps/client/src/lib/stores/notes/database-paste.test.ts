@@ -157,4 +157,56 @@ describe("Notes database paste choices", () => {
     expect(h.controller.isCreating(databaseId)).toBe(false);
     expect(h.controller.isCreating("copy")).toBe(false);
   });
+
+  it("keeps a dismissed action's late failure and busy end off the next prompt", async () => {
+    let rejectFirst: (error: Error) => void = () => {};
+    let resolveSecond: () => void = () => {};
+    const h = harness([model(createBlockWrite("text", "paragraph", LINK)), model(createBlockWrite("other", "paragraph", LINK))]);
+    const updates = [
+      new Promise<void>((_resolve, reject) => { rejectFirst = reject; }),
+      new Promise<void>((resolve) => { resolveSecond = resolve; }),
+    ];
+    let call = 0;
+    const controller = createNotesDatabasePasteController({
+      readPageId: () => PAGE, blockById: (id) => h.read().blocksById[id], apply: h.apply, optimisticBlock: model, updateLocal: () => undefined,
+      requestFocus: () => undefined, updateRichText: () => updates[call++] ?? Promise.resolve(),
+      enqueue: (mutation) => mutation(), retry: async () => undefined,
+      snapshot: () => null, recordUndo: () => undefined,
+    });
+    await controller.inspectLink("text", 0, LINK.length, LINK);
+    const first = controller.mention();
+    controller.dismiss();
+    await controller.inspectLink("other", 0, LINK.length, LINK);
+    expect(controller.prompt?.blockId).toBe("other");
+    expect(controller.busy).toBe(false);
+    const second = controller.mention();
+    expect(controller.busy).toBe(true);
+    rejectFirst(new Error("Unavailable"));
+    await first;
+    expect(controller.busy).toBe(true);
+    expect(controller.error).toBeNull();
+    resolveSecond();
+    await second;
+    expect(controller.prompt).toBeNull();
+  });
+
+  it("offers the copy choice again when the pasted database disappeared before any write was queued", async () => {
+    const h = harness([model(createBlockWrite("copy", "paragraph", "Not a database"))]);
+    h.controller.beginCopies({ copy: SOURCE }, false);
+    await h.controller.linkedView();
+    expect(h.controller.error).toBe("The pasted database is no longer available");
+    expect(h.controller.started).toBe(false);
+    expect(h.controller.busy).toBe(false);
+  });
+
+  it("closes a prompt whose queued writes were abandoned", async () => {
+    api.createNotesLinkedDatabaseView.mockRejectedValueOnce(new Error("Unavailable"));
+    const h = harness([model(createBlockWrite("text", "paragraph", LINK))]);
+    await h.controller.inspectLink("text", 0, LINK.length, LINK);
+    await h.controller.linkedView();
+    expect(h.controller.started).toBe(true);
+    h.controller.discardPendingCreations();
+    expect(h.controller.prompt).toBeNull();
+    expect(h.controller.error).toBeNull();
+  });
 });

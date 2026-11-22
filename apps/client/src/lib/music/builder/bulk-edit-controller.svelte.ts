@@ -19,6 +19,8 @@ export class MusicBulkEditController {
   createError = $state<string | null>(null);
   selectionStale = $state(false);
   private openGeneration = 0;
+  /** Changes when the edit starts over, so a playlist created for the earlier edit is not checked in the next one. */
+  private intentGeneration = 0;
 
   constructor(
     private readonly library: MusicLibraryController,
@@ -59,7 +61,10 @@ export class MusicBulkEditController {
   ): Promise<boolean> {
     const nextItemIds = [...new Set(itemIds)];
     const generation = ++this.openGeneration;
-    if (!preserveIntent) this.touchedPlaylistIds = new Set();
+    if (!preserveIntent) {
+      this.intentGeneration += 1;
+      this.touchedPlaylistIds = new Set();
+    }
     this.itemIds = nextItemIds;
     this.search = "";
     this.error = null;
@@ -72,13 +77,16 @@ export class MusicBulkEditController {
       const counts: Record<string, number> = {};
       for (const entry of matrix) counts[entry.playlistId] = (counts[entry.playlistId] ?? 0) + 1;
       this.initialCounts = counts;
-      this.states = Object.fromEntries(playlists.map((playlist) => {
-        const retained = preserveIntent && this.touchedPlaylistIds.has(playlist.id)
-          ? this.states[playlist.id]
+      const playlistIds = new Set(playlists.map((playlist) => playlist.id));
+      // A playlist created while this read ran may be missing from the summaries it was given.
+      if (preserveIntent) for (const playlistId of this.touchedPlaylistIds) playlistIds.add(playlistId);
+      this.states = Object.fromEntries([...playlistIds].map((playlistId) => {
+        const retained = preserveIntent && this.touchedPlaylistIds.has(playlistId)
+          ? this.states[playlistId]
           : undefined;
-        if (retained) return [playlist.id, retained];
-        const count = counts[playlist.id] ?? 0;
-        return [playlist.id, count === 0 ? "unchecked" : count === nextItemIds.length ? "checked" : "mixed"];
+        if (retained) return [playlistId, retained];
+        const count = counts[playlistId] ?? 0;
+        return [playlistId, count === 0 ? "unchecked" : count === nextItemIds.length ? "checked" : "mixed"];
       }));
       return true;
     } catch (error) {
@@ -115,6 +123,7 @@ export class MusicBulkEditController {
     this.creatingPlaylist = true;
     this.createError = null;
     const playlistId = this.id();
+    const intent = this.intentGeneration;
     try {
       await createMusicPlaylist({
         id: playlistId,
@@ -129,12 +138,13 @@ export class MusicBulkEditController {
       if (!await this.library.refreshSummariesAfterMutation()) {
         throw this.library.error ?? new Error("The new playlist could not be loaded.");
       }
+      if (intent !== this.intentGeneration) return playlistId;
       this.initialCounts = { ...this.initialCounts, [playlistId]: 0 };
       this.states = { ...this.states, [playlistId]: "checked" };
       this.touchedPlaylistIds = new Set([...this.touchedPlaylistIds, playlistId]);
       return playlistId;
     } catch (error) {
-      this.createError = musicErrorMessage(error, translate("music.errors.playlistCreateFailed"));
+      if (intent === this.intentGeneration) this.createError = musicErrorMessage(error, translate("music.errors.playlistCreateFailed"));
       return null;
     } finally {
       this.creatingPlaylist = false;
@@ -151,10 +161,12 @@ export class MusicBulkEditController {
       if (state === "unchecked" && initialCount > 0) removePlaylistIds.push(playlistId);
     }
     if (addPlaylistIds.length === 0 && removePlaylistIds.length === 0) return true;
+    const generation = this.openGeneration;
+    const itemCount = this.itemIds.length;
     const saved = await this.persist({ addPlaylistIds, removePlaylistIds, weightPlaylistIds: [], weight: null });
-    if (saved) {
+    if (saved && generation === this.openGeneration) {
       const nextCounts = { ...this.initialCounts };
-      for (const playlistId of addPlaylistIds) nextCounts[playlistId] = this.itemIds.length;
+      for (const playlistId of addPlaylistIds) nextCounts[playlistId] = itemCount;
       for (const playlistId of removePlaylistIds) nextCounts[playlistId] = 0;
       this.initialCounts = nextCounts;
     }
@@ -204,6 +216,7 @@ export class MusicBulkEditController {
         })
       : [];
     this.saving = true;
+    const generation = this.openGeneration;
     this.error = null;
     try {
       for (const snapshot of ignoredSnapshots) {
@@ -239,11 +252,13 @@ export class MusicBulkEditController {
           item.version = version;
         }
       }
-      const nextCounts = { ...this.initialCounts };
-      for (const playlistId of addPlaylistIds) nextCounts[playlistId] = items.length;
-      for (const playlistId of removePlaylistIds) nextCounts[playlistId] = 0;
-      this.initialCounts = nextCounts;
-      this.touchedPlaylistIds = new Set();
+      if (generation === this.openGeneration) {
+        const nextCounts = { ...this.initialCounts };
+        for (const playlistId of addPlaylistIds) nextCounts[playlistId] = items.length;
+        for (const playlistId of removePlaylistIds) nextCounts[playlistId] = 0;
+        this.initialCounts = nextCounts;
+        this.touchedPlaylistIds = new Set();
+      }
       await this.library.refreshSummariesAfterMutation();
       return true;
     } catch (error) {
@@ -251,7 +266,7 @@ export class MusicBulkEditController {
         snapshot.item.reviewState = snapshot.reviewState;
         snapshot.item.updatedAtMs = snapshot.updatedAtMs;
       }
-      this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
+      if (generation === this.openGeneration) this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
       return false;
     } finally {
       this.saving = false;
@@ -269,15 +284,18 @@ export class MusicBulkEditController {
   async setSignals(signals: MusicItemSignal[]): Promise<boolean> {
     if (this.saving || this.itemIds.length === 0) return false;
     this.saving = true;
+    const generation = this.openGeneration;
+    // The selection can change while the prior signals load, so the write and its Undo keep the tracks described.
+    const itemIds = [...this.itemIds];
     this.error = null;
     try {
-      const prior = await Promise.all(this.itemIds.map(async (itemId) => ({ itemId, signals: (await getMusicInspectorDetail(itemId)).signals })));
+      const prior = await Promise.all(itemIds.map(async (itemId) => ({ itemId, signals: (await getMusicInspectorDetail(itemId)).signals })));
       await this.library.runOptimistic({
-        key: `bulk-signals:${this.itemIds.join(":")}`,
+        key: `bulk-signals:${itemIds.join(":")}`,
         label: "Describe selected tracks",
         apply: () => undefined,
         rollback: () => undefined,
-        persist: () => setMusicItemSignals({ itemIds: this.itemIds, signals, updatedAtMs: this.now() }),
+        persist: () => setMusicItemSignals({ itemIds, signals, updatedAtMs: this.now() }),
         undo: async () => {
           for (const entry of prior) await setMusicItemSignals({ itemIds: [entry.itemId], signals: entry.signals, updatedAtMs: this.now() });
           await this.library.refreshAfterMutation();
@@ -286,7 +304,7 @@ export class MusicBulkEditController {
       await this.library.refreshAfterMutation();
       return true;
     } catch (error) {
-      this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
+      if (generation === this.openGeneration) this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
       return false;
     } finally {
       this.saving = false;
@@ -305,13 +323,14 @@ export class MusicBulkEditController {
       return false;
     }
     this.saving = true;
+    const generation = this.openGeneration;
     this.error = null;
     try {
       await bulkSetMusicReviewState({ items, reviewState, deferredUntil: null, updatedAtMs: this.now() });
       await this.library.refreshAfterMutation();
       return true;
     } catch (error) {
-      this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
+      if (generation === this.openGeneration) this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
       return false;
     } finally {
       this.saving = false;
@@ -322,6 +341,7 @@ export class MusicBulkEditController {
     if (this.saving || this.itemIds.length === 0) return false;
     const now = this.now();
     this.saving = true;
+    const generation = this.openGeneration;
     this.error = null;
     try {
       await bulkSnoozeMusicItems({
@@ -331,7 +351,7 @@ export class MusicBulkEditController {
       await this.library.refreshAfterMutation();
       return true;
     } catch (error) {
-      this.error = musicErrorMessage(error, translate("music.errors.snoozeFailed"));
+      if (generation === this.openGeneration) this.error = musicErrorMessage(error, translate("music.errors.snoozeFailed"));
       return false;
     } finally {
       this.saving = false;
@@ -340,6 +360,7 @@ export class MusicBulkEditController {
 
   clear(): void {
     this.openGeneration += 1;
+    this.intentGeneration += 1;
     this.itemIds = [];
     this.states = {};
     this.initialCounts = {};
@@ -359,6 +380,7 @@ export class MusicBulkEditController {
   }): Promise<boolean> {
     if (this.saving || this.itemIds.length === 0) return false;
     this.saving = true;
+    const generation = this.openGeneration;
     this.error = null;
     try {
       await bulkEditMusicMemberships({
@@ -370,7 +392,7 @@ export class MusicBulkEditController {
       await this.library.refreshAfterMutation();
       return true;
     } catch (error) {
-      this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
+      if (generation === this.openGeneration) this.error = musicErrorMessage(error, translate("music.errors.selectionSaveFailed"));
       return false;
     } finally {
       this.saving = false;

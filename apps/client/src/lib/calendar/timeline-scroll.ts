@@ -105,49 +105,90 @@ export function calendarTimelineScrollSpeedForDistance(distancePx: number): numb
     Math.min(CALENDAR_TIMELINE_MAX_SCROLL_SPEED_MULTIPLIER, distanceScale);
 }
 
+/**
+ * Distance between the scroll offset an animation last wrote and the element's current offset beyond which the
+ * offset counts as moved by other code. Browsers round written offsets to device pixels, so an exact comparison
+ * would misread that rounding as an outside write.
+ */
+export const SCROLL_OUTSIDE_WRITE_TOLERANCE_PX = 1;
+
+/**
+ * Report whether code other than an animation moved the element since the animation last wrote its offset.
+ *
+ * @param el The scroll container.
+ * @param lastWritten The offset the animation last wrote.
+ * @returns True when the current offset differs from the written one by more than rounding.
+ */
+export function scrollMovedOutside(el: Pick<HTMLElement, "scrollTop">, lastWritten: number): boolean {
+  return Math.abs(el.scrollTop - lastWritten) > SCROLL_OUTSIDE_WRITE_TOLERANCE_PX;
+}
+
 function clampScrollTopForElement(el: Pick<HTMLElement, "scrollHeight" | "clientHeight">, value: number): number {
   return Math.max(0, Math.min(value, smoothScrollMaxScrollTop(el)));
 }
 
+/** Lifecycle of the timeline wheel animation. Only a running animation holds a frame handle and a target. */
+type TimelineWheelState =
+  | { phase: "idle" }
+  | {
+    phase: "animating";
+    /** Handle of the scheduled animation frame. */
+    frame: number;
+    /** Timestamp of the previous frame, in milliseconds. */
+    prevTs: number;
+    /** Unrounded offset the animation has reached. */
+    position: number;
+    /** Offset the animation moves toward. */
+    target: number;
+    /** Current linear speed, in pixels per millisecond. */
+    speedPxPerMs: number;
+    /** Offset the animation last wrote, used to notice writes from other code. */
+    lastWritten: number;
+  };
+
+/**
+ * Create the Calendar timeline wheel handler. Wheel input accumulates into a target that a linear animation reaches;
+ * when other code moves the scroll offset (zoom, the all-day adjustment, the scrollbar), the animation stops instead
+ * of writing its older position back.
+ *
+ * @param getEl Returns the scroll container, or undefined while it is not mounted.
+ * @returns The wheel handler with a `cancel` that stops any running animation.
+ */
 export function createTimelineWheelScroll(getEl: () => HTMLElement | undefined): SmoothScrollFn {
-  let raf = 0;
-  let prevTs = 0;
-  let animatedScrollTop = 0;
-  let targetScrollTop = 0;
-  let scrollSpeedPxPerMs = CALENDAR_TIMELINE_BASE_SCROLL_SPEED_PX_PER_MS;
+  let state: TimelineWheelState = { phase: "idle" };
 
   function stop() {
-    if (raf) cancelAnimationFrame(raf);
-    raf = 0;
-    prevTs = 0;
-    scrollSpeedPxPerMs = CALENDAR_TIMELINE_BASE_SCROLL_SPEED_PX_PER_MS;
+    if (state.phase === "animating") cancelAnimationFrame(state.frame);
+    state = { phase: "idle" };
   }
 
   function tick(ts: number) {
+    if (state.phase !== "animating") return;
     const el = getEl();
-    if (!el) {
-      stop();
+    if (!el || scrollMovedOutside(el, state.lastWritten)) {
+      state = { phase: "idle" };
       return;
     }
 
-    targetScrollTop = clampScrollTopForElement(el, targetScrollTop);
-    const remaining = targetScrollTop - animatedScrollTop;
-    const dt = Math.min(64, Math.max(0, ts - prevTs));
-    prevTs = ts;
+    state.target = clampScrollTopForElement(el, state.target);
+    const remaining = state.target - state.position;
+    const dt = Math.min(64, Math.max(0, ts - state.prevTs));
+    state.prevTs = ts;
     const step = Math.sign(remaining) * Math.min(
       Math.abs(remaining),
-      scrollSpeedPxPerMs * dt,
+      state.speedPxPerMs * dt,
     );
-    animatedScrollTop += step;
+    state.position += step;
 
-    if (animatedScrollTop === targetScrollTop) {
-      el.scrollTop = targetScrollTop;
-      stop();
+    if (state.position === state.target) {
+      el.scrollTop = state.target;
+      state = { phase: "idle" };
       return;
     }
 
-    el.scrollTop = animatedScrollTop;
-    raf = requestAnimationFrame(tick);
+    el.scrollTop = state.position;
+    state.lastWritten = state.position;
+    state.frame = requestAnimationFrame(tick);
   }
 
   const scroll: SmoothScrollFn = (e: WheelEvent) => {
@@ -158,32 +199,34 @@ export function createTimelineWheelScroll(getEl: () => HTMLElement | undefined):
     const movement = deltaPixels * calendarTimelineWheelMultiplierForDeltaPixels(deltaPixels);
     if (movement === 0) return;
 
-    animatedScrollTop = el.scrollTop;
-    const remainingBeforeInput = targetScrollTop - animatedScrollTop;
-    targetScrollTop = raf
-      ? targetScrollTop + movement
-      : animatedScrollTop + movement;
-    targetScrollTop = clampScrollTopForElement(el, targetScrollTop);
-    const nextSpeed = calendarTimelineScrollSpeedForDistance(
-      targetScrollTop - animatedScrollTop,
-    );
-    const sameDirection = Math.sign(remainingBeforeInput) === Math.sign(targetScrollTop - animatedScrollTop);
-    scrollSpeedPxPerMs = raf && sameDirection
-      ? Math.max(scrollSpeedPxPerMs, nextSpeed)
-      : nextSpeed;
+    if (state.phase === "animating" && scrollMovedOutside(el, state.lastWritten)) stop();
 
-    if (!raf) {
-      prevTs = performance.now();
-      raf = requestAnimationFrame(tick);
+    const position = el.scrollTop;
+    const running = state.phase === "animating" ? state : null;
+    const target = clampScrollTopForElement(el, (running ? running.target : position) + movement);
+    const nextSpeed = calendarTimelineScrollSpeedForDistance(target - position);
+
+    if (running) {
+      const sameDirection = Math.sign(running.target - position) === Math.sign(target - position);
+      running.speedPxPerMs = sameDirection ? Math.max(running.speedPxPerMs, nextSpeed) : nextSpeed;
+      running.position = position;
+      running.target = target;
+      running.lastWritten = position;
+      return;
     }
+
+    state = {
+      phase: "animating",
+      frame: requestAnimationFrame(tick),
+      prevTs: performance.now(),
+      position,
+      target,
+      speedPxPerMs: nextSpeed,
+      lastWritten: position,
+    };
   };
 
-  scroll.cancel = () => {
-    stop();
-    const el = getEl();
-    animatedScrollTop = el?.scrollTop ?? 0;
-    targetScrollTop = animatedScrollTop;
-  };
+  scroll.cancel = stop;
 
   return scroll;
 }

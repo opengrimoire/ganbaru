@@ -7,7 +7,7 @@ use ganbaru_sync_contracts::{
     LateResolution, LateRow, ProposalRejection, Remove, ResolveLate, RowKey, SetRole, SpaceId,
 };
 use ganbaru_sync_replica::authority::propose;
-use ganbaru_sync_replica::outbox::OutboxEntry;
+use ganbaru_sync_replica::outbox::{OutboxEntry, OutboxState};
 use ganbaru_sync_replica::service::peers::coordinator_allowed;
 
 use super::super::host::{StagedTrust, staged_trust};
@@ -76,10 +76,9 @@ fn entry(change: Entry, created_ms: u64) -> OutboxEntry {
             created_ms,
         )
         .expect("proposal"),
-        rejection: None,
-        held: None,
-        after: None,
-        released_from: None,
+        state: OutboxState::Pending {
+            released_from: None,
+        },
     }
 }
 
@@ -148,7 +147,10 @@ fn sync_outbox_views_name_the_change_its_target_and_its_state_newest_first() {
         }),
         AT_MS,
     );
-    rejected.rejection = Some(ProposalRejection::NamesAnchor);
+    rejected.state = OutboxState::Rejected {
+        rejection: ProposalRejection::NamesAnchor,
+        released_from: None,
+    };
     let mut held = entry(
         Entry::SetRole(SetRole::Device {
             device_id: "device-c".to_string(),
@@ -156,7 +158,10 @@ fn sync_outbox_views_name_the_change_its_target_and_its_state_newest_first() {
         }),
         AT_MS + 1,
     );
-    held.held = Some(2);
+    held.state = OutboxState::Held {
+        epoch: 2,
+        released_from: None,
+    };
     let pending = entry(
         Entry::SetRole(SetRole::Recovery {
             recovery_admin_key: admin(8).public_key(),
@@ -249,7 +254,10 @@ fn sync_late_views_mark_rows_a_pending_proposal_already_decides() {
         }),
         AT_MS + 1,
     );
-    sequenced.held = Some(2);
+    sequenced.state = OutboxState::Held {
+        epoch: 2,
+        released_from: None,
+    };
 
     let mut changes = vec![
         late("note-decided", LateKind::Tombstone, None),

@@ -1,10 +1,7 @@
 //! Native Focus overlay windows: break, idle, and completion surfaces with focus enforcement.
 
 use serde::{Deserialize, Serialize};
-use std::sync::{
-    Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Mutex;
 use tauri::{Emitter, Manager, Runtime, State, WebviewUrl, WebviewWindowBuilder, window::Color};
 
 #[cfg(target_os = "linux")]
@@ -239,19 +236,54 @@ impl OverlayVisualState {
 }
 
 pub(crate) struct PomodoroOverlayState {
-    active: AtomicBool,
-    shutting_down: AtomicBool,
+    /// Serializes opening, closing, and repairing the overlay, including main-thread window work.
     lifecycle: Mutex<()>,
-    session: Mutex<Option<OverlaySession>>,
+    state: Mutex<OverlayLifecycle>,
 }
 
 impl Default for PomodoroOverlayState {
     fn default() -> Self {
         Self {
-            active: AtomicBool::new(false),
-            shutting_down: AtomicBool::new(false),
             lifecycle: Mutex::new(()),
-            session: Mutex::new(None),
+            state: Mutex::new(OverlayLifecycle::Closed),
+        }
+    }
+}
+
+/// Overlay lifecycle: `Closed` and `Open` alternate until `ShutDown`, which is terminal and
+/// refuses every later overlay.
+enum OverlayLifecycle {
+    Closed,
+    Open(Box<OverlaySession>),
+    ShutDown,
+}
+
+impl OverlayLifecycle {
+    fn session(&self) -> Option<&OverlaySession> {
+        match self {
+            Self::Open(session) => Some(session),
+            Self::Closed | Self::ShutDown => None,
+        }
+    }
+
+    fn session_mut(&mut self) -> Option<&mut OverlaySession> {
+        match self {
+            Self::Open(session) => Some(session),
+            Self::Closed | Self::ShutDown => None,
+        }
+    }
+
+    /// Takes the open session and leaves `Closed`, or `ShutDown` when `shut_down` is set or the
+    /// lifecycle already ended.
+    fn close(&mut self, shut_down: bool) -> Option<OverlaySession> {
+        let next = if shut_down || matches!(self, Self::ShutDown) {
+            Self::ShutDown
+        } else {
+            Self::Closed
+        };
+        match std::mem::replace(self, next) {
+            Self::Open(session) => Some(*session),
+            Self::Closed | Self::ShutDown => None,
         }
     }
 }
@@ -276,8 +308,18 @@ struct OverlaySessionSnapshot {
 }
 
 impl PomodoroOverlayState {
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, OverlayLifecycle> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     pub(crate) fn is_active(&self) -> bool {
-        self.active.load(Ordering::SeqCst)
+        matches!(*self.lock_state(), OverlayLifecycle::Open(_))
+    }
+
+    fn is_shut_down(&self) -> bool {
+        matches!(*self.lock_state(), OverlayLifecycle::ShutDown)
     }
 
     pub(crate) fn focus<R: Runtime, M: Manager<R>>(&self, manager: &M) {
@@ -296,7 +338,7 @@ impl PomodoroOverlayState {
         visual_state: OverlayVisualState,
         context: crate::pomodoro::FocusNativeContext,
     ) -> Result<(), String> {
-        if self.shutting_down.load(Ordering::SeqCst) {
+        if self.is_shut_down() {
             return Err("the application is shutting down".to_string());
         }
         self.close_locked(app);
@@ -332,11 +374,13 @@ impl PomodoroOverlayState {
             enforcement,
             reconcile_guard: None,
         };
-        *self
-            .session
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(session);
-        self.active.store(true, Ordering::SeqCst);
+        let mut state = self.lock_state();
+        if matches!(*state, OverlayLifecycle::ShutDown) {
+            drop(state);
+            stop_session_enforcement(session);
+            return Err("the application is shutting down".to_string());
+        }
+        *state = OverlayLifecycle::Open(Box::new(session));
         Ok(())
     }
 
@@ -346,14 +390,8 @@ impl PomodoroOverlayState {
         labels: Vec<String>,
         monitor_signature: MonitorSignature,
     ) {
-        let mut session = self
-            .session
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !self.active.load(Ordering::SeqCst) {
-            return;
-        }
-        if let Some(session) = session.as_mut() {
+        let mut state = self.lock_state();
+        if let Some(session) = state.session_mut() {
             session
                 .enforcement
                 .set_window_labels(labels.clone(), POMODORO_OVERLAY_MAIN_LABEL);
@@ -379,19 +417,15 @@ impl PomodoroOverlayState {
     }
 
     fn labels(&self) -> Vec<String> {
-        self.session
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
+        self.lock_state()
+            .session()
             .map(|session| session.labels.clone())
             .unwrap_or_default()
     }
 
     fn snapshot(&self) -> Option<OverlaySessionSnapshot> {
-        self.session
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
+        self.lock_state()
+            .session()
             .map(|session| OverlaySessionSnapshot {
                 labels: session.labels.clone(),
                 kind: session.kind,
@@ -402,12 +436,7 @@ impl PomodoroOverlayState {
     }
 
     fn set_visual_state(&self, visual_state: OverlayVisualState) {
-        if let Some(session) = self
-            .session
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_mut()
-        {
+        if let Some(session) = self.lock_state().session_mut() {
             session.visual_state = visual_state;
         }
     }
@@ -494,37 +523,32 @@ impl PomodoroOverlayState {
         self.close_locked(app);
     }
 
+    /// Closes the overlay and ends the lifecycle. An overlay that already holds the lifecycle
+    /// lock finishes opening first and is closed here; later overlays are refused.
     pub(crate) fn shutdown(&self, app: &tauri::AppHandle) {
-        self.shutting_down.store(true, Ordering::SeqCst);
         let _lifecycle = self
             .lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.close_locked(app);
+        self.end_session(app, true);
     }
 
     fn close_locked(&self, app: &tauri::AppHandle) {
-        self.active.store(false, Ordering::SeqCst);
-        let reconcile_guard = self
-            .session
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_mut()
-            .and_then(|session| session.reconcile_guard.take());
-        if let Some(mut reconcile_guard) = reconcile_guard {
+        self.end_session(app, false);
+    }
+
+    /// Takes the whole session before stopping its reconciler, so the reconciler observes the
+    /// closed state and the state lock is never held while it is joined.
+    fn end_session(&self, app: &tauri::AppHandle, shut_down: bool) {
+        let session = self.lock_state().close(shut_down);
+        let Some(mut session) = session else {
+            return;
+        };
+        if let Some(mut reconcile_guard) = session.reconcile_guard.take() {
             if let Err(err) = reconcile_guard.stop() {
                 eprintln!("failed to stop Pomodoro overlay monitor reconciler: {err}");
             }
         }
-        let session = self
-            .session
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        let Some(session) = session else {
-            return;
-        };
-
         destroy_overlay_windows(app, &session.labels);
         stop_session_enforcement(session);
     }
@@ -1122,10 +1146,10 @@ pub(crate) fn dismiss_pomodoro_completion(
         .lock()
         .map_err(|error| format!("Lock native completion lifecycle: {error}"))?;
     let allowed = overlays
-        .session
+        .state
         .lock()
         .map_err(|error| format!("Read native completion surface: {error}"))?
-        .as_ref()
+        .session()
         .is_some_and(|session| {
             matches!(session.kind, OverlayKind::Completion { .. })
                 && scope.matches_retained(
@@ -1151,7 +1175,7 @@ pub(crate) fn set_pomodoro_overlay_state(
         .lifecycle
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if overlays.shutting_down.load(Ordering::SeqCst) {
+    if overlays.is_shut_down() {
         return Err("the application is shutting down".to_string());
     }
     let visual_state = OverlayVisualState::from_id(&state)?;

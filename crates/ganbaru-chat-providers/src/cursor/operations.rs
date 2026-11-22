@@ -20,7 +20,7 @@ use ganbaru_chat_contracts::model_recommendation::recommended_model_id;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::Path;
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const MAX_PROMPT_BYTES: usize = 4 * 1024 * 1024;
@@ -416,7 +416,6 @@ impl ProviderDriver for CursorProviderDriver {
                     ));
                 }
                 state.active_turn_id = Some(request.turn_id.clone());
-                state.session_state = ProviderSessionState::Active;
                 state.modes = request.modes;
                 state.model_id = request.model_id.clone();
                 state.config_options = setup.config_options;
@@ -438,10 +437,11 @@ impl ProviderDriver for CursorProviderDriver {
             let route = Arc::clone(&live.route);
             let normalizer = Arc::clone(&live.normalizer);
             let sink = Arc::clone(&live.sink);
-            let terminal_error = Arc::clone(&live.terminal_error);
             let prompt_completions = Arc::clone(&live.prompt_completions);
             let delivered_instructions = Arc::clone(&live.delivered_instructions);
             let terminal_callbacks = live.terminal_callbacks.clone();
+            let lifecycle = live.lifecycle.clone();
+            let kill = live.connection.kill_handle();
             let prompt_context = DriverOperationContext {
                 operation_id: context.operation_id.clone(),
                 deadline: Instant::now() + PROMPT_TIMEOUT,
@@ -513,13 +513,25 @@ impl ProviderDriver for CursorProviderDriver {
                             .map_err(|_| driver_state_error())
                             .and_then(|mut state| normalizer.finish_turn(&mut state, stop_reason))
                     }
+                    // A lost transport fails the session, which the router owns: stopping the
+                    // agent ends its output, so the router sees the close even when only the
+                    // writer failed, and it interrupts the turn as part of the failure.
+                    Err(super::transport::AcpRpcFailure::Closed) if lifecycle.is_running() => {
+                        let _ = kill.kill(SESSION_FORCE_STOP).await;
+                        Ok(Vec::new())
+                    }
+                    // Any other failed prompt ends only its turn. An agent whose prompt timed
+                    // out may still run it, so it is asked to cancel before the next turn.
                     Err(error) => {
-                        let chat_error = error.to_chat_error("prompt");
-                        if let Ok(mut terminal) = terminal_error.lock() {
-                            if terminal.is_none() && chat_error.code != ChatErrorCode::Cancelled {
-                                *terminal = Some(chat_error.clone());
-                            }
+                        if error == super::transport::AcpRpcFailure::Timeout {
+                            let _ = client
+                                .notify(
+                                    "session/cancel",
+                                    json!({ "sessionId": provider_thread_id }),
+                                )
+                                .await;
                         }
+                        let chat_error = error.to_chat_error("prompt");
                         route
                             .lock()
                             .map_err(|_| driver_state_error())
@@ -803,7 +815,7 @@ impl ProviderDriver for CursorProviderDriver {
                     false,
                 ));
             }
-            live.expected_shutdown.store(true, Ordering::Release);
+            live.lifecycle.begin_stop();
             let provider_thread_id = live
                 .route
                 .lock()

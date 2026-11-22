@@ -1,5 +1,5 @@
 use super::*;
-use ganbaru_pomodoro::FocusExecutionSnapshot;
+use ganbaru_pomodoro::{FocusExecutionSnapshot, FocusModeState};
 use serde_json::json;
 
 fn snapshot(mode: FocusMode, phase: FocusPhase) -> FocusExecutionSnapshot {
@@ -16,8 +16,8 @@ fn snapshot(mode: FocusMode, phase: FocusPhase) -> FocusExecutionSnapshot {
         "skipNextBreak": false, "focusExtensionUsed": false, "breakExtensionMs": 0,
         "dismissedOccurrenceId": null, "automaticAdmissionSuppressed": false,
         "pausedPromptsDismissed": false, "idleStartedAtMs": 40_000, "idleDetectedAtMs": 100_000,
-        "focusFailedAtMs": null, "suspendStartedAtMs": null, "suspendReturnedAtMs": null,
-        "returnStartedAtMs": null, "activitySourceUnavailable": false, "effectiveIdleTimeoutMinutes": null
+        "focusFailedAtMs": 40_000, "suspendStartedAtMs": 40_000, "suspendReturnedAtMs": 100_000,
+        "returnStartedAtMs": 100_000, "activitySourceUnavailable": false, "effectiveIdleTimeoutMinutes": null
     })).unwrap()
 }
 
@@ -80,7 +80,9 @@ fn paused_reminders_coalesce_late_wakes_and_follow_persisted_dismissal() {
     assert_eq!(delayed.notification, Some(DesktopAlert::Paused));
     assert_eq!(delayed.sound, Some(AppSound::EventNotification));
     assert_eq!(delayed.next.next_alert_ms, Some(560_000));
-    paused.paused_prompts_dismissed = true;
+    paused.mode = FocusModeState::ManualPause {
+        paused_prompts_dismissed: true,
+    };
     let dismissed = delayed.next.plan(1, &paused, 510_000, &preferences);
     assert_eq!(dismissed.notification, None);
     assert_eq!(dismissed.next.next_alert_ms, None);

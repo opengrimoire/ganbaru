@@ -939,10 +939,15 @@ fn row_to_thread_shell(row: sqlx::sqlite::SqliteRow) -> ChatResult<ChatThreadShe
                     .map_err(persistence_error)?,
             )?,
         },
-        state: parse_thread_state(
-            &row.try_get::<String, _>("state")
-                .map_err(persistence_error)?,
-        )?,
+        state: thread_read_state(
+            parse_thread_state(
+                &row.try_get::<String, _>("state")
+                    .map_err(persistence_error)?,
+            )?,
+            row.try_get::<Option<String>, _>("archived_at")
+                .map_err(persistence_error)?
+                .is_some(),
+        ),
         latest_turn_state: row
             .try_get::<Option<String>, _>("latest_turn_state")
             .map_err(persistence_error)?
@@ -1004,17 +1009,21 @@ fn parse_interaction(value: &str) -> ChatResult<InteractionMode> {
     }
 }
 fn parse_thread_state(value: &str) -> ChatResult<ChatThreadState> {
-    match value {
-        "draft" => Ok(ChatThreadState::Draft),
-        "active" => Ok(ChatThreadState::Active),
-        "waiting" => Ok(ChatThreadState::Waiting),
-        "idle" => Ok(ChatThreadState::Idle),
-        "error" => Ok(ChatThreadState::Error),
-        "archived" => Ok(ChatThreadState::Archived),
-        "closed" => Ok(ChatThreadState::Closed),
-        _ => Err(corrupt_data_error()),
+    ChatThreadState::ALL
+        .into_iter()
+        .find(|state| state.is_persisted() && state.as_str() == value)
+        .ok_or_else(corrupt_data_error)
+}
+/// Reports `Archived` from `archived_at`, the only record of archiving, unless the thread is
+/// closed, which outranks archiving.
+fn thread_read_state(stored: ChatThreadState, archived: bool) -> ChatThreadState {
+    if archived && !stored.is_terminal() {
+        ChatThreadState::Archived
+    } else {
+        stored
     }
 }
+
 fn parse_turn_state(value: &str) -> ChatResult<ChatTurnState> {
     match value {
         "pending" => Ok(ChatTurnState::Pending),

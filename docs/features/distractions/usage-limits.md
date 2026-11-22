@@ -36,6 +36,7 @@ Usage is evidence, so it must never be double-counted or invented:
 - Draining spooled or journaled usage into the device's usage record and acknowledging it are retried until both succeed; the record ignores samples it already holds.
 - Intervals use monotonic elapsed time and split at actual local midnights, including daylight-saving changes. Long gaps and clock discontinuities produce no inferred usage.
 - A full device-local spool or journal fails explicitly and stops capturing new usage rather than dropping or clamping it.
+- The device-local spool carries a schema version shared by the app and the browser host; a spool written by another version is replaced, discarding its pending rows, because it is a short-lived queue rather than a source of truth.
 - A device writes only its own daily totals, and a total never shrinks, so a retried or reordered sync cannot lower or double another device's usage. Samples dated more than one day past the device's UTC date, or before the retention window, are not counted, so a wrong clock cannot displace real days.
 
 ## Browser counting

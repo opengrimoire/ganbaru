@@ -86,7 +86,7 @@ describe("MusicPanel", () => {
     target = undefined;
     vi.unstubAllGlobals();
     resizeObserverCallbacks.clear();
-    Object.assign(getMusicSourcesController(), { firstUseSession: false, preparingDefaultFolder: false, loaded: false });
+    Object.assign(getMusicSourcesController(), { firstUseSession: false, firstUseFolder: { phase: "idle", folderPath: null }, loaded: false });
     const player = getMusicPlayer();
     player.setPlaylistVisible(false);
     player.currentSource = null;
@@ -249,6 +249,40 @@ describe("MusicPanel", () => {
     expect(sessionApi.command).toHaveBeenLastCalledWith(expect.objectContaining({ intent: { kind: "refresh" } }));
     expect(player.queue.map((source) => source.title)).toEqual(["Snoozed"]);
     expect(play).not.toHaveBeenCalled();
+  });
+
+  it("keeps a pending Snooze removal on its own row when the queue window scrolls", async () => {
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    const player = getMusicPlayer();
+    player.setPlaylistVisible(true);
+    const ids = Array.from({ length: 30 }, (_, index) => `item-${index}`);
+    player.queue = ids.map((id) => localFileSourceFromPath(`/music/${id}.flac`, id));
+    player.activeQueueItemIds = ids;
+    player.activeSourceQueueId = "source:music";
+    player.sourceQueueSnoozedItemIds = ids;
+    const now = Date.now();
+    snoozeApi.getMusicInspectorDetail.mockImplementation(async (itemId: string) => ({ snoozes: [{
+      id: `snooze-${itemId}`, itemId, scope: "all-playlists", playlistId: null,
+      startsAtMs: now - 1_000, endsAtMs: now + 86_400_000, reason: "", createdAtMs: now - 1_000,
+    }] }));
+    snoozeApi.removeMusicSnooze.mockImplementationOnce(() => new Promise<void>(() => {}));
+    target = document.createElement("div");
+    document.body.append(target);
+    const { default: MusicPanel } = await import("./MusicPanel.svelte");
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
+    await tick();
+
+    const buttons = () => [...target!.querySelectorAll<HTMLButtonElement>("#music-playlist .music-snooze-button")];
+    buttons()[0]?.click();
+    await vi.waitFor(() => expect(snoozeApi.removeMusicSnooze).toHaveBeenCalledWith("snooze-item-0"));
+    expect(buttons()[0]?.disabled).toBe(true);
+
+    const scroller = target.querySelector<HTMLElement>("#music-playlist [data-music-scrollable='true']")!;
+    Object.defineProperty(scroller, "scrollTop", { configurable: true, value: 36 * 10 });
+    scroller.dispatchEvent(new Event("scroll"));
+    await tick();
+
+    expect(buttons().every((button) => !button.disabled)).toBe(true);
   });
 
   it("shows queue title tooltips only when the visible title is cut off", async () => {
@@ -520,7 +554,7 @@ describe("MusicPanel", () => {
   it("keeps first-use preparation pending when the panel closes before completion", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
     vi.stubGlobal("matchMedia", matchMediaStub);
-    Object.assign(getMusicSourcesController(), { firstUseSession: true, preparingDefaultFolder: true });
+    Object.assign(getMusicSourcesController(), { firstUseSession: true, firstUseFolder: { phase: "preparing", origin: "chosen", folderPath: "/home/user/Music" } });
     target = document.createElement("div");
     document.body.append(target);
     const { default: MusicPanel } = await import("./MusicPanel.svelte");

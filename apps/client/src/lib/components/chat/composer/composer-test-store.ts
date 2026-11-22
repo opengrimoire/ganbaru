@@ -104,7 +104,7 @@ export function interactionState(): ChatInteractionStateRead {
     sessionState: "ready",
     activeTurnId: null,
     capabilities: { entries: [] },
-    pendingRequest: null,
+    pendingRequests: [],
     queuedFollowup: null,
     usage: {
       inputTokens: 80_000,

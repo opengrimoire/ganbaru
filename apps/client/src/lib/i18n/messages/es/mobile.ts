@@ -15,6 +15,9 @@ export const mobile = {
     dataLocation: "Ubicación de datos",
     startFromZero: "Empezar de cero",
     restoreBackupFile: "Restaurar archivo de copia",
+    startNewVault: "Empezar una bóveda nueva",
+    startNewVaultTitle: "¿Empezar una bóveda nueva?",
+    startNewVaultMessage: "Ganbaru conserva entera la carpeta de la bóveda actual en este teléfono, listada en Ajustes > Datos, y abre en su lugar una bóveda nueva y vacía.",
     importExistingFolder: "Importar carpeta existente",
   },
   onboarding: {

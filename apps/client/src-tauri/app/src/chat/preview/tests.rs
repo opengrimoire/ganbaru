@@ -259,7 +259,6 @@ fn stored_tab(thread_id: &str, url: &str) -> BrowserTabRead {
         loading: false,
         viewport_width: 800,
         viewport_height: 600,
-        external_origin: false,
     }
 }
 
@@ -421,4 +420,73 @@ fn loopback_hosts_are_localhost_127_slash_8_and_ipv6_loopback_only() {
     ] {
         assert!(!super::is_loopback(&url(value)), "{value}");
     }
+}
+
+fn navigation(tab_id: &str, target: &str) -> super::approvals::PendingPreviewApproval {
+    super::approvals::PendingPreviewApproval::Navigation {
+        tab_id: tab_id.to_string(),
+        url: url(target),
+    }
+}
+
+fn shown_id(read: Option<super::approvals::PreviewApprovalRead>) -> u64 {
+    match read {
+        Some(super::approvals::PreviewApprovalRead::Navigation { approval_id, .. })
+        | Some(super::approvals::PreviewApprovalRead::Network { approval_id }) => approval_id,
+        other => panic!("expected an agent approval, not {other:?}"),
+    }
+}
+
+#[test]
+fn an_answer_to_an_approval_a_newer_one_replaced_takes_nothing() {
+    let thread = ChatThreadId::new("thread-approvals").unwrap();
+    let mut pending = super::approvals::PendingApprovals::default();
+    assert!(pending.hold(&thread, navigation("tab-1", "http://127.0.0.1:5173/")));
+    let shown = shown_id(pending.read(&thread));
+    assert!(pending.hold(&thread, navigation("tab-1", "http://127.0.0.1:8888/admin")));
+
+    assert_eq!(pending.take(&thread, shown), None);
+
+    let current = shown_id(pending.read(&thread));
+    assert_ne!(current, shown);
+    assert_eq!(
+        pending.take(&thread, current),
+        Some(navigation("tab-1", "http://127.0.0.1:8888/admin"))
+    );
+    assert_eq!(pending.read(&thread), None);
+}
+
+#[test]
+fn repeating_the_held_approval_keeps_its_id_and_is_not_announced_again() {
+    let thread = ChatThreadId::new("thread-repeat").unwrap();
+    let other = ChatThreadId::new("thread-other").unwrap();
+    let mut pending = super::approvals::PendingApprovals::default();
+    assert!(pending.hold(&thread, super::approvals::PendingPreviewApproval::Network));
+    let shown = shown_id(pending.read(&thread));
+
+    assert!(!pending.hold(&thread, super::approvals::PendingPreviewApproval::Network));
+    assert_eq!(shown_id(pending.read(&thread)), shown);
+    assert!(pending.hold(&other, super::approvals::PendingPreviewApproval::Network));
+    assert_eq!(pending.take(&other, shown), None);
+    assert_eq!(
+        pending.take(&thread, shown),
+        Some(super::approvals::PendingPreviewApproval::Network)
+    );
+}
+
+#[test]
+fn the_external_origin_flag_follows_the_current_url() {
+    let wire = |url: &str| {
+        serde_json::to_value(stored_tab("thread:test", url)).expect("tab should serialize")
+            ["externalOrigin"]
+            .clone()
+    };
+    assert_eq!(wire("https://example.com/page"), serde_json::json!(true));
+    assert_eq!(wire("http://localhost:5173/"), serde_json::json!(false));
+    assert_eq!(wire("http://[::1]:8080/"), serde_json::json!(false));
+    assert_eq!(wire("not a url"), serde_json::json!(false));
+    let mut tab = stored_tab("thread:test", "http://127.0.0.1:3000/");
+    assert!(!tab.external_origin());
+    tab.current_url = "https://example.org/".to_string();
+    assert!(tab.external_origin());
 }

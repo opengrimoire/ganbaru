@@ -77,6 +77,7 @@ export const quickNotes = {
     retry: "Retry save",
     conflict: "This note changed in another window or on another device",
     reload: "Reload",
+    reloadFailed: "The note could not be reloaded",
     saveCopy: "Save as copy",
     titleLimit: (count: number) => `Title limit: ${count} characters`,
     bodyLimit: (count: number) => `Body limit: ${count} characters`,

@@ -58,6 +58,8 @@ import {
   type BenchmarkSeedHandle,
   type BenchmarkSuiteState,
   type BenchmarkState,
+  type BenchmarkPhaseAState,
+  type BenchmarkPhaseBState,
   type BenchmarkScenario,
   type BenchmarkScenarioMetadata,
   type PhaseResult,
@@ -118,7 +120,11 @@ class BenchmarkRunnerStore {
   errorMessage = $state<string | undefined>(undefined);
   pendingRequest = $state<PendingRequest | undefined>(undefined);
 
-  #abort: AbortController | null = null;
+  /**
+   * Controller of the run this process is driving. Every run gets its own controller and checks only its own signal,
+   * so a cancel, or a newer run, stops an older run at its next await instead of letting it persist or restart.
+   */
+  #activeRun: AbortController | null = null;
 
   /** Open the confirmation dialog for `scenarioId`. */
   request(scenarioId: string) {
@@ -197,9 +203,11 @@ class BenchmarkRunnerStore {
           : "Restarting for baseline dataset",
     };
 
+    const signal = this.#beginRun();
     try {
       await invoke("prepare_benchmark_db");
       const platform = await this.#detectPlatform();
+      if (!this.#isCurrentRun(signal)) return;
       const benchmarkDatasets = benchmarkDatasetsForScenario(scenario);
       await persistPhaseAPending({
         scenarioId: scenario.id,
@@ -211,11 +219,11 @@ class BenchmarkRunnerStore {
           : undefined,
       });
     } catch (e) {
-      this.#failWith(`Setup failed: ${this.#describeError(e)}`);
+      this.#failRun(signal, `Setup failed: ${this.#describeError(e)}`);
       return;
     }
 
-    restartForScenario(scenario);
+    this.#restartRun(signal, scenario);
   }
 
   /**
@@ -224,7 +232,8 @@ class BenchmarkRunnerStore {
    * call from any non-idle status.
    */
   async cancel() {
-    this.#abort?.abort();
+    this.#activeRun?.abort();
+    this.#activeRun = null;
     try {
       await invoke("teardown_benchmark_db");
     } catch (e) {
@@ -309,7 +318,7 @@ class BenchmarkRunnerStore {
       await this.#runPhaseAThenSeed(scenario, state);
       return true;
     } else if (state.stage === "phase-b-pending") {
-      if (!state.seedHandle || (!state.phaseA && !isDenseOnlyScenario(scenario))) {
+      if (!state.phaseA && !isDenseOnlyScenario(scenario)) {
         await this.#abandonStale();
         return false;
       }
@@ -334,7 +343,7 @@ class BenchmarkRunnerStore {
     }
   }
 
-  async #runPhaseAThenSeed(scenario: BenchmarkScenario, state: BenchmarkState) {
+  async #runPhaseAThenSeed(scenario: BenchmarkScenario, state: BenchmarkPhaseAState) {
     this.status = "running";
     this.errorMessage = undefined;
     this.running = {
@@ -346,13 +355,14 @@ class BenchmarkRunnerStore {
         : undefined,
       step: "Setting up",
     };
-    this.#abort = new AbortController();
+    const signal = this.#beginRun();
     try {
       await persistBenchmarkState({ ...state, stage: "phase-a-running" });
     } catch (e) {
-      this.#failWith(`Persisting state failed: ${this.#describeError(e)}`);
+      this.#failRun(signal, `Persisting state failed: ${this.#describeError(e)}`);
       return;
     }
+    if (!this.#isCurrentRun(signal)) return;
 
     let phaseA: PhaseResult | undefined;
     let startupRuns = state.startupRuns;
@@ -363,7 +373,7 @@ class BenchmarkRunnerStore {
         this.#updateStep(this.#workloadStep(scenario, state, "A"));
         phaseA = await runner.runPhaseA({
           scenario,
-          signal: this.#abort.signal,
+          signal,
           anchorDate: state.anchorDate,
           onCurveProgress: (label, total, done) => {
             this.#updateCurve({ label, total, done });
@@ -371,10 +381,10 @@ class BenchmarkRunnerStore {
         });
       } catch (e) {
         if (this.#isAbort(e)) return;
-        this.#failWith(`Baseline dataset failed: ${this.#describeError(e)}`);
+        this.#failRun(signal, `Baseline dataset failed: ${this.#describeError(e)}`);
         return;
       }
-      if (this.#abort?.signal.aborted) return;
+      if (!this.#isCurrentRun(signal)) return;
 
       if (isStartupScenario(scenario)) {
         startupRuns = appendStartupPhaseRun(startupRuns, "phaseA", phaseA);
@@ -396,10 +406,10 @@ class BenchmarkRunnerStore {
               startupRuns,
             });
           } catch (e) {
-            this.#failWith(`Persisting state failed: ${this.#describeError(e)}`);
+            this.#failRun(signal, `Persisting state failed: ${this.#describeError(e)}`);
             return;
           }
-          restartForScenario(scenario);
+          this.#restartRun(signal, scenario);
           return;
         }
         phaseA = aggregateStartupPhase("A", startupRuns.phaseA);
@@ -411,12 +421,12 @@ class BenchmarkRunnerStore {
     this.#updateStep(`Seeding ${benchmarkDatasetId(dataset)}`, /* clearCurve */ true);
     let seedHandle: BenchmarkSeedHandle;
     try {
-      seedHandle = await scenario.seed(dataset, { anchorDate: state.anchorDate });
+      seedHandle = await scenario.seed(dataset, { anchorDate: state.anchorDate }, signal);
     } catch (e) {
-      this.#failWith(`Seeding failed: ${this.#describeError(e)}`);
+      this.#failRun(signal, `Seeding failed: ${this.#describeError(e)}`);
       return;
     }
-    if (this.#abort?.signal.aborted) return;
+    if (!this.#isCurrentRun(signal)) return;
 
     this.#updateStep(
       isStartupScenario(scenario)
@@ -439,16 +449,16 @@ class BenchmarkRunnerStore {
         startupRuns,
       });
     } catch (e) {
-      this.#failWith(`Persisting state failed: ${this.#describeError(e)}`);
+      this.#failRun(signal, `Persisting state failed: ${this.#describeError(e)}`);
       return;
     }
 
-    restartForScenario(scenario);
+    this.#restartRun(signal, scenario);
   }
 
   async #runPhaseB(
     scenario: BenchmarkScenario,
-    state: BenchmarkState,
+    state: BenchmarkPhaseBState,
     phaseA: PhaseResult | undefined,
     seedHandle: BenchmarkSeedHandle,
   ) {
@@ -464,22 +474,23 @@ class BenchmarkRunnerStore {
       step: "Setting up",
       datasetId: seedHandle.datasetId,
     };
-    this.#abort = new AbortController();
+    const signal = this.#beginRun();
     const calendarStore = getCalendar();
     const runner = createRunner(() => calendarStore.eventCount);
     try {
       await persistBenchmarkState({ ...state, stage: "phase-b-running" });
     } catch (e) {
-      this.#failWith(`Persisting state failed: ${this.#describeError(e)}`);
+      this.#failRun(signal, `Persisting state failed: ${this.#describeError(e)}`);
       return;
     }
+    if (!this.#isCurrentRun(signal)) return;
 
     let phaseB: PhaseResult;
     try {
       this.#updateStep(this.#workloadStep(scenario, state, "B"));
       phaseB = await runner.runPhaseB({
         scenario,
-        signal: this.#abort.signal,
+        signal,
         anchorDate: state.anchorDate,
         datasetId: seedHandle.datasetId,
         onCurveProgress: (label, total, done) => {
@@ -488,10 +499,10 @@ class BenchmarkRunnerStore {
       });
     } catch (e) {
       if (this.#isAbort(e)) return;
-      this.#failWith(`Dense dataset failed: ${this.#describeError(e)}`);
+      this.#failRun(signal, `Dense dataset failed: ${this.#describeError(e)}`);
       return;
     }
-    if (this.#abort?.signal.aborted) return;
+    if (!this.#isCurrentRun(signal)) return;
 
     const benchmarkDatasets = state.benchmarkDatasets ?? benchmarkDatasetsForScenario(scenario);
     const datasetIndex = state.datasetIndex ?? 0;
@@ -499,7 +510,7 @@ class BenchmarkRunnerStore {
     let startupRuns = state.startupRuns;
     if (isStartupScenario(scenario)) {
       if (!phaseA) {
-        this.#failWith("Startup benchmark is missing the baseline phase");
+        this.#failRun(signal, "Startup benchmark is missing the baseline phase");
         return;
       }
       startupRuns = appendStartupPhaseRun(startupRuns, "phaseB", phaseB);
@@ -525,10 +536,10 @@ class BenchmarkRunnerStore {
             startupRuns,
           });
         } catch (e) {
-          this.#failWith(`Persisting state failed: ${this.#describeError(e)}`);
+          this.#failRun(signal, `Persisting state failed: ${this.#describeError(e)}`);
           return;
         }
-        restartForScenario(scenario);
+        this.#restartRun(signal, scenario);
         return;
       }
       finalPhaseA = aggregateStartupPhase("A", startupRuns.phaseA);
@@ -543,18 +554,18 @@ class BenchmarkRunnerStore {
       const nextDatasetIndex = datasetIndex + 1;
       const nextDataset = benchmarkDatasets[nextDatasetIndex];
       if (nextDataset === undefined) {
-        this.#failWith("Benchmark dataset is missing");
+        this.#failRun(signal, "Benchmark dataset is missing");
         return;
       }
       this.#updateStep(`Seeding ${benchmarkDatasetId(nextDataset)}`, /* clearCurve */ true);
       let nextSeedHandle: BenchmarkSeedHandle;
       try {
-        nextSeedHandle = await scenario.seed(nextDataset, { anchorDate: state.anchorDate });
+        nextSeedHandle = await scenario.seed(nextDataset, { anchorDate: state.anchorDate }, signal);
       } catch (e) {
-        this.#failWith(`Seeding failed: ${this.#describeError(e)}`);
+        this.#failRun(signal, `Seeding failed: ${this.#describeError(e)}`);
         return;
       }
-      if (this.#abort?.signal.aborted) return;
+      if (!this.#isCurrentRun(signal)) return;
 
       this.#updateStep(
         isStartupScenario(scenario)
@@ -579,10 +590,10 @@ class BenchmarkRunnerStore {
             : startupRuns,
         });
       } catch (e) {
-        this.#failWith(`Persisting state failed: ${this.#describeError(e)}`);
+        this.#failRun(signal, `Persisting state failed: ${this.#describeError(e)}`);
         return;
       }
-      restartForScenario(scenario);
+      this.#restartRun(signal, scenario);
       return;
     }
 
@@ -612,6 +623,7 @@ class BenchmarkRunnerStore {
     const suite = state.suite;
     if (suite && suite.index < suite.scenarioIds.length - 1) {
       await this.#continueSuite(
+        signal,
         suite,
         result,
         state.platform,
@@ -622,9 +634,11 @@ class BenchmarkRunnerStore {
     }
 
     const finalResults = suite ? [...suite.results, result] : [result];
+    await this.#teardownFinishedBenchmark();
+    if (!this.#isCurrentRun(signal)) return;
+    this.#activeRun = null;
     this.result = result;
     this.results = finalResults;
-    await this.#teardownFinishedBenchmark();
     this.running = undefined;
     this.status = "summary";
     notifyBenchmarkDone(
@@ -638,6 +652,7 @@ class BenchmarkRunnerStore {
   }
 
   async #continueSuite(
+    signal: AbortSignal,
     suite: BenchmarkSuiteState,
     result: BenchmarkResult,
     platform: string,
@@ -648,7 +663,7 @@ class BenchmarkRunnerStore {
     const nextScenarioId = suite.scenarioIds[nextIndex];
     const nextScenario = getScenarioMetadataById(nextScenarioId);
     if (!nextScenario) {
-      this.#failWith(`Unknown suite scenario: ${nextScenarioId}`);
+      this.#failRun(signal, `Unknown suite scenario: ${nextScenarioId}`);
       return;
     }
     const nextSuite: BenchmarkSuiteState = {
@@ -671,6 +686,7 @@ class BenchmarkRunnerStore {
     };
     try {
       await invoke("prepare_benchmark_db");
+      if (!this.#isCurrentRun(signal)) return;
       await persistPhaseAPending({
         scenarioId: nextScenario.id,
         platform,
@@ -680,10 +696,10 @@ class BenchmarkRunnerStore {
         suite: nextSuite,
       });
     } catch (e) {
-      this.#failWith(`Preparing next benchmark failed: ${this.#describeError(e)}`);
+      this.#failRun(signal, `Preparing next benchmark failed: ${this.#describeError(e)}`);
       return;
     }
-    restartForScenario(nextScenario);
+    this.#restartRun(signal, nextScenario);
   }
 
   #updateStep(step: string, clearCurve = false) {
@@ -757,6 +773,32 @@ class BenchmarkRunnerStore {
     notifyBenchmarkDone(t("benchmark.notification.failedTitle"), message);
   }
 
+  /** Starts a run with its own controller, aborting any run still in flight. */
+  #beginRun(): AbortSignal {
+    this.#activeRun?.abort();
+    const controller = new AbortController();
+    this.#activeRun = controller;
+    return controller.signal;
+  }
+
+  /** Whether the run owning `signal` is still the active run and has not been aborted. */
+  #isCurrentRun(signal: AbortSignal): boolean {
+    return this.#activeRun?.signal === signal && !signal.aborted;
+  }
+
+  /** Ends the run owning `signal` with `message`, unless a cancel or a newer run superseded it. */
+  #failRun(signal: AbortSignal, message: string): void {
+    if (!this.#isCurrentRun(signal)) return;
+    this.#activeRun = null;
+    this.#failWith(message);
+  }
+
+  /** Restarts into the next stage of the run owning `signal`, unless a cancel or a newer run superseded it. */
+  #restartRun(signal: AbortSignal, scenario: BenchmarkScenarioMetadata): void {
+    if (!this.#isCurrentRun(signal)) return;
+    restartForScenario(scenario);
+  }
+
   #reset() {
     this.status = "idle";
     this.running = undefined;
@@ -764,7 +806,8 @@ class BenchmarkRunnerStore {
     this.results = [];
     this.errorMessage = undefined;
     this.pendingRequest = undefined;
-    this.#abort = null;
+    this.#activeRun?.abort();
+    this.#activeRun = null;
   }
 
   #isAbort(e: unknown): boolean {

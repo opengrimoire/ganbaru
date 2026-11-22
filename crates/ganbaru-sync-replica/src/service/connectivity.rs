@@ -21,14 +21,15 @@ pub fn dial_report(role: SyncRole, pairing: &PairingManager) -> Option<Coordinat
 
 /// The connection the latest successful dial reached.
 pub fn connection(dial: Option<&CoordinatorDialReport>) -> Option<SyncConnectionView> {
-    dial?.reached.and_then(SyncConnectionView::reached)
+    dial?.last_reached().and_then(SyncConnectionView::reached)
 }
 
 /// Degraded reasons the latest dial shows on its own.
 pub fn dial_reasons(dial: Option<&CoordinatorDialReport>, reasons: &mut DegradedReasons) {
     reasons.note(
         SyncDegradedReason::LocalNetworkDenied,
-        dial.is_some_and(|report| report.local_network_denied),
+        dial.and_then(CoordinatorDialReport::failure)
+            .is_some_and(|failure| failure.local_network_denied),
     );
 }
 
@@ -37,11 +38,18 @@ mod tests {
     use super::*;
     use crate::service::status::SyncConnectionNetwork;
 
+    /// A report whose latest dial reached `reached`, or failed with `denied` after reaching nothing.
     fn report(reached: Option<&str>, denied: bool) -> CoordinatorDialReport {
-        CoordinatorDialReport {
-            reached: reached.map(|endpoint| endpoint.parse().expect("endpoint")),
-            local_network_denied: denied,
-            discovery_found_nothing: false,
+        let reached = reached.map(|endpoint| endpoint.parse().expect("endpoint"));
+        match (reached, denied) {
+            (Some(endpoint), false) => CoordinatorDialReport::Reached(endpoint),
+            (last_reached, _) => CoordinatorDialReport::Failed {
+                last_reached,
+                failure: crate::service::dial_report::FailedDial {
+                    local_network_denied: denied,
+                    discovery_found_nothing: false,
+                },
+            },
         }
     }
 

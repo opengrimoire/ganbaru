@@ -5,8 +5,12 @@ import type {
   NotesCommentThread,
   NotesCommentThreadReadUpdate,
   NotesCommentUpdate,
+  NotesBlock,
   NotesPageNotificationLevel,
+  NotesSuggestion,
+  NotesSuggestionCreate,
 } from "$lib/notes/types";
+import { createBlockWrite } from "$lib/notes/blocks/factory";
 import { createTextRichText } from "$lib/notes/rich-text/core";
 import { createNotesCollaborationController } from "./collaboration.svelte";
 
@@ -20,6 +24,10 @@ const backend = vi.hoisted(() => ({
   reactionCalls: [] as Array<{ commentId: string; emoji: string }>,
   notificationLevel: "all" as NotesPageNotificationLevel,
   failNotificationWrite: false,
+  suggestionGate: null as Promise<void> | null,
+  createGate: null as Promise<void> | null,
+  suggestionCreates: [] as NotesSuggestionCreate[],
+  suggestionPageId: "page-a",
 }));
 
 function threadContaining(commentId: string): NotesCommentThread {
@@ -71,6 +79,7 @@ vi.mock("$lib/api/notes", async (importOriginal) => {
     },
     createNotesComment: async (request: NotesCommentCreate) => {
       backend.created.push(request);
+      if (backend.createGate) await backend.createGate;
       const existing = request.discussion_id
         ? backend.threads.find((candidate) => candidate.id === request.discussion_id)
         : undefined;
@@ -119,6 +128,12 @@ vi.mock("$lib/api/notes", async (importOriginal) => {
       page_id: pageId,
       level: backend.notificationLevel,
     }),
+    createNotesSuggestion: async (request: NotesSuggestionCreate): Promise<NotesSuggestion> => {
+      backend.suggestionCreates.push(request);
+      const pageId = backend.suggestionPageId;
+      if (backend.suggestionGate) await backend.suggestionGate;
+      return suggestionFor(request, pageId);
+    },
     setNotesPageNotificationLevel: async (pageId: string, level: NotesPageNotificationLevel) => {
       if (backend.failNotificationWrite) throw new Error("write refused");
       backend.notificationLevel = level;
@@ -190,6 +205,10 @@ beforeEach(() => {
   backend.reactionCalls = [];
   backend.notificationLevel = "all";
   backend.failNotificationWrite = false;
+  backend.suggestionGate = null;
+  backend.createGate = null;
+  backend.suggestionCreates = [];
+  backend.suggestionPageId = "page-a";
 });
 
 describe("Notes resolved comment visibility", () => {
@@ -333,6 +352,24 @@ describe("Notes comment authoring", () => {
     expect(controller.activeCommentParent).toBeNull();
   });
 
+  it("keeps a block comment started while an earlier block comment posts", async () => {
+    const controller = controllerForPage(() => "page-a");
+    await controller.reloadComments();
+    let release: () => void = () => undefined;
+    backend.createGate = new Promise<void>((resolve) => { release = resolve; });
+    controller.setActiveCommentParent({ type: "block_id", block_id: "block-1" });
+
+    const pending = controller.createComment([createTextRichText("First")]);
+    await vi.waitFor(() => expect(backend.created).toHaveLength(1));
+    const nextParent: NotesCommentParent = { type: "block_id", block_id: "block-2" };
+    controller.setActiveCommentParent(nextParent);
+    release();
+    await pending;
+
+    expect(backend.created[0].parent).toEqual({ type: "block_id", block_id: "block-1" });
+    expect(controller.activeCommentParent).toEqual(nextParent);
+  });
+
   it("replies and edits with attachments and keeps the thread list current", async () => {
     const controller = controllerForPage(() => "page-a");
     await controller.reloadComments();
@@ -397,5 +434,114 @@ describe("Notes page notification level", () => {
     backend.failNotificationWrite = true;
     await expect(controller.setPageNotificationLevel("all")).rejects.toThrow("write refused");
     expect(controller.pageNotificationLevel).toBe("none");
+  });
+});
+
+function suggestionFor(request: NotesSuggestionCreate, pageId: string): NotesSuggestion {
+  return {
+    object: "suggestion",
+    id: request.id,
+    page_id: pageId,
+    block_id: request.block_id,
+    created_by: { object: "user", id: "local-user" },
+    display_name: { type: "user", resolved_name: "Local user" },
+    status: "open",
+    range_start: request.range_start,
+    range_end: request.range_end,
+    original_text: request.original_text,
+    proposed_text: request.proposed_text,
+    prefix: request.prefix,
+    suffix: request.suffix,
+    accepted_at: null,
+    accepted_by: null,
+    rejected_at: null,
+    rejected_by: null,
+    created_time: "2026-01-01T00:00:00.000Z",
+    last_edited_time: "2026-01-01T00:00:00.000Z",
+  };
+}
+
+function paragraphBlock(id: string, text: string): NotesBlock {
+  const write = createBlockWrite(id, "paragraph", text);
+  if (write.type !== "paragraph") throw new Error("expected paragraph fixture");
+  return {
+    object: "block",
+    edit_revision: "0".repeat(64),
+    id,
+    parent: { type: "page_id", page_id: "page-a" },
+    created_time: "2026-01-01T00:00:00.000Z",
+    last_edited_time: "2026-01-01T00:00:00.000Z",
+    has_children: false,
+    in_trash: false,
+    archived: false,
+    source_provider: null,
+    source_object_id: null,
+    source_last_edited_time: null,
+    type: "paragraph",
+    paragraph: write.paragraph,
+  };
+}
+
+function suggestionController(readPageId: () => string) {
+  const blocks: Record<string, NotesBlock> = {
+    "block-a": paragraphBlock("block-a", "Draft the plan"),
+    "block-b": paragraphBlock("block-b", "Review the notes"),
+  };
+  return createNotesCollaborationController({
+    readSelectedPageId: readPageId,
+    readBlocksById: () => blocks,
+    flushBlockSave: async () => undefined,
+    requestBlockFocus: () => undefined,
+    updateBlockRichText: async () => undefined,
+    isPanelOpen: () => true,
+  });
+}
+
+describe("Notes suggestion authoring", () => {
+  it("creates one suggestion when the same draft is saved twice while it saves", async () => {
+    const controller = suggestionController(() => "page-a");
+    let release: () => void = () => undefined;
+    backend.suggestionGate = new Promise<void>((resolve) => { release = resolve; });
+    await controller.startInlineSuggestion("block-a", 0, 5);
+
+    const first = controller.createSuggestion("Write");
+    const second = controller.createSuggestion("Write");
+    release();
+    await Promise.all([first, second]);
+
+    expect(backend.suggestionCreates).toHaveLength(1);
+    expect(controller.suggestions).toHaveLength(1);
+    expect(controller.activeSuggestionDraft).toBeNull();
+  });
+
+  it("keeps a draft started while an earlier draft saves", async () => {
+    const controller = suggestionController(() => "page-a");
+    let release: () => void = () => undefined;
+    backend.suggestionGate = new Promise<void>((resolve) => { release = resolve; });
+    await controller.startInlineSuggestion("block-a", 0, 5);
+
+    const pending = controller.createSuggestion("Write");
+    await controller.startInlineSuggestion("block-b", 0, 6);
+    release();
+    await pending;
+
+    expect(controller.activeSuggestionDraft?.block_id).toBe("block-b");
+    expect(controller.suggestions.map((suggestion) => suggestion.block_id)).toEqual(["block-a"]);
+  });
+
+  it("leaves a suggestion created on an earlier page out of the selected page", async () => {
+    let pageId = "page-a";
+    const controller = suggestionController(() => pageId);
+    let release: () => void = () => undefined;
+    backend.suggestionGate = new Promise<void>((resolve) => { release = resolve; });
+    await controller.startInlineSuggestion("block-a", 0, 5);
+
+    const pending = controller.createSuggestion("Write");
+    controller.resetPageState();
+    pageId = "page-b";
+    release();
+    await pending;
+
+    expect(controller.suggestions).toEqual([]);
   });
 });

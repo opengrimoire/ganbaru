@@ -11,6 +11,7 @@ members = [
   "crates/ganbaru-civil-time",
   "crates/ganbaru-db",
   "crates/ganbaru-distractions",
+  "crates/ganbaru-distractions-authority",
   "crates/ganbaru-handoff",
   "crates/ganbaru-image-metadata",
   "crates/ganbaru-linking-firewall",
@@ -70,6 +71,7 @@ ganbaru-chat-providers = { path = "crates/ganbaru-chat-providers" }
 ganbaru-civil-time = { path = "crates/ganbaru-civil-time" }
 ganbaru-db = { path = "crates/ganbaru-db" }
 ganbaru-distractions = { path = "crates/ganbaru-distractions" }
+ganbaru-distractions-authority = { path = "crates/ganbaru-distractions-authority" }
 ganbaru-handoff = { path = "crates/ganbaru-handoff" }
 ganbaru-image-metadata = { path = "crates/ganbaru-image-metadata" }
 ganbaru-mobile-documents = { path = "crates/ganbaru-mobile-documents" }

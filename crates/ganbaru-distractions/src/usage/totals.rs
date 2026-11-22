@@ -97,30 +97,45 @@ impl FlushPlanner {
     }
 }
 
+/// The samples of a batch that [`insert_own_samples`] did not store.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct OwnSamplesImport {
+    /// Samples dated outside the window.
+    pub skipped: usize,
+    /// Why the vault refused each sample it would refuse on every attempt.
+    pub refused: Vec<String>,
+}
+
 /// Stores this device's `samples` dated inside `window` and drops samples older than it.
-/// Samples already stored are ignored, so retrying a batch is safe. Returns how many samples
-/// fell outside the window and were skipped.
+/// Samples already stored are ignored, so retrying a batch is safe. Each sample is stored in its
+/// own savepoint, so a sample the vault refuses by a constraint or trigger is left out with its
+/// reason while the rest are stored; any other vault error fails the whole call.
 pub async fn insert_own_samples(
     connection: &mut SqliteConnection,
     samples: &[DistractionsUsageSampleRow],
     window: &UsageDateWindow,
-) -> Result<usize, String> {
+) -> Result<OwnSamplesImport, String> {
     sqlx::query("DELETE FROM distractions_usage_samples WHERE local_date < ?")
         .bind(&window.earliest)
         .execute(&mut *connection)
         .await
         .map_err(|error| format!("apply usage retention: {error}"))?;
-    let mut skipped = 0;
+    let mut import = OwnSamplesImport::default();
     for sample in samples {
         if !window.contains(&sample.local_date) {
-            skipped += 1;
+            import.skipped += 1;
             continue;
         }
-        sqlx::query(
-            "INSERT OR IGNORE INTO distractions_usage_samples
+        let mut savepoint = sqlx::Connection::begin(&mut *connection)
+            .await
+            .map_err(|error| format!("begin usage sample: {error}"))?;
+        // `ON CONFLICT` ignores only a sample already stored; a failed check still raises.
+        let stored = sqlx::query(
+            "INSERT INTO distractions_usage_samples
                 (id, source_type, source_key, display_name, started_at_ms, elapsed_seconds,
                  local_date, created_at_ms)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (id) DO NOTHING",
         )
         .bind(&sample.id)
         .bind(&sample.source_type)
@@ -130,11 +145,26 @@ pub async fn insert_own_samples(
         .bind(sample.elapsed_seconds)
         .bind(&sample.local_date)
         .bind(sample.created_at_ms)
-        .execute(&mut *connection)
-        .await
-        .map_err(|error| format!("store usage sample: {error}"))?;
+        .execute(&mut *savepoint)
+        .await;
+        match stored {
+            Ok(_) => savepoint
+                .commit()
+                .await
+                .map_err(|error| format!("commit usage sample: {error}"))?,
+            Err(error) if super::is_permanent_refusal(&error) => {
+                savepoint
+                    .rollback()
+                    .await
+                    .map_err(|rollback| format!("roll back usage sample: {rollback}"))?;
+                import
+                    .refused
+                    .push(format!("usage sample {}: {error}", sample.id));
+            }
+            Err(error) => return Err(format!("store usage sample: {error}")),
+        }
     }
-    Ok(skipped)
+    Ok(import)
 }
 
 /// Buckets inside `window` whose summed own samples exceed, or whose label differs from, the

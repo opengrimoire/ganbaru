@@ -308,7 +308,10 @@ async fn an_invalidated_checkpoint_reports_missing_assignment_checkpoints() {
     .await;
     execute(
         &pool,
-        "UPDATE chat_checkpoints SET status = 'invalid' WHERE id = 'checkpoint:pre';".to_string(),
+        format!(
+            "UPDATE chat_checkpoints SET status = 'invalid', invalidated_at = '{NOW}'
+             WHERE id = 'checkpoint:pre';"
+        ),
     )
     .await;
 

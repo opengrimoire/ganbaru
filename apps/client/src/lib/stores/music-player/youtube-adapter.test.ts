@@ -9,6 +9,7 @@ import {
   createMusicYouTubeAdapter,
   type MusicYouTubeState,
 } from "./youtube-adapter";
+import { YOUTUBE_START_TIMEOUT_MS } from "./youtube-start-state";
 
 describe("Music YouTube adapter", () => {
   it("keeps autoplay feedback until the host plays and clears it on failure", async () => {
@@ -26,7 +27,6 @@ describe("Music YouTube adapter", () => {
       youtubeHostUrl: null,
       youtubeFrame: { contentWindow } as unknown as HTMLIFrameElement,
       youtubeHostToken: null,
-      youtubeHostReady: false,
     };
     const loadRuntime = new MusicLoadRuntime();
     const generation = loadRuntime.begin();
@@ -103,7 +103,6 @@ describe("Music YouTube adapter", () => {
       youtubeHostUrl: null,
       youtubeFrame: { contentWindow } as unknown as HTMLIFrameElement,
       youtubeHostToken: null,
-      youtubeHostReady: false,
     };
     const loadRuntime = new MusicLoadRuntime();
     const generation = loadRuntime.begin();
@@ -167,7 +166,6 @@ describe("Music YouTube adapter", () => {
       youtubeHostUrl: null,
       youtubeFrame: { contentWindow } as unknown as HTMLIFrameElement,
       youtubeHostToken: null,
-      youtubeHostReady: false,
     };
     const loadRuntime = new MusicLoadRuntime();
     const generation = loadRuntime.begin();
@@ -241,7 +239,6 @@ describe("Music YouTube adapter", () => {
       youtubeHostUrl: null,
       youtubeFrame: { contentWindow } as unknown as HTMLIFrameElement,
       youtubeHostToken: null,
-      youtubeHostReady: false,
     };
     const loadRuntime = new MusicLoadRuntime();
     const playlistGeneration = loadRuntime.begin();
@@ -295,7 +292,6 @@ describe("Music YouTube adapter", () => {
       youtubeHostUrl: null,
       youtubeFrame: { contentWindow } as unknown as HTMLIFrameElement,
       youtubeHostToken: null,
-      youtubeHostReady: false,
     };
     const loadRuntime = new MusicLoadRuntime();
     const generation = loadRuntime.begin();
@@ -348,7 +344,6 @@ describe("Music YouTube adapter", () => {
       youtubeHostUrl: null,
       youtubeFrame: { contentWindow } as unknown as HTMLIFrameElement,
       youtubeHostToken: null,
-      youtubeHostReady: false,
     };
     const loadRuntime = new MusicLoadRuntime();
     const generation = loadRuntime.begin();
@@ -399,7 +394,6 @@ describe("Music YouTube adapter", () => {
       youtubeHostUrl: null,
       youtubeFrame: { contentWindow } as unknown as HTMLIFrameElement,
       youtubeHostToken: null,
-      youtubeHostReady: false,
     };
     const loadRuntime = new MusicLoadRuntime();
     const generation = loadRuntime.begin();
@@ -425,14 +419,24 @@ describe("Music YouTube adapter", () => {
     });
     adapter.registerNativeHost(nativeHost);
     await adapter.load(source, null, generation, true);
-    const ready = { token: "test-token", load: String(generation), type: "ganbaru-youtube-ready" };
+    const hostState = (status: "playing" | "paused") => ({
+      token: "test-token",
+      load: String(generation),
+      type: "ganbaru-youtube-state",
+      status,
+      positionMs: 0,
+      durationMs: null,
+      videoId: "video-1",
+      title: null,
+      channel: null,
+    });
 
-    adapter.handleMessage({ source: contentWindow, data: ready } as unknown as MessageEvent<unknown>);
-    expect(state.youtubeHostReady).toBe(false);
-    adapter.handleNativeData({ ...ready, token: "other-token" });
-    expect(state.youtubeHostReady).toBe(false);
-    adapter.handleNativeData(ready);
-    expect(state.youtubeHostReady).toBe(true);
+    adapter.handleMessage({ source: contentWindow, data: hostState("playing") } as unknown as MessageEvent<unknown>);
+    expect(state.snapshot.status).toBe("loading");
+    adapter.handleNativeData({ ...hostState("playing"), token: "other-token" });
+    expect(state.snapshot.status).toBe("loading");
+    adapter.handleNativeData(hostState("playing"));
+    expect(state.snapshot.status).toBe("playing");
 
     adapter.post({ action: "pause" });
     expect(nativeHost.post).toHaveBeenCalledWith({
@@ -443,8 +447,70 @@ describe("Music YouTube adapter", () => {
     expect(contentWindow.postMessage).not.toHaveBeenCalled();
 
     adapter.registerNativeHost(null);
-    state.youtubeHostReady = false;
-    adapter.handleNativeData(ready);
-    expect(state.youtubeHostReady).toBe(false);
+    adapter.handleNativeData(hostState("paused"));
+    expect(state.snapshot.status).toBe("playing");
+  });
+
+  it("offers Play again when an autoplay load stays ready past the start deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const source = youtubeVideoSourceFromId("video-1");
+      const contentWindow = { postMessage: vi.fn() };
+      const state: MusicYouTubeState = {
+        currentSource: source,
+        snapshot: { ...DEFAULT_PLAYBACK_SNAPSHOT, status: "loading" },
+        playerError: null,
+        queue: [source],
+        queueHistory: [],
+        shuffleEnabled: false,
+        shuffleOrder: [],
+        pendingQueueIndex: null,
+        youtubeHostUrl: null,
+        youtubeFrame: { contentWindow } as unknown as HTMLIFrameElement,
+        youtubeHostToken: null,
+      };
+      const loadRuntime = new MusicLoadRuntime();
+      const setPlaybackStarting = vi.fn();
+      const adapter = createMusicYouTubeAdapter({
+        state,
+        loadRuntime,
+        effectiveVolume: () => 1,
+        resolvePlaylist: vi.fn(async () => undefined),
+        persist: vi.fn(async () => undefined),
+        updateExternalControls: vi.fn(),
+        onDurationKnown: vi.fn(),
+        setPlaybackStarting,
+        getHostUrl: vi.fn(async () => "http://127.0.0.1:1234/player?token=test-token"),
+        persistYouTubeVideo: vi.fn(async () => undefined),
+        persistYouTubePlaylist: vi.fn(async () => undefined),
+        reportYouTubeFailure: vi.fn(async () => undefined),
+        now: () => Date.now(),
+      });
+      const first = loadRuntime.begin();
+      await adapter.load(source, null, first, true);
+      vi.advanceTimersByTime(YOUTUBE_START_TIMEOUT_MS - 1_000);
+      const second = loadRuntime.begin();
+      await adapter.load(source, null, second, true);
+      adapter.handleMessage({
+        source: contentWindow,
+        data: {
+          token: "test-token",
+          load: String(second),
+          type: "ganbaru-youtube-state",
+          status: "ready",
+          positionMs: 0,
+          durationMs: null,
+          videoId: "video-1",
+          title: null,
+          channel: null,
+        },
+      } as unknown as MessageEvent<unknown>);
+      vi.advanceTimersByTime(1_000);
+      expect(setPlaybackStarting).toHaveBeenLastCalledWith(true);
+      vi.advanceTimersByTime(YOUTUBE_START_TIMEOUT_MS);
+      expect(setPlaybackStarting).toHaveBeenLastCalledWith(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

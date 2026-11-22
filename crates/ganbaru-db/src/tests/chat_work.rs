@@ -91,7 +91,7 @@ fn assignment_reviews_are_whole_and_only_on_completed_assignments() {
                  WHERE id = 'assignment-1'",
             )
             .bind(state.to_owned())
-            .bind(NOW)
+            .bind(matches!(state, "completed" | "failed" | "cancelled").then_some(NOW))
             .bind(outcome.map(str::to_owned))
             .bind(reviewed_at.map(str::to_owned))
             .bind(reviewer.map(str::to_owned))
@@ -123,7 +123,8 @@ fn assignment_reviews_are_whole_and_only_on_completed_assignments() {
             .unwrap();
         refused(
             sqlx::query(
-                "UPDATE chat_work_assignments SET state = 'working' WHERE id = 'assignment-1'",
+                "UPDATE chat_work_assignments SET state = 'working', settled_at = NULL
+                 WHERE id = 'assignment-1'",
             )
             .execute(&pool)
             .await,
@@ -745,5 +746,95 @@ fn agent_usage_days_check_dates_and_counts_and_follow_their_agent() {
                 .await
                 .unwrap();
         assert_eq!(remaining, ["usage-1"]);
+    });
+}
+
+const SETTLED_AT_REFUSAL: &str = "A Chat work assignment settled time must agree with its state";
+const CLAIM_TOKEN_REFUSAL: &str = "A claimed Chat dispatch job must carry its claim token";
+
+#[test]
+fn assignment_settled_time_agrees_with_its_state_for_local_writes() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        for state in [
+            "queued",
+            "working",
+            "waiting_for_answer",
+            "waiting_for_approval",
+            "ready_for_review",
+            "completed",
+            "failed",
+            "cancelled",
+        ] {
+            let settled = matches!(state, "completed" | "failed" | "cancelled");
+            for settled_at in [None, Some(NOW)] {
+                let updated = sqlx::query(
+                    "UPDATE chat_work_assignments SET state = ?, settled_at = ?
+                     WHERE id = 'assignment-1'",
+                )
+                .bind(state)
+                .bind(settled_at)
+                .execute(&pool)
+                .await;
+                let case = format!("{state} {settled_at:?}");
+                match updated {
+                    Ok(_) => assert_eq!(settled_at.is_some(), settled, "{case} was accepted"),
+                    Err(error) => {
+                        assert_ne!(settled_at.is_some(), settled, "{case} was refused");
+                        assert!(error.to_string().contains(SETTLED_AT_REFUSAL), "{error}");
+                    }
+                }
+            }
+        }
+
+        sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE chat_work_assignments SET state = 'working', settled_at = ?
+             WHERE id = 'assignment-1'",
+        )
+        .bind(NOW)
+        .execute(&pool)
+        .await
+        .expect("a remote apply is checked by the Chat sync domain instead");
+    });
+}
+
+#[test]
+fn a_claimed_dispatch_job_carries_its_claim_token() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let insert = |state: &'static str, token: Option<&'static str>| {
+            sqlx::query(
+                "INSERT INTO chat_assignment_dispatch_jobs
+                    (id, assignment_id, state, available_at, claim_token, created_at, updated_at)
+                 VALUES ('job-1', 'assignment-1', ?, ?, ?, ?, ?)",
+            )
+            .bind(state)
+            .bind(NOW)
+            .bind(token)
+            .bind(NOW)
+            .bind(NOW)
+            .execute(&pool)
+        };
+        let error = insert("claimed", None).await.unwrap_err();
+        assert!(error.to_string().contains(CLAIM_TOKEN_REFUSAL), "{error}");
+        insert("claimed", Some("token-1")).await.unwrap();
+
+        let release = |state: &'static str, token: Option<&'static str>| {
+            sqlx::query("UPDATE chat_assignment_dispatch_jobs SET state = ?, claim_token = ?")
+                .bind(state)
+                .bind(token)
+                .execute(&pool)
+        };
+        let error = release("claimed", None).await.unwrap_err();
+        assert!(error.to_string().contains(CLAIM_TOKEN_REFUSAL), "{error}");
+        for state in ["queued", "completed", "failed", "cancelled"] {
+            release(state, None).await.unwrap();
+        }
     });
 }

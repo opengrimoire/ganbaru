@@ -3,6 +3,7 @@
 use crate::models::{ChatError, ChatErrorCode, ChatResult, ChatThreadId, ChatTurnId};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
@@ -16,9 +17,17 @@ pub struct ChatWorkspaceMutationRegistry {
 struct ChatWorkspaceMutationRegistryInner {
     locks: Mutex<HashMap<PathBuf, Weak<RwLock<()>>>>,
     provider_turns: Mutex<HashMap<String, ProviderTurnReservationEntry>>,
+    /// Source of [`ReservationToken`]s, so every reservation of one turn key is distinct.
+    next_token: AtomicU64,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+/// Identity of one reservation of a turn key. A handle moves or releases only the entry that
+/// still carries its token, so a stale handle can never touch a later reservation of the same
+/// turn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ReservationToken(u64);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProviderTurnReservationOwner {
     PendingCommand,
     RuntimeCommand,
@@ -26,14 +35,28 @@ enum ProviderTurnReservationOwner {
 }
 
 struct ProviderTurnReservationEntry {
+    token: ReservationToken,
     owner: ProviderTurnReservationOwner,
     _guard: OwnedRwLockWriteGuard<()>,
+}
+
+/// Why a reservation handle could not move its entry to the next owner.
+#[derive(Debug, Eq, PartialEq)]
+enum ReservationMoveRejection {
+    /// The reservation was released, by its turn finishing or its thread stopping, before the
+    /// move. The key may now belong to a later reservation.
+    Released,
+    /// The entry with this token has another owner, which no handle sequence produces.
+    WrongOwner,
+    /// The registry lock is poisoned.
+    Unavailable,
 }
 
 #[must_use = "dropping the pending reservation releases the workspace"]
 pub struct PendingProviderTurnReservation {
     inner: Arc<ChatWorkspaceMutationRegistryInner>,
     key: String,
+    token: ReservationToken,
     active: bool,
 }
 
@@ -41,6 +64,7 @@ pub struct PendingProviderTurnReservation {
 pub struct ProviderTurnReservationHandoff {
     inner: Arc<ChatWorkspaceMutationRegistryInner>,
     key: String,
+    token: ReservationToken,
     active: bool,
 }
 
@@ -75,9 +99,11 @@ impl ChatWorkspaceMutationRegistry {
             .lock_for(root)?
             .try_write_owned()
             .map_err(|_| workspace_busy_error())?;
+        let token = ReservationToken(self.inner.next_token.fetch_add(1, Ordering::Relaxed));
         turns.insert(
             key.clone(),
             ProviderTurnReservationEntry {
+                token,
                 owner: ProviderTurnReservationOwner::PendingCommand,
                 _guard: guard,
             },
@@ -85,6 +111,7 @@ impl ChatWorkspaceMutationRegistry {
         Ok(PendingProviderTurnReservation {
             inner: Arc::clone(&self.inner),
             key,
+            token,
             active: true,
         })
     }
@@ -149,25 +176,34 @@ impl ChatWorkspaceMutationRegistry {
 }
 
 impl ChatWorkspaceMutationRegistryInner {
+    /// Moves the reservation `token` holds on `key` from `from` to `to`.
     fn transition(
         &self,
         key: &str,
+        token: ReservationToken,
         from: ProviderTurnReservationOwner,
         to: ProviderTurnReservationOwner,
-    ) -> ChatResult<bool> {
-        let mut turns = self.provider_turns.lock().map_err(|_| registry_error())?;
-        let Some(entry) = turns.get_mut(key) else {
-            return Ok(false);
-        };
+    ) -> Result<(), ReservationMoveRejection> {
+        let mut turns = self
+            .provider_turns
+            .lock()
+            .map_err(|_| ReservationMoveRejection::Unavailable)?;
+        let entry = turns
+            .get_mut(key)
+            .filter(|entry| entry.token == token)
+            .ok_or(ReservationMoveRejection::Released)?;
         if entry.owner != from {
-            return Err(registry_error());
+            return Err(ReservationMoveRejection::WrongOwner);
         }
         entry.owner = to;
-        Ok(true)
+        Ok(())
     }
 
-    fn remove(&self, key: &str) {
-        if let Ok(mut turns) = self.provider_turns.lock() {
+    /// Releases the reservation `token` holds on `key`, leaving a later reservation in place.
+    fn remove(&self, key: &str, token: ReservationToken) {
+        if let Ok(mut turns) = self.provider_turns.lock()
+            && turns.get(key).is_some_and(|entry| entry.token == token)
+        {
             turns.remove(key);
         }
     }
@@ -184,18 +220,33 @@ impl ChatWorkspaceMutationRegistryInner {
 }
 
 impl PendingProviderTurnReservation {
+    /// Hands the reservation to the runtime command. Fails with a conflict when the reservation
+    /// was released before the runtime could take it.
     pub fn handoff_to_runtime(mut self) -> ChatResult<ProviderTurnReservationHandoff> {
-        if !self.inner.transition(
+        match self.inner.transition(
             &self.key,
+            self.token,
             ProviderTurnReservationOwner::PendingCommand,
             ProviderTurnReservationOwner::RuntimeCommand,
-        )? {
-            return Err(registry_error());
+        ) {
+            Ok(()) => {}
+            Err(ReservationMoveRejection::Released) => {
+                self.active = false;
+                return Err(ChatError::new(
+                    ChatErrorCode::Conflict,
+                    "The provider turn's workspace reservation was released before the runtime took it",
+                    true,
+                ));
+            }
+            Err(ReservationMoveRejection::WrongOwner | ReservationMoveRejection::Unavailable) => {
+                return Err(registry_error());
+            }
         }
         self.active = false;
         Ok(ProviderTurnReservationHandoff {
             inner: Arc::clone(&self.inner),
             key: self.key.clone(),
+            token: self.token,
             active: true,
         })
     }
@@ -204,20 +255,24 @@ impl PendingProviderTurnReservation {
 impl Drop for PendingProviderTurnReservation {
     fn drop(&mut self) {
         if self.active {
-            self.inner.remove(&self.key);
+            self.inner.remove(&self.key, self.token);
         }
     }
 }
 
 impl ProviderTurnReservationHandoff {
+    /// Hands the reservation to the event sink, which keeps it until the turn finishes. A
+    /// reservation already released stays released; one that cannot move is released when this
+    /// handle drops, so the workspace never stays reserved without an owner.
     pub fn handoff_to_event_sink(mut self) {
         match self.inner.transition(
             &self.key,
+            self.token,
             ProviderTurnReservationOwner::RuntimeCommand,
             ProviderTurnReservationOwner::EventSink,
         ) {
-            Ok(true) | Ok(false) => self.active = false,
-            Err(_) => {}
+            Ok(()) | Err(ReservationMoveRejection::Released) => self.active = false,
+            Err(ReservationMoveRejection::WrongOwner | ReservationMoveRejection::Unavailable) => {}
         }
     }
 }
@@ -225,7 +280,7 @@ impl ProviderTurnReservationHandoff {
 impl Drop for ProviderTurnReservationHandoff {
     fn drop(&mut self) {
         if self.active {
-            self.inner.remove(&self.key);
+            self.inner.remove(&self.key, self.token);
         }
     }
 }
@@ -314,6 +369,45 @@ mod tests {
             .expect("provider reservation should restart")
             .handoff_to_runtime()
             .expect("runtime should own the reservation");
+        handoff.handoff_to_event_sink();
+        assert!(registry.try_mutation(root).is_err());
+        registry.finish_provider_turn(&thread, &turn);
+        assert!(registry.try_mutation(root).is_ok());
+    }
+
+    #[test]
+    fn a_stale_reservation_never_releases_a_newer_reservation_of_the_same_turn() {
+        let registry = ChatWorkspaceMutationRegistry::default();
+        let root = Path::new("/tmp/ganbaru-workspace-mutation-stale-test");
+        let thread = ChatThreadId::new("thread:test").expect("thread ID should be valid");
+        let turn = ChatTurnId::new("turn:test").expect("turn ID should be valid");
+
+        let stale_handoff = registry
+            .begin_provider_turn(root, &thread, &turn)
+            .expect("provider reservation should start")
+            .handoff_to_runtime()
+            .expect("runtime should own the reservation");
+        registry.finish_thread(&thread);
+        let newer = registry
+            .begin_provider_turn(root, &thread, &turn)
+            .expect("the released turn should reserve again");
+        drop(stale_handoff);
+        assert!(registry.try_mutation(root).is_err());
+
+        let stale_pending = newer;
+        registry.finish_provider_turn(&thread, &turn);
+        let newest = registry
+            .begin_provider_turn(root, &thread, &turn)
+            .expect("the released turn should reserve again");
+        let error = match stale_pending.handoff_to_runtime() {
+            Ok(_) => panic!("a released reservation must not reach the runtime"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, ChatErrorCode::Conflict);
+        assert!(registry.try_mutation(root).is_err());
+        let handoff = newest
+            .handoff_to_runtime()
+            .expect("the live reservation should reach the runtime");
         handoff.handoff_to_event_sink();
         assert!(registry.try_mutation(root).is_err());
         registry.finish_provider_turn(&thread, &turn);

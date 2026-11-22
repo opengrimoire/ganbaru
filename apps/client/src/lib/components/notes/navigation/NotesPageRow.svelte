@@ -155,6 +155,8 @@
   let titleDraft = $state("");
   let renameHistory = $state(createInlineRenameHistory(""));
   let pendingTitle = $state<string | null>(null);
+  /** Names the latest rename; an earlier rename that settles later leaves the newer pending title and draft alone. */
+  let renameRequest: symbol | null = null;
   let highlightPulseActive = $state(false);
   let highlightRequestInitialized = false;
   let handledHighlightRequestId = 0;
@@ -403,15 +405,17 @@
     menuOpen = false;
     titleDraft = title;
     if (title === editableTitle) return;
+    const request = Symbol("page rename");
+    renameRequest = request;
     pendingTitle = title;
-    void Promise.resolve(onRename(title)).then((renamed) => {
-      if (renamed !== false) return;
+    const settle = (renamed: boolean): void => {
+      if (renameRequest !== request) return;
+      renameRequest = null;
+      if (renamed) return;
       pendingTitle = null;
-      titleDraft = previousTitle;
-    }).catch(() => {
-      pendingTitle = null;
-      titleDraft = previousTitle;
-    });
+      if (!editing) titleDraft = previousTitle;
+    };
+    void Promise.resolve(onRename(title)).then((renamed) => settle(renamed !== false), () => settle(false));
   }
 
   function beginRename(): void {

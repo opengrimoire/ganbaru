@@ -17,6 +17,8 @@ use super::{
     LOCAL_PARTICIPANT_ID, ReviewedWork, i64_value, identifier_error, persistence_error, u64_value,
 };
 use ganbaru_chat::coordination::contracts::*;
+use ganbaru_chat::repository::state_writes::{narrowed_sources_sql, sources_sql};
+use ganbaru_chat::state::{ChatDispatchJobState, transition_assignment};
 use ganbaru_chat_contracts::models::*;
 pub(super) use messages::{
     ChannelCopy, CommunicationMessageWrite, MessageAuthor, insert_channel_copy,
@@ -1144,20 +1146,24 @@ pub(super) async fn complete_reviewed_assignment(
     now: &UtcTimestamp,
 ) -> ChatResult<bool> {
     let expected_revision = expected_revision.map(i64_value).transpose()?;
-    let settled = sqlx::query(
+    let to = ChatWorkAssignmentState::Completed;
+    let complete = format!(
         "UPDATE chat_work_assignments
-         SET state = 'completed', settled_at = ?1, review_outcome = ?2, reviewed_at = ?1,
+         SET state = '{}', settled_at = ?1, review_outcome = ?2, reviewed_at = ?1,
              reviewed_by_participant_id = ?3, revision = revision + 1, updated_at = ?1
-         WHERE id = ?4 AND state = 'ready_for_review' AND (?5 IS NULL OR revision = ?5)",
-    )
-    .bind(now.as_str())
-    .bind(wire_review_outcome(outcome))
-    .bind(reviewer_participant_id)
-    .bind(assignment_id.as_str())
-    .bind(expected_revision)
-    .execute(connection)
-    .await
-    .map_err(persistence_error)?;
+         WHERE id = ?4 AND state IN ({}) AND (?5 IS NULL OR revision = ?5)",
+        to.as_str(),
+        narrowed_sources_sql(to, |from| from == ChatWorkAssignmentState::ReadyForReview)
+    );
+    let settled = sqlx::query(sqlx::AssertSqlSafe(complete.as_str()))
+        .bind(now.as_str())
+        .bind(wire_review_outcome(outcome))
+        .bind(reviewer_participant_id)
+        .bind(assignment_id.as_str())
+        .bind(expected_revision)
+        .execute(connection)
+        .await
+        .map_err(persistence_error)?;
     Ok(settled.rows_affected() == 1)
 }
 
@@ -1234,23 +1240,33 @@ pub(super) async fn set_assignment_state(
     reason: Option<&str>,
 ) -> ChatResult<ChatWorkAssignmentRead> {
     let now = now_timestamp()?;
-    let updated = sqlx::query(
+    let statement = format!(
         "UPDATE chat_work_assignments
          SET state = ?, state_reason = ?, settled_at = ?, review_outcome = NULL,
              reviewed_at = NULL, reviewed_by_participant_id = NULL,
              revision = revision + 1, updated_at = ?
-         WHERE id = ? AND revision = ?",
-    )
-    .bind(wire_work_state(state))
-    .bind(reason)
-    .bind((!state.is_active()).then(|| now.as_str()))
-    .bind(now.as_str())
-    .bind(assignment_id.as_str())
-    .bind(i64_value(expected_revision)?)
-    .execute(pool)
-    .await
-    .map_err(persistence_error)?;
+         WHERE id = ? AND revision = ? AND state IN ({})",
+        sources_sql(state)
+    );
+    let updated = sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
+        .bind(wire_work_state(state))
+        .bind(reason)
+        .bind((!state.is_active()).then(|| now.as_str()))
+        .bind(now.as_str())
+        .bind(assignment_id.as_str())
+        .bind(i64_value(expected_revision)?)
+        .execute(pool)
+        .await
+        .map_err(persistence_error)?;
     if updated.rows_affected() != 1 {
+        let current = read_assignment(pool, assignment_id).await?;
+        if current.revision == expected_revision {
+            // Repeating the move the assignment already made changes nothing.
+            if current.state == state {
+                return Ok(current);
+            }
+            transition_assignment(current.state, state)?;
+        }
         return Err(ChatError::new(
             ChatErrorCode::StaleRevision,
             "The assignment changed before the update",
@@ -1281,20 +1297,23 @@ pub(super) async fn end_assignment_dispatch_jobs(
     state: ChatWorkAssignmentState,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
-    sqlx::query(
-        "UPDATE chat_assignment_dispatch_jobs SET state = ?, updated_at = ?
-         WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
-    )
-    .bind(if state == ChatWorkAssignmentState::Cancelled {
-        "cancelled"
+    let job_state = if state == ChatWorkAssignmentState::Cancelled {
+        ChatDispatchJobState::Cancelled
     } else {
-        "failed"
-    })
-    .bind(now.as_str())
-    .bind(assignment_id.as_str())
-    .execute(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
+        ChatDispatchJobState::Failed
+    };
+    let end_jobs = format!(
+        "UPDATE chat_assignment_dispatch_jobs SET state = ?, updated_at = ?
+         WHERE assignment_id = ? AND state IN ({})",
+        sources_sql(job_state)
+    );
+    sqlx::query(sqlx::AssertSqlSafe(end_jobs.as_str()))
+        .bind(job_state.as_str())
+        .bind(now.as_str())
+        .bind(assignment_id.as_str())
+        .execute(&mut *connection)
+        .await
+        .map_err(persistence_error)?;
     Ok(())
 }
 

@@ -8,13 +8,15 @@
 use super::support::{json_error, now_timestamp, persistence_error};
 use crate::chat::send_commands::ResolveChatApprovalCommand;
 use ganbaru_chat::coordination::remembered_approvals::{
-    approval_is_live, channel_run_scope, remember_approval, rememberable_approval,
+    RememberedApprovalScope, approval_is_live, channel_run_scope, remember_approval,
+    rememberable_approval,
 };
-use ganbaru_chat::runtime::ChatRuntimeRegistry;
+use ganbaru_chat::runtime::{ChatRuntimeRegistry, OpenRequestKind};
 use ganbaru_chat_contracts::events::ApprovalDecisionOption;
 use ganbaru_chat_contracts::models::*;
 use serde_json::Value;
 use sqlx::SqlitePool;
+use std::future::Future;
 use std::time::Duration;
 use tauri::Manager;
 
@@ -22,10 +24,9 @@ use tauri::Manager;
 const LOCAL_PARTICIPANT_ID: &str = "participant:local-owner";
 /// Prefix of the command ids of answers Ganbaru gives for a remembered approval.
 const REMEMBERED_APPROVAL_COMMAND_PREFIX: &str = "remembered-approval:";
-/// How often the answer checks that the provider is waiting for the request.
-const WAITING_POLL_INTERVAL: Duration = Duration::from_millis(50);
-/// How many checks the answer makes before it leaves the request to the person.
-const WAITING_POLLS: u32 = 40;
+/// How long the answer waits for the provider to hold the request open before it leaves the
+/// request to the person.
+const OPEN_APPROVAL_WAIT: Duration = Duration::from_secs(2);
 /// How many times the answer tries again when the provider has not registered the request yet.
 const CONFLICT_RETRIES: u32 = 4;
 /// The wait before trying again after a conflict.
@@ -103,18 +104,26 @@ pub(crate) async fn offered_rule(
         .map(|_| rule))
 }
 
-/// Records the rule of the request a person allows once and chose not to be asked about again,
-/// under the channel's current access. Only an allow-once choice of a request that offers a
-/// rule can be remembered.
+/// The rule an "Allow and don't ask again" choice records, with the channel access it is
+/// recorded under. It is derived and checked before the provider receives the choice.
+#[derive(Debug)]
+pub(super) struct RememberedChoice {
+    scope: RememberedApprovalScope,
+    rule: ChatRememberableApprovalRead,
+}
+
+/// Checks that the request a person allows once and chose not to be asked about again can be
+/// remembered, and derives the rule it records under the channel's current access. Only an
+/// allow-once choice of a request that offers a rule can be remembered.
 ///
 /// # Errors
 ///
-/// Returns a validation error when the request cannot be remembered and a persistence error
-/// when a read or the write fails.
-pub(super) async fn remember_choice(
+/// Returns a validation error when the request cannot be remembered, a conflict when it is no
+/// longer open, and a persistence error when a read fails.
+pub(super) async fn prepare_choice(
     pool: &SqlitePool,
     request: &ResolveChatApprovalCommand,
-) -> ChatResult<()> {
+) -> ChatResult<RememberedChoice> {
     if request.decision.kind != ApprovalDecisionKind::AllowOnce {
         return Err(not_rememberable(
             "Only an allow once choice can be remembered",
@@ -131,15 +140,55 @@ pub(super) async fn remember_choice(
         .ok_or_else(|| {
             not_rememberable("Only requests of agents working in a channel can be remembered")
         })?;
+    Ok(RememberedChoice { scope, rule })
+}
+
+/// Records `choice` for the local person.
+///
+/// # Errors
+///
+/// Returns a persistence error when the write fails.
+async fn record_choice(pool: &SqlitePool, choice: &RememberedChoice) -> ChatResult<()> {
+    let mut connection = pool.acquire().await.map_err(persistence_error)?;
     let now = now_timestamp()?;
     remember_approval(
         &mut connection,
-        &scope,
-        &rule,
+        &choice.scope,
+        &choice.rule,
         LOCAL_PARTICIPANT_ID,
         now.as_str(),
     )
     .await
+}
+
+/// Sends a person's approval choice through `resolve` and records `choice`, when there is one,
+/// only after the provider accepted the choice, so a remembered rule never exists for an
+/// approval the provider did not receive or refused.
+///
+/// # Errors
+///
+/// Returns the error of `resolve`, or a persistence error that says the approval was sent but
+/// not remembered when the rule cannot be recorded after the provider accepted it.
+pub(super) async fn resolve_then_remember(
+    pool: &SqlitePool,
+    choice: Option<RememberedChoice>,
+    resolve: impl Future<Output = ChatResult<DriverOperationReceipt>>,
+) -> ChatResult<DriverOperationReceipt> {
+    let receipt = resolve.await?;
+    let Some(choice) = choice.filter(|_| receipt.accepted) else {
+        return Ok(receipt);
+    };
+    record_choice(pool, &choice).await.map_err(|error| {
+        ChatError::new(
+            ChatErrorCode::Persistence,
+            format!(
+                "The approval was sent, but Ganbaru could not remember it: {}",
+                error.message
+            ),
+            false,
+        )
+    })?;
+    Ok(receipt)
 }
 
 fn not_rememberable(message: &str) -> ChatError {
@@ -203,12 +252,12 @@ async fn resolve_remembered(
     thread_id: &ChatThreadId,
     request_id: &str,
 ) -> ChatResult<()> {
-    if !wait_for_approval_state(app, thread_id).await {
-        return Ok(());
-    }
     let Some(open) = read_open_approval(pool, thread_id, request_id).await? else {
         return Ok(());
     };
+    if !wait_for_open_approval(app, thread_id, &open.provider_request_id).await {
+        return Ok(());
+    }
     let Some(option_id) = allow_once_option(&open.allowed_decisions) else {
         return Ok(());
     };
@@ -236,18 +285,24 @@ async fn resolve_remembered(
     }
 }
 
-/// Waits until the provider session of `thread_id` waits for an approval, which it reaches
-/// only after the event that opened the request is delivered. Returns false when it does not
-/// reach that state in time or stops running.
-async fn wait_for_approval_state(app: &tauri::AppHandle, thread_id: &ChatThreadId) -> bool {
-    for _ in 0..WAITING_POLLS {
-        match app.state::<ChatRuntimeRegistry>().snapshot(thread_id) {
-            Ok(snapshot) if snapshot.session_state == ProviderSessionState::WaitingForApproval => {
-                return true;
-            }
-            Ok(_) => tokio::time::sleep(WAITING_POLL_INTERVAL).await,
-            Err(_) => return false,
-        }
-    }
-    false
+/// Waits until the runtime of `thread_id` holds the approval `provider_request_id` open, which
+/// it does only after the event that opened the request is delivered. Returns false when the
+/// request does not open in time or the thread has no runtime.
+async fn wait_for_open_approval(
+    app: &tauri::AppHandle,
+    thread_id: &ChatThreadId,
+    provider_request_id: &str,
+) -> bool {
+    let Ok(provider_request_id) = ProviderRequestId::new(provider_request_id.to_string()) else {
+        return false;
+    };
+    app.state::<ChatRuntimeRegistry>()
+        .wait_until(
+            thread_id,
+            |snapshot| {
+                snapshot.open_request(&provider_request_id) == Some(OpenRequestKind::Approval)
+            },
+            OPEN_APPROVAL_WAIT,
+        )
+        .await
 }

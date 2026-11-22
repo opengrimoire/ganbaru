@@ -6,6 +6,7 @@ import {
   isFreshBenchmarkPendingAge,
   isFreshBenchmarkTotalAge,
 } from "$lib/benchmark/types";
+import { parseBenchmarkState } from "$lib/benchmark/state";
 
 /**
  * Connection string for the active database. Resolved exactly once on the
@@ -21,26 +22,17 @@ let cachedUrl: string | null = null;
 const USER_DB_URL = "sqlite:ganbaru.sqlite";
 const BENCHMARK_DB_URL = "sqlite:benchmark.sqlite";
 
-/** Minimal shape needed for the URL decision. The full state lives in `benchmark/types.ts`. */
-interface VaultModeProbe {
-  vaultMode?: "user" | "benchmark";
-  stage?: string;
-  harnessVersion?: string;
-  datasetVersion?: string;
-  startedAt?: string;
-  updatedAt?: string;
-}
-
 async function wantsBenchmarkDatabase(): Promise<boolean> {
   try {
     const json = await invoke<string | null>("read_benchmark_state");
     if (json) {
-      const parsed = JSON.parse(json) as VaultModeProbe;
-      const validVersion = parsed?.harnessVersion === HARNESS_VERSION
-        && parsed?.datasetVersion === DENSE_DATASET_VERSION;
+      const parsed = parseBenchmarkState(json);
+      if (!parsed) return false;
+      const validVersion = parsed.harnessVersion === HARNESS_VERSION
+        && parsed.datasetVersion === DENSE_DATASET_VERSION;
       const fresh = isFreshBenchmarkTotalAge(parsed) && isFreshBenchmarkPendingAge(parsed);
-      const benchmarkPending = isBenchmarkPendingStage(parsed?.stage);
-      return parsed?.vaultMode === "benchmark" && benchmarkPending && validVersion && fresh;
+      const benchmarkPending = isBenchmarkPendingStage(parsed.stage);
+      return parsed.vaultMode === "benchmark" && benchmarkPending && validVersion && fresh;
     }
   } catch (e) {
     console.error("dbUrl: failed to probe benchmark state, falling back to user DB", e);

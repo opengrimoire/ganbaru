@@ -136,9 +136,7 @@ export function buildProjectLoadedDataIndex(source: ProjectsSnapshot): ProjectLo
   sortGroups(projectsByGroup, sortByOrder);
   sortGroups(activeProjectsByGroup, sortByOrder);
   const activeProjects = source.projects.filter((project) => project.status === "active").sort(sortByOrder);
-  const visibleGroups = source.groups
-    .filter((group) => !group.hiddenAt && !group.archivedAt)
-    .sort(sortByOrder);
+  const visibleGroups = [...source.groups].sort(sortByOrder);
 
   const sectionById = new Map<string, ProjectSection>();
   const sectionsByProject = new Map<string, ProjectSection[]>();

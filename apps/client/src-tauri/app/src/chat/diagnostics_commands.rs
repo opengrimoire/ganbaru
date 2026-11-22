@@ -10,6 +10,7 @@ use crate::native_dialogs::on_dialog_thread;
 use chrono::{SecondsFormat, Utc};
 use ganbaru_chat::repository::lifecycle::STALE_RUNNING_CLEANUP_SECONDS;
 use ganbaru_chat::repository::rebuild::rebuild_thread_projections;
+use ganbaru_chat::repository::state_writes::running_turn_states_sql;
 use ganbaru_chat::runtime::ChatRuntimeRegistry;
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProbeState, VersionedJson,
@@ -216,13 +217,14 @@ pub async fn chat_rebuild_projections(
         return Err(active_turn_error());
     }
     let pool = connect_pool(app, db_url).await?;
-    let database_active_turns: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM chat_turns WHERE invalidated_at IS NULL
-         AND state IN ('dispatching', 'active', 'waiting_for_approval', 'waiting_for_user_input')",
-    )
-    .fetch_one(&pool)
-    .await
-    .map_err(persistence_error)?;
+    let statement = format!(
+        "SELECT COUNT(*) FROM chat_turns WHERE invalidated_at IS NULL AND state IN ({})",
+        running_turn_states_sql()
+    );
+    let database_active_turns: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(statement.as_str()))
+        .fetch_one(&pool)
+        .await
+        .map_err(persistence_error)?;
     if database_active_turns != 0 {
         return Err(active_turn_error());
     }

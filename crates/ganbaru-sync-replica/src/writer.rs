@@ -59,13 +59,20 @@ pub struct SequencedEntry {
     pub revision: u64,
     /// Entry hash, base64url without padding.
     pub entry_hash: String,
-    /// The writer that reserved the entry was retired because the database lost part of its
-    /// chain, so a selected head one revision behind is a restore, not a rolled back seal.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub restored: bool,
+    /// When the first writer that kept this entry was retired because the database lost part
+    /// of its chain or of the log, in Unix milliseconds. A selected head one revision behind is
+    /// then a restore, not a rolled back seal, and the restored anchor waits for its members to
+    /// return the log from this time on, across restarts and later successors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restored_at_ms: Option<u64>,
 }
 
 impl SequencedEntry {
+    /// Whether a writer that kept this entry was retired by a restore.
+    pub const fn restored(&self) -> bool {
+        self.restored_at_ms.is_some()
+    }
+
     /// The decoded entry hash, or `None` when the record holds a malformed one.
     pub fn hash(&self) -> Option<Digest32> {
         decode_digest(&self.entry_hash)
@@ -130,7 +137,7 @@ pub fn sequenced_check(
         return SequencedCheck::Current;
     }
     let next = selected.revision.saturating_add(1);
-    if entry.revision == next && !entry.restored {
+    if entry.revision == next && !entry.restored() {
         SequencedCheck::RolledBack
     } else if entry.revision >= next || entry.epoch > selected.epoch {
         SequencedCheck::Restored {
@@ -138,6 +145,55 @@ pub fn sequenced_check(
         }
     } else {
         SequencedCheck::Current
+    }
+}
+
+/// Where an anchor stands with a database restored behind the log it sequenced. The writer
+/// record holds the persisted part, so a restart resumes the same catch-up window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestorePhase {
+    /// The log holds what this installation sequenced, so the anchor may sequence.
+    Ready,
+    /// A restore was found while the writer was active: it is replaced before anything else.
+    Rotate {
+        /// The revision the record reached.
+        recorded: u64,
+    },
+    /// The anchor sequences nothing while its members push back what it lost.
+    CatchingUp {
+        /// The revision the record reached.
+        recorded: u64,
+        /// When the first writer was retired by the restore, in Unix milliseconds.
+        since_ms: u64,
+    },
+    /// The window passed, or no member can return the log: the anchor seals a handover to
+    /// itself so the next epoch supersedes the entries it never got back.
+    HandOver {
+        /// The revision the record reached.
+        recorded: u64,
+    },
+}
+
+/// The restore phase of an anchor from its restore check, its recorded high-water, the time,
+/// and whether members can return entries. A clock that went back before the recorded start
+/// counts as no time passed.
+pub fn restore_phase(
+    check: SequencedCheck,
+    sequenced: Option<&SequencedEntry>,
+    now_ms: u64,
+    members_reachable: bool,
+    window_ms: u64,
+) -> RestorePhase {
+    let SequencedCheck::Restored { recorded } = check else {
+        return RestorePhase::Ready;
+    };
+    let Some(since_ms) = sequenced.and_then(|entry| entry.restored_at_ms) else {
+        return RestorePhase::Rotate { recorded };
+    };
+    if members_reachable && now_ms.saturating_sub(since_ms) < window_ms {
+        RestorePhase::CatchingUp { recorded, since_ms }
+    } else {
+        RestorePhase::HandOver { recorded }
     }
 }
 
@@ -594,7 +650,7 @@ impl SequenceReservation for RecordReservation {
             epoch,
             revision,
             entry_hash: URL_SAFE_NO_PAD.encode(entry_hash),
-            restored: false,
+            restored_at_ms: None,
         };
         // A high-water of another charter belongs to a log a Reset cleared, so it never holds
         // back the current one. An entry of another epoch replaces the record even at a lower
@@ -660,11 +716,12 @@ impl SuccessorPlan {
 
     /// The plan that retires `record` because the database lost part of its chain or of the
     /// log it sequenced: the successor keeps the high-water marked as restored, so the anchor
-    /// treats a head one revision behind it as a restore too.
-    fn restored(record: &WriterRecord) -> Self {
+    /// treats a head one revision behind it as a restore too. The first restore found at
+    /// `now_ms` starts the catch-up window; a later successor keeps that start.
+    fn restored(record: &WriterRecord, now_ms: u64) -> Self {
         let mut plan = Self::retiring(record);
         if let Some(sequenced) = plan.sequenced.as_mut() {
-            sequenced.restored = true;
+            sequenced.restored_at_ms.get_or_insert(now_ms);
         }
         plan
     }
@@ -680,9 +737,9 @@ impl SuccessorPlan {
     }
 
     /// The plan that replaces the writer of an anchor whose database was restored behind the
-    /// log it sequenced.
-    pub fn after_restore(writer: &ActiveWriter) -> Self {
-        Self::restored(writer.record())
+    /// log it sequenced, found at `now_ms`.
+    pub fn after_restore(writer: &ActiveWriter, now_ms: u64) -> Self {
+        Self::restored(writer.record(), now_ms)
     }
 }
 
@@ -726,15 +783,25 @@ pub async fn check_writer(
         .await
         .map_err(|error| format!("check sync writer: {error}"))?;
     if !record_matches(&record, head) {
-        return Ok(WriterCheck::Successor(SuccessorPlan::restored(&record)));
+        return Ok(WriterCheck::Successor(SuccessorPlan::restored(
+            &record,
+            crate::now_ms()?,
+        )));
     }
     // A database behind the anchor's authorization high-water lost entries members may hold
     // at this writer's later sequences, so the writer must not seal again even when its own
-    // committed head survived, for instance when its commit was never recorded.
-    if let Some(view) = engine
-        .authorization(conn, ctx)
-        .await
-        .map_err(|error| format!("read sync authorization: {error}"))?
+    // committed head survived, for instance when its commit was never recorded. A record whose
+    // high-water is already marked restored belongs to the restore's successor, which reserved
+    // no entry since (reserving clears the mark) and whose own chain the database holds, so a
+    // restart keeps it through the catch-up instead of retiring it again.
+    if !record
+        .sequenced
+        .as_ref()
+        .is_some_and(SequencedEntry::restored)
+        && let Some(view) = engine
+            .authorization(conn, ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
         && matches!(
             sequenced_check(
                 record.sequenced.as_ref(),
@@ -747,7 +814,10 @@ pub async fn check_writer(
             SequencedCheck::Restored { .. }
         )
     {
-        return Ok(WriterCheck::Successor(SuccessorPlan::restored(&record)));
+        return Ok(WriterCheck::Successor(SuccessorPlan::restored(
+            &record,
+            crate::now_ms()?,
+        )));
     }
     // A forked writer, or one of a device the selected chain removed, seals no more: the
     // device key certifies a successor that names it as predecessor.

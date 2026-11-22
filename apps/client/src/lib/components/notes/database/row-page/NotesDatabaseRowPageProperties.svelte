@@ -130,8 +130,8 @@
   let pendingSaves = $state(0);
   /** Parent and sub-item saves in flight, which hold reloads like value saves do. */
   let relationSaves = $state(0);
-  /** A row page order being saved, shown until the saved schema arrives. */
-  let optimisticOrder = $state<string[] | null>(null);
+  /** The newest row page order being saved, shown until its saved schema arrives; compared by identity. */
+  let optimisticOrder = $state.raw<string[] | null>(null);
   /** A property just added, whose value editor takes focus once it renders. */
   let focusPropertyId = $state<string | null>(null);
   let dragged = $state<string | null>(null);
@@ -518,7 +518,8 @@
 
   /**
    * Save a new row page order. The order shows at once, and the saved one is rebuilt from the newest schema so a
-   * property added meanwhile keeps its place.
+   * property added meanwhile keeps its place. An earlier reorder that finishes while a later one still saves leaves
+   * the later order on screen.
    *
    * @param shown The order to show while saving.
    * @param arrange Builds the order to save from the newest saved order, or returns null to save nothing.
@@ -528,7 +529,7 @@
     return enqueue(async () => adoptResult(await updateNotesDataSourceSchemaDrafts(actionContext(), (current) => {
       const next = arrange(orderNotesDatabaseRowPageProperties(current).map((property) => property.id));
       return next ? withNotesDatabaseRowPagePositions(current, next) : null;
-    }))).finally(() => { optimisticOrder = null; });
+    }))).finally(() => { if (optimisticOrder === shown) optimisticOrder = null; });
   }
 
   /** Move a property one step among the properties on screen. */

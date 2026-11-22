@@ -22,12 +22,26 @@ import org.json.JSONObject
 /** Notification channel for the Music media notification and lock-screen controls. */
 private const val NOTIFICATION_CHANNEL_ID = "ganbaru_music_playback"
 
+/**
+ * Where the current source stands between a load and a prepared decoder. Only a resolving source has a
+ * deadline, and only a failed one carries an error.
+ */
+private sealed interface SourcePhase {
+  /** No source is waiting: none was loaded, it was stopped, or the decoder holds it. */
+  data object Idle : SourcePhase
+
+  /** The source URI is being resolved and must arrive before [deadlineMs] in elapsed realtime. */
+  data class Resolving(val deadlineMs: Long) : SourcePhase
+
+  /** Loading or applying the source failed with [message]. */
+  data class Failed(val message: String) : SourcePhase
+}
+
 class MusicPlaybackService : MediaSessionService() {
   private var mediaSession: MediaSession? = null
   private lateinit var decoder: ExoPlayer
   private val main = Handler(Looper.getMainLooper())
   private val sourceResolutionTimeoutMs = 30_000L
-  private var resolutionDeadlineMs: Long? = null
   private var sessionId: String? = null
   private var sourceIdentity: String? = null
   private var generation = 0L
@@ -35,12 +49,11 @@ class MusicPlaybackService : MediaSessionService() {
   private var intendedVolume = 0.8f
   private var muted = false
   private var applying = false
-  private var loading = false
   private var destroyed = false
   private var desiredAutoplay = false
   private var loadPositionMs = 0L
   private var loadEpoch = 0L
-  private var sourceError: String? = null
+  private var sourcePhase: SourcePhase = SourcePhase.Idle
   private val observer = object : Runnable {
     override fun run() {
       if (destroyed) return
@@ -111,9 +124,7 @@ class MusicPlaybackService : MediaSessionService() {
           sessionId = effect.getString("sessionId")
           val source = effect.getJSONObject("source")
           sourceIdentity = source.getString("identity")
-          sourceError = null
-          loading = true
-          resolutionDeadlineMs = SystemClock.elapsedRealtime() + sourceResolutionTimeoutMs
+          sourcePhase = SourcePhase.Resolving(SystemClock.elapsedRealtime() + sourceResolutionTimeoutMs)
           desiredAutoplay = effect.getBoolean("autoplay")
           loadPositionMs = effect.getLong("positionMs")
           decoder.stop()
@@ -132,9 +143,8 @@ class MusicPlaybackService : MediaSessionService() {
               main.post {
                 if (destroyed || capturedGeneration != generation || capturedLoadEpoch != loadEpoch) return@post
                 if (expireResolution()) return@post
-                resolutionDeadlineMs = null
                 if (!NativeMusicAuthority.isDeliveryCurrent(deliveryId)) {
-                  loading = false
+                  sourcePhase = SourcePhase.Idle
                   desiredAutoplay = false
                   sessionId?.let { NativeMusicSession.reportUnavailable(it, generation, NativeMusicInterruption.SourceAuthorityChanged) }
                   return@post
@@ -146,20 +156,19 @@ class MusicPlaybackService : MediaSessionService() {
                   decoder.playWhenReady = desiredAutoplay
                   decoder.setMediaItem(item, loadPositionMs)
                   decoder.prepare()
-                  loading = false
-                } catch (error: Exception) { sourceError = error.message ?: "Android media load failed"; loading = false }
+                  sourcePhase = SourcePhase.Idle
+                } catch (error: Exception) { sourcePhase = SourcePhase.Failed(error.message ?: "Android media load failed") }
                 finally { applying = false; reportObservation() }
               }
             } catch (error: Exception) {
               main.post {
                 if (!destroyed && capturedGeneration == generation && capturedLoadEpoch == loadEpoch) {
                   if (expireResolution()) return@post
-                  resolutionDeadlineMs = null
-                  loading = false
+                  sourcePhase = SourcePhase.Idle
                   if (!NativeMusicAuthority.isDeliveryCurrent(deliveryId)) {
                     desiredAutoplay = false
                     sessionId?.let { NativeMusicSession.reportUnavailable(it, generation, NativeMusicInterruption.SourceAuthorityChanged) }
-                  } else { sourceError = error.message ?: "Android media access failed"; reportObservation() }
+                  } else { sourcePhase = SourcePhase.Failed(error.message ?: "Android media access failed"); reportObservation() }
                 }
               }
             }
@@ -167,8 +176,8 @@ class MusicPlaybackService : MediaSessionService() {
         }
         "play" -> { desiredAutoplay = true; decoder.play() }
         "pause" -> { desiredAutoplay = false; decoder.pause() }
-        "stop" -> { generation = maxOf(generation, incomingGeneration); loadEpoch++; resolutionDeadlineMs = null; desiredAutoplay = false; decoder.stop(); decoder.clearMediaItems(); sessionId = null; sourceIdentity = null; loading = false }
-        "seek" -> { loadPositionMs = effect.getLong("positionMs"); if (!loading) decoder.seekTo(loadPositionMs) }
+        "stop" -> { generation = maxOf(generation, incomingGeneration); loadEpoch++; sourcePhase = SourcePhase.Idle; desiredAutoplay = false; decoder.stop(); decoder.clearMediaItems(); sessionId = null; sourceIdentity = null }
+        "seek" -> { loadPositionMs = effect.getLong("positionMs"); if (sourcePhase !is SourcePhase.Resolving) decoder.seekTo(loadPositionMs) }
         "settings" -> {
           intendedVolume = effect.getDouble("volume").toFloat()
           muted = effect.getBoolean("muted")
@@ -177,7 +186,7 @@ class MusicPlaybackService : MediaSessionService() {
         }
         else -> throw IllegalArgumentException("Android Music effect kind is invalid")
       }
-    } catch (error: Exception) { resolutionDeadlineMs = null; sourceError = error.message ?: "Android media effect failed"; loading = false; throw error }
+    } catch (error: Exception) { sourcePhase = SourcePhase.Failed(error.message ?: "Android media effect failed"); throw error }
     finally { applying = false; reportObservation() }
   }
 
@@ -196,11 +205,10 @@ class MusicPlaybackService : MediaSessionService() {
 
   /** Elapsed realtime includes sleep; a late callback cannot outrun the observer. */
   private fun expireResolution(): Boolean {
-    val deadline = resolutionDeadlineMs ?: return false
-    if (SystemClock.elapsedRealtime() < deadline) return false
-    resolutionDeadlineMs = null
+    val resolving = sourcePhase as? SourcePhase.Resolving ?: return false
+    if (SystemClock.elapsedRealtime() < resolving.deadlineMs) return false
+    sourcePhase = SourcePhase.Idle
     loadEpoch++
-    loading = false
     desiredAutoplay = false
     sessionId?.let { NativeMusicSession.reportUnavailable(it, generation, NativeMusicInterruption.SourceResolutionTimeout) }
     return true
@@ -210,7 +218,8 @@ class MusicPlaybackService : MediaSessionService() {
     if (destroyed || applying || !::decoder.isInitialized) return
     val session = sessionId ?: return
     val identity = sourceIdentity ?: return
-    val error = sourceError ?: decoder.playerError?.message
+    val error = (sourcePhase as? SourcePhase.Failed)?.message ?: decoder.playerError?.message
+    val loading = sourcePhase is SourcePhase.Resolving
     val status = when {
       error != null -> "error"
       loading || decoder.playbackState == Player.STATE_BUFFERING -> "loading"
@@ -272,7 +281,7 @@ class MusicPlaybackService : MediaSessionService() {
     main.removeCallbacks(observer)
     destroyed = true
     desiredAutoplay = false
-    resolutionDeadlineMs = null
+    sourcePhase = SourcePhase.Idle
     mediaSession?.run {
       player.release()
       release()

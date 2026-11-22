@@ -47,12 +47,17 @@
   let includeComments = $state(true);
   let includeUsers = $state(true);
   let keepExternalFileReferences = $state(false);
-  let importing = $state(false);
-  let activeImportId = $state<string | null>(null);
-  let stopping = $state(false);
+  /** The import in flight, named by its id so a late stop response for a finished import cannot touch a newer one. */
+  type ImportRun =
+    | { readonly phase: "idle" }
+    | { readonly phase: "importing"; readonly importId: string; readonly stopping: boolean };
+
+  let run = $state.raw<ImportRun>({ phase: "idle" });
   let error = $state<NotesFailure | null>(null);
   let result = $state<NotesNotionApiImportResult | null>(null);
   let tokenInputEl = $state<HTMLInputElement | null>(null);
+  const importing = $derived(run.phase === "importing");
+  const stopping = $derived(run.phase === "importing" && run.stopping);
 
   const pageIds = $derived(splitSourceIds(pageIdsText));
   const dataSourceIds = $derived(splitSourceIds(dataSourceIdsText));
@@ -140,8 +145,7 @@
   async function submit(): Promise<void> {
     if (!canImport) return;
     const importId = crypto.randomUUID();
-    importing = true;
-    activeImportId = importId;
+    run = { phase: "importing", importId, stopping: false };
     error = null;
     result = null;
     try {
@@ -160,22 +164,26 @@
     } catch (caught) {
       error = notesFailure(caught, t("notes.notionApiImportFailed"));
     } finally {
-      importing = false;
-      activeImportId = null;
-      stopping = false;
+      if (isRunning(importId)) run = { phase: "idle" };
     }
   }
 
   async function stopImport(): Promise<void> {
-    const importId = activeImportId;
-    if (!importId || stopping) return;
-    stopping = true;
+    if (run.phase !== "importing" || run.stopping) return;
+    const { importId } = run;
+    run = { ...run, stopping: true };
     try {
       await onStop(importId);
     } catch (caught) {
-      stopping = false;
+      if (!isRunning(importId)) return;
+      run = { phase: "importing", importId, stopping: false };
       error = notesFailure(caught, t("notes.notionApiImportStopFailed"));
     }
+  }
+
+  /** Whether `importId` names the import in flight. */
+  function isRunning(importId: string): boolean {
+    return run.phase === "importing" && run.importId === importId;
   }
 
   function splitSourceIds(value: string): string[] {

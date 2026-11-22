@@ -183,6 +183,7 @@
     ? (detail.item.artistOverride ?? detail.item.originalArtist) || t("music.builder.noArtist")
     : item?.artist || t("music.builder.noArtist"));
   const reviewPlayerReady = $derived(audition.ownsPlayback && audition.reviewItemId === item?.id);
+  const previewError = $derived(audition.errorFor(item?.id ?? null));
   const reviewPlaybackStarting = $derived(Boolean(item && (
     (reviewStartItemId === item.id && !reviewPlayerReady)
     || (reviewPlayerReady && player.youtubePlaybackStarting)
@@ -386,6 +387,7 @@
     if (!item || preparingNext || review.actionBusy) return;
     preparingNext = true;
     try {
+      const fromItemId = item.id;
       const skipped = new Set(sessionSkippedIds).add(item.id);
       let nextItemId = nextPendingMusicReviewTreeItemId(items, item.id, skipped);
       if (!nextItemId) {
@@ -395,6 +397,7 @@
         viewState.sessionSkippedIds = [...skipped];
       }
       await ensureReviewArtwork(nextItemId);
+      if (item?.id !== fromItemId) return;
       if (nextItemId) inspector.selectCached(nextItemId);
       library.selectItem(nextItemId);
     } finally {
@@ -405,10 +408,12 @@
   async function continueCurrentItem(): Promise<void> {
     if (!item || preparingNext || review.actionBusy) return;
     const nextItemId = reviewTreeIndex >= 0 ? reviewItemIds[reviewTreeIndex + 1] ?? null : null;
+    const fromItemId = item.id;
     viewState.membershipBaselines = { ...viewState.membershipBaselines, [item.id]: membershipSignature };
     preparingNext = true;
     try {
       await ensureReviewArtwork(nextItemId);
+      if (item?.id !== fromItemId) return;
       if (nextItemId) inspector.selectCached(nextItemId);
       library.selectItem(nextItemId);
     } finally {
@@ -478,10 +483,16 @@
       await player.togglePlay();
       return;
     }
+    await startReviewPreview();
+  }
+
+  /** Starts the preview of the current item, resolving whether it plays so a retry can report a failed attempt. */
+  async function startReviewPreview(): Promise<boolean> {
+    if (!detail) return false;
     const itemId = detail.item.id;
     if (detail.item.sourceKind === "youtube-video") reviewStartItemId = itemId;
     try {
-      await audition.preview(detail, sources.bindings, true);
+      return await audition.preview(detail, sources.bindings, true);
     } finally {
       if (reviewStartItemId === itemId) reviewStartItemId = null;
     }
@@ -644,6 +655,7 @@
           </div>
         </div>
       </div>
+      {#if previewError}<Notice class="mt-2 text-xs" message={previewError} copy={false} onRetry={startReviewPreview} onDismiss={() => audition.dismissError()} />{/if}
     {/if}
   </section>
 

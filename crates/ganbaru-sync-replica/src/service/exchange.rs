@@ -3,7 +3,7 @@
 //! with the other members, and the managed asset uploads and downloads around them.
 
 use super::host::SyncHost;
-use super::status::{SyncErrorCode, SyncState, SyncStatusView};
+use super::status::{SyncErrorCode, SyncPhase, SyncStatusView};
 use super::transport::PairedTransport;
 use super::{
     ApplyMark, AssetPeer, MAX_FORK_RECOVERIES, Next, OnlineWait, ServiceState, Session, acquire,
@@ -133,20 +133,19 @@ impl ServiceState {
                     if done.bootstrap_required {
                         // Waiting would return at once, since the hub holds what this device
                         // cannot pull; local commits and the fallback interval still push.
-                        view.state = SyncState::Error;
-                        view.last_error = done.problem.or_else(|| {
-                            Some("the hub no longer holds operations this device lacks".into())
-                        });
-                        view.last_error_code = Some(SyncErrorCode::BootstrapRequired);
+                        view.set_phase(SyncPhase::error(
+                            done.problem.unwrap_or_else(|| {
+                                "the hub no longer holds operations this device lacks".into()
+                            }),
+                            Some(SyncErrorCode::BootstrapRequired),
+                        ));
                         return Ok(Next::Idle);
                     }
                     match done.problem {
                         Some(problem) => {
-                            view.state = SyncState::Error;
-                            view.last_error = Some(problem);
-                            view.last_error_code = (done.refusal
-                                == Some(SyncRefusalCode::WriterLimit))
-                            .then_some(SyncErrorCode::WriterLimit);
+                            let code = (done.refusal == Some(SyncRefusalCode::WriterLimit))
+                                .then_some(SyncErrorCode::WriterLimit);
+                            view.set_phase(SyncPhase::error(problem, code));
                         }
                         None if done.more => return Ok(Next::Continue),
                         None => {}
@@ -187,16 +186,18 @@ impl ServiceState {
                             quarantine.devices(),
                             &listening,
                             view,
-                            error,
+                            error.clone(),
                         )
                         .await;
-                    view.state = SyncState::Error;
-                    view.last_error_code = Some(SyncErrorCode::ForkClaimUnproven);
+                    view.set_phase(SyncPhase::error(
+                        error,
+                        Some(SyncErrorCode::ForkClaimUnproven),
+                    ));
                     return Ok(next);
                 }
                 Ok(Exchange::Fork(fork)) => {
                     if !session.recover_fork(&mut self.writer, fork).await? {
-                        view.state = SyncState::WaitingForIdentity;
+                        view.set_phase(SyncPhase::WaitingForIdentity);
                         return Ok(Next::Idle);
                     }
                     self.applied = ApplyMark::default();
@@ -222,8 +223,7 @@ impl ServiceState {
         let members = self
             .exchange_members(session, &wait, quarantined, listening, false)
             .await;
-        view.state = SyncState::Offline;
-        view.last_error = Some(error);
+        view.set_phase(SyncPhase::offline(error));
         self.anchor_link = members.anchor;
         let (Some(anchor), Some(known)) = (self.anchor_link.as_ref(), members.anchor_known) else {
             return Next::Retry;
@@ -298,7 +298,7 @@ impl ServiceState {
                 "the selected log removed the coordinator".to_string(),
             )
             .await;
-        view.last_error_code = Some(SyncErrorCode::CoordinatorRemoved);
+        view.mark_coordinator_removed();
         Ok(next)
     }
 
@@ -375,13 +375,15 @@ impl ServiceState {
             .download(&mut self.assets, transfer)
             .await;
         if let Err(error) = downloaded {
-            view.state = SyncState::Offline;
-            view.last_error = Some(error);
+            view.set_phase(SyncPhase::offline(error));
             return Next::Retry;
         }
-        if let Some(problem) = transfer.problem.take() {
-            view.state = SyncState::Error;
-            view.last_error = Some(problem);
+        // An asset problem does not replace a failure the exchange already reported, such as
+        // a refused writer, whose explanation the interface shows.
+        if let Some(problem) = transfer.problem.take()
+            && !matches!(view.phase(), SyncPhase::Error { .. })
+        {
+            view.set_phase(SyncPhase::error(problem, None));
         }
         match next {
             Next::Online(_) if transfer.more => Next::Continue,

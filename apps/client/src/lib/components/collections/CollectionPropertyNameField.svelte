@@ -33,6 +33,8 @@
   let error = $state<string | null>(null);
   let iconError = $state<string | null>(null);
   let generation = 0;
+  /** The newest icon change; an older one settling later, or one for another property, leaves the error alone. */
+  let iconRequest = 0;
 
   $effect(() => {
     const currentId = propertyId;
@@ -41,6 +43,7 @@
     untrack(() => {
       if (currentId !== draftPropertyId) {
         generation += 1;
+        iconRequest += 1;
         draftPropertyId = currentId;
         canonical = currentName;
         draft = currentName;
@@ -86,11 +89,12 @@
   /** Save a chosen icon, showing a rejection in the field's message area. */
   async function changeIcon(next: string | null): Promise<void> {
     if (!onIconChange || next === icon) return;
+    const request = ++iconRequest;
     iconError = null;
     try {
       await onIconChange(next);
     } catch (caught: unknown) {
-      iconError = userErrorMessage(caught, t("collections.property.iconFailed"));
+      if (request === iconRequest) iconError = userErrorMessage(caught, t("collections.property.iconFailed"));
     }
   }
 </script>

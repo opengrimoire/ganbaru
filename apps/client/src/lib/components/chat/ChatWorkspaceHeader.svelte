@@ -113,7 +113,8 @@
     if (!navigatorOpen) navigatorHover.cancel();
   });
   $effect(() => () => navigatorHover.cancel());
-  let actionError = $state<string | null>(null);
+  /** The last failed open folder action and the working folder it was for; shown only while that folder is selected. */
+  let actionError = $state.raw<{ folderId: string; message: string } | null>(null);
   const selectedProject = $derived(projects.selectedProject);
   const selectedGroup = $derived(projects.selectedGroup);
   /**
@@ -126,6 +127,9 @@
     selectedProject ? chatSidebarOrder.sortChannels(selectedProject.id, chat.channelsForProject(selectedProject.id)) : [],
   );
   const selectedFolder = $derived(chat.selectedWorkingFolder);
+  const visibleActionError = $derived(
+    actionError && actionError.folderId === selectedFolder?.workingFolder.id ? actionError.message : null,
+  );
   const memberSummary = $derived(summarizeChannelMembers(selectedChannel?.memberships ?? []));
   const memberStackAgents = $derived(chat.agents
     .filter((agent) => memberSummary.agentIds.has(agent.participant.id))
@@ -271,9 +275,16 @@
     editingTitle = false;
   }
 
-  function run(action: () => Promise<unknown>): void {
+  /**
+   * Opens a working folder in the system file manager and records a failure against that folder.
+   *
+   * @param folderId The working folder to open.
+   */
+  function openFolder(folderId: string): void {
     actionError = null;
-    void action().catch((error: unknown) => { actionError = chatErrorMessage(error, t("chatErrors.actions.channelAction")); });
+    void chat.openWorkingFolder(folderId).catch((error: unknown) => {
+      actionError = { folderId, message: chatErrorMessage(error, t("chatErrors.actions.channelAction")) };
+    });
   }
 
   $effect(() => {
@@ -410,9 +421,9 @@
     {/if}
   </div>
   {#if !mobilePresentation}<div class="flex-1"></div>{/if}
-  {#if actionError}<Notice class="header-action-error max-w-48 text-[0.666667rem]" message={actionError} />{/if}
+  {#if visibleActionError}<Notice class="header-action-error max-w-48 text-[0.666667rem]" message={visibleActionError} />{/if}
   <div class={cn("flex shrink-0 items-center", mobilePresentation ? "gap-0" : "gap-1")}>
-    {#if selectedFolder?.bindingStatus === "available"}<button type="button" class={toolbarIconButtonClass} title={t("chat.openFolder")} aria-label={t("chat.openFolder")} onclick={() => run(() => chat.openWorkingFolder(selectedFolder.workingFolder.id))}><FolderOpen size={mobilePresentation ? 16 : 14} strokeWidth={mobilePresentation ? 1.75 : undefined} /></button>{/if}
+    {#if selectedFolder?.bindingStatus === "available"}<button type="button" class={toolbarIconButtonClass} title={t("chat.openFolder")} aria-label={t("chat.openFolder")} onclick={() => openFolder(selectedFolder.workingFolder.id)}><FolderOpen size={mobilePresentation ? 16 : 14} strokeWidth={mobilePresentation ? 1.75 : undefined} /></button>{/if}
     {#if selectedChannel}
       <button bind:this={membersTrigger} type="button" class={toolbarMembersTriggerClass} class:open={membersOpen} aria-label={t("chat.organization.membersPanel", memberSummary.count)} data-app-tooltip={t("chat.organization.members")} aria-haspopup="dialog" aria-expanded={membersOpen} data-chat-members-trigger onpointerenter={() => { void loadMembersPanel(); }} onfocus={() => { void loadMembersPanel(); }} onclick={toggleChannelMembers}>
         <span class="chat-members-stack" aria-hidden="true">

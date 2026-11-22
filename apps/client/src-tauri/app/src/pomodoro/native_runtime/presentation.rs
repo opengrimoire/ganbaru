@@ -158,7 +158,7 @@ impl PresentationState {
             generation,
             run: snapshot.run.as_ref().map(|run| run.id.clone()),
             segment: snapshot.segment.as_ref().map(|segment| segment.id.clone()),
-            mode: snapshot.mode,
+            mode: snapshot.mode.kind(),
         };
         let changed = self.identity.as_ref() != Some(&identity);
         let break_phase = snapshot
@@ -173,16 +173,17 @@ impl PresentationState {
             next.identity = Some(identity);
             next.next_alert_ms = None;
             next.warned_deadline = None;
-            match snapshot.mode {
+            match snapshot.mode.kind() {
                 FocusMode::Running if break_phase => {
                     surface = snapshot.phase_deadline_ms.map(Surface::Break);
                     sound = Some(AppSound::BreakStart);
                 }
                 FocusMode::IdlePause => {
                     let seconds = snapshot
-                        .idle_detected_at_ms
+                        .mode
+                        .idle_detected_at_ms()
                         .unwrap_or(now)
-                        .saturating_sub(snapshot.idle_started_at_ms.unwrap_or(now))
+                        .saturating_sub(snapshot.mode.idle_started_at_ms().unwrap_or(now))
                         .max(0)
                         / 1000;
                     surface = Some(Surface::Idle(u32::try_from(seconds).unwrap_or(u32::MAX)));
@@ -199,7 +200,7 @@ impl PresentationState {
                     next.next_alert_ms = (preferences.repeat_seconds > 0)
                         .then(|| now.saturating_add(preferences.repeat_seconds * 1000));
                 }
-                FocusMode::ManualPause if !snapshot.paused_prompts_dismissed => {
+                FocusMode::ManualPause if !snapshot.mode.paused_prompts_dismissed() => {
                     next.next_alert_ms = Some(now.saturating_add(PAUSED_REMINDER_INTERVAL_MS));
                     if self.identity.is_some() {
                         surface = Some(Surface::Close);
@@ -235,7 +236,7 @@ impl PresentationState {
             });
             sound = Some(AppSound::FocusEndingWarning);
         }
-        if snapshot.mode == FocusMode::ManualPause && snapshot.paused_prompts_dismissed {
+        if snapshot.mode == FocusMode::ManualPause && snapshot.mode.paused_prompts_dismissed() {
             next.next_alert_ms = None;
         }
         if snapshot.mode == FocusMode::Running
@@ -250,15 +251,15 @@ impl PresentationState {
             sound = Some(AppSound::BreakFinished);
         }
         if next.next_alert_ms.is_some_and(|target| now >= target) {
-            let interval = match snapshot.mode {
+            let interval = match snapshot.mode.kind() {
                 FocusMode::IdlePause => IDLE_ALERT_INTERVAL_MS,
                 FocusMode::ReturnWait => preferences.repeat_seconds * 1000,
-                FocusMode::ManualPause if !snapshot.paused_prompts_dismissed => {
+                FocusMode::ManualPause if !snapshot.mode.paused_prompts_dismissed() => {
                     PAUSED_REMINDER_INTERVAL_MS
                 }
                 _ => 0,
             };
-            sound = match snapshot.mode {
+            sound = match snapshot.mode.kind() {
                 FocusMode::IdlePause => Some(AppSound::IdleAlert),
                 FocusMode::ReturnWait if interval > 0 => Some(AppSound::BreakFinished),
                 FocusMode::ManualPause if interval > 0 => {

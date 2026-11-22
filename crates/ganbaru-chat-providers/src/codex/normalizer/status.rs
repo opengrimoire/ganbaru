@@ -189,10 +189,7 @@ impl CodexEventNormalizer {
         // A capacity error the session retries itself is recoverable even when Codex will not
         // retry it.
         let session_retries = error.is_some_and(CodexStopReason::is_capacity)
-            && state
-                .capacity_retry
-                .as_ref()
-                .is_some_and(|retry| retry.available());
+            && state.turn().retry().is_some_and(|retry| retry.available());
         let recoverable = session_retries
             || object
                 .get("willRetry")
@@ -221,7 +218,6 @@ impl CodexEventNormalizer {
         state: &mut CodexRouteState,
         _params: Value,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
-        state.session_state = ProviderSessionState::Stopped;
         Ok(vec![self.event(
             state,
             "thread/closed",

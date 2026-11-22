@@ -1,4 +1,5 @@
 use super::events::{apply_projection, read_canonical_events};
+use super::state_writes::running_turn_states_sql;
 use crate::models::{ChatError, ChatErrorCode, ChatResult, ChatThreadId};
 use sqlx::SqlitePool;
 
@@ -8,15 +9,16 @@ pub async fn rebuild_thread_projections(
 ) -> ChatResult<u64> {
     let events = read_canonical_events(pool, thread_id, 0).await?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    let active_turns: i64 = sqlx::query_scalar(
+    let statement = format!(
         "SELECT COUNT(*) FROM chat_turns WHERE thread_id = ?
-         AND invalidated_at IS NULL
-         AND state IN ('dispatching', 'active', 'waiting_for_approval', 'waiting_for_user_input')",
-    )
-    .bind(thread_id.as_str())
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
+         AND invalidated_at IS NULL AND state IN ({})",
+        running_turn_states_sql()
+    );
+    let active_turns: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(statement.as_str()))
+        .bind(thread_id.as_str())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
     if active_turns != 0 {
         return Err(ChatError::new(
             ChatErrorCode::Conflict,
@@ -95,12 +97,21 @@ pub async fn rebuild_thread_projections(
         .map_err(persistence_error)?;
     }
     let sequence = events.last().map(|event| event.sequence).unwrap_or(0);
-    sqlx::query("UPDATE chat_threads SET last_projected_sequence = ? WHERE id = ?")
-        .bind(i64::try_from(sequence).map_err(|_| corrupt_data_error())?)
-        .bind(thread_id.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
+    // Replayed turn events find settled turns and leave them untouched, so the latest turn
+    // state comes from the stored turns rather than from the replay.
+    sqlx::query(
+        "UPDATE chat_threads SET last_projected_sequence = ?, latest_turn_state = (
+                SELECT state FROM chat_turns
+                WHERE thread_id = chat_threads.id AND invalidated_at IS NULL
+                ORDER BY ordinal DESC LIMIT 1
+             )
+         WHERE id = ?",
+    )
+    .bind(i64::try_from(sequence).map_err(|_| corrupt_data_error())?)
+    .bind(thread_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
     transaction.commit().await.map_err(persistence_error)?;
     Ok(sequence)
 }

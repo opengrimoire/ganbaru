@@ -4,8 +4,8 @@
 use super::card::sign_local_card;
 use super::identity::LocalIdentity;
 use super::store::{
-    self, ContactState, NewContact, NewRequest, RequestDirection, RequestRow, RequestState,
-    TrustGrant,
+    self, ClosedRequestState, ContactState, NewContact, NewRequest, RequestDirection, RequestRow,
+    RequestState, TrustGrant,
 };
 use super::{ContactsError, contacts_pool};
 use crate::vault::handoff::pairing::random_token;
@@ -514,7 +514,7 @@ pub(crate) async fn accept_request(
         &mut *tx,
         id,
         Some(expected_revision),
-        RequestState::Accepted,
+        ClosedRequestState::Accepted,
         None,
         now,
     )
@@ -541,7 +541,7 @@ pub(crate) async fn accept_request(
         &mut *tx,
         RequestDirection::Sent,
         &row.public_key,
-        RequestState::Expired,
+        ClosedRequestState::Expired,
         now,
     )
     .await?;
@@ -551,18 +551,51 @@ pub(crate) async fn accept_request(
     Ok(())
 }
 
+/// How the user closes a pending request without accepting it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RequestClosure {
+    /// Declines a received request.
+    Decline,
+    /// Cancels a sent request, which then counts as expired.
+    Cancel,
+}
+
+impl RequestClosure {
+    /// The direction of the requests this closure applies to.
+    pub(crate) const fn direction(self) -> RequestDirection {
+        match self {
+            Self::Decline => RequestDirection::Received,
+            Self::Cancel => RequestDirection::Sent,
+        }
+    }
+
+    /// The final state this closure moves a pending request to.
+    pub(crate) const fn target(self) -> ClosedRequestState {
+        match self {
+            Self::Decline => ClosedRequestState::Declined,
+            Self::Cancel => ClosedRequestState::Expired,
+        }
+    }
+}
+
 /// Declines a received request or cancels a sent one.
 pub(crate) async fn close_request(
     pool: &SqlitePool,
     id: &str,
     expected_revision: i64,
-    direction: RequestDirection,
-    state: RequestState,
+    closure: RequestClosure,
 ) -> Result<(), ContactsError> {
     let now = store::now();
-    pending_row_in_direction(pool, id, direction, now).await?;
-    let updated =
-        store::set_request_state(pool, id, Some(expected_revision), state, None, now).await?;
+    pending_row_in_direction(pool, id, closure.direction(), now).await?;
+    let updated = store::set_request_state(
+        pool,
+        id,
+        Some(expected_revision),
+        closure.target(),
+        None,
+        now,
+    )
+    .await?;
     if updated {
         Ok(())
     } else {
@@ -604,7 +637,7 @@ pub(crate) async fn block_person(
         &mut *tx,
         RequestDirection::Received,
         public_key,
-        RequestState::Declined,
+        ClosedRequestState::Declined,
         now,
     )
     .await?;
@@ -612,7 +645,7 @@ pub(crate) async fn block_person(
         &mut *tx,
         RequestDirection::Sent,
         public_key,
-        RequestState::Expired,
+        ClosedRequestState::Expired,
         now,
     )
     .await?;
@@ -692,7 +725,7 @@ pub(super) async fn apply_status_response(
                 &mut *tx,
                 &row.id,
                 None,
-                RequestState::Accepted,
+                ClosedRequestState::Accepted,
                 None,
                 now,
             )
@@ -717,15 +750,22 @@ pub(super) async fn apply_status_response(
                 tx.rollback()
                     .await
                     .map_err(|error| format!("roll back accepted request: {error}"))?;
-                store::set_request_state(pool, &row.id, None, RequestState::Expired, None, now)
-                    .await?;
+                store::set_request_state(
+                    pool,
+                    &row.id,
+                    None,
+                    ClosedRequestState::Expired,
+                    None,
+                    now,
+                )
+                .await?;
                 return Ok(true);
             }
             store::close_pending_from(
                 &mut *tx,
                 RequestDirection::Sent,
                 &row.public_key,
-                RequestState::Expired,
+                ClosedRequestState::Expired,
                 now,
             )
             .await?;
@@ -744,13 +784,28 @@ pub(super) async fn apply_status_response(
                 .begin()
                 .await
                 .map_err(|error| format!("begin declined transaction: {error}"))?;
-            store::set_request_state(&mut *tx, &row.id, None, RequestState::Declined, None, now)
-                .await?;
+            let declined = store::set_request_state(
+                &mut *tx,
+                &row.id,
+                None,
+                ClosedRequestState::Declined,
+                None,
+                now,
+            )
+            .await?;
+            if !declined {
+                // A local cancel or block closed the request while the poll was in flight, so a
+                // newer request to the same person is not this answer's to close.
+                tx.rollback()
+                    .await
+                    .map_err(|error| format!("roll back declined request: {error}"))?;
+                return Ok(true);
+            }
             store::close_pending_from(
                 &mut *tx,
                 RequestDirection::Sent,
                 &row.public_key,
-                RequestState::Expired,
+                ClosedRequestState::Expired,
                 now,
             )
             .await?;
@@ -768,7 +823,7 @@ pub(super) async fn apply_status_response(
                 pool,
                 &row.id,
                 None,
-                RequestState::Expired,
+                ClosedRequestState::Expired,
                 Some(CARD_REVOKED_CODE),
                 now,
             )

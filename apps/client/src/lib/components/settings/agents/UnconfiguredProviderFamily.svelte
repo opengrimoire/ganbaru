@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ProviderFamilyMetadataRead } from "$lib/chat/contracts";
+  import type { ProviderFamilyId, ProviderFamilyMetadataRead } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -25,26 +25,46 @@
     onSetUp: () => void;
   } = $props();
 
+  /**
+   * The last refresh, tagged with the family it ran for, because the parent reuses this component when another
+   * family is selected. A newer refresh replaces the token, so an older one never settles the outcome.
+   */
+  type RefreshOutcome =
+    | { readonly kind: "none" }
+    | { readonly kind: "refreshing"; readonly familyId: ProviderFamilyId; readonly token: symbol }
+    | { readonly kind: "failed"; readonly familyId: ProviderFamilyId; readonly error: string }
+    | { readonly kind: "notAdded"; readonly familyId: ProviderFamilyId };
+
   const { t } = getLocalization();
   const chat = getChat();
-  let refreshError = $state<string | null>(null);
-  let notAdded = $state(false);
+  let outcome = $state.raw<RefreshOutcome>({ kind: "none" });
+  /** The outcome of a refresh for the family shown now, or `none` for another family's. */
+  const shownOutcome = $derived<RefreshOutcome>(
+    outcome.kind !== "none" && outcome.familyId === family.familyId ? outcome : { kind: "none" },
+  );
 
   const situation = $derived(unconfiguredFamilySituation(installedExecutables));
   /** Refresh adds a found CLI unless the device does not search for it or the person removed it before. */
   const automatic = $derived(situation.kind !== "unknown"
     && !(chat.settings?.configuration.automaticProviderSetupDisabled.includes(family.familyId) ?? false));
 
+  /** Refreshes every provider and reports whether the family it started for got a configuration. */
   async function refresh(): Promise<void> {
-    refreshError = null;
-    notAdded = false;
+    const familyId = family.familyId;
+    const token = Symbol("provider refresh");
+    outcome = { kind: "refreshing", familyId, token };
+    const isCurrent = () => outcome.kind === "refreshing" && outcome.token === token;
     try {
       await chat.refreshAllProviders();
     } catch (error: unknown) {
-      refreshError = chatErrorMessage(error, t("settings.agents.providers.operationFailed"));
+      if (isCurrent()) {
+        outcome = { kind: "failed", familyId, error: chatErrorMessage(error, t("settings.agents.providers.operationFailed")) };
+      }
       return;
     }
-    notAdded = !(chat.settings?.providerInstances.some((provider) => provider.configuration.familyId === family.familyId) ?? false);
+    if (!isCurrent()) return;
+    const added = chat.settings?.providerInstances.some((provider) => provider.configuration.familyId === familyId) ?? false;
+    outcome = added ? { kind: "none" } : { kind: "notAdded", familyId };
   }
 </script>
 
@@ -57,9 +77,9 @@
       onRefresh={automatic ? refresh : undefined}
     />
   {/if}
-  {#if refreshError}
-    <Notice class="text-[0.8rem]" message={refreshError} onDismiss={() => (refreshError = null)} />
-  {:else if notAdded}
+  {#if shownOutcome.kind === "failed"}
+    <Notice class="text-[0.8rem]" message={shownOutcome.error} onDismiss={() => (outcome = { kind: "none" })} />
+  {:else if shownOutcome.kind === "notAdded"}
     <Notice
       class="text-[0.8rem]"
       tone="warning"

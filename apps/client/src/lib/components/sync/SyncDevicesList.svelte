@@ -16,6 +16,7 @@
     syncOwnDevice,
     syncQuarantinableAnchor,
   } from "$lib/sync/authority";
+  import { IDLE_SYNC_ACTIONS, runSyncAction, type SyncActionAccess, type SyncActionState } from "./sync-action-state";
 
   let {
     buttonClass,
@@ -33,9 +34,9 @@
 
   const { t } = getLocalization();
   const authorityState = getSyncAuthorityState();
-  let busy = $state(false);
-  let message = $state("");
-  let failed = $state(false);
+  let actions = $state.raw<SyncActionState<"device">>(IDLE_SYNC_ACTIONS);
+  const actionAccess: SyncActionAccess<"device"> = { read: () => actions, write: (next) => { actions = next; } };
+  const busy = $derived(actions.running.length > 0);
   let confirmation = $state<Confirmation | null>(null);
 
   const actionClass = $derived(mobileLayout ? `${buttonClass} min-h-12` : buttonClass);
@@ -68,11 +69,7 @@
   }
 
   async function run(action: DeviceAction | AnchorAction, deviceId: string | null): Promise<void> {
-    if (busy) return;
-    busy = true;
-    message = "";
-    failed = false;
-    try {
+    await runSyncAction(actionAccess, "device", async () => {
       if (action === "takeAnchor") await authorityState.takeAnchor();
       else if (action === "forceAnchor") {
         await authorityState.forceAnchor({
@@ -87,14 +84,14 @@
       else if (action === "quarantine") await authorityState.quarantineDevice(deviceId);
       else if (action === "lift") await authorityState.liftQuarantine(deviceId);
       else await authorityState.promoteDevice(deviceId);
-      message = successLabel(action);
-    } catch (cause: unknown) {
-      console.warn("sync device action failed", cause);
-      failed = true;
-      message = failureLabel(action);
-    } finally {
-      busy = false;
-    }
+    }, {
+      success: () => successLabel(action),
+      failure: (cause) => {
+        console.warn("sync device action failed", cause);
+        return failureLabel(action);
+      },
+      exclusive: true,
+    });
   }
 
   function confirm(): void {
@@ -180,12 +177,10 @@
       </div>
     </div>
   {/if}
-  {#if message}
-    {#if failed}
-      <Notice class="px-1 text-[0.8rem] leading-5" {message} copy={false} />
-    {:else}
-      <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{message}</p>
-    {/if}
+  {#if actions.feedback.kind === "failed"}
+    <Notice class="px-1 text-[0.8rem] leading-5" message={actions.feedback.message} copy={false} />
+  {:else if actions.feedback.kind === "done"}
+    <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{actions.feedback.message}</p>
   {/if}
 </div>
 

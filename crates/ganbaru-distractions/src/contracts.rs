@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use ganbaru_distractions_authority::spool;
 pub use ganbaru_distractions_authority::{
     ActivePhase, BlockingPhase, DistractionsRuntimeState, PauseReason, PhaseBlockingSettings,
     RuntimeAuthority,

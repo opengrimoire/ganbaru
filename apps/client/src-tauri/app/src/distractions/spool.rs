@@ -7,6 +7,7 @@
 //! them into the replicated `distractions_block_events`.
 
 use crate::distractions::DistractionsUsageSampleRow;
+use ganbaru_distractions::contracts::spool::{SPOOL_RESET_SQL, SPOOL_SCHEMA_VERSION};
 use ganbaru_distractions::usage::totals::insert_own_samples;
 use ganbaru_distractions::usage::{
     SpooledBlockEvent, SpooledBlockEventError, UsageDateWindow, record_spooled_block_event,
@@ -34,6 +35,21 @@ fn spool_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> 
         .map_err(|error| format!("find Distractions spool directory: {error}"))
 }
 
+/// Replaces the spool tables when their schema version is not the current one, inside one
+/// immediate transaction so the browser host and the app never reset the same spool twice.
+async fn prepare_spool(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&mut *transaction)
+        .await?;
+    if version != SPOOL_SCHEMA_VERSION {
+        sqlx::raw_sql(SPOOL_RESET_SQL)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    transaction.commit().await
+}
+
 async fn open_spool(path: &Path) -> Result<SqlitePool, String> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -49,46 +65,9 @@ async fn open_spool(path: &Path) -> Result<SqlitePool, String> {
         .connect_with(options)
         .await
         .map_err(|error| format!("open Distractions spool: {error}"))?;
-    sqlx::raw_sql(
-        "CREATE TABLE IF NOT EXISTS pending_usage_samples (
-            sample_id TEXT PRIMARY KEY,
-            vault_id TEXT NOT NULL,
-            device_id TEXT NOT NULL,
-            source_type TEXT NOT NULL,
-            source_key TEXT NOT NULL,
-            display_name TEXT,
-            started_at_ms INTEGER NOT NULL,
-            elapsed_seconds INTEGER NOT NULL,
-            local_date TEXT NOT NULL,
-            created_at_ms INTEGER NOT NULL,
-            claimed INTEGER NOT NULL DEFAULT 0 CHECK (claimed IN (0, 1))
-        );
-        CREATE TABLE IF NOT EXISTS native_usage_batch_receipts (
-            vault_id TEXT NOT NULL,
-            device_id TEXT NOT NULL,
-            batch_id TEXT NOT NULL,
-            digest TEXT NOT NULL,
-            PRIMARY KEY (vault_id, device_id)
-        );
-        CREATE TABLE IF NOT EXISTS pending_block_events (
-            event_id TEXT PRIMARY KEY,
-            vault_id TEXT NOT NULL,
-            device_id TEXT NOT NULL,
-            run_id TEXT,
-            occurred_at TEXT NOT NULL,
-            source_type TEXT NOT NULL,
-            source_key TEXT NOT NULL,
-            display_name TEXT,
-            phase TEXT,
-            decision TEXT NOT NULL,
-            rule_kind TEXT,
-            rule_label TEXT,
-            blocker_mode TEXT
-        );",
-    )
-    .execute(&pool)
-    .await
-    .map_err(|error| format!("initialize Distractions spool: {error}"))?;
+    prepare_spool(&pool)
+        .await
+        .map_err(|error| format!("initialize Distractions spool: {error}"))?;
     Ok(pool)
 }
 

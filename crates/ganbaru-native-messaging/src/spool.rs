@@ -3,6 +3,7 @@
 //! The host never opens the vault database. Usage samples and block events wait here, keyed by
 //! the vault and device that produced them, until the app moves them into the vault.
 
+use ganbaru_distractions_authority::spool::{SPOOL_RESET_SQL, SPOOL_SCHEMA_VERSION};
 use serde::Deserialize;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -84,7 +85,22 @@ fn spool_target(
     })
 }
 
-/// Opens the spool and creates the tables the host writes. The app creates the same tables.
+/// Replaces the spool tables when their schema version is not the current one, inside one
+/// immediate transaction so the host and the app never reset the same spool twice.
+async fn prepare(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&mut *transaction)
+        .await?;
+    if version != SPOOL_SCHEMA_VERSION {
+        sqlx::raw_sql(SPOOL_RESET_SQL)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    transaction.commit().await
+}
+
+/// Opens the spool with the current schema, which the app shares.
 async fn connect(path: &Path) -> Result<SqlitePool, String> {
     let options = SqliteConnectOptions::new()
         .filename(path)
@@ -95,39 +111,9 @@ async fn connect(path: &Path) -> Result<SqlitePool, String> {
         .connect_with(options)
         .await
         .map_err(|e| format!("connect Distractions spool: {e}"))?;
-    sqlx::raw_sql(
-        "CREATE TABLE IF NOT EXISTS pending_usage_samples (
-            sample_id TEXT PRIMARY KEY,
-            vault_id TEXT NOT NULL,
-            device_id TEXT NOT NULL,
-            source_type TEXT NOT NULL,
-            source_key TEXT NOT NULL,
-            display_name TEXT,
-            started_at_ms INTEGER NOT NULL,
-            elapsed_seconds INTEGER NOT NULL,
-            local_date TEXT NOT NULL,
-            created_at_ms INTEGER NOT NULL,
-            claimed INTEGER NOT NULL DEFAULT 0 CHECK (claimed IN (0, 1))
-        );
-        CREATE TABLE IF NOT EXISTS pending_block_events (
-            event_id TEXT PRIMARY KEY,
-            vault_id TEXT NOT NULL,
-            device_id TEXT NOT NULL,
-            run_id TEXT,
-            occurred_at TEXT NOT NULL,
-            source_type TEXT NOT NULL,
-            source_key TEXT NOT NULL,
-            display_name TEXT,
-            phase TEXT,
-            decision TEXT NOT NULL,
-            rule_kind TEXT,
-            rule_label TEXT,
-            blocker_mode TEXT
-        );",
-    )
-    .execute(&pool)
-    .await
-    .map_err(|e| format!("initialize Distractions spool: {e}"))?;
+    prepare(&pool)
+        .await
+        .map_err(|e| format!("initialize Distractions spool: {e}"))?;
     Ok(pool)
 }
 
@@ -338,6 +324,44 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path, label: &str) -> Result
 #[cfg(test)]
 mod tests {
     use super::{compact, connect};
+
+    #[test]
+    fn a_spool_from_an_older_schema_is_replaced_with_the_current_tables() {
+        let path = std::env::temp_dir().join(format!(
+            "ganbaru-host-spool-older-schema-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        crate::block_on(async {
+            let older = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+            sqlx::raw_sql(
+                "CREATE TABLE pending_usage_samples (sample_id TEXT PRIMARY KEY);
+                 INSERT INTO pending_usage_samples VALUES ('stale');",
+            )
+            .execute(&older)
+            .await
+            .unwrap();
+            older.close().await;
+
+            let pool = connect(&path).await.unwrap();
+            let pending: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM pending_usage_samples WHERE claimed = 0")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(pending, 0);
+            pool.close().await;
+        });
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn compaction_merges_only_unclaimed_samples() {

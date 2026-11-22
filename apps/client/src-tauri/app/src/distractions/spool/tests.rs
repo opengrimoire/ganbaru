@@ -111,6 +111,47 @@ async fn a_fresh_spool_holds_only_pending_samples_block_events_and_batch_receipt
 }
 
 #[tokio::test]
+async fn a_spool_from_an_older_schema_is_replaced_and_drains_new_samples() {
+    let path = temporary_spool("older-schema");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let older = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "CREATE TABLE pending_usage_samples (
+            sample_id TEXT PRIMARY KEY, vault_id TEXT NOT NULL, device_id TEXT NOT NULL,
+            source_type TEXT NOT NULL, source_key TEXT NOT NULL, display_name TEXT,
+            started_at_ms INTEGER NOT NULL, elapsed_seconds INTEGER NOT NULL,
+            local_date TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+         INSERT INTO pending_usage_samples VALUES
+            ('stale', 'vault', 'laptop', 'desktop-app', 'steam', NULL, 1, 9, '2026-09-13', 1);",
+    )
+    .execute(&older)
+    .await
+    .unwrap();
+    older.close().await;
+
+    let vault = vault_pool().await;
+    enqueue_native_samples_at(&path, VAULT, DEVICE, &[sample("fresh", 12)])
+        .await
+        .unwrap();
+    assert_eq!(
+        drain_at(&path, &vault, VAULT, DEVICE, &window())
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(journal(&vault).await, [("fresh".to_string(), 12)]);
+    vault.close().await;
+    remove(&path);
+}
+#[tokio::test]
 async fn drained_samples_join_the_journal_once_and_leave_the_spool() {
     let path = temporary_spool("drain");
     let vault = vault_pool().await;

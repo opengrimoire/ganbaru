@@ -6,10 +6,12 @@
 //! messaging host both read that file through [`DistractionsRuntimeState::parse`] and decide with
 //! [`RuntimeAuthority::enforces_blocking`], so the two can never disagree. The crate depends only
 //! on serde so the browser host stays small. Freshness bounds and the `enabled` switches stay with
-//! each reader.
+//! each reader. [`spool`] holds the schema of the device-local spool both of them write.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub mod spool;
 
 #[cfg(test)]
 mod tests;

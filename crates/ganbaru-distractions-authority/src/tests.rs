@@ -276,3 +276,9 @@ fn validity_ends_at_the_deadline_or_when_a_running_phase_elapses() {
     assert!(!inactive.validity_expired(0, 99_999));
     assert!(inactive.validity_expired(0, 100_000));
 }
+
+#[test]
+fn spool_reset_stamps_the_current_schema_version() {
+    let stamp = format!("PRAGMA user_version = {};", spool::SPOOL_SCHEMA_VERSION);
+    assert!(spool::SPOOL_RESET_SQL.trim_end().ends_with(&stamp));
+}

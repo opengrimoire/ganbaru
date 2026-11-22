@@ -68,7 +68,9 @@
   const localization = getLocalization();
   const { t } = localization;
 
-  let editing = $state(false);
+  /** The open edit, a fresh object each time editing starts so a save finishing late closes only its own edit. */
+  let editSession = $state.raw<{ readonly started: true } | null>(null);
+  const editing = $derived(editSession !== null);
   let confirmingDelete = $state(false);
   let errorMessage = $state<NotesFailure | null>(null);
   let linkCopied = $state(false);
@@ -154,8 +156,9 @@
   }
 
   async function saveEdit(richText: NotesRichText[], attachments: Record<string, unknown>[]): Promise<boolean> {
+    const session = editSession;
     const saved = await notes.updateComment(comment.id, richText, attachments);
-    if (saved) editing = false;
+    if (saved && editSession === session) editSession = null;
     return saved;
   }
 
@@ -211,7 +214,7 @@
           mode="edit"
           showAvatar={false}
           onSubmit={saveEdit}
-          onCancel={() => { editing = false; }}
+          onCancel={() => { editSession = null; }}
         />
       </div>
     {:else}
@@ -321,7 +324,7 @@
         triggerClass="comment-toolbar-button justify-center rounded-none px-0"
       >
         {#if ownComment}
-          <CollectionMenuItem icon={Pencil} label={t("notes.commentEdit")} onclick={() => { editing = true; }} />
+          <CollectionMenuItem icon={Pencil} label={t("notes.commentEdit")} onclick={() => { editSession = { started: true }; }} />
         {/if}
         <button type="button" class="menu-item min-w-0" data-collection-menu-keep-open onclick={() => void copyDiscussionLink()}>
           {#if linkCopied}

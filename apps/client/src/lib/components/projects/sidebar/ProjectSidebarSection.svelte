@@ -120,7 +120,9 @@
   const addMenuOpen = $derived(menu.kind === "add");
   let editing = $state(false);
   let nameDraft = $state("");
-  let pendingName = $state<string | null>(null);
+  /** The latest rename in flight, named by a token so an earlier rename settling cannot clear a later one's name. */
+  let pendingRename = $state.raw<{ readonly name: string; readonly token: symbol } | null>(null);
+  const pendingName = $derived(pendingRename?.name ?? null);
   let confirmation = $state.raw<ProjectSectionConfirmation>(NO_PROJECT_SECTION_CONFIRMATION);
   const removeCandidate = $derived(confirmation.kind === "removeView" ? confirmation.view : null);
   const confirmingDelete = $derived(confirmation.kind === "deleteProject");
@@ -231,13 +233,14 @@
     if (name && renameTaken(name)) return;
     editing = false;
     if (!name || name === project.name) return;
-    pendingName = name;
+    const rename = { name, token: Symbol("project rename") };
+    pendingRename = rename;
     void onRename(name)
       .catch((error: unknown) => {
         console.error("Failed to rename a project from the Projects sidebar", error);
       })
       .finally(() => {
-        pendingName = null;
+        if (pendingRename?.token === rename.token) pendingRename = null;
       });
   }
 

@@ -41,6 +41,8 @@
   let savedIds = $state<Set<string>>(new Set());
   let draftIds = $state<Set<string>>(new Set());
   let generation = 0;
+  /** The membership save still in flight, which a reopened menu waits for so it never reads memberships from before it. */
+  let pendingSave: Promise<void> | null = null;
 
   const queueIndex = $derived(player.currentQueueIndex);
   const itemId = $derived(queueIndex >= 0 ? player.activeQueueItemIds[queueIndex] ?? null : null);
@@ -89,6 +91,8 @@
     try {
       const now = Date.now();
       const summaries: MusicPlaylistSummary[] = [];
+      if (pendingSave) await pendingSave;
+      if (request !== generation) return;
       const matrix = await getMusicMembershipMatrix([targetItemId]);
       for (let offset = 0; ; offset += playlistPageSize) {
         const page = await getMusicPlaylistSummaries(now, offset, playlistPageSize);
@@ -127,7 +131,14 @@
     draftIds = next;
   }
 
-  async function save(): Promise<void> {
+  function save(): Promise<void> {
+    const task = saveMemberships();
+    pendingSave = task;
+    void task.then(() => { if (pendingSave === task) pendingSave = null; });
+    return task;
+  }
+
+  async function saveMemberships(): Promise<void> {
     const targetItemId = itemId;
     if (!targetItemId || !changed || loading || saving) return;
     const addPlaylistIds = [...draftIds].filter((id) => !savedIds.has(id));

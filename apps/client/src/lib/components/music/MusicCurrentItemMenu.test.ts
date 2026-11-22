@@ -99,6 +99,33 @@ describe("MusicCurrentItemMenu", () => {
     expect(onOpenBuilder).toHaveBeenCalledExactlyOnceWith("song");
   });
 
+  it("reads memberships after a save that was still in flight when the menu was reopened", async () => {
+    const view = await render();
+    const trigger = view.querySelector<HTMLButtonElement>("button[aria-label='Current track playlists']");
+    trigger?.click();
+    await vi.waitFor(() => expect(view.querySelector("input[aria-label='Add to Evening']")).not.toBeNull());
+    view.querySelector<HTMLInputElement>("input[aria-label='Add to Evening']")?.click();
+    let finishSave: () => void = () => {};
+    api.bulkEditMusicMemberships.mockImplementationOnce(() => new Promise((resolve) => { finishSave = () => resolve({ changedCount: 1 }); }));
+    const save = [...view.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Save");
+    await vi.waitFor(() => expect(save?.disabled).toBe(false));
+    save?.click();
+    await vi.waitFor(() => expect(api.bulkEditMusicMemberships).toHaveBeenCalledOnce());
+
+    trigger?.click();
+    trigger?.click();
+    await tick();
+    expect(api.getMusicMembershipMatrix).toHaveBeenCalledOnce();
+    api.getMusicMembershipMatrix.mockResolvedValueOnce([
+      { itemId: "song", playlistId: "a", weight: "normal" },
+      { itemId: "song", playlistId: "b", weight: "normal" },
+    ]);
+    finishSave();
+
+    await vi.waitFor(() => expect(view.querySelector<HTMLInputElement>("input[aria-label='Remove from Evening']")?.checked).toBe(true));
+    expect(api.getMusicMembershipMatrix).toHaveBeenCalledTimes(2);
+  });
+
   it("opens the builder without a selected item when native selection is absent", async () => {
     const onOpenBuilder = vi.fn();
     const view = await render(onOpenBuilder, -1);

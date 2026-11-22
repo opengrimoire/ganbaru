@@ -1520,7 +1520,7 @@
                   {@const cell = notesDatabasePropertyCell(row, column)}
                   <CollectionCell role="cell" class={`${frozenOffset(column.id) !== null ? "sticky z-20 bg-background" : ""} ${notesTableColumnPresentation(tableConfiguration?.presentation, column.id).wrap ? "notes-table-wrap" : ""}`}
                     style={`${frozenStyle(column.id) ?? ""} ${conditionalColorStyle(row, column.id)}`}>
-                    <div class={column.type === "title" ? "flex w-full min-w-0 items-start gap-0.5" : "contents"}
+                    <div class={column.type === "title" ? "peer flex w-full min-w-0 items-start gap-0.5" : "contents"}
                       style={column.type === "title" ? `padding-left: ${titleIndent(hierarchy?.depth ?? 0)};` : ""}>
                     {#if cell.kind === "mismatch"}
                     <NotesDatabaseMismatchCell pageId={row.id} propertyId={column.id} storedType={cell.storedType}
@@ -1536,7 +1536,7 @@
                     {/if}
                     </div>
                     {#if column.type === "title"}
-                      <button type="button" data-collection-hover-reveal="" class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground opacity-100 hover:bg-accent hover:text-accent-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-has-focus-visible/row:opacity-100"
+                      <button type="button" data-collection-hover-reveal="" class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground opacity-100 hover:bg-accent hover:text-accent-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-has-focus-visible/row:opacity-100 peer-focus-within:invisible"
                         aria-label={t("notes.databaseRowsOpen", title)} disabled={mutating || rowCreation.blocked(row.id)} onclick={() => openRow(row)}>
                         {#if !mobileShell}<PanelRight class="size-3.5" aria-hidden="true" />{/if}<span>{t("collections.property.open")}</span>
                       </button>

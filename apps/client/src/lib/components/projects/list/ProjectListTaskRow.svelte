@@ -227,7 +227,7 @@
     </div>
     <CollectionCell class={context?.cellClass("name")} style={context?.cellStyle("name")}>
     <!-- Section, tags, and the archived badge share the title line so every row keeps the shared row height. -->
-    <div class="flex w-full min-w-0 items-center gap-1.5" style={depth > 0 ? `padding-left: ${collectionRowIndent(depth)};` : undefined}>
+    <div class="peer flex w-full min-w-0 items-center gap-1.5" style={depth > 0 ? `padding-left: ${collectionRowIndent(depth)};` : undefined}>
       <input
         data-collection-cell-primary
         class="h-7 min-w-0 flex-1 truncate rounded-sm border border-transparent bg-transparent p-0 text-foreground outline-none"
@@ -266,7 +266,7 @@
       {/if}
     </div>
     <button type="button" data-collection-hover-reveal=""
-      class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground opacity-100 hover:bg-accent hover:text-accent-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-has-focus-visible/row:opacity-100"
+      class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground opacity-100 hover:bg-accent hover:text-accent-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-has-focus-visible/row:opacity-100 peer-focus-within:invisible"
       aria-label={t("projects.actions.openTaskDetails", task.title)} onclick={() => onOpenTask(task)}>
       {#if !mobileShell}<PanelRight class="size-3.5" aria-hidden="true" />{/if}<span>{t("collections.property.open")}</span>
     </button>

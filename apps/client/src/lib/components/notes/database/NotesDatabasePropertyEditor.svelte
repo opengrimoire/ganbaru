@@ -174,7 +174,7 @@
     data-table-cell="true" data-collection-cell-primary
     data-row-index={rowIndex}
     data-column-index={columnIndex}
-    class={cn("h-8 w-full min-w-0 rounded-sm border border-transparent bg-transparent px-1 text-foreground outline-none", page && pageTextClass)}
+    class={cn("h-8 w-full min-w-0 truncate rounded-sm border border-transparent bg-transparent px-1 text-foreground outline-none", page && pageTextClass)}
     value={String(value)}
     inputmode="text"
     aria-label={column.name}

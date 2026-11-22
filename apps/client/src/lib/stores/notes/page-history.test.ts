@@ -229,3 +229,34 @@ describe("page history snapshots", () => {
     expect(controller.snapshotsLoading).toBe(false);
   });
 });
+
+describe("page history versions", () => {
+  type Version = Awaited<ReturnType<typeof import("$lib/api/notes").loadNotesPageHistorySnapshot>>;
+
+  it("ends a running version load when it is asked again with no page open", async () => {
+    const api = await import("$lib/api/notes");
+    const pending: Array<(value: Version) => void> = [];
+    vi.mocked(api.loadNotesPageHistorySnapshot).mockReset().mockImplementation(
+      () => new Promise<Version>((resolve) => pending.push(resolve)),
+    );
+    let selected: string | null = "page-a";
+    const { createNotesPageHistoryController } = await import("./page-history.svelte");
+    const controller = createNotesPageHistoryController({
+      readSelectedPageId: () => selected,
+      applyPostMutation: vi.fn(),
+      requestPageLoadFocus: vi.fn(),
+      flushPendingBlockSaves: async () => undefined,
+      setLoadError: vi.fn(),
+    });
+    const running = controller.loadVersion("snapshot-a");
+    expect(controller.versionLoading).toBe(true);
+    selected = null;
+    await controller.loadVersion("snapshot-b");
+    expect(controller.versionLoading).toBe(false);
+    expect(controller.version).toBeNull();
+    pending[0]?.(loadedPage("page-a"));
+    await running;
+    expect(controller.versionLoading).toBe(false);
+    expect(controller.version).toBeNull();
+  });
+});

@@ -168,6 +168,9 @@ export function createNotesPageHistoryController(
     const requestId = ++versionRequestId;
     if (!pageId) {
       version = null;
+      versionSnapshotId = null;
+      versionLoading = false;
+      versionError = null;
       return;
     }
     versionLoading = true;

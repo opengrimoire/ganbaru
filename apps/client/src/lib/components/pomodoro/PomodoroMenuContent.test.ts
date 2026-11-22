@@ -115,6 +115,22 @@ describe("PomodoroMenuContent", () => {
     expect(focusActivity.read).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps the newest activity read when an older read resolves later", async () => {
+    let resolveFirst: (activity: FocusOtherDeviceActivity[]) => void = () => {};
+    focusActivity.read.mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }));
+    focusActivity.read.mockResolvedValueOnce([]);
+    const host = mountMenu();
+    await vi.waitFor(() => expect(focusActivity.applied).toHaveLength(1));
+
+    for (const onApplied of focusActivity.applied) onApplied(["focus"]);
+    await vi.waitFor(() => expect(focusActivity.read).toHaveBeenCalledTimes(2));
+    await Promise.resolve();
+    resolveFirst([laptopFocusing]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(activityLines(host)).toEqual([]);
+  });
+
   it("asks before an explicit start while another device is focusing", async () => {
     pomodoro.isActive = false;
     focusActivity.read.mockResolvedValueOnce([laptopFocusing]);

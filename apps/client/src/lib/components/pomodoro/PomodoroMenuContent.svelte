@@ -100,14 +100,22 @@
     onOpenMusic();
   }
 
-  /** Read what other linked devices are focusing on; a failed read shows no activity. */
+  let activityReadSequence = 0;
+
+  /**
+   * Read what other linked devices are focusing on; a failed read shows no activity.
+   * Only the newest read applies, so an older read that resolves late cannot restore stale activity.
+   */
   async function refreshActivity(): Promise<void> {
+    const sequence = ++activityReadSequence;
+    let next: FocusOtherDeviceActivity[];
     try {
-      otherActivity = await readFocusDeviceActivity();
+      next = await readFocusDeviceActivity();
     } catch (error) {
       console.warn("Failed to read Focus activity of other devices:", error);
-      otherActivity = [];
+      next = [];
     }
+    if (sequence === activityReadSequence) otherActivity = next;
   }
 
   onMount(() => {

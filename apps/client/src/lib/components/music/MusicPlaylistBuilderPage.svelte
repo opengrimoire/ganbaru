@@ -157,6 +157,8 @@
   let firstUsePreparationActive = $state(false);
   let firstUseFinalizing = $state(false);
   let firstUseFinalizationGeneration = 0;
+  /** The latest destination change; plain because only async continuations compare it. */
+  let destinationChangeToken: symbol | null = null;
   let playlistManagementOpen = $state(false);
   interface PlaylistManagerHandle {
     cancelManaging: () => Promise<void>;
@@ -624,12 +626,21 @@
     sourceSurface = "item-repair";
   }
 
+  /** Marks a destination change as the latest one so earlier changes stop before loading their playlist. */
+  function beginDestinationChange(): symbol {
+    const token = Symbol("music-builder-destination");
+    destinationChangeToken = token;
+    return token;
+  }
+
   async function navigateNow(next: MusicBuilderDestination): Promise<void> {
     if (next.kind === "soundscapes" && !supportsSoundscapes) return;
+    const token = beginDestinationChange();
     history = pushMusicBuilderRoute(history, { destination: next, inspectorItemId: null }, routeContext);
     library.navigate(next);
     inspector.clear();
     await library.ensureCurrentDestination();
+    if (token !== destinationChangeToken) return;
     if (next.kind === "playlist") await playlist.load(next.playlistId);
     else playlist.clear();
   }
@@ -713,9 +724,11 @@
   async function handleBack(): Promise<void> {
     const previous = backMusicBuilderRoute(history, routeContext);
     if (!previous) { void openPlayerFromBuilder(); return; }
+    const token = beginDestinationChange();
     history = previous;
     library.navigate(history.current.destination);
     await library.ensureCurrentDestination();
+    if (token !== destinationChangeToken) return;
     if (history.current.destination.kind === "playlist") await playlist.load(history.current.destination.playlistId);
     else playlist.clear();
   }

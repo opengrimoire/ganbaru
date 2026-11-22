@@ -352,6 +352,24 @@ describe("Notes comment authoring", () => {
     expect(controller.activeCommentParent).toBeNull();
   });
 
+  it("keeps a block comment started while an earlier block comment posts", async () => {
+    const controller = controllerForPage(() => "page-a");
+    await controller.reloadComments();
+    let release: () => void = () => undefined;
+    backend.createGate = new Promise<void>((resolve) => { release = resolve; });
+    controller.setActiveCommentParent({ type: "block_id", block_id: "block-1" });
+
+    const pending = controller.createComment([createTextRichText("First")]);
+    await vi.waitFor(() => expect(backend.created).toHaveLength(1));
+    const nextParent: NotesCommentParent = { type: "block_id", block_id: "block-2" };
+    controller.setActiveCommentParent(nextParent);
+    release();
+    await pending;
+
+    expect(backend.created[0].parent).toEqual({ type: "block_id", block_id: "block-1" });
+    expect(controller.activeCommentParent).toEqual(nextParent);
+  });
+
   it("replies and edits with attachments and keeps the thread list current", async () => {
     const controller = controllerForPage(() => "page-a");
     await controller.reloadComments();

@@ -331,7 +331,12 @@ export function createNotesCollaborationController(
       rich_text: body,
       attachments: [...attachments],
     }));
-    if (pendingParent) {
+    // A comment started on another block while this one posted stays pending.
+    if (
+      pendingParent
+      && activeCommentParent
+      && notesCommentParentKey(activeCommentParent) === notesCommentParentKey(parent)
+    ) {
       activeCommentParent = null;
       activeCommentAnchor = null;
     }

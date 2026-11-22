@@ -440,6 +440,8 @@ impl ProviderDriver for CursorProviderDriver {
             let prompt_completions = Arc::clone(&live.prompt_completions);
             let delivered_instructions = Arc::clone(&live.delivered_instructions);
             let terminal_callbacks = live.terminal_callbacks.clone();
+            let lifecycle = live.lifecycle.clone();
+            let kill = live.connection.kill_handle();
             let prompt_context = DriverOperationContext {
                 operation_id: context.operation_id.clone(),
                 deadline: Instant::now() + PROMPT_TIMEOUT,
@@ -511,9 +513,24 @@ impl ProviderDriver for CursorProviderDriver {
                             .map_err(|_| driver_state_error())
                             .and_then(|mut state| normalizer.finish_turn(&mut state, stop_reason))
                     }
-                    // A failed prompt ends only its turn. When the transport itself is gone,
-                    // the router sees the close and fails the session.
+                    // A lost transport fails the session, which the router owns: stopping the
+                    // agent ends its output, so the router sees the close even when only the
+                    // writer failed, and it interrupts the turn as part of the failure.
+                    Err(super::transport::AcpRpcFailure::Closed) if lifecycle.is_running() => {
+                        let _ = kill.kill(SESSION_FORCE_STOP).await;
+                        Ok(Vec::new())
+                    }
+                    // Any other failed prompt ends only its turn. An agent whose prompt timed
+                    // out may still run it, so it is asked to cancel before the next turn.
                     Err(error) => {
+                        if error == super::transport::AcpRpcFailure::Timeout {
+                            let _ = client
+                                .notify(
+                                    "session/cancel",
+                                    json!({ "sessionId": provider_thread_id }),
+                                )
+                                .await;
+                        }
                         let chat_error = error.to_chat_error("prompt");
                         route
                             .lock()

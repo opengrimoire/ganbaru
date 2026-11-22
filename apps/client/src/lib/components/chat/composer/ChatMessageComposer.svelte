@@ -1327,6 +1327,7 @@
       error = invalid;
       return;
     }
+    const startedIn = editTarget;
     error = null;
     try {
       const imported = await Promise.all(files.map(async (file) => chatApi.importChatImage(
@@ -1335,9 +1336,7 @@
         file.name,
         new Uint8Array(await file.arrayBuffer()),
       )));
-      rememberAttachments(imported);
-      attachmentIds = [...attachmentIds, ...imported.map((attachment) => attachment.id)];
-      persist();
+      addImportedAttachments(startedIn, imported);
     } catch (cause: unknown) {
       error = chatErrorMessage(cause, t("chatErrors.actions.fileAction"));
     }
@@ -1364,6 +1363,7 @@
       error = t("chat.composer.paste.attachmentLimit", CHAT_IMAGE_LIMIT);
       return;
     }
+    const startedIn = editTarget;
     error = null;
     try {
       const attachment = await chatApi.importChatTextSnippet(
@@ -1372,12 +1372,28 @@
         t("chat.composer.paste.snippetName", pastedTextLineCount(text)),
         text,
       );
-      rememberAttachments([attachment]);
-      attachmentIds = [...attachmentIds, attachment.id];
-      persist();
+      addImportedAttachments(startedIn, [attachment]);
     } catch (cause: unknown) {
       error = chatErrorMessage(cause, t("chatErrors.actions.fileAction"));
     }
+  }
+
+  /**
+   * Adds imported attachments to the content the import started in. An edit that began during the import holds
+   * other content, so attachments meant for the draft go to the saved draft, and ones meant for an edit that has
+   * since ended are dropped with it.
+   */
+  function addImportedAttachments(startedIn: ComposerEditTarget, attachments: readonly ChatAttachmentRead[]): void {
+    rememberAttachments(attachments);
+    const ids = attachments.map((attachment) => attachment.id);
+    if (editTarget === startedIn) {
+      attachmentIds = [...attachmentIds, ...ids];
+      persist();
+      return;
+    }
+    if (startedIn.phase !== "draft") return;
+    const draft = chat.organizationalDraft(destination);
+    chat.setOrganizationalDraft(destination, { ...draft, attachmentIds: [...draft.attachmentIds, ...ids] });
   }
 
   function rememberAttachments(attachments: readonly ChatAttachmentRead[]): void {
@@ -1530,6 +1546,7 @@
       imageInput?.click();
       return;
     }
+    const startedIn = editTarget;
     error = null;
     try {
       const imported = await chatApi.pickChatImages(
@@ -1537,9 +1554,7 @@
         Array.from({ length: available }, () => crypto.randomUUID()),
         t("chat.composer.attachImages"),
       );
-      rememberAttachments(imported);
-      attachmentIds = [...attachmentIds, ...imported.map((attachment) => attachment.id)];
-      persist();
+      addImportedAttachments(startedIn, imported);
     } catch (cause: unknown) {
       error = chatErrorMessage(cause, t("chatErrors.actions.fileAction"));
     }

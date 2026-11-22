@@ -67,7 +67,6 @@ pub(super) async fn create_child_browser_webview(
             manager.update_from_page(&loading_tab, |read| {
                 read.current_url = bounded_preview_url(payload.url());
                 read.loading = payload.event() == PageLoadEvent::Started;
-                read.external_origin = !is_loopback(payload.url());
             });
         })
         .on_document_title_changed(move |_, title| {
@@ -100,7 +99,6 @@ pub(super) async fn create_child_browser_webview(
         loading: true,
         viewport_width: bounds.width.round() as u32,
         viewport_height: bounds.height.round() as u32,
-        external_origin: !is_loopback(&url),
     };
     app.state::<ChatBrowserManager>()
         .tabs

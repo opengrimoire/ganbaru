@@ -259,7 +259,6 @@ fn stored_tab(thread_id: &str, url: &str) -> BrowserTabRead {
         loading: false,
         viewport_width: 800,
         viewport_height: 600,
-        external_origin: false,
     }
 }
 
@@ -473,4 +472,21 @@ fn repeating_the_held_approval_keeps_its_id_and_is_not_announced_again() {
         pending.take(&thread, shown),
         Some(super::approvals::PendingPreviewApproval::Network)
     );
+}
+
+#[test]
+fn the_external_origin_flag_follows_the_current_url() {
+    let wire = |url: &str| {
+        serde_json::to_value(stored_tab("thread:test", url)).expect("tab should serialize")
+            ["externalOrigin"]
+            .clone()
+    };
+    assert_eq!(wire("https://example.com/page"), serde_json::json!(true));
+    assert_eq!(wire("http://localhost:5173/"), serde_json::json!(false));
+    assert_eq!(wire("http://[::1]:8080/"), serde_json::json!(false));
+    assert_eq!(wire("not a url"), serde_json::json!(false));
+    let mut tab = stored_tab("thread:test", "http://127.0.0.1:3000/");
+    assert!(!tab.external_origin());
+    tab.current_url = "https://example.org/".to_string();
+    assert!(tab.external_origin());
 }

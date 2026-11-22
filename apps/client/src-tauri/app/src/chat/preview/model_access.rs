@@ -328,7 +328,6 @@ mod tests {
             loading: false,
             viewport_width: 800,
             viewport_height: 600,
-            external_origin: true,
         };
         let hidden = redact_for_model(
             read("https://mail.example.com/inbox?q=secret"),

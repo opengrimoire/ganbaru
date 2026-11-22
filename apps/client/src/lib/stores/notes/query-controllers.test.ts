@@ -34,6 +34,7 @@ const backend = vi.hoisted(() => {
     backlinks: queue<NotesBacklink[]>(),
     aliases: queue<NotesPageAlias[]>(),
     unresolved: queue<NotesUnresolvedLink[]>(),
+    addAlias: vi.fn<() => Promise<NotesPageAlias[]>>(),
   };
 });
 
@@ -49,6 +50,7 @@ vi.mock("$lib/api/notes", async (importOriginal) => {
     listNotesBacklinks: backend.backlinks.next,
     listNotesPageAliases: backend.aliases.next,
     listNotesUnresolvedLinks: backend.unresolved.next,
+    addNotesPageAlias: backend.addAlias,
   };
 });
 
@@ -222,6 +224,38 @@ describe("Notes query controllers", () => {
     expect(controller.backlinksLoading).toBe(false);
     expect(controller.aliasesLoading).toBe(false);
     expect(controller.unresolvedLoading).toBe(false);
+  });
+
+  it("keeps an alias write when an older alias read finishes after it", async () => {
+    const { createNotesLinksController } = await import("./links.svelte");
+    const written: NotesPageAlias = {
+      object: "page_alias",
+      id: "alias-new",
+      page_id: "page-a",
+      alias: "New",
+      normalized_alias: "new",
+      created_time: "2026-07-03T00:00:00.000Z",
+      last_edited_time: "2026-07-03T00:00:00.000Z",
+    };
+    backend.addAlias.mockResolvedValueOnce([written]);
+    const controller = createNotesLinksController({
+      readSelectedPageId: () => "page-a",
+      readSelectedProjectId: () => null,
+      readAllPages: () => [],
+      reloadSelectedPage: async () => undefined,
+      scheduleVisibleMetadataRefresh: () => undefined,
+    });
+    const staleRead = controller.reloadPageAliases();
+    const staleCall = lastCall(backend.aliases.next);
+    const write = controller.addPageAlias("New");
+    await vi.waitFor(() => expect(controller.aliases).toEqual([written]));
+    backend.aliases.resolve(staleCall, []);
+    await staleRead;
+    expect(controller.aliases).toEqual([written]);
+    expect(controller.aliasesLoading).toBe(false);
+    backend.unresolved.resolve(lastCall(backend.unresolved.next), []);
+    backend.backlinks.resolve(lastCall(backend.backlinks.next), []);
+    await write;
   });
 
   it("keeps changed and removed pages current when a destination read finishes late", async () => {

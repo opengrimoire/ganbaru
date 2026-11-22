@@ -469,6 +469,44 @@ describe("ProjectSidebarSection", () => {
     expect(store.renameView).toHaveBeenCalledWith("overview", "Status");
   });
 
+  it("keeps showing a later view rename while an earlier view rename settles", async () => {
+    const settles: Array<(error?: Error) => void> = [];
+    store.renameView.mockImplementation(() => new Promise<void>((resolve, reject) => {
+      settles.push((error) => (error ? reject(error) : resolve()));
+    }));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    render();
+
+    async function renameBacklog(from: string, to: string): Promise<void> {
+      button(`View actions: ${from}`).click();
+      flushSync();
+      button("Rename view").click();
+      await tick();
+      const input = target.querySelector<HTMLInputElement>('input[aria-label="View name"]');
+      if (!input) throw new Error("Rename input missing");
+      input.value = to;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      flushSync();
+    }
+
+    await renameBacklog("Backlog", "Alpha");
+    await renameBacklog("Alpha", "Beta");
+    expect(viewRowLabels()).toEqual(["Overview", "Beta", "Notes"]);
+
+    settles[0]?.(new Error("rename refused"));
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+    expect(viewRowLabels()).toEqual(["Overview", "Beta", "Notes"]);
+
+    settles[1]?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+    expect(viewRowLabels()).toEqual(["Overview", "Backlog", "Notes"]);
+  });
+
   it("reorders a view by dragging it past other rows and keeps the release from opening it", () => {
     const onSelectView = vi.fn();
     render({ onSelectView });

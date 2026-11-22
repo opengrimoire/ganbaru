@@ -69,7 +69,9 @@
   let menuOpen = $state(false);
   let editing = $state(false);
   let nameDraft = $state("");
-  let pendingName = $state<string | null>(null);
+  /** The latest rename in flight, named by a token so an earlier rename settling cannot clear a later one's name. */
+  let pendingRename = $state.raw<{ readonly name: string; readonly token: symbol } | null>(null);
+  const pendingName = $derived(pendingRename?.name ?? null);
   let actionButton = $state<HTMLButtonElement | null>(null);
   let menuElement = $state<HTMLDivElement | null>(null);
   let renameInput = $state<HTMLInputElement | null>(null);
@@ -127,13 +129,14 @@
       ? name.length === 0 || name === projectViewTypeLabel(t, view.viewType)
       : name === view.name;
     if (unchanged) return;
-    pendingName = name || projectViewTypeLabel(t, view.viewType);
+    const rename = { name: name || projectViewTypeLabel(t, view.viewType), token: Symbol("project view rename") };
+    pendingRename = rename;
     void onRename(name)
       .catch((error: unknown) => {
         console.error("Failed to rename a project view from the Projects sidebar", error);
       })
       .finally(() => {
-        pendingName = null;
+        if (pendingRename?.token === rename.token) pendingRename = null;
       });
   }
 

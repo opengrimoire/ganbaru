@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import CalendarClock from "@lucide/svelte/icons/calendar-clock";
   import { dismissChatScheduleProposal, readChatScheduleProposalStates } from "$lib/api/chat";
   import type {
@@ -16,6 +17,14 @@
   import { localTimezone } from "$lib/stores/calendar/event-payloads";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
+  import {
+    asyncResourceError,
+    failAsyncRequest,
+    idleAsyncResource,
+    resolveAsyncRequest,
+    startAsyncRequest,
+    type AsyncResource,
+  } from "$lib/utils/async-resource";
 
   /**
    * An agent's schedule proposal: when it would first send, how it repeats, and why. Nothing is
@@ -35,9 +44,13 @@
   const { t } = localization;
   const chat = useChat();
   const preferences = getPreferences();
-  let proposalState = $state<ChatScheduleProposalState | null>(null);
+  /** The proposal state as last read; a settling command replaces it, which also supersedes a read in flight. */
+  let stateRead = $state.raw<AsyncResource<ChatScheduleProposalState | null>>(idleAsyncResource(null));
   let pending = $state(false);
-  let error = $state<string | null>(null);
+  /** The failure of the last command, which a later read of the state does not clear. */
+  let actionError = $state<string | null>(null);
+  const proposalState = $derived(stateRead.data);
+  const error = $derived(actionError ?? asyncResourceError(stateRead));
   let ScheduleMenu = $state<ScheduleMenuComponent | null>(null);
   let menuOpen = $state(false);
 
@@ -59,37 +72,47 @@
 
   $effect(() => {
     const _version = chat.scheduledMessagesVersion;
-    void loadState(proposalItemId);
+    const itemId = proposalItemId;
+    untrack(() => { void loadState(itemId); });
   });
 
+  /**
+   * Reads the proposal state. Only the newest read settles it, so an older read that finishes later, or one that a
+   * confirm or dismiss overtook, cannot bring back the actions.
+   *
+   * @param itemId - The proposal message to read.
+   */
   async function loadState(itemId: ChatConversationItemId): Promise<void> {
+    const started = startAsyncRequest(stateRead);
+    stateRead = started.resource;
     try {
       const [read] = await readChatScheduleProposalStates([itemId]);
-      if (itemId === proposalItemId) proposalState = read?.state ?? "pending";
+      stateRead = resolveAsyncRequest(stateRead, started.token, read?.state ?? "pending");
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
+      stateRead = failAsyncRequest(stateRead, started.token, chatErrorMessage(cause, t("chatErrors.actions.proposalAction")));
     }
   }
 
   async function openConfirm(): Promise<void> {
     if (pending) return;
-    error = null;
+    actionError = null;
     try {
       ScheduleMenu ??= (await import("$lib/components/chat/composer/ChatMessageScheduleMenu.svelte")).default;
       menuOpen = true;
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
+      actionError = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
     }
   }
 
   async function confirm(scheduledFor: string, recurrence: ChatRecurrenceSpec | null): Promise<void> {
     pending = true;
-    error = null;
+    actionError = null;
+    const itemId = proposalItemId;
     try {
-      await chat.confirmScheduleProposal({ proposalItemId, scheduledFor, recurrence, normalizedMarkdown: null });
-      proposalState = "confirmed";
+      await chat.confirmScheduleProposal({ proposalItemId: itemId, scheduledFor, recurrence, normalizedMarkdown: null });
+      if (itemId === proposalItemId) stateRead = idleAsyncResource("confirmed");
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
+      if (itemId === proposalItemId) actionError = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
     } finally {
       pending = false;
     }
@@ -103,12 +126,13 @@
     });
     if (!confirmed || pending) return;
     pending = true;
-    error = null;
+    actionError = null;
+    const itemId = proposalItemId;
     try {
-      await dismissChatScheduleProposal(proposalItemId);
-      proposalState = "dismissed";
+      await dismissChatScheduleProposal(itemId);
+      if (itemId === proposalItemId) stateRead = idleAsyncResource("dismissed");
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
+      if (itemId === proposalItemId) actionError = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
     } finally {
       pending = false;
     }

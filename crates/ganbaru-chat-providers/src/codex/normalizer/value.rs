@@ -58,9 +58,9 @@ pub(super) fn route_turn(
     object: Option<&Map<String, Value>>,
 ) -> Option<ChatTurnId> {
     let provider_turn = object.and_then(|value| text(value, "turnId"));
-    match (provider_turn, state.active_provider_turn_id.as_deref()) {
+    match (provider_turn, state.turn().provider_turn()) {
         (Some(actual), Some(expected)) if actual != expected => None,
-        _ => state.active_chat_turn_id.clone(),
+        _ => state.turn().chat_turn().cloned(),
     }
 }
 

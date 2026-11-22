@@ -8,6 +8,7 @@
 use super::normalizer::{CodexEventNormalizer, CodexRouteState};
 use super::protocol::{TurnStartResponse, decode_response};
 use super::transport::CodexRpcClient;
+use super::turn_route::TurnRouteEvent;
 use crate::events::*;
 use crate::live_session::LiveSessionLifecycle;
 use crate::models::*;
@@ -107,20 +108,16 @@ pub(super) async fn begin_capacity_retry(
         if other_thread || other_turn {
             return Ok(false);
         }
-        let Some(chat_turn) = state.active_chat_turn_id.clone() else {
+        let Some(chat_turn) = state.turn().chat_turn().cloned() else {
             return Ok(false);
         };
-        let Some(retry) = state
-            .capacity_retry
-            .as_mut()
-            .filter(|retry| retry.available())
-        else {
+        let Some(retry) = state.capacity_retry_mut().filter(|retry| retry.available()) else {
             return Ok(false);
         };
         retry.attempts += 1;
         let attempt = retry.attempts;
         let retry = retry.clone();
-        state.active_provider_turn_id = None;
+        state.transition_turn(TurnRouteEvent::RestartAttempt)?;
         state.stream_indexes.clear();
         let provider_turn = turn
             .get("id")
@@ -203,17 +200,19 @@ async fn run_capacity_retry(
                 Ok(provider_turn_id) if current => {
                     // A later failure may already have absorbed this turn into the next attempt.
                     let still_this_attempt = state
-                        .capacity_retry
-                        .as_ref()
+                        .turn()
+                        .retry()
                         .is_some_and(|current| current.attempts == attempt);
-                    if state.active_provider_turn_id.is_none() && still_this_attempt {
-                        state.active_provider_turn_id = Some(provider_turn_id.clone());
+                    if state.turn().provider_turn().is_none() && still_this_attempt {
+                        let _ = state.transition_turn(TurnRouteEvent::ProviderTurn(
+                            provider_turn_id.clone(),
+                        ));
                     }
                     None
                 }
                 // An interrupt that saw this turn start already stopped it for its chat turn.
                 Ok(provider_turn_id)
-                    if state.active_provider_turn_id.as_deref() == Some(provider_turn_id) =>
+                    if state.turn().provider_turn() == Some(provider_turn_id.as_str()) =>
                 {
                     None
                 }
@@ -289,7 +288,7 @@ fn retry_is_current_in(
 ) -> bool {
     !retry.cancellation.is_cancelled()
         && resources.lifecycle.is_running()
-        && state.active_chat_turn_id.as_ref() == Some(chat_turn)
+        && state.turn().chat_turn() == Some(chat_turn)
 }
 
 /// Refuses to start a turn while a retry request is in flight, because the retried provider turn

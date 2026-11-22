@@ -9,6 +9,7 @@ mod protocol;
 mod sandbox_check;
 mod session;
 mod transport;
+mod turn_route;
 
 #[cfg(test)]
 pub(crate) mod replay;

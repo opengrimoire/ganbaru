@@ -87,16 +87,14 @@ pub(super) async fn interrupt_live_turn(
 ) -> ChatResult<()> {
     let (state, waiting_retry) = {
         let mut state = live.route.lock().map_err(|_| driver_state_error())?;
-        let retry = state.capacity_retry.take();
-        let waiting_retry = retry.as_ref().is_some_and(CodexCapacityRetry::retrying);
-        if let Some(retry) = retry {
-            retry.cancel();
-        }
+        let waiting_retry = state
+            .turn()
+            .retry()
+            .is_some_and(CodexCapacityRetry::retrying);
+        state.cancel_capacity_retry();
         (state.clone(), waiting_retry)
     };
-    if waiting_retry
-        && state.active_provider_turn_id.is_none()
-        && state.active_chat_turn_id.is_some()
+    if waiting_retry && state.turn().provider_turn().is_none() && state.turn().chat_turn().is_some()
     {
         let event = {
             let mut state = live.route.lock().map_err(|_| driver_state_error())?;
@@ -105,9 +103,10 @@ pub(super) async fn interrupt_live_turn(
         };
         return live.sink.emit(event).await;
     }
-    let (Some(provider_thread_id), Some(provider_turn_id)) =
-        (state.provider_thread_id, state.active_provider_turn_id)
-    else {
+    let (Some(provider_thread_id), Some(provider_turn_id)) = (
+        state.provider_thread_id.clone(),
+        state.turn().provider_turn().map(str::to_string),
+    ) else {
         return Ok(());
     };
     live.connection

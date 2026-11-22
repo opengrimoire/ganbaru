@@ -1,5 +1,6 @@
 //! Codex app-server notification normalization.
 
+use super::turn_route::{TurnRoute, TurnRouteEvent, TurnRouteOutcome};
 use crate::events::*;
 use crate::models::*;
 use serde_json::{Map, Value, json};
@@ -76,16 +77,14 @@ pub(super) const CODEX_NOTIFICATION_METHODS: &[&str] = &[
 #[derive(Clone, Debug)]
 pub struct CodexRouteState {
     pub provider_thread_id: Option<String>,
-    pub active_chat_turn_id: Option<ChatTurnId>,
-    pub active_provider_turn_id: Option<String>,
+    /// The running turn, changed only through [`Self::transition_turn`].
+    turn: TurnRoute,
     pub thread_state: ChatThreadState,
     pub modes: TurnModeSnapshot,
     pub effective_model_id: Option<ModelId>,
     pub stream_indexes: HashMap<(String, ContentStreamKind), u32>,
     pub changed_files: Vec<ChangedFileSummary>,
     pub rate_limits: CodexRateLimits,
-    /// The capacity retry armed for the active `turn/start` turn.
-    pub capacity_retry: Option<super::capacity_retry::CodexCapacityRetry>,
     /// A retry `turn/start` is awaiting its response. The chat turn may already have settled, so
     /// a new turn must wait until the retried provider turn is known and can be ignored.
     pub retry_request_in_flight: bool,
@@ -102,7 +101,7 @@ impl CodexRouteState {
     /// The state a session change reports as its previous state: `Active` while a chat turn
     /// runs, `Ready` otherwise. The runtime owns the session state; this only labels events.
     pub fn running_session_state(&self) -> ProviderSessionState {
-        if self.active_chat_turn_id.is_some() {
+        if self.turn.chat_turn().is_some() {
             ProviderSessionState::Active
         } else {
             ProviderSessionState::Ready
@@ -112,18 +111,36 @@ impl CodexRouteState {
     pub fn new(modes: TurnModeSnapshot, model_id: Option<ModelId>) -> Self {
         Self {
             provider_thread_id: None,
-            active_chat_turn_id: None,
-            active_provider_turn_id: None,
+            turn: TurnRoute::Idle,
             thread_state: ChatThreadState::Active,
             modes,
             effective_model_id: model_id,
             stream_indexes: HashMap::new(),
             changed_files: Vec::new(),
             rate_limits: CodexRateLimits::default(),
-            capacity_retry: None,
             retry_request_in_flight: false,
             abandoned_provider_turn_ids: VecDeque::new(),
         }
+    }
+
+    /// The running turn.
+    pub fn turn(&self) -> &TurnRoute {
+        &self.turn
+    }
+
+    /// Applies `event` to the running turn; see [`TurnRoute::transition`].
+    pub fn transition_turn(&mut self, event: TurnRouteEvent) -> ChatResult<TurnRouteOutcome> {
+        self.turn.transition(event)
+    }
+
+    /// Takes the armed capacity retry out and cancels it, leaving the turn running.
+    pub fn cancel_capacity_retry(&mut self) -> Option<super::capacity_retry::CodexCapacityRetry> {
+        self.turn.cancel_retry()
+    }
+
+    /// The capacity retry armed for the running chat turn.
+    pub fn capacity_retry_mut(&mut self) -> Option<&mut super::capacity_retry::CodexCapacityRetry> {
+        self.turn.retry_mut()
     }
 
     /// Remembers a provider turn no chat turn owns, dropping the oldest past the bound.
@@ -150,8 +167,8 @@ impl CodexRouteState {
     pub fn owns_provider_turn(&self, provider_turn_id: &str) -> bool {
         !self.is_abandoned(provider_turn_id)
             && self
-                .active_provider_turn_id
-                .as_deref()
+                .turn
+                .provider_turn()
                 .is_none_or(|active| active == provider_turn_id)
     }
 }

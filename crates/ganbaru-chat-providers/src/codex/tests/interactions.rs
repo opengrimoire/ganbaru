@@ -115,8 +115,15 @@ fn a_cancelled_approval_resolves_even_when_codex_refuses_the_interrupt() {
             None,
         );
         state.provider_thread_id = Some("provider-thread-1".to_string());
-        state.active_chat_turn_id = Some(identifier("chat-turn-1", ChatTurnId::new));
-        state.active_provider_turn_id = Some("provider-turn-1".to_string());
+        state
+            .transition_turn(TurnRouteEvent::Begin {
+                chat_turn: identifier("chat-turn-1", ChatTurnId::new),
+                retry: None,
+            })
+            .unwrap();
+        state
+            .transition_turn(TurnRouteEvent::ProviderTurn("provider-turn-1".to_string()))
+            .unwrap();
         let route = Arc::new(Mutex::new(state));
         let sink = Arc::new(RecordingSink::default());
         let sink_trait: Arc<dyn ProviderEventSink> = sink.clone();

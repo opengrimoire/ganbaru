@@ -15,6 +15,7 @@ use super::session::{
 use super::transport::{
     CodexInboundMessage, CodexRpcConnection, CodexRpcFailure, MAX_JSONL_MESSAGE_BYTES,
 };
+use super::turn_route::TurnRouteEvent;
 use crate::events::{
     ApprovalSubjectKind, CanonicalEvent, CanonicalRuntimeEvent, SessionPermissionGrant,
 };

@@ -100,9 +100,7 @@ impl CodexRouterResources {
 /// connection.
 fn cancel_capacity_retry(resources: &CodexRouterResources) {
     if let Ok(mut state) = resources.route.lock() {
-        if let Some(retry) = state.capacity_retry.take() {
-            retry.cancel();
-        }
+        state.cancel_capacity_retry();
     }
 }
 
@@ -193,7 +191,7 @@ async fn route_server_request(
         .map_err(|_| router_state_error())?
         .clone();
     let provenance = CodexRequestProvenance {
-        chat_turn_id: route.active_chat_turn_id.clone(),
+        chat_turn_id: route.turn().chat_turn().cloned(),
         provider_turn_id: text(object, "turnId")
             .and_then(|value| ProviderTurnId::new(value.to_string()).ok()),
         provider_item_id: text(object, "itemId")
@@ -689,8 +687,10 @@ pub async fn resolve_codex_approval(
     )?;
     sink.emit(event).await?;
     if request.decision.kind == ApprovalDecisionKind::Cancel
-        && let (Some(thread_id), Some(turn_id)) =
-            (state.provider_thread_id, state.active_provider_turn_id)
+        && let (Some(thread_id), Some(turn_id)) = (
+            state.provider_thread_id.clone(),
+            state.turn().provider_turn().map(str::to_string),
+        )
     {
         // Best effort: a refused interrupt leaves the turn running, and the person can still
         // interrupt it from the turn itself.

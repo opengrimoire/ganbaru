@@ -11,7 +11,12 @@ fn redacted_fixture_normalizes_lifecycle_content_plan_and_unknown_events() {
         modes(SafetyMode::AskForApproval, InteractionMode::Build),
         Some(identifier("gpt-5.4", ModelId::new)),
     );
-    state.active_chat_turn_id = Some(identifier("chat-turn-1", ChatTurnId::new));
+    state
+        .transition_turn(TurnRouteEvent::Begin {
+            chat_turn: identifier("chat-turn-1", ChatTurnId::new),
+            retry: None,
+        })
+        .unwrap();
     let mut events = Vec::new();
     for line in include_str!("../fixtures/notifications.jsonl").lines() {
         let envelope: Value = serde_json::from_str(line).unwrap();
@@ -77,7 +82,12 @@ fn item_lifecycles_preserve_command_message_and_file_change_data() {
         modes(SafetyMode::AskForApproval, InteractionMode::Build),
         Some(identifier("gpt-5.4", ModelId::new)),
     );
-    state.active_chat_turn_id = Some(identifier("chat-turn-1", ChatTurnId::new));
+    state
+        .transition_turn(TurnRouteEvent::Begin {
+            chat_turn: identifier("chat-turn-1", ChatTurnId::new),
+            retry: None,
+        })
+        .unwrap();
 
     normalizer
         .normalize_notification(
@@ -204,8 +214,15 @@ fn context_compaction_is_a_thread_level_activity() {
         modes(SafetyMode::AskForApproval, InteractionMode::Build),
         Some(identifier("gpt-5.4", ModelId::new)),
     );
-    state.active_chat_turn_id = Some(identifier("compact-turn-1", ChatTurnId::new));
-    state.active_provider_turn_id = Some("provider-turn-1".to_string());
+    state
+        .transition_turn(TurnRouteEvent::Begin {
+            chat_turn: identifier("compact-turn-1", ChatTurnId::new),
+            retry: None,
+        })
+        .unwrap();
+    state
+        .transition_turn(TurnRouteEvent::ProviderTurn("provider-turn-1".to_string()))
+        .unwrap();
 
     let events = normalizer
         .normalize_notification(

@@ -309,13 +309,17 @@
     routeUi.closeToolbarImmediately();
   }
 
-  /** Selects a project from its sidebar menu and opens its settings, asking first when other settings are unsaved. */
+  /**
+   * Selects a project from its sidebar menu and opens its settings, asking first when other settings are unsaved. A
+   * newer selection that supersedes this one leaves the project the user moved to as it is.
+   */
   function openProjectSettings(project: Project): void {
     if (project.id === projects.selectedProjectId && routeUi.toolbarPanel === "settings") return;
     routeUi.runAfterSettingsClose(() => {
       void (async () => {
         try {
           if (project.id !== projects.selectedProjectId) await projects.selectProject(project.id);
+          if (project.id !== projects.selectedProjectId) return;
           routeUi.closeTaskDetail();
           routeUi.setToolbarPanel("settings");
         } catch (error: unknown) {

@@ -259,4 +259,30 @@ describe("page history versions", () => {
     expect(controller.versionLoading).toBe(false);
     expect(controller.version).toBeNull();
   });
+
+  it("keeps the newest version when an older load answers late and clears it on failure", async () => {
+    const api = await import("$lib/api/notes");
+    const pending: Array<{ resolve: (value: Version) => void; reject: (error: Error) => void }> = [];
+    vi.mocked(api.loadNotesPageHistorySnapshot).mockReset().mockImplementation(
+      () => new Promise<Version>((resolve, reject) => pending.push({ resolve, reject })),
+    );
+    const { controller } = await setup();
+    const stale = controller.loadVersion("snapshot-a");
+    const current = controller.loadVersion("snapshot-b");
+    const newest = loadedPage("page-a");
+    pending[1]?.resolve(newest);
+    await current;
+    pending[0]?.resolve(loadedPage("page-a"));
+    await stale;
+    expect(controller.version).toBe(newest);
+    expect(controller.versionLoading).toBe(false);
+
+    const failed = controller.loadVersion("snapshot-c");
+    expect(controller.version).toBe(newest);
+    pending[2]?.reject(new Error("offline"));
+    await failed;
+    expect(controller.version).toBeNull();
+    expect(controller.versionError).toContain("offline");
+    expect(controller.versionLoading).toBe(false);
+  });
 });

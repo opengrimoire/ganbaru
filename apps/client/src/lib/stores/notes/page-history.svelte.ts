@@ -22,6 +22,7 @@ import {
   isCurrentAsyncRequest,
   resolveAsyncRequest,
   startAsyncRequest,
+  updateAsyncResourceData,
   type AsyncResource,
 } from "$lib/utils/async-resource";
 import {
@@ -36,6 +37,12 @@ import {
   type NotesPageHistoryActionEvent,
   type NotesPageHistoryActionKind,
 } from "./page-history-state";
+
+/** A loaded history version and the snapshot it was loaded from. */
+interface NotesPageHistoryVersion {
+  readonly page: NotesLoadedPage;
+  readonly snapshotId: string;
+}
 
 export interface NotesPageHistoryControllerContext {
   readSelectedPageId: () => string | null;
@@ -76,25 +83,20 @@ export function createNotesPageHistoryController(
   const snapshotList = $derived(snapshots.data);
   const snapshotsLoading = $derived(isAsyncResourceLoading(snapshots));
   const snapshotsError = $derived(asyncResourceError(snapshots));
-  let version = $state<NotesLoadedPage | null>(null);
-  let versionSnapshotId: string | null = null;
-  let versionLoading = $state(false);
-  let versionError = $state<string | null>(null);
+  let version = $state<AsyncResource<NotesPageHistoryVersion | null>>(idleAsyncResource(null));
+  const versionPage = $derived(version.data?.page ?? null);
+  const versionLoading = $derived(isAsyncResourceLoading(version));
+  const versionError = $derived(asyncResourceError(version));
   let settings = $state<NotesPageHistorySettings | null>(null);
   let settingsLoading = $state(false);
   let settingsError = $state<string | null>(null);
   let action = $state<NotesPageHistoryAction>(IDLE_PAGE_HISTORY_ACTION);
   let actionToken = 0;
-  let versionRequestId = 0;
   let settingsRequestId = 0;
 
   function resetPageState(): void {
-    versionRequestId += 1;
     snapshots = idleAsyncResource([]);
-    version = null;
-    versionSnapshotId = null;
-    versionLoading = false;
-    versionError = null;
+    version = idleAsyncResource(null);
     dispatchAction({ type: "reset" });
   }
 
@@ -148,14 +150,13 @@ export function createNotesPageHistoryController(
       }
       if (!isCurrentAsyncRequest(snapshots, started.token)) return;
       snapshots = resolveAsyncRequest(snapshots, started.token, [...nextSnapshots]);
-      if (version && version.page.id !== pageId) {
-        version = null;
-        versionSnapshotId = null;
-      }
-      if (version && !nextSnapshots.some((snapshot) => snapshot.id === versionSnapshotId)) {
-        version = null;
-        versionSnapshotId = null;
-      }
+      version = updateAsyncResourceData(version, (shown) => (
+        shown
+        && shown.page.page.id === pageId
+        && nextSnapshots.some((snapshot) => snapshot.id === shown.snapshotId)
+          ? shown
+          : null
+      ));
     } catch (error) {
       snapshots = pageId === context.readSelectedPageId()
         ? failAsyncRequest(snapshots, started.token, notesErrorDetail(error), [])
@@ -165,28 +166,21 @@ export function createNotesPageHistoryController(
 
   async function loadVersion(snapshotId: string): Promise<void> {
     const pageId = context.readSelectedPageId();
-    const requestId = ++versionRequestId;
     if (!pageId) {
-      version = null;
-      versionSnapshotId = null;
-      versionLoading = false;
-      versionError = null;
+      version = idleAsyncResource(null);
       return;
     }
-    versionLoading = true;
-    versionError = null;
+    const started = startAsyncRequest(version);
+    version = started.resource;
     try {
       const loaded = await loadNotesPageHistorySnapshot(pageId, snapshotId);
-      if (requestId !== versionRequestId || pageId !== context.readSelectedPageId()) return;
-      version = loaded;
-      versionSnapshotId = snapshotId;
+      version = pageId === context.readSelectedPageId()
+        ? resolveAsyncRequest(version, started.token, { page: loaded, snapshotId })
+        : abandonAsyncRequest(version, started.token);
     } catch (error) {
-      if (requestId !== versionRequestId || pageId !== context.readSelectedPageId()) return;
-      version = null;
-      versionSnapshotId = null;
-      versionError = notesErrorDetail(error);
-    } finally {
-      if (requestId === versionRequestId) versionLoading = false;
+      version = pageId === context.readSelectedPageId()
+        ? failAsyncRequest(version, started.token, notesErrorDetail(error), null)
+        : abandonAsyncRequest(version, started.token);
     }
   }
 
@@ -270,7 +264,7 @@ export function createNotesPageHistoryController(
       return snapshotsError;
     },
     get version() {
-      return version;
+      return versionPage;
     },
     get versionLoading() {
       return versionLoading;

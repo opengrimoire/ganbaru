@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ChatAttachmentRead,
   ChatDraftRead,
+  ChatError,
   ChatInteractionStateRead,
   ChatPendingRequestRead,
   ChatSettingsRead,
@@ -67,6 +68,80 @@ describe("ChatComposerRuntimeController sending", () => {
     expect(api.readInteraction).toHaveBeenCalledWith("thread-1");
     expect(consoleError).toHaveBeenCalledTimes(1);
     consoleError.mockRestore();
+  });
+
+  it("leaves a thread picked while a send was in flight selected and free of its launch error", async () => {
+    let selected: string | null = "thread-1";
+    const options = { ...controllerOptions(), selectedThreadId: () => selected };
+    const controller = new ChatComposerRuntimeController(options);
+    await controller.bind("working-folder-1", "thread-1");
+    const sent = deferred<SendChatTurnResult>();
+    api.sendTurn.mockReturnValueOnce(sent.promise);
+
+    const sending = controller.send();
+    await vi.waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(1));
+    selected = "thread-2";
+    api.readDraft.mockResolvedValueOnce({ ...composerDraft(), id: "draft-2", threadId: "thread-2" });
+    await controller.bind("working-folder-1", "thread-2");
+    sent.resolve({ thread: threadShell(), dispatch: null, launchError: launchError() });
+    await sending;
+
+    expect(options.upsertThread).toHaveBeenCalledWith(threadShell());
+    expect(options.setSelectedThreadId).not.toHaveBeenCalled();
+    expect(controller.sendError).toBeNull();
+  });
+
+  it("selects the thread a send started and reports its launch error while the user stays", async () => {
+    const options = controllerOptions();
+    const controller = new ChatComposerRuntimeController(options);
+    await controller.bind("working-folder-1", "thread-1");
+    api.sendTurn.mockResolvedValueOnce({ thread: threadShell(), dispatch: null, launchError: launchError() });
+
+    await controller.send();
+
+    expect(options.setSelectedThreadId).toHaveBeenCalledWith("thread-1");
+    expect(controller.sendError).not.toBeNull();
+  });
+
+  it("switches to the thread a draft send created while the draft stays shown", async () => {
+    const options = { ...controllerOptions(), selectedThread: () => null, selectedThreadId: () => null };
+    const controller = new ChatComposerRuntimeController(options);
+    api.readDraft.mockResolvedValueOnce({ ...composerDraft(), id: "draft-new", threadId: null });
+    await controller.bind("working-folder-1", null);
+    api.sendTurn.mockImplementationOnce(async (request) => ({
+      thread: { ...threadShell(), id: request.newThreadId ?? "missing" },
+      dispatch: null,
+      launchError: null,
+    }));
+
+    await controller.send();
+
+    const createdId = api.sendTurn.mock.calls[0]?.[0].newThreadId;
+    expect(createdId).toEqual(expect.any(String));
+    expect(options.setSelectedThreadId).toHaveBeenCalledWith(createdId);
+    expect(controller.draftThreadId).toBeNull();
+  });
+
+  it("stays on a thread picked during a draft send but never reuses the consumed draft thread ID", async () => {
+    let selected: string | null = null;
+    const options = { ...controllerOptions(), selectedThread: () => null, selectedThreadId: () => selected };
+    const controller = new ChatComposerRuntimeController(options);
+    api.readDraft.mockResolvedValueOnce({ ...composerDraft(), id: "draft-new", threadId: null });
+    await controller.bind("working-folder-1", null);
+    const sent = deferred<SendChatTurnResult>();
+    api.sendTurn.mockReturnValueOnce(sent.promise);
+
+    const sending = controller.send();
+    await vi.waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(1));
+    selected = "thread-2";
+    api.readDraft.mockResolvedValueOnce({ ...composerDraft(), id: "draft-2", threadId: "thread-2" });
+    await controller.bind("working-folder-1", "thread-2");
+    sent.resolve({ thread: threadShell(), dispatch: null, launchError: launchError() });
+    await sending;
+
+    expect(options.setSelectedThreadId).not.toHaveBeenCalled();
+    expect(controller.sendError).toBeNull();
+    expect(controller.draftThreadId).toBeNull();
   });
 
   it("rejects pasted or dropped images beyond the attachment limit before importing", async () => {
@@ -249,6 +324,11 @@ function deferred<T>() {
   let reject: (error: unknown) => void = () => undefined;
   const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
   return { promise, resolve, reject };
+}
+
+/** Builds the provider launch failure a send can report after the turn is stored. */
+function launchError(): ChatError {
+  return { code: "validation", message: "Provider failed to start", field: null, recoverable: true, details: null };
 }
 
 function pendingRequest(requestKind: "approval" | "user_input", suffix = "1"): ChatPendingRequestRead {

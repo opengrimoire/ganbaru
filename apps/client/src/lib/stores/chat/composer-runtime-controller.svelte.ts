@@ -217,6 +217,15 @@ export class ChatComposerRuntimeController {
     }
   }
 
+  /**
+   * Identifies what the composer shows, so a finished send can tell whether the user moved on.
+   *
+   * @returns The selected thread ID and bound draft ID joined into one comparable key.
+   */
+  private selectionKey(): string {
+    return JSON.stringify([this.options.selectedThreadId(), this.composer.draftId]);
+  }
+
   private dispatchInteraction(event: InteractionLoadEvent): void {
     this.interactionLoad = transitionInteractionLoad(this.interactionLoad, event);
   }
@@ -240,6 +249,7 @@ export class ChatComposerRuntimeController {
         }));
     this.sendError = null;
     this.failedSendOptions = null;
+    const origin = this.selectionKey();
     const selectedCurrent = this.options.selectedThread();
     const current = selectedCurrent && !threadMatchesExecutionConfiguration(
       selectedCurrent,
@@ -324,12 +334,16 @@ export class ChatComposerRuntimeController {
       throw error;
     }
     this.options.upsertThread(result.thread);
-    if (!current) this.discardDraft();
-    this.options.setSelectedThreadId(result.thread.id);
-    this.sendError = result.launchError
-      ? chatErrorMessage(result.launchError, translate("chatErrors.actions.sendMessage"))
-      : null;
-    this.failedSendOptions = result.launchError ? { ...options } : null;
+    // The backend consumed the draft thread ID, so it must not be reused even when the user moved on.
+    if (newThreadId !== null && this.draftThreadId === newThreadId) this.discardDraft();
+    // A user who picked another thread or draft meanwhile keeps it; the sent thread records any launch failure.
+    if (this.selectionKey() === origin) {
+      this.options.setSelectedThreadId(result.thread.id);
+      this.sendError = result.launchError
+        ? chatErrorMessage(result.launchError, translate("chatErrors.actions.sendMessage"))
+        : null;
+      this.failedSendOptions = result.launchError ? { ...options } : null;
+    }
     try {
       await this.options.refreshTimeline(result.thread.id);
     } finally {

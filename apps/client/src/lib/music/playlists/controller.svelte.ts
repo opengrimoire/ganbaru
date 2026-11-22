@@ -29,15 +29,23 @@ export interface MusicPlaylistDraft {
   intendedUses: MusicIntendedUse[];
 }
 
+/** The read of one playlist detail. */
+type MusicPlaylistLoad = { phase: "idle" } | { phase: "loading"; token: symbol };
+
+/** A delete impact, tied to the playlist it was read for. */
+interface MusicPlaylistDeleteInspection {
+  playlistId: string;
+  impact: MusicPlaylistDeleteImpact;
+}
+
 export class MusicPlaylistController {
   detail = $state<MusicPlaylist | null>(null);
-  busy = $state(false);
   saving = $state(false);
   error = $state<string | null>(null);
-  deleteImpact = $state<MusicPlaylistDeleteImpact | null>(null);
   playbackProjection = $state<MusicPlaylistPlaybackProjection | null>(null);
   playbackIssue = $state<"no-eligible-items" | null>(null);
-  private loadGeneration = 0;
+  private loadRequest = $state.raw<MusicPlaylistLoad>({ phase: "idle" });
+  private deleteInspection = $state.raw<MusicPlaylistDeleteInspection | null>(null);
 
   constructor(
     private readonly library: MusicLibraryController,
@@ -45,33 +53,47 @@ export class MusicPlaylistController {
     private readonly id: () => string = () => crypto.randomUUID(),
   ) {}
 
+  /** Whether a playlist detail is loading. */
+  get busy(): boolean {
+    return this.loadRequest.phase === "loading";
+  }
+
+  /** The delete impact read for the shown playlist, or null before it is inspected. */
+  get deleteImpact(): MusicPlaylistDeleteImpact | null {
+    const inspection = this.deleteInspection;
+    return inspection && inspection.playlistId === this.detail?.id ? inspection.impact : null;
+  }
+
   async load(playlistId: string | null): Promise<boolean> {
     if (!playlistId) { this.clear(); return true; }
-    if (this.detail?.id === playlistId) return true;
-    const generation = ++this.loadGeneration;
-    this.busy = true;
+    if (this.detail?.id === playlistId) {
+      this.loadRequest = { phase: "idle" };
+      return true;
+    }
+    const token = Symbol(playlistId);
+    this.loadRequest = { phase: "loading", token };
+    const isCurrent = () => this.loadRequest.phase === "loading" && this.loadRequest.token === token;
     this.error = null;
     try {
       const detail = await getMusicPlaylist(playlistId);
-      if (generation !== this.loadGeneration) return false;
+      if (!isCurrent()) return false;
       this.detail = detail;
       return true;
     } catch (error) {
-      if (generation !== this.loadGeneration) return false;
+      if (!isCurrent()) return false;
       this.error = musicErrorMessage(error, translate("music.errors.playlistLoadFailed"));
       this.detail = null;
       return false;
     } finally {
-      if (generation === this.loadGeneration) this.busy = false;
+      if (isCurrent()) this.loadRequest = { phase: "idle" };
     }
   }
 
   clear(): void {
-    this.loadGeneration += 1;
+    this.loadRequest = { phase: "idle" };
     this.detail = null;
-    this.deleteImpact = null;
+    this.deleteInspection = null;
     this.error = null;
-    this.busy = false;
   }
 
   async create(draft: MusicPlaylistDraft): Promise<string | null> {
@@ -160,9 +182,12 @@ export class MusicPlaylistController {
     if (!detail) return false;
     this.error = null;
     try {
-      this.deleteImpact = await getMusicPlaylistDeleteImpact(detail.id);
+      const impact = await getMusicPlaylistDeleteImpact(detail.id);
+      if (this.detail?.id !== detail.id) return false;
+      this.deleteInspection = { playlistId: detail.id, impact };
       return true;
     } catch (error) {
+      if (this.detail?.id !== detail.id) return false;
       this.error = musicErrorMessage(error, translate("music.errors.playlistDeleteFailed"));
       return false;
     }

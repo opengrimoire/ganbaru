@@ -1,4 +1,5 @@
 import { Temporal } from "@js-temporal/polyfill";
+import { untrack } from "svelte";
 import type {
   Calendar, CalendarEvent, CalendarViewMode,
 } from "$lib/calendar/types";
@@ -197,6 +198,14 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
   let prefetchGeneration = 0;
   let foregroundWindowIdleWaiters: Array<() => void> = [];
 
+  /**
+   * The phase for the store's own decisions. Reading it untracked keeps an effect that starts a load from depending
+   * on the phase that load writes; the public getters stay reactive.
+   */
+  function readWindowPhase(): CalendarWindowPhase {
+    return untrack(() => windowPhase);
+  }
+
   function setWindowPhase(next: CalendarWindowPhase): void {
     windowPhase = next;
     if (isCalendarWindowBusy(next)) return;
@@ -209,11 +218,11 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
     supersedePending: () => {
       prefetchGeneration++;
       windowLoadCoordinator.supersedePending();
-      setWindowPhase(calendarWindowMarkedStale(windowPhase));
+      setWindowPhase(calendarWindowMarkedStale(readWindowPhase()));
     },
     reloadCurrentWindow: async () => {
       const shown = currentWindowStart && currentWindowEnd ? { start: currentWindowStart, end: currentWindowEnd } : null;
-      const target = calendarWindowReloadTarget(windowPhase, shown);
+      const target = calendarWindowReloadTarget(readWindowPhase(), shown);
       if (!target) {
         windowEvents = [];
         expansionDiagnostics = [];
@@ -249,7 +258,7 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
     windowEnd: Temporal.PlainDate,
     renderZone: string,
   ): boolean {
-    return isCalendarWindowLoaded(windowPhase)
+    return isCalendarWindowLoaded(readWindowPhase())
       && currentWindowSourceVersion === sourceVersion
       && currentWindowStart !== null
       && currentWindowEnd !== null
@@ -289,7 +298,7 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
     currentWindowStart = snapshot.windowStart;
     currentWindowEnd = snapshot.windowEnd;
     currentWindowSourceVersion = sourceVersion;
-    setWindowPhase(calendarWindowShown(windowPhase));
+    setWindowPhase(calendarWindowShown(readWindowPhase()));
     clearPanelEventCache();
     indexVersion++;
     perfMark("window.applied", {
@@ -300,9 +309,9 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
   }
 
   /**
-   * Run one foreground load under its own token. A load the window owner superseded, such as by a committed change
-   * that cleared the cache, requests again while no newer foreground load took over, so a boot is never left
-   * without a window.
+   * Run one foreground load under its own token. A load that a committed change or a cache warm-up superseded
+   * requests again while no newer showing load took over, so a boot is never left without a window. A warm-up that
+   * joins a showing load runs without a token.
    */
   async function runForegroundWindowLoad(
     mode: ForegroundWindowLoadMode,
@@ -311,23 +320,28 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
     request: () => Promise<WindowLoadOutcome>,
   ): Promise<void> {
     prefetchGeneration++;
-    const started = startCalendarWindowLoad(windowPhase, mode, { start: windowStart, end: windowEnd });
+    const started = startCalendarWindowLoad(readWindowPhase(), mode, { start: windowStart, end: windowEnd });
+    const { token } = started;
+    if (token === null) {
+      await request();
+      return;
+    }
     setWindowPhase(started.phase);
     try {
       let outcome = await request();
-      while (outcome === "superseded" && mode !== "ensure" && isCurrentCalendarWindowLoad(windowPhase, started.token)) {
+      while (outcome === "superseded" && mode !== "ensure" && isCurrentCalendarWindowLoad(readWindowPhase(), token)) {
         perfMark("window.load-requested-again", { mode });
         outcome = await request();
       }
-      setWindowPhase(finishCalendarWindowLoad(windowPhase, started.token, { type: "settled" }));
+      setWindowPhase(finishCalendarWindowLoad(readWindowPhase(), token, { type: "settled" }));
     } catch (error) {
-      setWindowPhase(finishCalendarWindowLoad(windowPhase, started.token, { type: "failed", error }));
+      setWindowPhase(finishCalendarWindowLoad(readWindowPhase(), token, { type: "failed", error }));
       throw error;
     }
   }
 
   async function waitForForegroundWindowIdle(): Promise<void> {
-    if (!isCalendarWindowBusy(windowPhase)) return;
+    if (!isCalendarWindowBusy(readWindowPhase())) return;
     await new Promise<void>((resolve) => {
       foregroundWindowIdleWaiters.push(resolve);
     });
@@ -419,7 +433,7 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
   ): Promise<void> {
     const renderZone = localTimezone();
     const key = calendarWindowKey(windowStart, windowEnd, renderZone);
-    if (!force && !markBoot && isCalendarWindowLoaded(windowPhase) && currentWindowSourceVersion === sourceVersion
+    if (!force && !markBoot && isCalendarWindowLoaded(readWindowPhase()) && currentWindowSourceVersion === sourceVersion
       && currentWindowKey === key) return;
     if (!force && !markBoot && currentWindowCovers(windowStart, windowEnd, renderZone)) return;
     if (!force && !markBoot) {
@@ -456,7 +470,7 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
     windowEnd: Temporal.PlainDate,
     generation: number,
   ): Promise<void> {
-    if (generation !== prefetchGeneration || !isCalendarWindowLoaded(windowPhase)) return;
+    if (generation !== prefetchGeneration || !isCalendarWindowLoaded(readWindowPhase())) return;
     const renderZone = localTimezone();
     const key = calendarWindowKey(windowStart, windowEnd, renderZone);
     if (currentWindowCovers(windowStart, windowEnd, renderZone)
@@ -684,8 +698,9 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
      * afresh. The outcome is reported through `windowLoadFailed`, so this never rejects.
      */
     async retryWindow(): Promise<void> {
-      if (!isCalendarWindowFailed(windowPhase)) return;
-      const { mode, target } = windowPhase;
+      const failed = readWindowPhase();
+      if (!isCalendarWindowFailed(failed)) return;
+      const { mode, target } = failed;
       try {
         if (mode === "boot") await store.load();
         else await loadWindowIntoState(target.start, target.end, false, true);
@@ -702,7 +717,7 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
       windowStart: Temporal.PlainDate,
       windowEnd: Temporal.PlainDate,
     ): Promise<void> {
-      if (bootsWithApp || isCalendarWindowLoaded(windowPhase) || isCalendarWindowBusy(windowPhase)) return;
+      if (bootsWithApp || isCalendarWindowLoaded(readWindowPhase()) || isCalendarWindowBusy(readWindowPhase())) return;
       await loadWindowIntoState(windowStart, windowEnd, false);
     },
 

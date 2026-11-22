@@ -78,12 +78,17 @@ export function calendarWindowReloadTarget(
   return phase.kind === "loading" && phase.mode !== "ensure" ? phase.target : shown;
 }
 
-/** Start a foreground load that supersedes any earlier one. A boot forgets the shown window. */
+/**
+ * Start a foreground load that supersedes any earlier one. A boot forgets the shown window. A cache warm-up never
+ * takes over a load that will show a window: it returns the phase unchanged and a `null` token, so that load keeps
+ * its ownership and requests again if the warm-up displaced its read.
+ */
 export function startCalendarWindowLoad(
   phase: CalendarWindowPhase,
   mode: CalendarWindowLoadMode,
   target: CalendarWindowTarget,
-): { phase: CalendarWindowPhase; token: symbol } {
+): { phase: CalendarWindowPhase; token: symbol | null } {
+  if (mode === "ensure" && phase.kind === "loading" && phase.mode !== "ensure") return { phase, token: null };
   const token = Symbol("calendar-window-load");
   const previous = mode === "boot" ? { kind: "idle" as const } : settledCalendarWindowPhase(phase);
   return { phase: { kind: "loading", token, mode, target, previous }, token };

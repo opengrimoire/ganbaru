@@ -322,4 +322,18 @@ describe("Calendar store boot superseded by a committed change", () => {
     expect(store.windowLoadFailed).toBe(false);
     expect(store.isWindowCurrent(start, end)).toBe(true);
   });
+
+  it("keeps the boot owning the window when a navigation warms the cache during the boot read", async () => {
+    const { getCalendar } = await import("./calendar.svelte");
+    const store = getCalendar();
+    const bootRead = deferred<MappedNativeCalendarWindow>();
+    vi.mocked(loadNativeCalendarWindow).mockReturnValueOnce(bootRead.promise);
+    const boot = store.load();
+    await vi.waitFor(() => expect(loadNativeCalendarWindow).toHaveBeenCalledOnce());
+    const warmUp = store.ensureWindowReady(Temporal.PlainDate.from("2024-03-16"), Temporal.PlainDate.from("2024-03-22"));
+    bootRead.resolve(snapshot());
+    await Promise.all([boot, warmUp]);
+    expect(store.loaded).toBe(true);
+    expect(store.foregroundWindowLoadBusy).toBe(false);
+  });
 });

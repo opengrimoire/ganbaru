@@ -17,9 +17,7 @@ function terminalRead(id: string): ChatTerminalRead {
     shell: "sh",
     columns: 80,
     rows: 24,
-    running: true,
-    exitCode: null,
-    generation: 1,
+    status: { kind: "running" },
     lastSequence: 0,
   };
 }

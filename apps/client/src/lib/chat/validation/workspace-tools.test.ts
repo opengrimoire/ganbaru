@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  parseChatTerminal,
   parseChatReviewPatchPage,
   parseChatReviewSnapshot,
   parseChatRestorePreview,
@@ -74,5 +75,24 @@ describe("Chat workspace response validation", () => {
     expect(() =>
       parseChatRestorePreview({ ...preview, warnings: ["The real staging state will be restored to the checkpoint."] }),
     ).toThrow("restorePreview.warnings");
+  });
+
+  it("reads the terminal status union and requires an exit code only for an exited shell", () => {
+    const terminal = (status: unknown) => ({
+      id: "terminal-1",
+      channelId: "channel-1",
+      workingFolderId: "folder-1",
+      name: "Terminal 1",
+      shell: "sh",
+      columns: 80,
+      rows: 24,
+      status,
+      lastSequence: 0,
+    });
+    expect(parseChatTerminal(terminal({ kind: "running" })).status).toEqual({ kind: "running" });
+    expect(parseChatTerminal(terminal({ kind: "stopped", exitCode: 9 })).status).toEqual({ kind: "stopped" });
+    expect(parseChatTerminal(terminal({ kind: "exited", exitCode: 2 })).status).toEqual({ kind: "exited", exitCode: 2 });
+    expect(() => parseChatTerminal(terminal({ kind: "exited" }))).toThrow("terminal.status.exitCode");
+    expect(() => parseChatTerminal(terminal({ kind: "paused" }))).toThrow("terminal.status.kind");
   });
 });

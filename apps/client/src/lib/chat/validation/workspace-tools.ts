@@ -18,6 +18,7 @@ import {
   type ChatTerminalOutputChunk,
   type ChatTerminalRead,
   type ChatTerminalSnapshotRead,
+  type ChatTerminalStatus,
   type GitChangedPathRead,
   type GitStatusRead,
   type HostedChangeRequestRead,
@@ -44,6 +45,7 @@ import {
 } from "./readers";
 
 const FILE_KINDS = ["file", "directory"] as const;
+const TERMINAL_STATUS_KINDS = ["running", "stopped", "exited"] as const;
 const FILE_STATUSES = ["added", "modified", "deleted", "renamed", "type_changed", "unknown"] as const;
 const REVIEW_STATES = ["open", "resolved"] as const;
 const REVIEW_SOURCE_KINDS = [
@@ -451,11 +453,16 @@ export function parseChatTerminal(value: unknown, label = "terminal"): ChatTermi
     shell: readString(record.shell, `${label}.shell`),
     columns: readNonNegativeSafeInteger(record.columns, `${label}.columns`),
     rows: readNonNegativeSafeInteger(record.rows, `${label}.rows`),
-    running: readBoolean(record.running, `${label}.running`),
-    exitCode: readNullable(record.exitCode, `${label}.exitCode`, readSafeInteger),
-    generation: readNonNegativeSafeInteger(record.generation, `${label}.generation`),
+    status: parseChatTerminalStatus(record.status, `${label}.status`),
     lastSequence: readNonNegativeSafeInteger(record.lastSequence, `${label}.lastSequence`),
   };
+}
+
+function parseChatTerminalStatus(value: unknown, label: string): ChatTerminalStatus {
+  const record = readRecord(value, label);
+  const kind = readEnum(record.kind, TERMINAL_STATUS_KINDS, `${label}.kind`);
+  if (kind === "exited") return { kind, exitCode: readSafeInteger(record.exitCode, `${label}.exitCode`) };
+  return { kind };
 }
 
 function parseChatTerminalPanelLayout(value: unknown, label: string): ChatTerminalPanelLayout {
@@ -484,7 +491,6 @@ export function parseChatTerminalOutput(value: unknown, label = "terminalOutput"
   const record = readRecord(value, label);
   return {
     terminalId: readIdentifier(record.terminalId, `${label}.terminalId`),
-    generation: readNonNegativeSafeInteger(record.generation, `${label}.generation`),
     sequence: readNonNegativeSafeInteger(record.sequence, `${label}.sequence`),
     dataBase64: readString(record.dataBase64, `${label}.dataBase64`),
     replay: readBoolean(record.replay, `${label}.replay`),

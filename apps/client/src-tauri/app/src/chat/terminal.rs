@@ -152,17 +152,51 @@ pub struct ChatTerminalRead {
     pub shell: String,
     pub columns: u16,
     pub rows: u16,
-    pub running: bool,
-    pub exit_code: Option<i32>,
-    pub generation: u64,
+    pub status: ChatTerminalStatus,
     pub last_sequence: u64,
+}
+
+/// Lifecycle of one terminal shell. A terminal starts running and settles once, either stopped by Ganbaru or
+/// exited on its own with the shell's exit code.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ChatTerminalStatus {
+    Running,
+    Stopped,
+    Exited { exit_code: i32 },
+}
+
+impl ChatTerminalStatus {
+    pub fn is_running(self) -> bool {
+        self == Self::Running
+    }
+
+    /// The status after the shell exits with `exit_code`. A terminal Ganbaru already stopped stays stopped,
+    /// since the exit code then reports the kill rather than the shell.
+    fn after_exit(self, exit_code: i32) -> Self {
+        match self {
+            Self::Running => Self::Exited { exit_code },
+            settled => settled,
+        }
+    }
+
+    /// The status after Ganbaru stops the shell. A shell that already exited keeps its exit code.
+    fn after_stop(self) -> Self {
+        match self {
+            Self::Running => Self::Stopped,
+            settled => settled,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatTerminalOutputChunk {
     pub terminal_id: String,
-    pub generation: u64,
     pub sequence: u64,
     pub data_base64: String,
     pub replay: bool,
@@ -251,12 +285,10 @@ struct TerminalSpawnSpec {
     name: String,
     columns: u16,
     rows: u16,
-    generation: u64,
 }
 
 #[derive(Debug)]
 struct ReplayChunk {
-    generation: u64,
     sequence: u64,
     bytes: Vec<u8>,
 }
@@ -267,9 +299,7 @@ struct TerminalState {
     shell: String,
     columns: u16,
     rows: u16,
-    running: bool,
-    exit_code: Option<i32>,
-    generation: u64,
+    status: ChatTerminalStatus,
     sequence: u64,
     replay_bytes: usize,
     replay: VecDeque<ReplayChunk>,
@@ -301,9 +331,7 @@ impl TerminalSession {
             shell: state.shell.clone(),
             columns: state.columns,
             rows: state.rows,
-            running: state.running,
-            exit_code: state.exit_code,
-            generation: state.generation,
+            status: state.status,
             last_sequence: state.sequence,
         })
     }
@@ -318,9 +346,7 @@ impl TerminalSession {
             shell: state.shell.clone(),
             columns: state.columns,
             rows: state.rows,
-            running: state.running,
-            exit_code: state.exit_code,
-            generation: state.generation,
+            status: state.status,
             last_sequence: state.sequence,
         };
         let scrollback = state
@@ -339,7 +365,6 @@ impl TerminalSession {
                 };
                 ChatTerminalOutputChunk {
                     terminal_id: self.id.clone(),
-                    generation: chunk.generation,
                     sequence: chunk.sequence,
                     data_base64,
                     replay: true,
@@ -352,20 +377,15 @@ impl TerminalSession {
         })
     }
 
-    fn record_output(
-        &self,
-        generation: u64,
-        bytes: Vec<u8>,
-    ) -> ChatResult<Option<ChatTerminalOutputChunk>> {
+    fn record_output(&self, bytes: Vec<u8>) -> ChatResult<Option<ChatTerminalOutputChunk>> {
         let mut state = self.state.lock().map_err(|_| terminal_state_error())?;
-        if generation != state.generation || bytes.is_empty() {
+        if bytes.is_empty() {
             return Ok(None);
         }
         state.sequence = state.sequence.saturating_add(1);
         let sequence = state.sequence;
         state.replay_bytes = state.replay_bytes.saturating_add(bytes.len());
         state.replay.push_back(ReplayChunk {
-            generation,
             sequence,
             bytes: bytes.clone(),
         });
@@ -377,7 +397,6 @@ impl TerminalSession {
         }
         Ok(Some(ChatTerminalOutputChunk {
             terminal_id: self.id.clone(),
-            generation,
             sequence,
             data_base64: general_purpose::STANDARD.encode(bytes),
             replay: false,
@@ -463,17 +482,17 @@ impl TerminalSession {
             .state
             .lock()
             .map_err(|_| terminal_state_error())?
-            .running)
+            .status
+            .is_running())
     }
 
-    fn mark_exited(&self, generation: u64, exit_code: i32) -> ChatResult<bool> {
+    /// Records the shell's exit and returns whether the status changed.
+    fn mark_exited(&self, exit_code: i32) -> ChatResult<bool> {
         let mut state = self.state.lock().map_err(|_| terminal_state_error())?;
-        if state.generation != generation {
-            return Ok(false);
-        }
-        state.running = false;
-        state.exit_code = Some(exit_code);
-        Ok(true)
+        let next = state.status.after_exit(exit_code);
+        let changed = next != state.status;
+        state.status = next;
+        Ok(changed)
     }
 
     fn terminate(&self) -> ChatResult<()> {
@@ -494,7 +513,7 @@ impl TerminalSession {
             .map_err(|_| terminal_state_error())?
             .take();
         if let Ok(mut state) = self.state.lock() {
-            state.running = false;
+            state.status = state.status.after_stop();
         }
         self.output_credit.notify_all();
         Ok(())
@@ -617,7 +636,6 @@ impl ChatTerminalRegistry {
                 name: terminal_name,
                 columns: input.columns,
                 rows: input.rows,
-                generation: 1,
             },
         )?;
         let snapshot = session.snapshot()?;
@@ -696,7 +714,7 @@ impl ChatTerminalRegistry {
         }
         validate_paste_framing(text)?;
         let session = self.session(terminal_id)?;
-        if !session.read()?.running {
+        if !session.read()?.status.is_running() {
             return Err(ChatError::new(
                 ChatErrorCode::InvalidStateTransition,
                 "Chat terminal is not running",
@@ -735,7 +753,7 @@ impl ChatTerminalRegistry {
 
     pub fn close(&self, terminal_id: &str, confirmed: bool) -> ChatResult<ChatTerminalCloseResult> {
         let session = self.session(terminal_id)?;
-        if session.read()?.running && !confirmed {
+        if session.read()?.status.is_running() && !confirmed {
             return Ok(ChatTerminalCloseResult {
                 closed: false,
                 confirmation_required: true,
@@ -796,7 +814,7 @@ impl ChatTerminalRegistry {
     pub fn live_count(&self) -> ChatResult<usize> {
         let sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
         sessions.values().try_fold(0usize, |count, session| {
-            Ok(count + usize::from(session.read()?.running))
+            Ok(count + usize::from(session.read()?.status.is_running()))
         })
     }
 
@@ -886,9 +904,7 @@ fn spawn_session(
             shell,
             columns: spec.columns,
             rows: spec.rows,
-            running: true,
-            exit_code: None,
-            generation: spec.generation,
+            status: ChatTerminalStatus::Running,
             sequence: 0,
             replay_bytes: 0,
             replay: VecDeque::new(),
@@ -899,7 +915,7 @@ fn spawn_session(
         subscribers: Mutex::new(OutputSubscribers::default()),
         output_credit: Condvar::new(),
     });
-    spawn_reader(Arc::clone(&session), reader, spec.generation)?;
+    spawn_reader(Arc::clone(&session), reader)?;
     let wait_session = Arc::clone(&session);
     if let Err(error) = std::thread::Builder::new()
         .name("chat-terminal-wait".to_string())
@@ -909,10 +925,7 @@ fn spawn_session(
                 .map(|status| status.exit_code() as i32)
                 .unwrap_or(1);
             drop(registration);
-            if wait_session
-                .mark_exited(spec.generation, exit_code)
-                .unwrap_or(false)
-            {
+            if wait_session.mark_exited(exit_code).unwrap_or(false) {
                 if let Ok(read) = wait_session.read() {
                     let _ = app.emit(CHAT_TERMINAL_STATE_EVENT, read);
                 }
@@ -926,11 +939,7 @@ fn spawn_session(
 }
 
 /// Live output reaches only the views attached to this terminal, each through its own channel.
-fn spawn_reader(
-    session: Arc<TerminalSession>,
-    mut reader: Box<dyn Read + Send>,
-    generation: u64,
-) -> ChatResult<()> {
+fn spawn_reader(session: Arc<TerminalSession>, mut reader: Box<dyn Read + Send>) -> ChatResult<()> {
     std::thread::Builder::new()
         .name("chat-terminal-output".to_string())
         .spawn(move || {
@@ -943,7 +952,7 @@ fn spawn_reader(
                     Ok(0) | Err(_) => break,
                     Ok(count) => {
                         let bytes = buffer[..count].to_vec();
-                        if let Ok(Some(event)) = session.record_output(generation, bytes)
+                        if let Ok(Some(event)) = session.record_output(bytes)
                             && session.publish_output(&event, count).is_err()
                         {
                             break;

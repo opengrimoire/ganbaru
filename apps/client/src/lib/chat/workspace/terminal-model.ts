@@ -3,7 +3,6 @@ import { chatErrorMessage } from "$lib/chat/error-presentation";
 import { safeExternalUrl } from "$lib/chat/timeline/markdown";
 
 export interface TerminalOutputState {
-  generation: number;
   lastSequence: number;
 }
 
@@ -16,29 +15,23 @@ export type TerminalOutputDecision =
  * Returns the output state a view starts from before writing a snapshot's scrollback. Bounded replay drops its
  * oldest chunks, so the first retained chunk sets the expected sequence instead of sequence one.
  *
- * @param generation The terminal generation the snapshot describes.
  * @param scrollback The snapshot's replay chunks in order.
  */
-export function replayStartState(
-  generation: number,
-  scrollback: readonly ChatTerminalOutputChunk[],
-): TerminalOutputState {
-  const first = scrollback.find((chunk) => chunk.generation === generation);
-  return { generation, lastSequence: first ? Math.max(0, first.sequence - 1) : 0 };
+export function replayStartState(scrollback: readonly ChatTerminalOutputChunk[]): TerminalOutputState {
+  const first = scrollback[0];
+  return { lastSequence: first ? Math.max(0, first.sequence - 1) : 0 };
 }
 
 export function applyTerminalOutput(
   state: TerminalOutputState,
   chunk: ChatTerminalOutputChunk,
 ): TerminalOutputDecision {
-  if (chunk.generation < state.generation) return { kind: "duplicate", state };
-  const generationChanged = chunk.generation > state.generation;
-  const expected = generationChanged ? 1 : state.lastSequence + 1;
+  const expected = state.lastSequence + 1;
   if (chunk.sequence < expected) return { kind: "duplicate", state };
   if (chunk.sequence > expected) return { kind: "gap", state, expectedSequence: expected };
   return {
     kind: "accept",
-    state: { generation: chunk.generation, lastSequence: chunk.sequence },
+    state: { lastSequence: chunk.sequence },
     bytes: decodeBase64(chunk.dataBase64),
   };
 }

@@ -426,11 +426,12 @@ export interface ChatTerminalRead {
   shell: string;
   columns: number;
   rows: number;
-  running: boolean;
-  exitCode: number | null;
-  generation: number;
+  status: ChatTerminalStatus;
   lastSequence: number;
 }
+
+/** Lifecycle of one terminal shell: running, stopped by Ganbaru, or exited on its own with an exit code. */
+export type ChatTerminalStatus = { kind: "running" } | { kind: "stopped" } | { kind: "exited"; exitCode: number };
 
 export interface ChatTerminalPanelLayout {
   placement: "inspector" | "bottom";
@@ -450,7 +451,6 @@ export interface ChatTerminalLayoutRead {
 
 export interface ChatTerminalOutputChunk {
   terminalId: string;
-  generation: number;
   sequence: number;
   dataBase64: string;
   replay: boolean;

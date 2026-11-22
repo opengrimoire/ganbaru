@@ -299,8 +299,8 @@ export type PreviewPageDialogKind = (typeof PREVIEW_PAGE_DIALOG_KINDS)[number];
 
 /** An approval the coding agent or a preview page is waiting on in the Browser panel. */
 export type PreviewApproval =
-  | { kind: "navigation"; origin: string }
-  | { kind: "network" }
+  | { kind: "navigation"; approvalId: number; origin: string }
+  | { kind: "network"; approvalId: number }
   | { kind: "permission"; requestId: number; origin: string; permission: PreviewPagePermission }
   | {
     kind: "dialog";
@@ -329,11 +329,11 @@ function isRequestId(value: unknown): value is number {
 export function parsePreviewApproval(value: unknown): PreviewApproval | null {
   if (value === null) return null;
   if (typeof value !== "object") throw new Error("Invalid browser approval");
-  const { kind, origin, requestId, permission, dialogKind, message, defaultText } =
+  const { kind, origin, approvalId, requestId, permission, dialogKind, message, defaultText } =
     value as Record<string, unknown>;
-  if (kind === "network") return { kind };
+  if (kind === "network" && isRequestId(approvalId)) return { kind, approvalId };
   if (typeof origin !== "string") throw new Error("Invalid browser approval");
-  if (kind === "navigation") return { kind, origin };
+  if (kind === "navigation" && isRequestId(approvalId)) return { kind, approvalId, origin };
   if (kind === "permission" && isRequestId(requestId) && isOneOf(PREVIEW_PAGE_PERMISSIONS, permission)) {
     return { kind, requestId, origin, permission };
   }
@@ -354,24 +354,29 @@ export async function readPendingBrowserApproval(threadId: ChatThreadId): Promis
   return parsePreviewApproval(await invoke<unknown>("chat_browser_pending_approval", { threadId }));
 }
 
+/** What an approval answer names: the page request with an accepted prompt's text, or the agent approval shown. */
+export type BrowserApprovalAnswer = { requestId: number; text?: string } | { approvalId: number };
+
 /**
- * Allows or dismisses a thread's pending approval. Allowing a navigation opens it and returns
- * the updated tab.
+ * Allows or dismisses an approval the thread's Browser panel shows. Allowing a navigation opens
+ * it and returns the updated tab. An agent approval that a newer one replaced is left alone.
  *
  * @param threadId Thread whose Browser panel shows the approval.
  * @param allow Allow the request, or accept the page dialog.
- * @param page The page request being answered and, for an accepted prompt, its text.
+ * @param answer The page request or agent approval being answered.
  */
 export async function resolveBrowserApproval(
   threadId: ChatThreadId,
   allow: boolean,
-  page?: { requestId: number; text?: string },
+  answer: BrowserApprovalAnswer,
 ): Promise<BrowserTabRead | null> {
+  const page = "requestId" in answer ? answer : null;
   const value = await invoke<unknown>("chat_browser_resolve_approval", {
     dbUrl: await ensureDbUrl(),
     threadId,
     allow,
     requestId: page?.requestId ?? null,
+    approvalId: "approvalId" in answer ? answer.approvalId : null,
     text: page?.text ?? null,
   });
   return value === null ? null : parseBrowserTabRead(value);

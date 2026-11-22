@@ -140,7 +140,7 @@ struct BrowserArtifactPayload<'a> {
 pub struct ChatBrowserManager {
     tabs: Arc<Mutex<HashMap<String, RuntimeBrowserTab>>>,
     recording: Arc<Mutex<Option<ActiveRecording>>>,
-    pending_approvals: Arc<Mutex<HashMap<ChatThreadId, approvals::PendingPreviewApproval>>>,
+    pending_approvals: Arc<Mutex<approvals::PendingApprovals>>,
     /// Page permission requests and dialogs waiting for the user, and remembered answers.
     page_requests: Arc<Mutex<page_requests::PageRequestState>>,
     data_sweeps: data_store::PreviewDataSweeps,
@@ -240,7 +240,7 @@ impl ChatBrowserManager {
     ) {
         self.cancel_recording(|recording| &recording.thread_id == thread_id);
         if let Ok(mut pending) = self.pending_approvals.lock() {
-            pending.remove(thread_id);
+            pending.forget(thread_id);
         }
         self.forget_thread_page_requests(app, thread_id);
         let labels = if let Ok(mut tabs) = self.tabs.lock() {

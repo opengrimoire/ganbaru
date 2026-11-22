@@ -21,8 +21,9 @@ describe("parsePreviewApproval", () => {
   it("accepts agent approvals and page requests", async () => {
     const { parsePreviewApproval } = await import("./workspace");
     expect(parsePreviewApproval(null)).toBeNull();
-    expect(parsePreviewApproval({ kind: "network" })).toEqual({ kind: "network" });
-    expect(parsePreviewApproval({ kind: "navigation", origin })).toEqual({ kind: "navigation", origin });
+    expect(parsePreviewApproval({ kind: "network", approvalId: 2 })).toEqual({ kind: "network", approvalId: 2 });
+    expect(parsePreviewApproval({ kind: "navigation", approvalId: 1, origin }))
+      .toEqual({ kind: "navigation", approvalId: 1, origin });
     expect(parsePreviewApproval({ kind: "permission", requestId: 3, origin, permission: "cameraAndMicrophone" }))
       .toEqual({ kind: "permission", requestId: 3, origin, permission: "cameraAndMicrophone" });
     expect(parsePreviewApproval({
@@ -40,6 +41,9 @@ describe("parsePreviewApproval", () => {
     const invalid: unknown[] = [
       "network",
       { kind: "navigation" },
+      { kind: "navigation", origin },
+      { kind: "network" },
+      { kind: "network", approvalId: 0 },
       { kind: "permission", requestId: 3, origin, permission: "everything" },
       { kind: "permission", requestId: 0, origin, permission: "camera" },
       { kind: "permission", requestId: 1.5, origin, permission: "camera" },
@@ -65,19 +69,21 @@ describe("resolveBrowserApproval", () => {
       threadId: "thread:test",
       allow: true,
       requestId: 7,
+      approvalId: null,
       text: "Ada",
     });
   });
 
-  it("answers the agent approval when no page request is named", async () => {
+  it("answers the agent approval by the ID it was shown with", async () => {
     const { resolveBrowserApproval } = await import("./workspace");
     invokeMock.mockResolvedValue(null);
-    await resolveBrowserApproval("thread:test", false);
+    await resolveBrowserApproval("thread:test", false, { approvalId: 9 });
     expect(invokeMock).toHaveBeenCalledWith("chat_browser_resolve_approval", {
       dbUrl: "sqlite:test",
       threadId: "thread:test",
       allow: false,
       requestId: null,
+      approvalId: 9,
       text: null,
     });
   });

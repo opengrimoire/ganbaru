@@ -22,14 +22,84 @@ pub(crate) enum PendingPreviewApproval {
     Network,
 }
 
+/// Agent approvals held per thread, each under the ID the Browser panel shows it with, so an
+/// answer to an approval that a newer one replaced cannot allow the newer one.
+#[derive(Debug, Default)]
+pub(crate) struct PendingApprovals {
+    last_id: u64,
+    held: HashMap<ChatThreadId, HeldApproval>,
+}
+
+#[derive(Debug)]
+struct HeldApproval {
+    id: u64,
+    approval: PendingPreviewApproval,
+}
+
+impl PendingApprovals {
+    /// Holds the thread's approval under a new ID, replacing an older one. Returns false when
+    /// the same request is already held, which keeps its ID.
+    pub(super) fn hold(
+        &mut self,
+        thread_id: &ChatThreadId,
+        approval: PendingPreviewApproval,
+    ) -> bool {
+        if self
+            .held
+            .get(thread_id)
+            .is_some_and(|held| held.approval == approval)
+        {
+            return false;
+        }
+        self.last_id += 1;
+        self.held.insert(
+            thread_id.clone(),
+            HeldApproval {
+                id: self.last_id,
+                approval,
+            },
+        );
+        true
+    }
+
+    /// What the Browser panel shows for the thread's held approval.
+    pub(super) fn read(&self, thread_id: &ChatThreadId) -> Option<PreviewApprovalRead> {
+        self.held.get(thread_id).and_then(approval_read)
+    }
+
+    /// Takes the thread's held approval only when it is the one shown under `approval_id`.
+    pub(super) fn take(
+        &mut self,
+        thread_id: &ChatThreadId,
+        approval_id: u64,
+    ) -> Option<PendingPreviewApproval> {
+        if self.held.get(thread_id)?.id != approval_id {
+            return None;
+        }
+        self.held.remove(thread_id).map(|held| held.approval)
+    }
+
+    /// Drops the thread's held approval.
+    pub(super) fn forget(&mut self, thread_id: &ChatThreadId) {
+        self.held.remove(thread_id);
+    }
+
+    /// Drops every held approval.
+    pub(super) fn clear(&mut self) {
+        self.held.clear();
+    }
+}
+
 /// What the Browser panel shows for a pending approval.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum PreviewApprovalRead {
-    Navigation {
-        origin: String,
-    },
-    Network,
+    /// A tab waits to open a loopback origin. Answered by `approval_id`.
+    #[serde(rename_all = "camelCase")]
+    Navigation { approval_id: u64, origin: String },
+    /// Preview tools wait for network access. Answered by `approval_id`.
+    #[serde(rename_all = "camelCase")]
+    Network { approval_id: u64 },
     /// A page asked for a capability. The user's answer is remembered per thread and origin.
     #[serde(rename_all = "camelCase")]
     Permission {
@@ -85,12 +155,16 @@ pub(crate) fn approval_pending_error(subject: &str) -> ChatError {
     )
 }
 
-fn approval_read(approval: &PendingPreviewApproval) -> Option<PreviewApprovalRead> {
-    match approval {
+fn approval_read(held: &HeldApproval) -> Option<PreviewApprovalRead> {
+    let approval_id = held.id;
+    match &held.approval {
         PendingPreviewApproval::Navigation { url, .. } => {
-            loopback_origin_key(url).map(|origin| PreviewApprovalRead::Navigation { origin })
+            loopback_origin_key(url).map(|origin| PreviewApprovalRead::Navigation {
+                approval_id,
+                origin,
+            })
         }
-        PendingPreviewApproval::Network => Some(PreviewApprovalRead::Network),
+        PendingPreviewApproval::Network => Some(PreviewApprovalRead::Network { approval_id }),
     }
 }
 
@@ -106,10 +180,9 @@ impl ChatBrowserManager {
         let Ok(mut pending) = self.pending_approvals.lock() else {
             return;
         };
-        if pending.get(thread_id) == Some(&approval) {
+        if !pending.hold(thread_id, approval) {
             return;
         }
-        pending.insert(thread_id.clone(), approval);
         drop(pending);
         let _ = app.emit(
             CHAT_BROWSER_APPROVAL_EVENT,
@@ -120,12 +193,13 @@ impl ChatBrowserManager {
     fn take_approval(
         &self,
         thread_id: &ChatThreadId,
+        approval_id: u64,
     ) -> ChatResult<Option<PendingPreviewApproval>> {
         Ok(self
             .pending_approvals
             .lock()
             .map_err(|_| browser_state_error())?
-            .remove(thread_id))
+            .take(thread_id, approval_id))
     }
 }
 
@@ -164,12 +238,12 @@ pub async fn chat_browser_pending_approval(
         .pending_approvals
         .lock()
         .map_err(|_| browser_state_error())?
-        .get(&thread_id)
-        .and_then(approval_read))
+        .read(&thread_id))
 }
 
 /// Answers a page request when `request_id` is given, otherwise allows or dismisses the
-/// thread's pending approval. Allowing a navigation remembers its loopback origin for the
+/// thread's pending approval shown under `approval_id`; an answer to an approval a newer one
+/// replaced takes nothing. Allowing a navigation remembers its loopback origin for the
 /// thread and opens the held URL in the tab that asked for it. `text` is what an accepted
 /// `prompt` dialog returns to the page.
 #[tauri::command]
@@ -179,15 +253,19 @@ pub async fn chat_browser_resolve_approval(
     thread_id: ChatThreadId,
     allow: bool,
     request_id: Option<u64>,
+    approval_id: Option<u64>,
     text: Option<String>,
 ) -> ChatResult<Option<BrowserTabRead>> {
     if let Some(request_id) = request_id {
         page_requests::resolve_page_request(&app, &thread_id, request_id, allow, text)?;
         return Ok(None);
     }
+    let Some(approval_id) = approval_id else {
+        return Ok(None);
+    };
     let Some(approval) = app
         .state::<ChatBrowserManager>()
-        .take_approval(&thread_id)?
+        .take_approval(&thread_id, approval_id)?
     else {
         return Ok(None);
     };

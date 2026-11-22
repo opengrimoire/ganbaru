@@ -132,16 +132,16 @@
     if (!threadId || !approval) return;
     const selectedThread = threadId;
     const resolved = approval;
-    const page = "requestId" in resolved
+    const answer = "requestId" in resolved
       ? {
         requestId: resolved.requestId,
         text: allow && resolved.kind === "dialog" && resolved.dialogKind === "prompt" ? promptText : undefined,
       }
-      : undefined;
+      : { approvalId: resolved.approvalId };
     approval = null;
     error = null;
     try {
-      const navigated = await chatApi.resolveBrowserApproval(selectedThread, allow, page);
+      const navigated = await chatApi.resolveBrowserApproval(selectedThread, allow, answer);
       if (navigated && selectedThread === threadId) {
         tabs = tabs.map((tab) => tab.tabId === navigated.tabId ? navigated : tab);
         if (navigated.tabId === tabId) {

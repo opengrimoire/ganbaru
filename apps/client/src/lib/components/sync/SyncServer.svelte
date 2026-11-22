@@ -49,17 +49,26 @@
   const lines = $derived(server ? syncServerLines(t, server) : []);
   const isAnchorCode = $derived(code.trim().startsWith(ANCHOR_CODE_PREFIX));
 
-  /** Loads the server the vault names and probes a relay; a probe failure is part of the view. */
+  /** Counts status reads, so only the newest one settles the view and ends the loading state. */
+  let statusReads = 0;
+
+  /**
+   * Loads the server the vault names and probes a relay; a probe failure is part of the view. A refresh after an add
+   * or removal can overlap another, and an older read never replaces a newer one.
+   */
   async function refresh(): Promise<void> {
+    const read = ++statusReads;
     loading = true;
     try {
-      server = await getSyncServerStatus();
+      const next = await getSyncServerStatus();
+      if (read !== statusReads) return;
+      server = next;
       loadFailed = false;
     } catch (cause: unknown) {
       console.warn("sync server status could not be loaded", cause);
-      loadFailed = true;
+      if (read === statusReads) loadFailed = true;
     } finally {
-      loading = false;
+      if (read === statusReads) loading = false;
     }
   }
 

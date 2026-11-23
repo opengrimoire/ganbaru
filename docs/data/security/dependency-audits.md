@@ -2,7 +2,7 @@
 
 This file records reviewed Rust and npm advisory exceptions and allowed warnings. Lockfiles and current command output are authoritative; an old date or prior clean result is not evidence for the current lockfile.
 
-As of 2026-11-18, `pnpm -w run audit:deps` reports no known npm vulnerabilities beyond the two reviewed ignores below, and `pnpm -w run audit:rust` exits successfully with the one reviewed ignore and the six allowed warnings listed below.
+As of 2026-11-23, `pnpm -w run audit:deps` reports no known npm vulnerabilities beyond the two reviewed ignores below, and `pnpm -w run audit:rust` exits successfully with the one reviewed ignore and the six allowed warnings listed below.
 
 A successful Rust audit exit does not mean warning-free. The cargo-audit output policy allows warnings, so maintainers must review new unsound, unmaintained, and yanked findings separately.
 

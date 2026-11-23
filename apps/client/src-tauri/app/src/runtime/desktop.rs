@@ -717,6 +717,11 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::vault_pick_and_write_theme_json,
             vault::vault_pick_and_write_recovery_kit,
             vault::encrypted_backup::vault_backup_to_file,
+            vault::automatic_backup::vault_automatic_backup_status,
+            vault::automatic_backup::vault_automatic_backup_configure,
+            vault::automatic_backup::vault_automatic_backup_choose_folder,
+            vault::automatic_backup::vault_automatic_backup_reset_folder,
+            vault::automatic_backup::vault_automatic_backup_run_now,
             vault::encrypted_backup::vault_inspect_backup,
             vault::encrypted_backup::vault_restore_backup,
             calendar::reads::calendar_load_window,
@@ -1093,6 +1098,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             app.manage(chat::sync::AssignmentWaker::new(app.handle().clone()));
             chat::revocation::start_job_drain(app.handle());
             chat::cleanup_service::start(app.handle());
+            vault::automatic_backup::start(app.handle());
             chat::usage_summaries::start(app.handle());
             chat::provider_status::start(app.handle());
             #[cfg(target_os = "linux")]

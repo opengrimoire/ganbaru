@@ -46,13 +46,13 @@ use tauri::{Manager, Runtime};
 /// File extension of encrypted backups.
 pub(crate) const BACKUP_EXTENSION: &str = "ganbaru-backup";
 /// Name of the backup file kind in pickers and Android Downloads.
-const BACKUP_FILE_KIND: &str = "Ganbaru backup";
+pub(super) const BACKUP_FILE_KIND: &str = "Ganbaru backup";
 /// App cache directory that holds backup staging and picked backups.
 const TRANSFER_ROOT: &str = "vault-backups";
 /// Prefix of the private directory one inspected backup lives in; the rest is its token.
 const RESTORE_TRANSFER_PREFIX: &str = "restore-";
 /// Prefix of the private directory one Android backup is written to before it is saved.
-const SAVE_TRANSFER_PREFIX: &str = "save-";
+pub(super) const SAVE_TRANSFER_PREFIX: &str = "save-";
 /// The decrypted archive inside a restore transfer directory.
 const RESTORED_ARCHIVE_FILE: &str = "archive.zip";
 /// Prefix of the folder that holds a restored vault before it replaces the vault beside it. The
@@ -438,7 +438,7 @@ fn take_pending(token: &str) -> Result<Option<PendingBackup>, String> {
 }
 
 /// The app cache directory backups are staged in.
-fn transfer_root<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+pub(super) fn transfer_root<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     let root = app
         .path()
         .app_cache_dir()
@@ -470,7 +470,7 @@ fn new_restore_transfer<R: Runtime>(
 
 /// Removes directories under `root` named with `prefix` that an exit left behind. The caller
 /// holds the vault transition, so none of them is in use.
-fn remove_stale_transfers(root: &Path, prefix: &str) {
+pub(super) fn remove_stale_transfers(root: &Path, prefix: &str) {
     let Ok(entries) = fs::read_dir(root) else {
         return;
     };
@@ -620,7 +620,7 @@ impl Drop for StagedFolder {
     }
 }
 
-async fn blocking<T: Send + 'static>(
+pub(super) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(work)
@@ -734,7 +734,7 @@ fn refuse_linked_active(active: Option<&ActiveVault>) -> Result<(), BackupRefusa
 }
 
 /// The keys a backup of the active vault is sealed to, `None` without a recovery kit.
-async fn active_seal_keys(
+pub(super) async fn active_seal_keys(
     app: &tauri::AppHandle,
     vault_id: &str,
 ) -> Result<Option<BackupSealKeys>, String> {
@@ -785,7 +785,7 @@ fn backup_file_name() -> String {
 }
 
 /// A backup file name that starts with `stem` and carries the current time.
-fn stamped_file_name(stem: &str) -> String {
+pub(super) fn stamped_file_name(stem: &str) -> String {
     let timestamp = now_utc()
         .to_rfc3339_opts(SecondsFormat::Secs, true)
         .replace(':', "-");

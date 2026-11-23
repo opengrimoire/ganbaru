@@ -65,6 +65,11 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::vault_pick_and_read_theme_json,
             vault::vault_pick_and_write_theme_json,
             vault::encrypted_backup::vault_backup_to_downloads,
+            vault::automatic_backup::vault_automatic_backup_status,
+            vault::automatic_backup::vault_automatic_backup_configure,
+            vault::automatic_backup::vault_automatic_backup_choose_folder,
+            vault::automatic_backup::vault_automatic_backup_reset_folder,
+            vault::automatic_backup::vault_automatic_backup_run_now,
             vault::encrypted_backup::vault_inspect_backup,
             vault::encrypted_backup::vault_restore_backup,
             vault::database_rollback::vault_database_rollbacks,
@@ -542,6 +547,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             #[cfg(target_os = "android")]
             crate::sync::headless::configure_background_at_start(app.handle());
             crate::sync::setup(app.handle());
+            vault::automatic_backup::start(app.handle());
             music::setup_youtube_host(app.handle())?;
             music::session::setup(app.handle());
             pomodoro::setup(app.handle());

@@ -9,6 +9,25 @@ const PLUGIN_IDENTIFIER: &str = "org.opengrimoire.ganbaru.mobile.documents";
 #[derive(Debug)]
 pub struct MobileDocuments<R: Runtime>(PluginHandle<R>);
 
+/// A folder automatic backups are written to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackupFolder<'a> {
+    /// A folder of this name below Downloads, written through MediaStore.
+    Downloads { subdirectory: &'a str },
+    /// A document tree the user picked with [`MobileDocuments::pick_backup_tree`].
+    Tree { uri: &'a str },
+}
+
+/// A document tree the user picked and the app holds persistent write access to.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickedBackupTree {
+    /// The tree URI later requests name the folder by.
+    pub tree_uri: String,
+    /// The folder name the document provider reports.
+    pub display_name: String,
+}
+
 impl<R: Runtime> Clone for MobileDocuments<R> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
@@ -302,5 +321,181 @@ pub trait MobileDocumentsExt<R: Runtime> {
 impl<R: Runtime, T: Manager<R>> MobileDocumentsExt<R> for T {
     fn mobile_documents(&self) -> &MobileDocuments<R> {
         self.state::<MobileDocuments<R>>().inner()
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupFolderFields<'a> {
+    tree_uri: Option<&'a str>,
+    downloads_subdirectory: Option<&'a str>,
+}
+
+impl<'a> From<BackupFolder<'a>> for BackupFolderFields<'a> {
+    fn from(folder: BackupFolder<'a>) -> Self {
+        match folder {
+            BackupFolder::Downloads { subdirectory } => Self {
+                tree_uri: None,
+                downloads_subdirectory: Some(subdirectory),
+            },
+            BackupFolder::Tree { uri } => Self {
+                tree_uri: Some(uri),
+                downloads_subdirectory: None,
+            },
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PickBackupTreeResponse {
+    tree_uri: Option<String>,
+    display_name: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupTreeRequest<'a> {
+    tree_uri: &'a str,
+}
+
+#[derive(Deserialize)]
+struct BackupTreeAvailableResponse {
+    available: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveFileToBackupFolderRequest<'a> {
+    #[serde(flatten)]
+    folder: BackupFolderFields<'a>,
+    source_path: &'a str,
+    file_name: &'a str,
+    max_bytes: u64,
+    accepted_extensions: Vec<String>,
+    mime_type: &'a str,
+    document_kind: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupFolderFilesRequest<'a> {
+    #[serde(flatten)]
+    folder: BackupFolderFields<'a>,
+    prefix: &'a str,
+    names: &'a [String],
+}
+
+#[derive(Deserialize)]
+struct BackupFolderNamesResponse {
+    names: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct BackupFolderDeletedResponse {
+    deleted: u32,
+}
+
+impl<R: Runtime> MobileDocuments<R> {
+    /// Ask Android's folder picker for a folder automatic backups go to, starting at Downloads,
+    /// and keep write access to it across restarts. Returns `None` when the person cancels.
+    pub fn pick_backup_tree(&self) -> Result<Option<PickedBackupTree>, String> {
+        let response = self
+            .0
+            .run_mobile_plugin::<PickBackupTreeResponse>("pickBackupTree", ())
+            .map_err(|error| format!("pick backup folder: {error}"))?;
+        match (response.tree_uri, response.display_name) {
+            (Some(tree_uri), Some(display_name)) => Ok(Some(PickedBackupTree {
+                tree_uri,
+                display_name,
+            })),
+            (None, _) => Ok(None),
+            (Some(_), None) => Err("pick backup folder: the folder has no name".to_string()),
+        }
+    }
+
+    /// Whether the app still holds write access to the picked backup folder `tree_uri`.
+    pub fn backup_tree_available(&self, tree_uri: &str) -> Result<bool, String> {
+        self.0
+            .run_mobile_plugin::<BackupTreeAvailableResponse>(
+                "backupTreeAvailable",
+                BackupTreeRequest { tree_uri },
+            )
+            .map(|response| response.available)
+            .map_err(|error| format!("check backup folder: {error}"))
+    }
+
+    /// Stream one bounded app-private file into `folder` as `file_name`, returning the name
+    /// the folder gave it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_file_to_backup_folder(
+        &self,
+        folder: BackupFolder<'_>,
+        source_path: &str,
+        file_name: &str,
+        max_bytes: u64,
+        accepted_extensions: &[&str],
+        mime_type: &str,
+        document_kind: &str,
+    ) -> Result<String, String> {
+        self.0
+            .run_mobile_plugin::<SaveDownloadResponse>(
+                "saveFileToBackupFolder",
+                SaveFileToBackupFolderRequest {
+                    folder: folder.into(),
+                    source_path,
+                    file_name,
+                    max_bytes,
+                    accepted_extensions: accepted_extensions
+                        .iter()
+                        .map(|value| (*value).to_string())
+                        .collect(),
+                    mime_type,
+                    document_kind,
+                },
+            )
+            .map(|response| response.display_name)
+            .map_err(|error| format!("save {document_kind}: {error}"))
+    }
+
+    /// The names of the files in `folder` that start with `prefix`. A Downloads folder lists only
+    /// the files this installation created.
+    pub fn list_backup_folder_files(
+        &self,
+        folder: BackupFolder<'_>,
+        prefix: &str,
+    ) -> Result<Vec<String>, String> {
+        self.0
+            .run_mobile_plugin::<BackupFolderNamesResponse>(
+                "listBackupFolderFiles",
+                BackupFolderFilesRequest {
+                    folder: folder.into(),
+                    prefix,
+                    names: &[],
+                },
+            )
+            .map(|response| response.names)
+            .map_err(|error| format!("list backup folder: {error}"))
+    }
+
+    /// Deletes the files of `folder` named in `names` that start with `prefix`, returning how
+    /// many were deleted.
+    pub fn delete_backup_folder_files(
+        &self,
+        folder: BackupFolder<'_>,
+        prefix: &str,
+        names: &[String],
+    ) -> Result<u32, String> {
+        self.0
+            .run_mobile_plugin::<BackupFolderDeletedResponse>(
+                "deleteBackupFolderFiles",
+                BackupFolderFilesRequest {
+                    folder: folder.into(),
+                    prefix,
+                    names,
+                },
+            )
+            .map(|response| response.deleted)
+            .map_err(|error| format!("delete old backups: {error}"))
     }
 }

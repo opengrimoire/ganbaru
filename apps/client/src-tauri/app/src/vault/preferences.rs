@@ -40,9 +40,12 @@ const FOCUS_PREFERENCE_BRANCH: &str = "preferences";
 /// The device file entry that holds native Chat device settings: provider settings, remembered
 /// selections, working folder provider preferences, and panels. It never replicates.
 pub(crate) const CHAT_DEVICE_ENTRY: &str = "chat";
+/// The device file entry that holds this device's automatic backup schedule, destination, and
+/// last outcome for the vault. It never replicates.
+pub(crate) const AUTOMATIC_BACKUP_DEVICE_ENTRY: &str = "automaticBackup";
 /// Device file entries that native commands own. The registry never routes a patch to them and
 /// the composed view leaves them out.
-const NATIVE_DEVICE_ENTRIES: &[&str] = &[CHAT_DEVICE_ENTRY];
+const NATIVE_DEVICE_ENTRIES: &[&str] = &[CHAT_DEVICE_ENTRY, AUTOMATIC_BACKUP_DEVICE_ENTRY];
 
 /// Managed cache of the active vault's effective preference view.
 #[derive(Default)]

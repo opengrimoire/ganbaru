@@ -3,6 +3,7 @@ package org.opengrimoire.ganbaru.mobile.documents
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ComponentName
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
@@ -16,6 +17,7 @@ import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
+import app.tauri.plugin.JSArray
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.io.ByteArrayOutputStream
@@ -28,6 +30,9 @@ import java.nio.charset.CodingErrorAction
 private const val DEFAULT_JSON_MIME_TYPE = "application/json"
 private const val EXTERNAL_STORAGE_DOCUMENTS_AUTHORITY = "com.android.externalstorage.documents"
 private const val PRIMARY_STORAGE_ROOT_DOCUMENT_ID = "primary:"
+
+/** Rejection message of a request whose picked backup folder lost its access grant or was removed. */
+internal const val BACKUP_FOLDER_UNAVAILABLE = "The backup folder is unavailable"
 
 private fun primaryStorageRootUri(): Uri = DocumentsContract.buildDocumentUri(
   EXTERNAL_STORAGE_DOCUMENTS_AUTHORITY,
@@ -232,6 +237,7 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
   private val pendingVaultTreeCopy = PendingPicker<PendingVaultTreeCopy>("A folder import is already active")
   private val pendingDocumentCopy = PendingPicker<PendingDocumentCopy>("A document import is already active")
   private val pendingDocumentSave = PendingPicker<PendingDocumentSave>("A document save is already active")
+  private val pendingBackupTree = PendingPicker<Unit>("A folder picker is already active")
 
   @Command
   fun pickVaultTreeToPath(invoke: Invoke) {
@@ -714,6 +720,238 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
     }.start()
   }
 
+  /** Lets the user pick a folder for automatic backups and keeps write access to it across restarts. */
+  @Command
+  fun pickBackupTree(invoke: Invoke) {
+    try {
+      pendingBackupTree.begin(invoke.id, Unit)
+      val pickerIntent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+        addFlags(
+          Intent.FLAG_GRANT_READ_URI_PERMISSION
+            or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION,
+        )
+        putExtra(DocumentsContract.EXTRA_INITIAL_URI, downloadsDirectoryUri())
+      }
+      startActivityForResult(invoke, pickerIntent, "pickBackupTreeResult")
+    } catch (error: Exception) {
+      pendingBackupTree.release(invoke.id)
+      invoke.reject(error.message ?: "Failed to open folder picker")
+    }
+  }
+
+  @ActivityCallback
+  fun pickBackupTreeResult(invoke: Invoke, result: ActivityResult) {
+    val pending = pendingBackupTree.take(invoke.id)
+    if (result.resultCode == Activity.RESULT_CANCELED) {
+      invoke.resolve(JSObject().apply { put("treeUri", null) })
+      return
+    }
+    val treeUri = result.data?.data
+    if (result.resultCode != Activity.RESULT_OK || pending == null || treeUri == null) {
+      invoke.reject("Failed to select folder")
+      return
+    }
+    try {
+      requireForeignPickerResult(treeUri)
+      activity.contentResolver.takePersistableUriPermission(
+        treeUri,
+        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+      )
+      val rootUri = DocumentsContract.buildDocumentUriUsingTree(
+        treeUri,
+        DocumentsContract.getTreeDocumentId(treeUri),
+      )
+      val displayName = resolveDocumentDisplayName(rootUri)
+        ?: throw IllegalArgumentException("The selected folder has no name")
+      invoke.resolve(JSObject().apply {
+        put("treeUri", treeUri.toString())
+        put("displayName", displayName)
+      })
+    } catch (error: Exception) {
+      invoke.reject(error.message ?: "The selected folder is unavailable")
+    }
+  }
+
+  /** Whether the app still holds write access to the picked backup folder [BackupTreeArgs.treeUri]. */
+  @Command
+  fun backupTreeAvailable(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(BackupTreeArgs::class.java)
+    } catch (error: Exception) {
+      invoke.reject(error.message ?: "Invalid backup folder request")
+      return
+    }
+    Thread {
+      val available = try {
+        val folder = BackupFolders.parse(args.treeUri, null, Environment.DIRECTORY_DOWNLOADS)
+        backupTreeRoot(folder as BackupFolder.Tree) != null
+      } catch (_: Exception) {
+        false
+      }
+      invoke.resolve(JSObject().apply { put("available", available) })
+    }.start()
+  }
+
+  /** Copies an app-private file into the automatic backup folder. */
+  @Command
+  fun saveFileToBackupFolder(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(SaveFileToBackupFolderArgs::class.java)
+    } catch (error: Exception) {
+      invoke.reject(error.message ?: "Invalid backup folder request")
+      return
+    }
+    Thread {
+      var created: Uri? = null
+      try {
+        val folder = BackupFolders.parse(args.treeUri, args.downloadsSubdirectory, Environment.DIRECTORY_DOWNLOADS)
+        val source = PrivateTransferPaths.readableSource(File(activity.applicationInfo.dataDir), args.sourcePath)
+        require(args.maxBytes > 0) { "Document size limit must be positive" }
+        validateDownloadMetadata(args.fileName, args.acceptedExtensions, args.mimeType, args.documentKind)
+        require(source.length() <= args.maxBytes) { "${args.documentKind} exceeds the size limit" }
+        val target = when (folder) {
+          is BackupFolder.Downloads -> createPendingDownload(args.fileName, args.mimeType, folder.relativePath)
+          is BackupFolder.Tree -> {
+            val root = backupTreeRoot(folder) ?: throw IllegalStateException(BACKUP_FOLDER_UNAVAILABLE)
+            DocumentsContract.createDocument(activity.contentResolver, root, args.mimeType, args.fileName)
+              ?: throw IllegalStateException("Android could not create the backup file")
+          }
+        }
+        created = target
+        source.inputStream().use { input ->
+          activity.contentResolver.openOutputStream(target, "w").use { output ->
+            requireNotNull(output) { "Android could not open the backup file" }
+            input.copyTo(output)
+            output.flush()
+          }
+        }
+        val displayName = when (folder) {
+          is BackupFolder.Downloads -> {
+            publishDownload(target)
+            resolveDisplayName(target)
+          }
+          is BackupFolder.Tree -> resolveDocumentDisplayName(target)
+        } ?: args.fileName
+        invoke.resolve(JSObject().apply { put("displayName", displayName) })
+      } catch (error: Exception) {
+        created?.let { uri ->
+          try {
+            if (DocumentsContract.isDocumentUri(activity, uri)) {
+              DocumentsContract.deleteDocument(activity.contentResolver, uri)
+            } else {
+              activity.contentResolver.delete(uri, null, null)
+            }
+          } catch (_: Exception) {
+          }
+        }
+        invoke.reject(error.message ?: "Failed to save the backup file")
+      }
+    }.start()
+  }
+
+  /** Lists the names of the files in the automatic backup folder that start with the request's prefix. */
+  @Command
+  fun listBackupFolderFiles(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(BackupFolderFilesArgs::class.java)
+    } catch (error: Exception) {
+      invoke.reject(error.message ?: "Invalid backup folder request")
+      return
+    }
+    Thread {
+      try {
+        val folder = BackupFolders.parse(args.treeUri, args.downloadsSubdirectory, Environment.DIRECTORY_DOWNLOADS)
+        val prefix = BackupFolders.validatePrefix(args.prefix)
+        val names = backupFolderFiles(folder, prefix).map { it.first }
+        invoke.resolve(JSObject().apply { put("names", JSArray(names)) })
+      } catch (error: Exception) {
+        invoke.reject(error.message ?: "Failed to list the backup folder")
+      }
+    }.start()
+  }
+
+  /** Deletes the requested files of the automatic backup folder that start with the request's prefix. */
+  @Command
+  fun deleteBackupFolderFiles(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(BackupFolderFilesArgs::class.java)
+    } catch (error: Exception) {
+      invoke.reject(error.message ?: "Invalid backup folder request")
+      return
+    }
+    Thread {
+      try {
+        val folder = BackupFolders.parse(args.treeUri, args.downloadsSubdirectory, Environment.DIRECTORY_DOWNLOADS)
+        val prefix = BackupFolders.validatePrefix(args.prefix)
+        val files = backupFolderFiles(folder, prefix)
+        val deletable = BackupFolders.deletable(files.map { it.first }, prefix, args.names).toSet()
+        var deleted = 0
+        for ((name, uri) in files) {
+          if (name !in deletable) continue
+          val removed = when (folder) {
+            is BackupFolder.Downloads -> activity.contentResolver.delete(uri, null, null) > 0
+            is BackupFolder.Tree -> DocumentsContract.deleteDocument(activity.contentResolver, uri)
+          }
+          if (removed) deleted += 1
+        }
+        invoke.resolve(JSObject().apply { put("deleted", deleted) })
+      } catch (error: Exception) {
+        invoke.reject(error.message ?: "Failed to delete old backups")
+      }
+    }.start()
+  }
+
+  /** The root document of [folder] while the app holds persistent write access to it, or null. */
+  private fun backupTreeRoot(folder: BackupFolder.Tree): Uri? {
+    val treeUri = Uri.parse(folder.uri)
+    val granted = activity.contentResolver.persistedUriPermissions.any { permission ->
+      permission.uri == treeUri && permission.isWritePermission
+    }
+    if (!granted) return null
+    val rootUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
+    return try {
+      resolveDocumentDisplayName(rootUri)?.let { rootUri }
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  /** The regular files of [folder] whose names start with [prefix], with the URI each is deleted through. */
+  private fun backupFolderFiles(folder: BackupFolder, prefix: String): List<Pair<String, Uri>> = when (folder) {
+    is BackupFolder.Downloads -> {
+      val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME)
+      val selection =
+        "${MediaStore.MediaColumns.RELATIVE_PATH} = ? AND ${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ? ESCAPE '\\'"
+      val selectionArgs = arrayOf(folder.relativePath, BackupFolders.likePattern(prefix))
+      activity.contentResolver.query(
+        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+        projection,
+        selection,
+        selectionArgs,
+        null,
+      )?.use { cursor ->
+        val files = ArrayList<Pair<String, Uri>>()
+        while (cursor.moveToNext()) {
+          val name: String? = cursor.getString(1)
+          if (name != null && name.startsWith(prefix)) {
+            files.add(name to ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cursor.getLong(0)))
+          }
+        }
+        files
+      } ?: throw IllegalStateException("Android could not list the backup folder")
+    }
+    is BackupFolder.Tree -> {
+      backupTreeRoot(folder) ?: throw IllegalStateException(BACKUP_FOLDER_UNAVAILABLE)
+      val treeUri = Uri.parse(folder.uri)
+      queryDocumentChildren(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
+        .filter { entry ->
+          entry.mimeType != DocumentsContract.Document.MIME_TYPE_DIR && entry.displayName.startsWith(prefix)
+        }
+        .map { entry -> entry.displayName to DocumentsContract.buildDocumentUriUsingTree(treeUri, entry.documentId) }
+    }
+  }
+
   private fun copyBounded(input: InputStream, destination: File, maxBytes: Long) {
     input.use { source ->
       FileOutputStream(destination).use { target ->
@@ -748,11 +986,15 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
     require(mimeType.isNotBlank() && '/' in mimeType) { "Download MIME type is invalid" }
   }
 
-  private fun createPendingDownload(fileName: String, mimeType: String): Uri {
+  private fun createPendingDownload(
+    fileName: String,
+    mimeType: String,
+    relativePath: String = Environment.DIRECTORY_DOWNLOADS,
+  ): Uri {
     val pendingValues = ContentValues().apply {
       put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
       put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-      put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+      put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
       put(MediaStore.MediaColumns.IS_PENDING, 1)
     }
     return activity.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, pendingValues)

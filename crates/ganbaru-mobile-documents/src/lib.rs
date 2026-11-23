@@ -4,7 +4,7 @@
 mod mobile;
 
 #[cfg(target_os = "android")]
-pub use mobile::{MobileDocuments, MobileDocumentsExt};
+pub use mobile::{BackupFolder, MobileDocuments, MobileDocumentsExt, PickedBackupTree};
 
 #[cfg(target_os = "android")]
 use tauri::Manager;

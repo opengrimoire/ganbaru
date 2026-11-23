@@ -34,6 +34,7 @@ mod documents;
 pub use config::*;
 pub use documents::*;
 
+pub(crate) mod automatic_backup;
 pub(crate) mod backup;
 pub(crate) mod database_rollback;
 pub(crate) mod encrypted_backup;

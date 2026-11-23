@@ -9,7 +9,7 @@ import { runRustTests } from "./rust-tests.mjs";
  * Runs one concurrency-sensitive validation stage with the limits of the selected profile.
  *
  * `GANBARU_VALIDATE_PROFILE` selects `standard` (the default, also used by CI) or `low-memory`
- * for machines that cannot spare about 5 GB for a gate while other applications run.
+ * for machines that cannot spare about 7 GB plus some swap for a gate while other applications run.
  *
  * Usage: node run-profiled.mjs <clippy | rust-tests | frontend-tests>
  */

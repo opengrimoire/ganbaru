@@ -9,7 +9,7 @@
 //! [`RETAINED_BACKUPS`] automatic backups of the vault and no other file is touched.
 //!
 //! By default desktop writes beside the vault folder, in a folder named after it with
-//! [`DEFAULT_FOLDER_SUFFIX`], and Android writes to a Downloads folder named the same way through
+//! [`DEFAULT_FOLDER_SUFFIX`], and Android writes to a Documents folder named the same way through
 //! MediaStore. The user can pick another folder instead: a desktop folder outside the vault, or an
 //! Android document tree the app keeps write access to.
 
@@ -50,9 +50,9 @@ const LONGEST_WAIT: Duration = Duration::from_secs(15 * 60);
 const BUSY_RETRY: Duration = Duration::from_secs(5 * 60);
 /// Seconds after a failed attempt before a scheduled backup is tried again.
 const FAILURE_RETRY_SECONDS: i64 = 60 * 60;
-/// Folder of the Android shared storage that holds Downloads, as file managers show it.
+/// Folder of the Android shared storage that holds documents, as file managers show it.
 #[cfg(target_os = "android")]
-const ANDROID_DOWNLOADS_FOLDER: &str = "Download";
+const ANDROID_DOCUMENTS_FOLDER: &str = "Documents";
 /// Event emitted whenever the automatic backup status changes; listeners read the status again.
 pub(crate) const AUTOMATIC_BACKUP_CHANGED_EVENT: &str = "vault-automatic-backup-changed";
 
@@ -612,7 +612,7 @@ fn default_folder_label(vault_root: &Path) -> Result<String, String> {
 #[cfg(target_os = "android")]
 fn default_folder_label(vault_root: &Path) -> Result<String, String> {
     Ok(format!(
-        "{ANDROID_DOWNLOADS_FOLDER}/{}",
+        "{ANDROID_DOCUMENTS_FOLDER}/{}",
         default_folder_name(vault_root)?
     ))
 }
@@ -755,7 +755,7 @@ async fn write_to_folder(
 #[cfg(target_os = "android")]
 #[derive(Clone)]
 enum AndroidFolder {
-    Downloads(String),
+    Documents(String),
     Tree(String),
 }
 
@@ -764,7 +764,7 @@ impl AndroidFolder {
     fn as_folder(&self) -> ganbaru_mobile_documents::BackupFolder<'_> {
         use ganbaru_mobile_documents::BackupFolder;
         match self {
-            Self::Downloads(subdirectory) => BackupFolder::Downloads { subdirectory },
+            Self::Documents(subdirectory) => BackupFolder::Documents { subdirectory },
             Self::Tree(uri) => BackupFolder::Tree { uri },
         }
     }
@@ -803,7 +803,7 @@ async fn write_to_folder(
     use ganbaru_mobile_documents::MobileDocumentsExt;
     let target = match folder {
         None => {
-            AndroidFolder::Downloads(default_folder_name(vault_root).map_err(AttemptError::Failed)?)
+            AndroidFolder::Documents(default_folder_name(vault_root).map_err(AttemptError::Failed)?)
         }
         Some(CustomFolder::Tree { uri, .. }) => AndroidFolder::Tree(uri.clone()),
         Some(CustomFolder::Folder { .. }) => {

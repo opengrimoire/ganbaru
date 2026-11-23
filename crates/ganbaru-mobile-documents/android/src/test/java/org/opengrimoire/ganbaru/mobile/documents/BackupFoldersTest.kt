@@ -6,27 +6,27 @@ import org.junit.Test
 
 class BackupFoldersTest {
   @Test
-  fun namesOneDownloadsFolderOrOnePickedTree() {
+  fun namesOneDocumentsFolderOrOnePickedTree() {
     assertEquals(
-      BackupFolder.Downloads("Download/Ganbaru Backup/"),
-      BackupFolders.parse(null, "Ganbaru Backup", "Download"),
+      BackupFolder.Documents("Documents/Ganbaru Backup/"),
+      BackupFolders.parse(null, "Ganbaru Backup", "Documents"),
     )
     assertEquals(
       BackupFolder.Tree("content://com.android.externalstorage.documents/tree/primary%3ABackups"),
-      BackupFolders.parse("content://com.android.externalstorage.documents/tree/primary%3ABackups", null, "Download"),
+      BackupFolders.parse("content://com.android.externalstorage.documents/tree/primary%3ABackups", null, "Documents"),
     )
-    for ((tree, downloads) in listOf(null to null, "content://tree" to "Backups", "file:///sdcard" to null)) {
+    for ((tree, documents) in listOf(null to null, "content://tree" to "Backups", "file:///sdcard" to null)) {
       assertThrows(IllegalArgumentException::class.java) {
-        BackupFolders.parse(tree, downloads, "Download")
+        BackupFolders.parse(tree, documents, "Documents")
       }
     }
   }
 
   @Test
-  fun refusesDownloadsFoldersThatAreNotOnePlainName() {
+  fun refusesDocumentsFoldersThatAreNotOnePlainName() {
     for (name in listOf("", "..", "a/b", "a\\b", " padded ")) {
       assertThrows(IllegalArgumentException::class.java) {
-        BackupFolders.parse(null, name, "Download")
+        BackupFolders.parse(null, name, "Documents")
       }
     }
   }

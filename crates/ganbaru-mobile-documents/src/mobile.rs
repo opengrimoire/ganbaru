@@ -12,8 +12,8 @@ pub struct MobileDocuments<R: Runtime>(PluginHandle<R>);
 /// A folder automatic backups are written to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackupFolder<'a> {
-    /// A folder of this name below Downloads, written through MediaStore.
-    Downloads { subdirectory: &'a str },
+    /// A folder of this name below Documents, written through MediaStore.
+    Documents { subdirectory: &'a str },
     /// A document tree the user picked with [`MobileDocuments::pick_backup_tree`].
     Tree { uri: &'a str },
 }
@@ -328,19 +328,19 @@ impl<R: Runtime, T: Manager<R>> MobileDocumentsExt<R> for T {
 #[serde(rename_all = "camelCase")]
 struct BackupFolderFields<'a> {
     tree_uri: Option<&'a str>,
-    downloads_subdirectory: Option<&'a str>,
+    documents_subdirectory: Option<&'a str>,
 }
 
 impl<'a> From<BackupFolder<'a>> for BackupFolderFields<'a> {
     fn from(folder: BackupFolder<'a>) -> Self {
         match folder {
-            BackupFolder::Downloads { subdirectory } => Self {
+            BackupFolder::Documents { subdirectory } => Self {
                 tree_uri: None,
-                downloads_subdirectory: Some(subdirectory),
+                documents_subdirectory: Some(subdirectory),
             },
             BackupFolder::Tree { uri } => Self {
                 tree_uri: Some(uri),
-                downloads_subdirectory: None,
+                documents_subdirectory: None,
             },
         }
     }
@@ -397,7 +397,7 @@ struct BackupFolderDeletedResponse {
 }
 
 impl<R: Runtime> MobileDocuments<R> {
-    /// Ask Android's folder picker for a folder automatic backups go to, starting at Downloads,
+    /// Ask Android's folder picker for a folder automatic backups go to, starting at Documents,
     /// and keep write access to it across restarts. Returns `None` when the person cancels.
     pub fn pick_backup_tree(&self) -> Result<Option<PickedBackupTree>, String> {
         let response = self
@@ -458,7 +458,7 @@ impl<R: Runtime> MobileDocuments<R> {
             .map_err(|error| format!("save {document_kind}: {error}"))
     }
 
-    /// The names of the files in `folder` that start with `prefix`. A Downloads folder lists only
+    /// The names of the files in `folder` that start with `prefix`. A Documents folder lists only
     /// the files this installation created.
     pub fn list_backup_folder_files(
         &self,

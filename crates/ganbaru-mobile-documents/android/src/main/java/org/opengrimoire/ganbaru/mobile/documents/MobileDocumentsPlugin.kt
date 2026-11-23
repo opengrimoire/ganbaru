@@ -44,6 +44,14 @@ private fun downloadsDirectoryUri(): Uri = DocumentsContract.buildDocumentUri(
   "$PRIMARY_STORAGE_ROOT_DOCUMENT_ID${Environment.DIRECTORY_DOWNLOADS}",
 )
 
+private fun documentsDirectoryUri(): Uri = DocumentsContract.buildDocumentUri(
+  EXTERNAL_STORAGE_DOCUMENTS_AUTHORITY,
+  "$PRIMARY_STORAGE_ROOT_DOCUMENT_ID${Environment.DIRECTORY_DOCUMENTS}",
+)
+
+/** The MediaStore collection of non-media files in shared storage, which holds folders below Documents. */
+private fun sharedFilesUri(): Uri = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+
 @InvokeArg
 internal class PickUtf8DocumentArgs {
   var maxBytes: Long = 0
@@ -731,7 +739,7 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
             or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION,
         )
-        putExtra(DocumentsContract.EXTRA_INITIAL_URI, downloadsDirectoryUri())
+        putExtra(DocumentsContract.EXTRA_INITIAL_URI, documentsDirectoryUri())
       }
       startActivityForResult(invoke, pickerIntent, "pickBackupTreeResult")
     } catch (error: Exception) {
@@ -784,7 +792,7 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
     }
     Thread {
       val available = try {
-        val folder = BackupFolders.parse(args.treeUri, null, Environment.DIRECTORY_DOWNLOADS)
+        val folder = BackupFolders.parse(args.treeUri, null, Environment.DIRECTORY_DOCUMENTS)
         backupTreeRoot(folder as BackupFolder.Tree) != null
       } catch (_: Exception) {
         false
@@ -805,13 +813,14 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
     Thread {
       var created: Uri? = null
       try {
-        val folder = BackupFolders.parse(args.treeUri, args.downloadsSubdirectory, Environment.DIRECTORY_DOWNLOADS)
+        val folder = BackupFolders.parse(args.treeUri, args.documentsSubdirectory, Environment.DIRECTORY_DOCUMENTS)
         val source = PrivateTransferPaths.readableSource(File(activity.applicationInfo.dataDir), args.sourcePath)
         require(args.maxBytes > 0) { "Document size limit must be positive" }
         validateDownloadMetadata(args.fileName, args.acceptedExtensions, args.mimeType, args.documentKind)
         require(source.length() <= args.maxBytes) { "${args.documentKind} exceeds the size limit" }
         val target = when (folder) {
-          is BackupFolder.Downloads -> createPendingDownload(args.fileName, args.mimeType, folder.relativePath)
+          is BackupFolder.Documents ->
+            createPendingDownload(args.fileName, args.mimeType, folder.relativePath, sharedFilesUri())
           is BackupFolder.Tree -> {
             val root = backupTreeRoot(folder) ?: throw IllegalStateException(BACKUP_FOLDER_UNAVAILABLE)
             DocumentsContract.createDocument(activity.contentResolver, root, args.mimeType, args.fileName)
@@ -827,7 +836,7 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
           }
         }
         val displayName = when (folder) {
-          is BackupFolder.Downloads -> {
+          is BackupFolder.Documents -> {
             publishDownload(target)
             resolveDisplayName(target)
           }
@@ -861,7 +870,7 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
     }
     Thread {
       try {
-        val folder = BackupFolders.parse(args.treeUri, args.downloadsSubdirectory, Environment.DIRECTORY_DOWNLOADS)
+        val folder = BackupFolders.parse(args.treeUri, args.documentsSubdirectory, Environment.DIRECTORY_DOCUMENTS)
         val prefix = BackupFolders.validatePrefix(args.prefix)
         val names = backupFolderFiles(folder, prefix).map { it.first }
         invoke.resolve(JSObject().apply { put("names", JSArray(names)) })
@@ -882,7 +891,7 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
     }
     Thread {
       try {
-        val folder = BackupFolders.parse(args.treeUri, args.downloadsSubdirectory, Environment.DIRECTORY_DOWNLOADS)
+        val folder = BackupFolders.parse(args.treeUri, args.documentsSubdirectory, Environment.DIRECTORY_DOCUMENTS)
         val prefix = BackupFolders.validatePrefix(args.prefix)
         val files = backupFolderFiles(folder, prefix)
         val deletable = BackupFolders.deletable(files.map { it.first }, prefix, args.names).toSet()
@@ -890,7 +899,7 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
         for ((name, uri) in files) {
           if (name !in deletable) continue
           val removed = when (folder) {
-            is BackupFolder.Downloads -> activity.contentResolver.delete(uri, null, null) > 0
+            is BackupFolder.Documents -> activity.contentResolver.delete(uri, null, null) > 0
             is BackupFolder.Tree -> DocumentsContract.deleteDocument(activity.contentResolver, uri)
           }
           if (removed) deleted += 1
@@ -919,13 +928,13 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
 
   /** The regular files of [folder] whose names start with [prefix], with the URI each is deleted through. */
   private fun backupFolderFiles(folder: BackupFolder, prefix: String): List<Pair<String, Uri>> = when (folder) {
-    is BackupFolder.Downloads -> {
+    is BackupFolder.Documents -> {
       val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME)
       val selection =
         "${MediaStore.MediaColumns.RELATIVE_PATH} = ? AND ${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ? ESCAPE '\\'"
       val selectionArgs = arrayOf(folder.relativePath, BackupFolders.likePattern(prefix))
       activity.contentResolver.query(
-        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+        sharedFilesUri(),
         projection,
         selection,
         selectionArgs,
@@ -935,7 +944,7 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
         while (cursor.moveToNext()) {
           val name: String? = cursor.getString(1)
           if (name != null && name.startsWith(prefix)) {
-            files.add(name to ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cursor.getLong(0)))
+            files.add(name to ContentUris.withAppendedId(sharedFilesUri(), cursor.getLong(0)))
           }
         }
         files
@@ -990,6 +999,7 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
     fileName: String,
     mimeType: String,
     relativePath: String = Environment.DIRECTORY_DOWNLOADS,
+    collection: Uri = MediaStore.Downloads.EXTERNAL_CONTENT_URI,
   ): Uri {
     val pendingValues = ContentValues().apply {
       put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
@@ -997,7 +1007,7 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
       put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
       put(MediaStore.MediaColumns.IS_PENDING, 1)
     }
-    return activity.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, pendingValues)
+    return activity.contentResolver.insert(collection, pendingValues)
       ?: throw IllegalStateException("Android could not create the download")
   }
 

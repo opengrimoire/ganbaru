@@ -6,14 +6,14 @@ import app.tauri.annotation.InvokeArg
 private const val MAX_BACKUP_PREFIX_CHARS = 128
 
 /**
- * Requests on the folder automatic backups go to: a folder below Downloads that the app writes
+ * Requests on the folder automatic backups go to: a folder below Documents that the app writes
  * through MediaStore, or a document tree the user picked and granted persistent access to.
- * Exactly one of `treeUri` and `downloadsSubdirectory` is set.
+ * Exactly one of `treeUri` and `documentsSubdirectory` is set.
  */
 @InvokeArg
 internal class BackupFolderFilesArgs {
   var treeUri: String? = null
-  var downloadsSubdirectory: String? = null
+  var documentsSubdirectory: String? = null
   var prefix: String = ""
   var names: List<String> = emptyList()
 }
@@ -21,7 +21,7 @@ internal class BackupFolderFilesArgs {
 @InvokeArg
 internal class SaveFileToBackupFolderArgs {
   var treeUri: String? = null
-  var downloadsSubdirectory: String? = null
+  var documentsSubdirectory: String? = null
   lateinit var sourcePath: String
   lateinit var fileName: String
   var maxBytes: Long = 0
@@ -37,8 +37,8 @@ internal class BackupTreeArgs {
 
 /** A validated automatic backup folder. */
 internal sealed interface BackupFolder {
-  /** A folder below Downloads, as the MediaStore relative path of its entries. */
-  data class Downloads(val relativePath: String) : BackupFolder
+  /** A folder below Documents, as the MediaStore relative path of its entries. */
+  data class Documents(val relativePath: String) : BackupFolder
 
   /** A document tree the user picked, as its tree URI text. */
   data class Tree(val uri: String) : BackupFolder
@@ -46,20 +46,20 @@ internal sealed interface BackupFolder {
 
 internal object BackupFolders {
   /**
-   * The folder [treeUri] or [downloadsSubdirectory] names, where Downloads lives at
-   * [downloadsDirectory]. Exactly one must be set, and a Downloads folder is one plain folder name.
+   * The folder [treeUri] or [documentsSubdirectory] names, where Documents lives at
+   * [documentsDirectory]. Exactly one must be set, and a Documents folder is one plain folder name.
    */
-  fun parse(treeUri: String?, downloadsSubdirectory: String?, downloadsDirectory: String): BackupFolder {
-    require((treeUri == null) != (downloadsSubdirectory == null)) {
+  fun parse(treeUri: String?, documentsSubdirectory: String?, documentsDirectory: String): BackupFolder {
+    require((treeUri == null) != (documentsSubdirectory == null)) {
       "Exactly one backup folder must be named"
     }
     if (treeUri != null) {
       require(treeUri.startsWith("content://")) { "The backup folder is unavailable" }
       return BackupFolder.Tree(treeUri)
     }
-    val name = VaultTreePaths.validateDisplayName(downloadsSubdirectory.orEmpty())
+    val name = VaultTreePaths.validateDisplayName(documentsSubdirectory.orEmpty())
     require(name.length <= 255 && name.trim() == name) { "The backup folder name is invalid" }
-    return BackupFolder.Downloads("$downloadsDirectory/$name/")
+    return BackupFolder.Documents("$documentsDirectory/$name/")
   }
 
   /** Validates the file name prefix that a list or delete is limited to. */

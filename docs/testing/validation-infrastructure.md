@@ -27,12 +27,12 @@ Rust runs first because compiler and linker peaks are less predictable. Rust and
 
 ### Validation profiles
 
-`GANBARU_VALIDATE_PROFILE` selects the concurrency of Clippy, Rust tests, and Vitest; `apps/client/scripts/validation/run-profiled.mjs` owns the exact values and rejects unknown names. Lanes never exceed logical cores divided by test threads, so a four-core runner runs one binary at a time.
+`GANBARU_VALIDATE_PROFILE` selects the concurrency of Clippy, Rust tests, and Vitest; `apps/client/scripts/validation/run-profiled.mjs` owns the exact values and rejects unknown names. Lanes never exceed logical cores divided by test threads, so a four-core runner runs one binary at a time. The low-memory profile limits only Cargo jobs and test lanes: its peak is one compiler process (about 4.7 GB for the Tauri app test target), while four-thread tests need about 1.6 GB and the Vitest shards about 1.5 GB, so fewer threads or workers would cost time without lowering the peak.
 
 | Profile | Cargo build jobs | Rust test threads | Rust test lanes | Vitest |
 | --- | --- | --- | --- | --- |
 | `standard` (default) | 4 | 4 | 2 | Two sequential two-worker shards |
-| `low-memory` | 1 | 2 | 1 | Four sequential one-worker shards |
+| `low-memory` | 1 | 4 | 1 | Two sequential two-worker shards |
 
 A cold `validate:full` with the standard profile on a 7.6 GiB, eight-core machine running nothing else kept at least 1.1 GB available and took 33 minutes; its peak is the test build compiling the Tauri app, Notes, and Sync test targets together, which pushes about 2 GB to swap briefly. The standard profile is also what CI runs, so local and CI results match. Fast validation is the default because most contributor machines have that memory free. Set `low-memory` permanently in the shell environment of a machine that cannot spare it while a browser or other applications run; it trades wall time for one compiler process at a time. The choice is left to the machine owner rather than detected, because free memory changes during a run.
 
@@ -44,7 +44,7 @@ Benchmark fixture and harness contracts are deliberately outside `validate`. Run
 
 The 3,072 MiB Svelte Check heap leaves headroom over the measured live heap of about 1,916 MiB after a full collection (whole-process resident peak about 2.5 GiB under this limit). A limit within a few hundred MiB of the live heap fails intermittently, because whether a run survives then depends on collection timing. The checked program holds only app source, tests, and the libraries they import, so the heap tracks ordinary codebase growth. Treat exhaustion as a controlled failure. Investigate graph growth and checker topology before raising it again.
 
-Cargo development builds keep only line tables as debug information, and the test profile inherits that setting so tests and development builds reuse the same dependency artifacts. The Notes HTML sanitizer dependencies are compiled with full optimization in both, because their unoptimized parsing makes import tests take several times longer. One-job builds prevent competing compiler or linker peaks, but they cannot bound a single crate: a cold rebuild of the Tauri app crate's test target peaks at about 4.8 GB in one compiler process, and an incremental rebuild at about 3 GB. Keep Tauri-free logic in workspace crates so that peak does not keep growing. Restore full native debug information only for a concrete debugging session:
+Cargo development builds keep only line tables as debug information, and the test profile inherits that setting so tests and development builds reuse the same dependency artifacts. The Notes HTML sanitizer dependencies are compiled with full optimization in both, because their unoptimized parsing makes import tests take several times longer. One-job builds prevent competing compiler or linker peaks, but they cannot bound a single crate: a cold rebuild of the Tauri app crate's test target peaks at about 5.5 GB in one compiler process (borrow checking and code generation over about 190,000 lines), and an incremental rebuild at about 3 GB. Incremental compilation stays on: turning it off saves disk but makes that cold build slower with the same peak. Keep Tauri-free logic in workspace crates so that peak does not keep growing. Restore full native debug information only for a concrete debugging session:
 
 ```sh
 CARGO_PROFILE_DEV_DEBUG=full CARGO_BUILD_JOBS=1 pnpm --dir apps/client tauri dev

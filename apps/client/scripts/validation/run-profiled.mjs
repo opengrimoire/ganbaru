@@ -29,7 +29,7 @@ const BENCHMARK_TESTS = "src/lib/benchmark/**/*.test.ts";
 /** @type {Record<string, ValidationProfile>} */
 const PROFILES = {
   standard: { cargoJobs: 4, rustTestThreads: 4, rustTestLanes: 2, vitestShards: 2, vitestWorkers: 2 },
-  "low-memory": { cargoJobs: 1, rustTestThreads: 2, rustTestLanes: 1, vitestShards: 4, vitestWorkers: 1 },
+  "low-memory": { cargoJobs: 1, rustTestThreads: 4, rustTestLanes: 1, vitestShards: 2, vitestWorkers: 2 },
 };
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");

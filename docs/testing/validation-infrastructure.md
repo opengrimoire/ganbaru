@@ -27,12 +27,12 @@ Rust runs first because compiler and linker peaks are less predictable. Rust and
 
 ### Validation profiles
 
-`GANBARU_VALIDATE_PROFILE` selects the concurrency of Clippy, Rust tests, and Vitest; `apps/client/scripts/validation/run-profiled.mjs` owns the exact values and rejects unknown names. Lanes never exceed logical cores divided by test threads, so a four-core runner runs one binary at a time. The low-memory profile limits only Cargo jobs and test lanes: its peak is one compiler process (about 4.7 GB for the Tauri app test target), while four-thread tests need about 1.6 GB and the Vitest shards about 1.5 GB, so fewer threads or workers would cost time without lowering the peak.
+`GANBARU_VALIDATE_PROFILE` selects the concurrency of Clippy, Rust tests, and Vitest; `apps/client/scripts/validation/run-profiled.mjs` owns the exact values and rejects unknown names. Lanes never exceed logical cores divided by test threads, so a four-core runner runs one binary at a time. The low-memory profile limits only Cargo jobs: its peak is one compiler process (about 5 GB for the Tauri app test target, leaving 2.1 GB available on that machine), while two lanes of four-thread tests need under 2.5 GB and the Vitest shards about 1.5 GB, so fewer lanes, threads, or workers would cost time without lowering the peak. A cold low-memory `validate:full` there took 58 minutes, 17 of them running test binaries one at a time before two lanes.
 
 | Profile | Cargo build jobs | Rust test threads | Rust test lanes | Vitest |
 | --- | --- | --- | --- | --- |
 | `standard` (default) | 4 | 4 | 2 | Two sequential two-worker shards |
-| `low-memory` | 1 | 4 | 1 | Two sequential two-worker shards |
+| `low-memory` | 1 | 4 | 2 | Two sequential two-worker shards |
 
 A cold `validate:full` with the standard profile on a 7.6 GiB, eight-core machine running nothing else took 33 minutes in each of two runs; its peak is the test build compiling the Tauri app, Notes, Sync, and Calendar test targets together, which left 0.3 to 1.1 GB available for under a minute and pushed 1.6 to 3.1 GB to swap, without the out-of-memory killer in three runs. The standard profile is also what CI runs, so local and CI results match. Fast validation is the default because most contributor machines have that memory free. Set `low-memory` permanently in the shell environment of a machine that cannot spare it while a browser or other applications run; it trades wall time for one compiler process at a time. The choice is left to the machine owner rather than detected, because free memory changes during a run.
 

@@ -1,9 +1,10 @@
 use super::{TestDirectory, acquire, add_note, block_on, context, create_vault};
 use crate::backup::{
     ArchiveGate, BackupFileError, BackupSealKeys, DATABASE_FILE, VAULT_MANIFEST_FILE,
-    create_backup_archive, create_encrypted_backup, create_snapshot_archive, decrypt_backup,
-    is_bundle_layout_entry, is_database_sidecar, read_backup_header, seal_archive,
-    sweep_backup_staging, vacuum_database, validate_vault_database,
+    collect_archive_entries, create_backup_archive, create_encrypted_backup,
+    create_snapshot_archive, decrypt_backup, is_bundle_layout_entry, is_database_sidecar,
+    read_backup_header, seal_archive, sweep_backup_staging, vacuum_database,
+    validate_vault_database, write_archive_entries,
 };
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_sync_contracts::backup::{BACKUP_CHUNK_BYTES, BackupError};
@@ -868,5 +869,90 @@ fn create_encrypted_backup_sweeps_a_killed_run() {
 
         assert!(!leftover.exists(), "the killed run's staging is removed");
         assert_eq!(staged_entries(&staging), 0);
+    });
+}
+
+#[test]
+fn an_archive_leaves_out_files_removed_after_they_were_listed() {
+    let directory = TestDirectory::new("backup-vanished");
+    let root = directory.path().join("vault");
+    std::fs::create_dir_all(&root).expect("create vault root");
+    write_layout(&root);
+    std::fs::write(root.join("projects/alpha/draft.md"), b"draft").expect("write draft");
+    let snapshot = directory.path().join("snapshot.sqlite");
+    std::fs::write(&snapshot, b"database").expect("write snapshot");
+    std::fs::write(root.join(DATABASE_FILE), b"live").expect("write database");
+    let mut entries = Vec::new();
+    let mut total_bytes = 0;
+    collect_archive_entries(&root, &root, &mut entries, &mut total_bytes).expect("list vault");
+    std::fs::remove_file(root.join("projects/alpha/draft.md")).expect("remove draft");
+    let archive = directory.path().join("archive.zip");
+
+    write_archive_entries(entries, &snapshot, &archive).expect("write archive");
+
+    let names = archive_names(&archive);
+    assert!(names.iter().any(|name| name == "projects/alpha/plan.md"));
+    assert!(names.iter().any(|name| name == DATABASE_FILE));
+    assert!(!names.iter().any(|name| name == "projects/alpha/draft.md"));
+}
+
+#[test]
+fn listing_skips_a_folder_removed_below_the_vault_but_not_a_missing_vault() {
+    let directory = TestDirectory::new("backup-vanished-folder");
+    let root = directory.path().join("vault");
+    std::fs::create_dir_all(&root).expect("create vault root");
+    let mut entries = Vec::new();
+    let mut total_bytes = 0;
+
+    collect_archive_entries(
+        &root,
+        &root.join("projects/gone"),
+        &mut entries,
+        &mut total_bytes,
+    )
+    .expect("a vanished folder lists nothing");
+    assert!(entries.is_empty());
+    let missing = directory.path().join("missing");
+    assert!(
+        collect_archive_entries(&missing, &missing, &mut entries, &mut total_bytes).is_err(),
+        "the vault root must be readable"
+    );
+}
+
+#[test]
+fn encrypted_backup_reads_a_vault_whose_database_stays_open() {
+    block_on(async {
+        let directory = TestDirectory::new("backup-live");
+        let root = directory.path().join("vault");
+        std::fs::create_dir_all(&root).expect("create vault root");
+        let registry = DatabasePoolRegistry::default();
+        let pool = create_vault(&registry, &root.join(DATABASE_FILE)).await;
+        context(&mut *acquire(&pool).await).await;
+        add_note(&mut *acquire(&pool).await, "live").await;
+        write_layout(&root);
+        let backup = directory.path().join("vault.ganbaru-backup");
+
+        create_encrypted_backup(
+            &ArchiveGate::default(),
+            &root,
+            &directory.path().join("staging"),
+            &seal_keys(None),
+            &backup,
+        )
+        .await
+        .expect("create encrypted backup");
+        add_note(&mut *acquire(&pool).await, "after").await;
+        registry.close_all().await.expect("close vault");
+
+        let archive = directory.path().join("restored.zip");
+        decrypt_backup(
+            &backup,
+            |header| header.open_with_recovery(&kit()),
+            &archive,
+        )
+        .expect("decrypt backup");
+        let extracted = directory.path().join("extracted.sqlite");
+        extract_database(&archive, &extracted);
+        assert_eq!(note_ids(&extracted).await, vec!["live".to_string()]);
     });
 }

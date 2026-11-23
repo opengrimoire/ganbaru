@@ -262,20 +262,32 @@ fn remove_stale_compaction(compacted: &Path) -> Result<(), String> {
 }
 
 #[derive(Clone)]
-struct ArchiveEntry {
+pub(crate) struct ArchiveEntry {
     source: PathBuf,
     relative: PathBuf,
     directory: bool,
 }
 
-fn collect_archive_entries(
+/// Lists the layout entries below `current`. A folder or file below `root` that disappears
+/// while it is listed is left out, since an automatic backup reads a vault the app keeps
+/// writing to; the vault root itself must stay readable.
+pub(crate) fn collect_archive_entries(
     root: &Path,
     current: &Path,
     entries: &mut Vec<ArchiveEntry>,
     total_bytes: &mut u64,
 ) -> Result<(), String> {
-    let mut children = fs::read_dir(current)
-        .map_err(|error| format!("read backup source '{}': {error}", current.display()))?
+    let listing = match fs::read_dir(current) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == ErrorKind::NotFound && current != root => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "read backup source '{}': {error}",
+                current.display()
+            ));
+        }
+    };
+    let mut children = listing
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("read backup source entry: {error}"))?;
     children.sort_by_key(fs::DirEntry::file_name);
@@ -293,8 +305,16 @@ fn collect_archive_entries(
         if depth > BACKUP_MAX_DEPTH {
             return Err("Ganbaru folder is nested too deeply to back up".to_string());
         }
-        let metadata = fs::symlink_metadata(&source)
-            .map_err(|error| format!("inspect backup entry '{}': {error}", source.display()))?;
+        let metadata = match fs::symlink_metadata(&source) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "inspect backup entry '{}': {error}",
+                    source.display()
+                ));
+            }
+        };
         if !is_bundle_layout_entry(&relative, metadata.is_dir()) {
             continue;
         }
@@ -355,7 +375,17 @@ fn write_archive(
     let mut entries = Vec::new();
     let mut total_bytes = 0;
     collect_archive_entries(vault_root, vault_root, &mut entries, &mut total_bytes)?;
+    write_archive_entries(entries, database_snapshot, destination)
+}
 
+/// Writes `entries` to a zip archive at `destination`, taking the database bytes from
+/// `database_snapshot`. A file that disappeared after it was listed is left out; the
+/// database snapshot must open.
+pub(crate) fn write_archive_entries(
+    entries: Vec<ArchiveEntry>,
+    database_snapshot: &Path,
+    destination: &Path,
+) -> Result<(), String> {
     let file =
         fs::File::create(destination).map_err(|error| format!("create backup archive: {error}"))?;
     let mut writer = ZipWriter::new(file);
@@ -375,17 +405,25 @@ fn write_archive(
                 .map_err(|error| format!("write backup directory: {error}"))?;
             continue;
         }
-        writer
-            .start_file(name, options)
-            .map_err(|error| format!("write backup entry: {error}"))?;
-        let source = if entry.relative == Path::new(DATABASE_FILE) {
+        let is_database = entry.relative == Path::new(DATABASE_FILE);
+        let source = if is_database {
             database_snapshot
         } else {
             &entry.source
         };
-        let mut input = fs::File::open(source).map_err(|error| {
-            format!("open backup entry '{}': {error}", entry.relative.display())
-        })?;
+        let mut input = match fs::File::open(source) {
+            Ok(input) => input,
+            Err(error) if error.kind() == ErrorKind::NotFound && !is_database => continue,
+            Err(error) => {
+                return Err(format!(
+                    "open backup entry '{}': {error}",
+                    entry.relative.display()
+                ));
+            }
+        };
+        writer
+            .start_file(name, options)
+            .map_err(|error| format!("write backup entry: {error}"))?;
         loop {
             let count = input.read(&mut buffer).map_err(|error| {
                 format!("read backup entry '{}': {error}", entry.relative.display())
@@ -542,7 +580,9 @@ pub fn sweep_staging_entries(root: &Path, stale: impl Fn(&str) -> bool) -> io::R
 /// left by a hard kill is swept. The gate stays held from the
 /// database snapshot until the encrypted file is synced and renamed over `destination`, so
 /// the asset sweep never removes a file the archive references while it is written. The
-/// caller excludes vault writers first. Returns the bytes written.
+/// database is always a consistent snapshot; a caller that leaves vault writers running gets
+/// the other files as each is read, without the ones removed meanwhile. Returns the bytes
+/// written.
 pub async fn create_encrypted_backup(
     gate: &ArchiveGate,
     vault_root: &Path,

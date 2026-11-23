@@ -3,12 +3,13 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runRustTests } from "./rust-tests.mjs";
 
 /**
  * Runs one concurrency-sensitive validation stage with the limits of the selected profile.
  *
  * `GANBARU_VALIDATE_PROFILE` selects `standard` (the default, also used by CI) or `low-memory`
- * for machines that cannot spare about 5 GB for a gate while other applications run.
+ * for machines that cannot spare about 7 GB plus some swap for a gate while other applications run.
  *
  * Usage: node run-profiled.mjs <clippy | rust-tests | frontend-tests>
  */
@@ -20,14 +21,15 @@ const BENCHMARK_TESTS = "src/lib/benchmark/**/*.test.ts";
  * @typedef {object} ValidationProfile
  * @property {number} cargoJobs Parallel Cargo build jobs.
  * @property {number} rustTestThreads Runtime threads per Rust test binary.
+ * @property {number} rustTestLanes Rust test binaries running at once, capped by logical cores.
  * @property {number} vitestShards Sequential Vitest shards; each releases its module graph before the next.
  * @property {number} vitestWorkers Vitest workers inside each shard.
  */
 
 /** @type {Record<string, ValidationProfile>} */
 const PROFILES = {
-  standard: { cargoJobs: 4, rustTestThreads: 4, vitestShards: 2, vitestWorkers: 2 },
-  "low-memory": { cargoJobs: 1, rustTestThreads: 2, vitestShards: 4, vitestWorkers: 1 },
+  standard: { cargoJobs: 4, rustTestThreads: 4, rustTestLanes: 2, vitestShards: 2, vitestWorkers: 2 },
+  "low-memory": { cargoJobs: 1, rustTestThreads: 4, rustTestLanes: 2, vitestShards: 2, vitestWorkers: 2 },
 };
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -61,10 +63,13 @@ function turboEntry() {
   return createRequire(import.meta.url).resolve("turbo/bin/turbo");
 }
 
-/** @type {Record<string, (profile: ValidationProfile) => void>} */
+/** @type {Record<string, (profile: ValidationProfile) => void | Promise<void>>} */
 const STAGES = {
   clippy: (profile) => run("cargo", ["clippy", "--workspace", "-j", String(profile.cargoJobs), "--", "-D", "warnings"]),
-  "rust-tests": (profile) => run("cargo", ["test", "--workspace", "-j", String(profile.cargoJobs), "--", `--test-threads=${profile.rustTestThreads}`]),
+  "rust-tests": async (profile) => {
+    const limits = { cargoJobs: profile.cargoJobs, threads: profile.rustTestThreads, lanes: profile.rustTestLanes };
+    if (!(await runRustTests(repoRoot, limits))) process.exitCode = 1;
+  },
   "frontend-tests": (profile) => {
     const turbo = turboEntry();
     for (let shard = 1; shard <= profile.vitestShards; shard += 1) {
@@ -80,7 +85,7 @@ if (!stage) {
   process.exit(2);
 }
 try {
-  stage(selectedProfile());
+  await stage(selectedProfile());
 } catch (caught) {
   console.error(caught instanceof Error ? caught.message : String(caught));
   process.exit(1);

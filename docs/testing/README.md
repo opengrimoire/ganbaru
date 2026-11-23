@@ -137,7 +137,7 @@ If a batch already passed the required gate, do not repeat it unless later chang
 
 Broad root scripts run Rust and frontend work one after the other. Do not start Cargo, Vitest, Svelte Check, Turbo, or another broad validation command while `check`, `test`, `validate`, or `validate:full` is active.
 
-Focused Cargo commands use four build jobs and test threads, or one of each under the low-memory validation profile. Focused Vitest uses one worker. Do not increase broad concurrency, combine Rust and frontend stages, or remove sharding without measuring peak memory and confirming unchanged coverage.
+Focused Cargo commands use four build jobs and test threads, or one build job under the low-memory validation profile. Focused Vitest uses one worker. Do not increase broad concurrency, combine Rust and frontend stages, or remove sharding without measuring peak memory and confirming unchanged coverage.
 
 See [Validation infrastructure](validation-infrastructure.md) for ordering, heap limits, caches, bundle contracts, and topology changes.
 

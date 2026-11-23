@@ -2,7 +2,7 @@
 
 This file records reviewed Rust and npm advisory exceptions and allowed warnings. Lockfiles and current command output are authoritative; an old date or prior clean result is not evidence for the current lockfile.
 
-As of 2026-11-18, `pnpm -w run audit:deps` reports no known npm vulnerabilities beyond the two reviewed ignores below, and `pnpm -w run audit:rust` exits successfully with the one reviewed ignore and the six allowed warnings listed below.
+As of 2026-11-23, `pnpm -w run audit:deps` reports no known npm vulnerabilities beyond the two reviewed ignores below, and `pnpm -w run audit:rust` exits successfully with the one reviewed ignore and the six allowed warnings listed below.
 
 A successful Rust audit exit does not mean warning-free. The cargo-audit output policy allows warnings, so maintainers must review new unsound, unmaintained, and yanked findings separately.
 
@@ -58,7 +58,7 @@ SQLite CVEs are not RustSec advisories, so neither audit reports them; track the
 
 - Current: SQLite 3.51.3 through `libsqlite3-sys` 0.37.0 and sqlx 0.9.0. It fixes CVE-2025-7709 (FTS5 corrupt index, reachable from database content), CVE-2025-6965, CVE-2025-29087, and CVE-2025-3277. `ganbaru-db` tests assert this minimum.
 - Open: CVE-2026-11822 and CVE-2026-11824 are fixed in SQLite 3.53.2, which needs `libsqlite3-sys` 0.38, and sqlx 0.9.0 does not allow it. Both need arbitrary SQL with defensive mode off, so the defensive build below mitigates them. CVE-2026-119375 is the reviewed ignore above. Upgrade when a sqlx release accepts `libsqlite3-sys` 0.39.
-- Build: `.cargo/config.toml` compiles SQLite with `SQLITE_DEFAULT_DEFENSIVE` and `SQLITE_TRUSTED_SCHEMA=0` through `LIBSQLITE3_FLAGS`. `ganbaru-db` pools also set `trusted_schema=OFF` and `cell_size_check=ON`, and validate untrusted schema catalogs as described in [Application boundaries](application-boundaries.md#vault-and-configuration).
+- Build: `.cargo/config.toml` compiles SQLite with `SQLITE_DEFAULT_DEFENSIVE` and `SQLITE_TRUSTED_SCHEMA=0` through `LIBSQLITE3_FLAGS`, plus `SQLITE_DEFAULT_MEMSTATUS=0` because allocation statistics take one process-wide mutex on every allocation and nothing reads them. `ganbaru-db` pools also set `trusted_schema=OFF` and `cell_size_check=ON`, and validate untrusted schema catalogs as described in [Application boundaries](application-boundaries.md#vault-and-configuration).
 
 ## Updater archive extraction
 

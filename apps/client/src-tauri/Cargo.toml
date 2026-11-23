@@ -11,6 +11,10 @@ default-run = "ganbaru"
 [lib]
 name = "ganbaru_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+# The entry crate only wires the runtime together; its behavior is tested in ganbaru-tauri-app.
+# A test harness here would compile that crate a second time without cfg(test) and link the
+# whole desktop stack, the largest compile and memory cost of the workspace test build.
+test = false
 doctest = false
 
 [[bin]]

@@ -259,14 +259,16 @@ pub(crate) async fn write_local_seeds(
 /// copy as a new row; captures belong to the installation that made them, so the copy drops any
 /// that could not be sealed; and the apply flag is clear.
 ///
-/// The resets run with the apply flag set, so gated domain triggers and capture stay quiet.
+/// The resets run with the apply flag set, so gated domain triggers and capture stay quiet, and
+/// foreign keys are checked at commit, because `Local` tables reference each other in an order
+/// the manifest does not follow.
 pub async fn prepare_snapshot_copy(
     conn: &mut SqliteConnection,
     manifest: &Manifest,
 ) -> SyncResult<()> {
     manifest.validate().map_err(SyncError::InvalidManifest)?;
     let mut tx = conn.begin().await?;
-    sql::set_applying(&mut tx, true).await?;
+    sql::begin_engine_write(&mut tx).await?;
     for table in manifest.local {
         sqlx::query(AssertSqlSafe(format!("DELETE FROM {}", sql::ident(table))))
             .execute(&mut *tx)

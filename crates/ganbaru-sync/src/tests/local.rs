@@ -863,6 +863,42 @@ async fn local_rows(
 }
 
 #[test]
+fn a_snapshot_copy_clears_device_rows_that_reference_each_other_in_any_order() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let bundle = "a".repeat(64);
+        sqlx::raw_sql(AssertSqlSafe(format!(
+            "INSERT INTO notes_pages (id, parent_type, title, created_time, last_edited_time)
+             VALUES ('page-1', 'workspace', 'Plans', '2026-11-22T09:00:00.000Z',
+                     '2026-11-22T09:00:00.000Z');
+             INSERT INTO notes_history_bundles
+                 (hash, kind, encoding, payload, uncompressed_bytes, stored_bytes)
+             VALUES ('{bundle}', 'row', 'raw-json-v1', X'5B5D', 2, 2);
+             INSERT INTO notes_page_history_snapshots
+                 (id, page_id, parent_type, properties, blocks, reason, created_by,
+                  page_created_time, page_last_edited_time, block_bundle_hash)
+             VALUES ('snapshot-1', 'page-1', 'workspace', '{{}}', '[]', 'manual', 'owner',
+                     '2026-11-22T09:00:00.000Z', '2026-11-22T09:00:00.000Z', '{bundle}');"
+        )))
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        prepare_snapshot_copy(&mut conn, &VAULT_MANIFEST)
+            .await
+            .unwrap();
+        for table in ["notes_page_history_snapshots", "notes_history_bundles"] {
+            let rows: i64 =
+                sqlx::query_scalar(AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                    .fetch_one(&mut *conn)
+                    .await
+                    .unwrap();
+            assert_eq!(rows, 0, "{table}");
+        }
+    });
+}
+
+#[test]
 fn a_snapshot_copy_of_a_new_vault_keeps_every_seeded_device_row() {
     block_on(async {
         let pool = migrated_pool().await;

@@ -320,7 +320,7 @@ export const vaultHandoff = {
     serverCode: "el código que muestra",
   },
   continueWithoutLinking: "Continuar sin vincular",
-  unlinkedNotice: "Sin una computadora vinculada, tus datos solo están en este teléfono, así que desinstalar la app los borra.",
+  unlinkedNotice: "Ganbaru no guarda una copia en línea de tus datos, así que si la desinstalas antes de vincular una computadora, se pierde todo para siempre.",
   unlinkedNoticeAcknowledge: "Entendido",
   continue: "Continuar",
   connectTabs: {

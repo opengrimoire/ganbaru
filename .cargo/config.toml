@@ -2,5 +2,7 @@
 # Compile options for the SQLite library that sqlx bundles: defensive mode
 # blocks schema and page writes that corrupt a database on purpose, and an
 # untrusted schema cannot call functions with side effects from views or
-# triggers. See docs/data/security/dependency-audits.md.
-LIBSQLITE3_FLAGS = "-DSQLITE_DEFAULT_DEFENSIVE -DSQLITE_TRUSTED_SCHEMA=0"
+# triggers. See docs/data/security/dependency-audits.md. Memory statistics
+# are off because they serialize every SQLite allocation in the process on
+# one global mutex, which stalls concurrent connections; nothing reads them.
+LIBSQLITE3_FLAGS = "-DSQLITE_DEFAULT_DEFENSIVE -DSQLITE_TRUSTED_SCHEMA=0 -DSQLITE_DEFAULT_MEMSTATUS=0"

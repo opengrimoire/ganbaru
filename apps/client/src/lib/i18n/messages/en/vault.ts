@@ -312,6 +312,8 @@ export const vaultHandoff = {
     serverCode: "the code it shows",
   },
   continueWithoutLinking: "Continue without linking",
+  unlinkedNotice: "Without a linked computer, your data lives only on this phone, so uninstalling the app deletes it.",
+  unlinkedNoticeAcknowledge: "I understand",
   continue: "Continue",
   connectTabs: {
     phone: "your phone",

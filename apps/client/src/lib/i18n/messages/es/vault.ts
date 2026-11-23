@@ -320,6 +320,8 @@ export const vaultHandoff = {
     serverCode: "el código que muestra",
   },
   continueWithoutLinking: "Continuar sin vincular",
+  unlinkedNotice: "Sin una computadora vinculada, tus datos solo están en este teléfono, así que desinstalar la app los borra.",
+  unlinkedNoticeAcknowledge: "Entendido",
   continue: "Continuar",
   connectTabs: {
     phone: "tu teléfono",

@@ -27,7 +27,7 @@ Rust runs first because compiler and linker peaks are less predictable. Rust and
 
 ### Validation profiles
 
-`GANBARU_VALIDATE_PROFILE` selects the concurrency of Clippy, Rust tests, and Vitest; `apps/client/scripts/validation/run-profiled.mjs` owns the exact values and rejects unknown names. Lanes never exceed logical cores divided by test threads, so a four-core runner runs one binary at a time. The low-memory profile limits only Cargo jobs: its peak is one compiler process (about 5 GB for the Tauri app test target, leaving 2.1 GB available on that machine), while two lanes of four-thread tests need under 2.5 GB and the Vitest shards about 1.5 GB, so fewer lanes, threads, or workers would cost time without lowering the peak.
+`GANBARU_VALIDATE_PROFILE` selects the concurrency of Clippy, Rust tests, and Vitest; `apps/client/scripts/validation/run-profiled.mjs` owns the exact values and rejects unknown names. Lanes never exceed logical cores divided by test threads, so a four-core runner runs one binary at a time. The low-memory profile limits only Cargo jobs: its peak is one compiler process (about 5 GB for the Tauri app test target, leaving 2.1 GB available on that machine), while two lanes of four-thread tests need under 2.5 GB and the Vitest shards about 1.5 GB, so fewer lanes, threads, or workers would cost time without lowering the peak. A cold low-memory `validate:full` there takes 54 minutes and keeps about 2 GB available.
 
 | Profile | Cargo build jobs | Rust test threads | Rust test lanes | Vitest |
 | --- | --- | --- | --- | --- |

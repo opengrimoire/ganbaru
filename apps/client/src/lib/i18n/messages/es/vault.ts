@@ -320,7 +320,7 @@ export const vaultHandoff = {
     serverCode: "el código que muestra",
   },
   continueWithoutLinking: "Continuar sin vincular",
-  unlinkedNotice: "Si desinstalas Ganbaru, reinstalarla no recuperará tus datos a menos que hayas vinculado una computadora.",
+  unlinkedNotice: "Tus datos no tendrán una copia en ningún otro lugar hasta que configures la sincronización o un respaldo en Ajustes > Datos.",
   unlinkedNoticeAcknowledge: "Entendido",
   continue: "Continuar",
   connectTabs: {

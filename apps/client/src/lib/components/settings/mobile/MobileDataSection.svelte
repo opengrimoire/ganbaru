@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AutomaticBackupRows from "$lib/components/vault/AutomaticBackupRows.svelte";
   import DatabaseRollbacks from "$lib/components/vault/DatabaseRollbacks.svelte";
   import KeptVaultFolders from "$lib/components/vault/KeptVaultFolders.svelte";
   import ReplacedVaultBackups from "$lib/components/vault/ReplacedVaultBackups.svelte";
@@ -23,6 +24,8 @@
     <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">
       {t("settings.data.backupHeading")}
     </h2>
+
+    <AutomaticBackupRows buttonClass={actionButtonClass} />
 
     <VaultBackupRows
       platform="android"

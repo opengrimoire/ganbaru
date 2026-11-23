@@ -3,6 +3,7 @@
   import FolderInput from "@lucide/svelte/icons/folder-input";
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
+  import AutomaticBackupRows from "$lib/components/vault/AutomaticBackupRows.svelte";
   import DatabaseRollbacks from "$lib/components/vault/DatabaseRollbacks.svelte";
   import VaultBackupRows from "$lib/components/vault/VaultBackupRows.svelte";
   import VaultLockWarning from "$lib/components/vault/VaultLockWarning.svelte";
@@ -180,6 +181,8 @@
 
   <section class="flex flex-col gap-4">
     <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("settings.data.backupHeading")}</h2>
+
+    <AutomaticBackupRows buttonClass={SETTINGS_SECONDARY_BUTTON_CLASS} />
 
     <VaultBackupRows platform="desktop" buttonClass={SETTINGS_SECONDARY_BUTTON_CLASS} onRestored={restartApp} />
   </section>

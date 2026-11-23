@@ -1,6 +1,5 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { fade } from "svelte/transition";
   import {
     releaseStarterVault,
     type PairingInvitation,
@@ -8,10 +7,13 @@
   } from "$lib/api/vault-handoff";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
-  import { dismissOnOutside } from "$lib/utils/dismiss-on-outside";
   import { completeVaultHandoffOnboarding } from "$lib/vault/handoff-onboarding";
   import { getActiveVaultInfo } from "$lib/vault/state";
-  import OnboardingNav, { type OnboardingNavPrimary, type OnboardingNavProgress } from "../OnboardingNav.svelte";
+  import OnboardingNav, {
+    type OnboardingNavNotice,
+    type OnboardingNavPrimary,
+    type OnboardingNavProgress,
+  } from "../OnboardingNav.svelte";
   import VaultHandoffPanel from "./VaultHandoffPanel.svelte";
 
   /**
@@ -51,7 +53,16 @@
   const confirmsUnlinkedContinue = $derived(platform === "android");
   let unlinkedNoticeRequested = $state(false);
   const linked = $derived(status?.linked === true);
-  const unlinkedNoticeOpen = $derived(unlinkedNoticeRequested && !linked && !completing);
+  const unlinkedNotice = $derived<OnboardingNavNotice | null>(
+    unlinkedNoticeRequested && !linked && !completing
+      ? {
+        message: t("vaultHandoff.unlinkedNotice"),
+        acknowledgeLabel: t("vaultHandoff.unlinkedNoticeAcknowledge"),
+        onAcknowledge: () => void leave(false),
+        onDismiss: () => { unlinkedNoticeRequested = false; },
+      }
+      : null,
+  );
   const readyToContinue = $derived(
     status?.linked === true
       && (platform === "desktop"
@@ -92,11 +103,6 @@
   function continueWithoutLinking(): void {
     if (confirmsUnlinkedContinue) unlinkedNoticeRequested = true;
     else void leave(false);
-  }
-
-  /** Moves focus to the notice's acknowledgement so keyboard and screen reader users land on it. */
-  function focusOnMount(node: HTMLElement): void {
-    node.focus();
   }
 
   async function leave(persistCompletion: boolean): Promise<void> {
@@ -142,28 +148,5 @@
     </div>
   </section>
 
-  <div class="relative">
-    {#if unlinkedNoticeOpen}
-      <div class="pointer-events-none absolute inset-x-0 bottom-full z-40 flex justify-center px-4">
-        <div
-          use:dismissOnOutside={{ onDismiss: () => { unlinkedNoticeRequested = false; } }}
-          transition:fade={{ duration: 120 }}
-          role="dialog"
-          aria-labelledby="unlinked-notice-text"
-          class="surface-floating pointer-events-auto flex w-floating-lg flex-col gap-3 p-4"
-        >
-          <p id="unlinked-notice-text" class="text-sm text-foreground">{t("vaultHandoff.unlinkedNotice")}</p>
-          <button
-            use:focusOnMount
-            type="button"
-            class="inline-flex min-h-11 items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 active:bg-primary/90"
-            onclick={() => void leave(false)}
-          >
-            {t("vaultHandoff.unlinkedNoticeAcknowledge")}
-          </button>
-        </div>
-      </div>
-    {/if}
-    <OnboardingNav {primary} {backLocked} {progress} />
-  </div>
+  <OnboardingNav {primary} {backLocked} {progress} primaryNotice={unlinkedNotice} />
 </div>

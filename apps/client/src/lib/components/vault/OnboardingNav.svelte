@@ -10,6 +10,18 @@
     arrow?: boolean;
   }
 
+  /**
+   * A notice the user acknowledges before the primary action takes effect. It points at the primary action, which
+   * dims while the notice shows so the acknowledgement reads as the next step.
+   */
+  export interface OnboardingNavNotice {
+    message: string;
+    acknowledgeLabel: string;
+    onAcknowledge: () => void;
+    /** Closes the notice without acknowledging it, after a press elsewhere or Escape. */
+    onDismiss: () => void;
+  }
+
   /** An onboarding screen's position among the screens its dots count. */
   export interface OnboardingNavProgress {
     index: number;
@@ -24,6 +36,8 @@
   import type { Snippet } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
+  import { dismissOnOutside } from "$lib/utils/dismiss-on-outside";
+  import { keepInViewport } from "$lib/utils/keep-in-viewport";
   import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
   import { WELCOME_COLUMN_CLASS } from "$lib/vault/welcome-layout";
 
@@ -40,6 +54,7 @@
     backLocked = false,
     secondary,
     progress,
+    primaryNotice = null,
     class: className = "",
   }: {
     primary: OnboardingNavPrimary;
@@ -51,10 +66,17 @@
     /** The screen's other choices, above Back and the primary action. */
     secondary?: Snippet;
     progress?: OnboardingNavProgress;
+    /** A notice shown above the primary action while it waits for acknowledgement. */
+    primaryNotice?: OnboardingNavNotice | null;
     class?: string;
   } = $props();
 
   const { t } = getLocalization();
+
+  /** Moves focus to the notice's acknowledgement so Enter and screen readers land on it. */
+  function focusOnMount(node: HTMLElement): void {
+    node.focus();
+  }
 </script>
 
 <div class={cn(WELCOME_COLUMN_CLASS, "shrink-0 pb-6 @min-[860px]:pb-10", className)}>
@@ -72,21 +94,58 @@
           {t("common.back")}
         </button>
       {/if}
-      <button
-        use:onboardingPrimaryAction
-        type="button"
-        class="inline-flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 active:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
-        disabled={primary.disabled || primary.busy}
-        aria-busy={primary.busy || undefined}
-        onclick={primary.onClick}
+      <!-- Presses on the primary action count as inside the notice, so pressing it again keeps the notice open. -->
+      <div
+        class="relative flex min-w-0 flex-1"
+        use:dismissOnOutside={{ enabled: primaryNotice !== null, onDismiss: () => primaryNotice?.onDismiss() }}
       >
-        <span class="min-w-0 truncate">{primary.label}</span>
-        {#if primary.busy}
-          <LoaderCircle size={16} strokeWidth={2} class="shrink-0 animate-spin" aria-hidden="true" />
-        {:else if primary.arrow ?? true}
-          <ArrowRight size={16} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
+        <button
+          use:onboardingPrimaryAction
+          type="button"
+          class={cn(
+            "inline-flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 active:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60",
+            primaryNotice && "opacity-40",
+          )}
+          disabled={primary.disabled || primary.busy}
+          aria-busy={primary.busy || undefined}
+          aria-expanded={primaryNotice ? true : undefined}
+          onclick={primary.onClick}
+        >
+          <span class="min-w-0 truncate">{primary.label}</span>
+          {#if primary.busy}
+            <LoaderCircle size={16} strokeWidth={2} class="shrink-0 animate-spin" aria-hidden="true" />
+          {:else if primary.arrow ?? true}
+            <ArrowRight size={16} strokeWidth={1.8} class="shrink-0" aria-hidden="true" />
+          {/if}
+        </button>
+        {#if primaryNotice}
+          <!-- A zero-width anchor at the primary action's center; the notice overflows it equally on both sides, which
+               keeps the notice's own translate free for keepInViewport. -->
+          <div class="absolute bottom-[calc(100%+0.75rem)] left-1/2 z-40 flex w-0 justify-center">
+            <div
+              use:keepInViewport
+              role="dialog"
+              aria-labelledby="onboarding-primary-notice"
+              class="surface-floating flex w-floating shrink-0 flex-col gap-3 p-3"
+            >
+              <p id="onboarding-primary-notice" class="text-sm text-foreground">{primaryNotice.message}</p>
+              <button
+                use:focusOnMount
+                type="button"
+                class="inline-flex min-h-10 items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 active:bg-primary/90"
+                onclick={primaryNotice.onAcknowledge}
+              >
+                {primaryNotice.acknowledgeLabel}
+              </button>
+            </div>
+          </div>
+          <!-- The pointer stays centered on the primary action even when the notice slides to fit a narrow screen. -->
+          <span
+            class="absolute bottom-[calc(100%+0.75rem-6px)] left-1/2 z-40 size-3 -translate-x-1/2 rotate-45 border-r border-b border-border bg-popover"
+            aria-hidden="true"
+          ></span>
         {/if}
-      </button>
+      </div>
       {#if progress}
         <span class="ml-auto flex shrink-0 gap-1.5 pl-3" aria-hidden="true">
           {#each { length: progress.count } as _, dotIndex (dotIndex)}

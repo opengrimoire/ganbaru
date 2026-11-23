@@ -312,7 +312,7 @@ export const vaultHandoff = {
     serverCode: "the code it shows",
   },
   continueWithoutLinking: "Continue without linking",
-  unlinkedNotice: "Ganbaru doesn't keep an online copy of your data, so if you uninstall the app before linking a computer, your data can't be recovered.",
+  unlinkedNotice: "If you uninstall Ganbaru, reinstalling it won't bring your data back unless you've linked a computer.",
   unlinkedNoticeAcknowledge: "I understand",
   continue: "Continue",
   connectTabs: {

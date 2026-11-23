@@ -13,7 +13,7 @@ import Keyboard from "@lucide/svelte/icons/keyboard";
 import Music from "@lucide/svelte/icons/eighth-notes";
 import Timer from "@lucide/svelte/icons/timer";
 import DownloadCloud from "@lucide/svelte/icons/cloud-download";
-import HardDrive from "@lucide/svelte/icons/hard-drive";
+import Database from "@lucide/svelte/icons/database";
 import type { SectionId } from "$lib/settings/types";
 import type { PlatformShell } from "$lib/platform";
 
@@ -40,7 +40,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "focus", labelKey: "settings.section.focus", icon: Timer },
   { id: "music", labelKey: "settings.section.music", icon: Music },
   { id: "distractions", labelKey: "settings.section.distractions", icon: GlobeOff },
-  { id: "data", labelKey: "settings.section.data", icon: HardDrive },
+  { id: "data", labelKey: "settings.section.data", icon: Database },
   { id: "updates", labelKey: "settings.section.updates", icon: DownloadCloud },
   { id: "shortcuts", labelKey: "settings.section.shortcuts", icon: Keyboard },
   { id: "about", labelKey: "settings.section.about", icon: Info },
